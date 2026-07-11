@@ -148,6 +148,14 @@ begin operation
 Manifest publication is last. A crash before publication leaves only staging
 locations, never a partially readable object version.
 
+The Worker can stage large manifest metadata through bounded D1 batches because
+all staging rows remain unreachable. One final D1 batch verifies the current
+incarnation and lease fence, marks the version published, compare-and-swaps the
+object pointer, records both recovery copies, succeeds the operation, and
+releases the lease. A crash before that batch is harmless; a retry adopts the
+same rows. If a lease expires between batches, an exact uncommitted intent can
+be rebound to the new live fence, while any changed identity is rejected.
+
 Publication also has a recovery barrier. The client writes a portable,
 immutable recovery sidecar to the destination driver, then submits the same
 small metadata document to the Worker. The Worker validates its complete
@@ -221,6 +229,11 @@ They use renewable leases with short expirations and fencing tokens. Acquiring
 an expired lease increments its token. Every heartbeat, staging commit,
 finalize, move, and delete compares that token, so a paused old client cannot
 resume and overwrite a newer owner.
+
+Locations identify both an extent's immutable ciphertext hash and its physical
+`(driver, storage key, offset, length)` range. Multiple locations may therefore
+reference disjoint ranges in one provider pack object without coupling crypto
+or restore logic to that provider's object layout.
 
 D1 is the authoritative online coordination ledger. It is not the sole
 recovery source for published data: portable manifests and root-seed recovery

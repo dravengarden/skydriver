@@ -154,15 +154,11 @@ func (client *ControlClient) StageRecovery(
 		return StagedRecovery{}, fmt.Errorf("marshal recovery manifest for staging: %w", err)
 	}
 
-	authorization := "Bearer " + base64.RawURLEncoding.EncodeToString(client.token[:])
-
 	var response StagedRecovery
 
-	if err := client.request(
+	if err := client.authenticatedPost(
 		ctx,
-		http.MethodPost,
 		"/api/v1/recovery-manifests/stage",
-		authorization,
 		encoded,
 		&response,
 	); err != nil {
@@ -180,6 +176,21 @@ func (client *ControlClient) StageRecovery(
 	}
 
 	return response, nil
+}
+
+func (client *ControlClient) authenticatedPost(
+	ctx context.Context,
+	path string,
+	body []byte,
+	destination any,
+) error {
+	if client == nil {
+		return fmt.Errorf("%w: control client is not initialized", ErrInvalidControlPlane)
+	}
+
+	authorization := "Bearer " + base64.RawURLEncoding.EncodeToString(client.token[:])
+
+	return client.request(ctx, http.MethodPost, path, authorization, body, destination)
 }
 
 func (client *ControlClient) request(

@@ -7,79 +7,79 @@ const FRAME_TAG_BYTES: u64 = 16;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RecoveryManifest {
-    schema_version: String,
-    manifest_sha256: String,
-    manifest: ContentManifest,
-    locations: Vec<Location>,
+pub(crate) struct RecoveryManifest {
+    pub(crate) schema_version: String,
+    pub(crate) manifest_sha256: String,
+    pub(crate) manifest: ContentManifest,
+    pub(crate) locations: Vec<Location>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ContentManifest {
-    schema_version: String,
-    namespace_id: String,
-    object_id: String,
-    generation: u64,
-    plaintext_size: u64,
-    plaintext_sha256: String,
-    layout: Layout,
-    crypto: Crypto,
-    packs: Vec<Pack>,
+pub(crate) struct ContentManifest {
+    pub(crate) schema_version: String,
+    pub(crate) namespace_id: String,
+    pub(crate) object_id: String,
+    pub(crate) generation: u64,
+    pub(crate) plaintext_size: u64,
+    pub(crate) plaintext_sha256: String,
+    pub(crate) layout: Layout,
+    pub(crate) crypto: Crypto,
+    pub(crate) packs: Vec<Pack>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Layout {
+pub(crate) struct Layout {
     #[serde(rename = "physical_block_bytes")]
-    physical_block: u64,
+    pub(crate) physical_block: u64,
     #[serde(rename = "crypto_frame_bytes")]
-    crypto_frame: u64,
+    pub(crate) crypto_frame: u64,
     #[serde(rename = "logical_pack_bytes")]
-    logical_pack: u64,
+    pub(crate) logical_pack: u64,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Crypto {
-    suite: String,
-    root_version: u32,
-    key_epoch: u64,
+pub(crate) struct Crypto {
+    pub(crate) suite: String,
+    pub(crate) root_version: u32,
+    pub(crate) key_epoch: u64,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Pack {
-    ordinal: u64,
+pub(crate) struct Pack {
+    pub(crate) ordinal: u64,
     #[serde(rename = "pack_id")]
-    id: String,
-    plaintext_offset: u64,
-    plaintext_size: u64,
-    ciphertext_size: u64,
-    ciphertext_sha256: String,
-    extents: Vec<Extent>,
+    pub(crate) id: String,
+    pub(crate) plaintext_offset: u64,
+    pub(crate) plaintext_size: u64,
+    pub(crate) ciphertext_size: u64,
+    pub(crate) ciphertext_sha256: String,
+    pub(crate) extents: Vec<Extent>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Extent {
-    ordinal: u64,
-    first_frame: u64,
-    frame_count: u64,
-    ciphertext_offset: u64,
-    ciphertext_size: u64,
-    ciphertext_sha256: String,
+pub(crate) struct Extent {
+    pub(crate) ordinal: u64,
+    pub(crate) first_frame: u64,
+    pub(crate) frame_count: u64,
+    pub(crate) ciphertext_offset: u64,
+    pub(crate) ciphertext_size: u64,
+    pub(crate) ciphertext_sha256: String,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Location {
-    extent_sha256: String,
-    driver_id: String,
-    storage_key: String,
-    provider_version: Option<String>,
-    offset: u64,
-    length: u64,
+pub(crate) struct Location {
+    pub(crate) extent_sha256: String,
+    pub(crate) driver_id: String,
+    pub(crate) storage_key: String,
+    pub(crate) provider_version: Option<String>,
+    pub(crate) offset: u64,
+    pub(crate) length: u64,
 }
 
 pub(crate) struct ValidatedRecovery {
@@ -87,6 +87,7 @@ pub(crate) struct ValidatedRecovery {
     pub(crate) namespace_id: String,
     pub(crate) object_id: String,
     pub(crate) generation: u64,
+    pub(crate) recovery: RecoveryManifest,
 }
 
 pub(crate) fn validate(encoded: &[u8]) -> Result<ValidatedRecovery, String> {
@@ -99,10 +100,11 @@ pub(crate) fn validate(encoded: &[u8]) -> Result<ValidatedRecovery, String> {
     validate_recovery(&recovery)?;
 
     Ok(ValidatedRecovery {
-        manifest_sha256: recovery.manifest_sha256,
-        namespace_id: recovery.manifest.namespace_id,
-        object_id: recovery.manifest.object_id,
+        manifest_sha256: recovery.manifest_sha256.clone(),
+        namespace_id: recovery.manifest.namespace_id.clone(),
+        object_id: recovery.manifest.object_id.clone(),
         generation: recovery.manifest.generation,
+        recovery,
     })
 }
 

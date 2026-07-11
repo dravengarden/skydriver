@@ -31,10 +31,11 @@ var (
 
 // ImportResult contains publication-ready logical and portable manifests.
 type ImportResult struct {
-	Manifest       manifest.Manifest
-	Recovery       manifest.RecoveryManifest
-	RecoveryKey    string
-	RecoveryObject provider.Object
+	Manifest            manifest.Manifest
+	Recovery            manifest.RecoveryManifest
+	DestinationDriverID string
+	RecoveryKey         string
+	RecoveryObject      provider.Object
 }
 
 // Execute encrypts, uploads, and independently verifies every planned extent,
@@ -124,10 +125,11 @@ func (importer *Importer) Execute(
 	}
 
 	return ImportResult{
-		Manifest:       content,
-		Recovery:       recovery,
-		RecoveryKey:    recoveryKey,
-		RecoveryObject: recoveryObject,
+		Manifest:            content,
+		Recovery:            recovery,
+		DestinationDriverID: plan.DestinationDriverID,
+		RecoveryKey:         recoveryKey,
+		RecoveryObject:      recoveryObject,
 	}, nil
 }
 

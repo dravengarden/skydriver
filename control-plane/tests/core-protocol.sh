@@ -81,7 +81,7 @@ INSERT INTO objects (
 
 INSERT INTO object_versions (
   id, object_id, generation, manifest_sha256, plaintext_sha256,
-  plaintext_bytes, chunk_count, state, created_at
+  plaintext_bytes, chunk_count, pack_count, state, created_at
 ) VALUES (
   'version-1',
   'object-1',
@@ -89,6 +89,7 @@ INSERT INTO object_versions (
   '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
   'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789',
   8,
+  1,
   1,
   'staging',
   1
@@ -130,13 +131,15 @@ INSERT INTO version_packs (
 ) VALUES ('version-1', 0, '404142434445464748494a4b4c4d4e4f', 0);
 
 INSERT INTO locations (
-  id, extent_id, driver_id, storage_key, ciphertext_sha256,
+  id, extent_id, driver_id, storage_key, storage_offset, storage_length, ciphertext_sha256,
   ciphertext_bytes, state, verified_at, created_at, updated_at
 ) VALUES (
   'location-1',
   'extent-1',
   'driver-1',
   'packs/40/pack',
+  0,
+  24,
   '2222222222222222222222222222222222222222222222222222222222222222',
   24,
   'staging',
@@ -146,7 +149,16 @@ INSERT INTO locations (
 );
 UPDATE locations
 SET state = 'verified', verified_at = 2, revision = revision + 1, updated_at = 2
-WHERE id = 'location-1';"
+WHERE id = 'location-1';
+
+INSERT INTO locations (
+  id, extent_id, driver_id, storage_key, storage_offset, storage_length,
+  ciphertext_sha256, ciphertext_bytes, state, created_at, updated_at
+) VALUES (
+  'location-2', 'extent-1', 'driver-1', 'packs/40/pack', 24, 24,
+  '2222222222222222222222222222222222222222222222222222222222222222',
+  24, 'staging', 2, 2
+);"
 
 expect_failure \
   "UPDATE object_versions SET state = 'published' WHERE id = 'version-1';" \
@@ -220,14 +232,25 @@ expect_failure \
 
 expect_failure \
   "INSERT INTO locations (
-     id, extent_id, driver_id, storage_key, ciphertext_sha256,
+     id, extent_id, driver_id, storage_key, storage_offset, storage_length, ciphertext_sha256,
      ciphertext_bytes, state, created_at, updated_at
    ) VALUES (
-     'location-bad', 'extent-1', 'driver-1', 'bad',
+     'location-bad', 'extent-1', 'driver-1', 'bad', 0, 24,
      '7777777777777777777777777777777777777777777777777777777777777777',
      24, 'staging', 4, 4
    );" \
   "location whose identity differs from its extent"
+
+expect_failure \
+  "INSERT INTO locations (
+     id, extent_id, driver_id, storage_key, storage_offset, storage_length,
+     ciphertext_sha256, ciphertext_bytes, state, created_at, updated_at
+   ) VALUES (
+     'location-bad-range', 'extent-1', 'driver-1', 'bad-range', 7, 23,
+     '2222222222222222222222222222222222222222222222222222222222222222',
+     24, 'staging', 4, 4
+   );" \
+  "provider range shorter than its extent"
 
 execute "
 INSERT INTO clients (
@@ -294,10 +317,83 @@ expect_failure \
   "operation from a stale incarnation"
 
 execute "
-UPDATE operations SET state = 'cancelled', updated_at = 2
+UPDATE operations
+SET state = 'running', phase = 'transferring', revision = revision + 1, updated_at = 2
+WHERE id = 'operation-1';
+
+INSERT INTO publication_intents (
+  operation_id, client_id, namespace_id, object_id, generation,
+  manifest_sha256, recovery_sha256, r2_storage_key, r2_version,
+  sidecar_driver_id, sidecar_storage_key, expected_object_revision,
+  incarnation, lease_id, fencing_token, state, created_at, updated_at
+)
+SELECT
+  'operation-1', 'client-1', '202122232425262728292a2b2c2d2e2f',
+  'object-1', 2,
+  '3333333333333333333333333333333333333333333333333333333333333333',
+  '7777777777777777777777777777777777777777777777777777777777777777',
+  'manifests/33/recovery.json', 'r2-version-2',
+  'driver-1', 'manifests/33/sidecar.json', 2,
+  incarnation, 'lease-1', 1, 'staging', 2, 2
+FROM control_plane_state WHERE singleton = 1;
+"
+
+expect_failure \
+  "UPDATE publication_intents SET state = 'committed'
+   WHERE operation_id = 'operation-1';" \
+  "publication before its object version becomes visible"
+
+execute "
+INSERT INTO recovery_manifests (
+  manifest_sha256, version_id, schema_version, r2_storage_key,
+  sidecar_driver_id, sidecar_storage_key, state, ciphertext_bytes,
+  verified_at, created_at, updated_at
+) VALUES (
+  '3333333333333333333333333333333333333333333333333333333333333333',
+  'version-2', 'carrack.recovery.v1', 'manifests/33/recovery.json',
+  'driver-1', 'manifests/33/sidecar.json', 'durable', 512, 3, 2, 3
+);
+UPDATE object_versions
+SET state = 'published', published_at = 3
+WHERE id = 'version-2';
+UPDATE objects
+SET current_generation = 2, revision = revision + 1, updated_at = 3
+WHERE id = 'object-1' AND revision = 2;
+UPDATE leases
+SET fencing_token = 2, updated_at = 3
+WHERE id = 'lease-1';"
+
+expect_failure \
+  "UPDATE publication_intents
+   SET state = 'committed', committed_at = 3, updated_at = 3
+   WHERE operation_id = 'operation-1';" \
+  "publication through a superseded fencing token"
+
+execute "
+UPDATE publication_intents
+SET fencing_token = 2, updated_at = 3
+WHERE operation_id = 'operation-1' AND state = 'staging';
+UPDATE publication_intents
+SET state = 'committed', committed_at = 3, updated_at = 3
+WHERE operation_id = 'operation-1';
+UPDATE operations
+SET state = 'verifying', phase = 'verifying', revision = revision + 1, updated_at = 3
+WHERE id = 'operation-1';
+UPDATE operations
+SET state = 'committing', phase = 'committing', revision = revision + 1, updated_at = 3
+WHERE id = 'operation-1';
+UPDATE operations
+SET state = 'succeeded', phase = 'succeeded', revision = revision + 1,
+    finished_at = 3, updated_at = 3
 WHERE id = 'operation-1';
 UPDATE leases SET released_at = unixepoch(), updated_at = unixepoch()
 WHERE id = 'lease-1';
 INSERT INTO protocol_assertions
-SELECT state = 'cancelled' FROM operations WHERE id = 'operation-1';
+SELECT operation.state = 'succeeded'
+       AND intent.state = 'committed'
+       AND object.current_generation = 2
+FROM operations AS operation
+JOIN publication_intents AS intent ON intent.operation_id = operation.id
+JOIN objects AS object ON object.id = intent.object_id
+WHERE operation.id = 'operation-1';
 PRAGMA foreign_key_check;"

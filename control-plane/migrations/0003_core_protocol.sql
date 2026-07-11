@@ -214,6 +214,8 @@ CREATE TABLE locations (
     driver_id TEXT NOT NULL REFERENCES driver_instances(id),
     storage_key TEXT NOT NULL CHECK (length(storage_key) BETWEEN 1 AND 4096),
     provider_version TEXT,
+    storage_offset INTEGER NOT NULL CHECK (storage_offset >= 0),
+    storage_length INTEGER NOT NULL CHECK (storage_length > 0),
     ciphertext_sha256 TEXT NOT NULL CHECK (length(ciphertext_sha256) = 64),
     ciphertext_bytes INTEGER NOT NULL CHECK (ciphertext_bytes > 0),
     state TEXT NOT NULL CHECK (
@@ -234,7 +236,7 @@ CREATE TABLE locations (
     deleted_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    UNIQUE (driver_id, storage_key)
+    UNIQUE (driver_id, storage_key, storage_offset, storage_length)
 ) STRICT;
 
 CREATE TABLE operations (

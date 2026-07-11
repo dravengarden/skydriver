@@ -75,7 +75,9 @@ manifest. The SDK writes a destination sidecar and submits the identical
 metadata to the Worker, which validates it again and stores it in a
 recovery-SHA-addressed R2 archive. Replaying the same persisted plan produces
 byte-identical ciphertext and safely converges with an earlier interrupted
-upload.
+upload. The control client now exposes idempotent operation creation, renewable
+fenced claims, recovery staging, and atomic import publication; provider payload
+bytes still never enter the Worker.
 
 Carrack prefers native drivers where Go already has a mature protocol or SDK:
 S3-compatible storage, R2, public HTTP, and local filesystems do not pass

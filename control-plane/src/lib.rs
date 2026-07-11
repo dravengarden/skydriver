@@ -7,7 +7,9 @@ mod clients;
 pub mod keys;
 mod manifest_archive;
 mod manifests;
+mod operations;
 pub mod protocol;
+mod publication;
 
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -158,6 +160,48 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
                 };
 
                 manifest_archive::stage(&mut request, &context.env, &client).await
+            },
+        )
+        .post_async("/api/v1/operations", |mut request, context| async move {
+            if external_maintenance(&context.env) {
+                return Response::error("control-plane mutations are disabled", 409);
+            }
+
+            let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                return Response::error("client authentication required", 401);
+            };
+
+            operations::create(&mut request, &context.env, &client).await
+        })
+        .post_async(
+            "/api/v1/operations/:id/claim",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+                let Some(operation_id) = context.param("id") else {
+                    return Response::error("operation ID is required", 400);
+                };
+
+                operations::claim(&mut request, &context.env, &client, operation_id).await
+            },
+        )
+        .post_async(
+            "/api/v1/imports/publish",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+
+                publication::publish(&mut request, &context.env, &client).await
             },
         )
         .get_async("/api/summary", |request, context| async move {

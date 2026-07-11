@@ -29,7 +29,8 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 - Every published object version MUST reference an ordered, content-addressed
   manifest.
 - Every readable location MUST have an exact expected length and ciphertext
-  SHA-256 identity.
+  SHA-256 identity. Its physical provider offset and length MUST be recorded
+  independently so many extents can safely share one provider object.
 - The defaults MUST be 64 MiB plaintext chunks, 8 MiB authenticated frames,
   and an 8 GiB logical pack target. They MUST be independently configurable
   within protocol-safe bounds.
@@ -90,6 +91,9 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
   recovery manifests have been durably written and verified.
 - A crash before publication MAY leave staging objects but MUST NOT expose a
   partially published object version.
+- Publication metadata MAY be staged across bounded D1 batches, but the final
+  object pointer, published version, durable recovery record, operation state,
+  and lease release MUST switch in one fenced atomic batch.
 - Copy MUST preserve the source and MUST publish a destination only after
   verifying its complete identity.
 - Move MUST be implemented as copy, verify, publish destination, tombstone
@@ -116,6 +120,9 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
   client clock.
 - Losing a lease MUST prevent a client from publishing metadata or deleting
   provider data, even if its in-flight upload later completes.
+- An uncommitted publication intent MAY be rebound after lease takeover only
+  when every immutable object, manifest, recovery, and CAS identity is exactly
+  unchanged. A committed or conflicting intent MUST NOT be rebound.
 - Two clients importing the same bytes MAY both transfer data, but publication
   MUST converge on one valid immutable result.
 - Conflicting content for the same logical object MUST produce explicit object
