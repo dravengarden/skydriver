@@ -147,6 +147,44 @@ func TestDescriptorCalculatesCiphertextSpans(t *testing.T) {
 	}
 }
 
+func TestDescriptorNeverPadsPartialFinalFrame(t *testing.T) {
+	t.Parallel()
+
+	const frameBytes = uint64(4 << 20)
+	for _, plaintextBytes := range []uint64{
+		1,
+		frameBytes - 1,
+		frameBytes,
+		frameBytes + 1,
+		3*frameBytes + 17,
+	} {
+		descriptor := cryptostream.Descriptor{
+			Suite:          cryptostream.SuiteAES128GCMHKDFSHA256V1,
+			RootVersion:    1,
+			NamespaceID:    identifier(0x20),
+			EpochID:        7,
+			PackID:         identifier(0x40),
+			FrameBytes:     frameBytes,
+			PlaintextBytes: plaintextBytes,
+		}
+
+		ciphertextBytes, err := descriptor.CiphertextBytes()
+		if err != nil {
+			t.Fatalf("plaintext %d: calculate ciphertext bytes: %v", plaintextBytes, err)
+		}
+
+		expected := plaintextBytes + 16*descriptor.FrameCount()
+		if ciphertextBytes != expected {
+			t.Fatalf(
+				"plaintext %d: ciphertext has %d bytes, expected exact payload plus tags %d",
+				plaintextBytes,
+				ciphertextBytes,
+				expected,
+			)
+		}
+	}
+}
+
 func TestDescriptorRejectsInvalidCiphertextSpan(t *testing.T) {
 	t.Parallel()
 

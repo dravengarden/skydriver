@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.carrack.dev/bundle-plan.v1.schema.json",
+  "title": "Carrack persisted bundle plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "data_bytes", "members"],
+  "properties": {
+    "schema_version": { "const": "carrack.bundle-plan.v1" },
+    "data_bytes": { "type": "integer", "minimum": 0 },
+    "members": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/member" }
+    }
+  },
+  "$defs": {
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "offset", "size"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "offset": { "type": "integer", "minimum": 0 },
+        "size": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

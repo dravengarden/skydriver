@@ -31,6 +31,15 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 - Every readable location MUST have an exact expected length and ciphertext
   SHA-256 identity. Its physical provider offset and length MUST be recorded
   independently so many extents can safely share one provider object.
+- Frame, extent, logical-pack, multipart-part, transfer-window, and provider-
+  object sizes MUST be targets or upper bounds, never preallocated logical
+  slots. Carrack MUST NOT add zero padding to reach any configured target.
+- A final frame, extent, pack, or provider object MUST use its exact actual
+  length. Authenticated-encryption tags and defined recovery metadata are
+  overhead, not padding.
+- Small-file bundles MUST concatenate file payloads without alignment gaps.
+  The bundle data-region length MUST equal the sum of member file lengths.
+  File entries MAY cross frame, extent, and pack boundaries.
 - The defaults MUST be 64 MiB plaintext chunks, 8 MiB authenticated frames,
   and an 8 GiB logical pack target. They MUST be independently configurable
   within protocol-safe bounds.
@@ -61,6 +70,8 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
   amd64 and arm64 clients.
 - Memory use MUST be bounded by configured frame and concurrency limits, not by
   object or pack size.
+- Bundle membership, canonical paths, declared lengths, and ordering MUST be
+  fixed before transfer. A retry MUST NOT silently regroup or reorder members.
 
 ## Driver requirements
 

@@ -17,7 +17,8 @@ future drivers use the same object and operation model.
 
 ## Initial layout
 
-- `archive`: configurable physical block and crypto frame layout.
+- `archive`: configurable physical layout and the canonical gapless small-file
+  bundle format. Configured sizes are targets and never add zero padding.
 - `cryptostream`: provider-free HKDF and framed AES-GCM implementation.
 - `manifest`: versioned, content-addressed archive manifests.
 - `provider`: storage provider boundaries.
@@ -26,9 +27,10 @@ future drivers use the same object and operation model.
 - `cmd/carrack`: operator CLI.
 - `control-plane`: Cloudflare Worker and D1 migrations.
 - `web`: Carrack control console.
-- `schemas`: shared protocol schemas.
+- `schemas`: shared manifest, recovery, bundle, and bundle-plan schemas.
 - `docs/requirements.md`: normative product, concurrency, recovery, and safety
   requirements.
+- `docs/bundle-format.md`: exact zero-padding bundle wire contract.
 - `docs/architecture.md`: correctness, concurrency, key, and GC protocol.
 
 ## Provider status

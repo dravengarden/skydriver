@@ -14,7 +14,8 @@ const (
 // ErrInvalidLayout indicates an internally inconsistent archive layout.
 var ErrInvalidLayout = errors.New("invalid archive layout")
 
-// Layout controls physical block, encryption frame, and logical pack sizes.
+// Layout controls target physical-block, encryption-frame, and logical-pack
+// sizes. Targets never reserve slots or add padding to a short tail.
 type Layout struct {
 	PhysicalBlockBytes uint64 `json:"physical_block_bytes" yaml:"physical_block_bytes"`
 	CryptoFrameBytes   uint64 `json:"crypto_frame_bytes"   yaml:"crypto_frame_bytes"`
@@ -45,7 +46,8 @@ type ExtentSpan struct {
 	FrameCount      uint64 `json:"frame_count"      yaml:"frame_count"`
 }
 
-// DefaultLayout returns the initial Carrack storage profile.
+// DefaultLayout returns the initial Carrack storage profile. Every configured
+// size is a target or upper bound rather than a preallocated slot.
 func DefaultLayout() Layout {
 	return Layout{
 		PhysicalBlockBytes: 64 * mebibyte,

@@ -41,6 +41,8 @@ These are protocol requirements rather than implementation preferences:
    local result.
 10. A failure may leave an extra replica or an orphaned staging object; it must
     never cause the last verified replica to be deleted.
+11. Configured sizes are targets, not storage slots. No frame, extent, pack,
+    bundle, transfer window, or provider object is padded to its target size.
 
 ## Logical and physical model
 
@@ -54,6 +56,9 @@ Carrack separates logical data from physical placement:
 - A **pack** is an immutable encrypted physical blob containing one or more
   chunks. Pack entries carry byte offsets so a range-capable driver can read one
   chunk without downloading the whole pack.
+- A **bundle** is a canonical gapless plaintext stream for many small files.
+  Its local index maps canonical paths to exact byte ranges and hashes without
+  creating one D1 row or provider object per file.
 - A **location** records one complete pack replica on one driver instance.
 - An **operation** is an idempotent import, copy, move, restore, compact,
   verify, reconcile, or GC state machine.
@@ -62,6 +67,13 @@ The default layout uses 8 MiB authenticated-encryption frames, 64 MiB chunks,
 and an 8 GiB target logical pack. These are policy defaults. A driver
 may choose a smaller physical pack target when its API, object-size limits, or
 failure characteristics make that safer.
+
+Every target has an exact short tail. Files inside a bundle are concatenated
+without alignment, and a file may cross frame, extent, or pack boundaries. A
+20.3 GiB stream under an 8 GiB pack target therefore produces exact plaintext
+pack lengths of 8 GiB, 8 GiB, and 4.3 GiB; it never reserves three 8 GiB slots.
+The canonical wire format is specified in
+[bundle-format.md](bundle-format.md).
 
 Chunk size, provider object size, and multipart part size are independent. A
 driver may stream multiple 64 MiB Carrack chunks into one provider object and

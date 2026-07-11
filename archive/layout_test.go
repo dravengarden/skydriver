@@ -107,3 +107,58 @@ func TestPlanExtentsRejectsEmptyAndOversizedPack(t *testing.T) {
 		}
 	}
 }
+
+func TestLayoutTargetsNeverReservePaddingSlots(t *testing.T) {
+	t.Parallel()
+
+	layout := archive.Layout{
+		PhysicalBlockBytes: 64,
+		CryptoFrameBytes:   8,
+		LogicalPackBytes:   256,
+	}
+
+	for _, objectSize := range []uint64{1, 63, 64, 65, 255, 256, 257, 1_003} {
+		packs, err := layout.PlanPacks(objectSize)
+		if err != nil {
+			t.Fatalf("object %d: plan packs: %v", objectSize, err)
+		}
+
+		covered := uint64(0)
+		for _, pack := range packs {
+			if pack.Offset != covered {
+				t.Fatalf("object %d: pack %d starts at %d after %d bytes", objectSize, pack.Ordinal, pack.Offset, covered)
+			}
+
+			extents, extentErr := layout.PlanExtents(pack.Size)
+			if extentErr != nil {
+				t.Fatalf("object %d pack %d: plan extents: %v", objectSize, pack.Ordinal, extentErr)
+			}
+
+			packCovered := uint64(0)
+			for _, extent := range extents {
+				if extent.PlaintextOffset != packCovered {
+					t.Fatalf(
+						"object %d pack %d: extent %d starts at %d after %d bytes",
+						objectSize,
+						pack.Ordinal,
+						extent.Ordinal,
+						extent.PlaintextOffset,
+						packCovered,
+					)
+				}
+
+				packCovered += extent.PlaintextSize
+			}
+
+			if packCovered != pack.Size {
+				t.Fatalf("object %d pack %d: extents cover %d of %d bytes", objectSize, pack.Ordinal, packCovered, pack.Size)
+			}
+
+			covered += pack.Size
+		}
+
+		if covered != objectSize {
+			t.Fatalf("object %d: packs cover %d bytes", objectSize, covered)
+		}
+	}
+}
