@@ -225,6 +225,14 @@ SDK downloads only missing or invalid local chunks, decrypts into temporary
 files, verifies plaintext, then atomically publishes the local output. Its
 resume journal contains no key material and is safe to discard.
 
+Each restore operation stores its immutable version and manifest identity in a
+`restore_intents` row. Its operation-scoped read lease permits concurrent
+readers of the same version while giving GC an exact
+`lease -> operation -> restore intent -> version` protection path. Successful
+completion rechecks the manifest and plaintext identities under the live read
+fence, advances the operation through verification and commit states, and
+releases the lease in one D1 batch.
+
 ### Driver-to-driver transfer
 
 The same copy or move state machine applies whether the source is encrypted or

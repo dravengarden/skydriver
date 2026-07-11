@@ -10,6 +10,7 @@ mod manifests;
 mod operations;
 pub mod protocol;
 mod publication;
+mod restoration;
 mod telemetry;
 
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
@@ -120,6 +121,10 @@ struct LiveComponentsResponse {
 /// Returns a Worker error when a binding, request body, cryptographic
 /// operation, D1 query, or response serialization fails.
 #[event(fetch)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the fetch entrypoint keeps the complete HTTP route table visible"
+)]
 pub async fn main(request: Request, env: Env, _context: Context) -> Result<Response> {
     if !request.path().starts_with("/api/") {
         return env.assets("ASSETS")?.fetch_request(request).await;
@@ -174,6 +179,51 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
 
             operations::create(&mut request, &context.env, &client).await
         })
+        .post_async("/api/v1/restores", |mut request, context| async move {
+            if external_maintenance(&context.env) {
+                return Response::error("control-plane mutations are disabled", 409);
+            }
+
+            let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                return Response::error("client authentication required", 401);
+            };
+
+            restoration::create(&mut request, &context.env, &client).await
+        })
+        .post_async(
+            "/api/v1/restores/:id/claim",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+                let Some(operation_id) = context.param("id") else {
+                    return Response::error("operation ID is required", 400);
+                };
+
+                restoration::claim(&mut request, &context.env, &client, operation_id).await
+            },
+        )
+        .post_async(
+            "/api/v1/restores/:id/complete",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+                let Some(operation_id) = context.param("id") else {
+                    return Response::error("operation ID is required", 400);
+                };
+
+                restoration::complete(&mut request, &context.env, &client, operation_id).await
+            },
+        )
         .post_async(
             "/api/v1/operations/:id/claim",
             |mut request, context| async move {

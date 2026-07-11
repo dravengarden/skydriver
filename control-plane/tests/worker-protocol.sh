@@ -57,6 +57,45 @@ verifier=$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)
       '303132333435363738393a3b3c3d3e3f',
       '202122232425262728292a2b2c2d2e2f', 'importer', unixepoch()
     );
+    INSERT INTO client_namespace_permissions (client_id, namespace_id, role, created_at)
+    VALUES (
+      '303132333435363738393a3b3c3d3e3f',
+      '202122232425262728292a2b2c2d2e2f', 'restorer', unixepoch()
+    );
+    INSERT INTO credential_envelopes (
+      id, envelope_algorithm, key_version, nonce, ciphertext, created_at, rotated_at
+    ) VALUES ('restore-credential', 'test/v1', '1', X'01', X'02', unixepoch(), unixepoch());
+    INSERT INTO driver_instances (
+      id, kind, config_json, credential_ref, created_at, updated_at
+    ) VALUES ('restore-driver', 'test/v1', '{}', 'restore-credential', unixepoch(), unixepoch());
+    INSERT INTO objects (id, namespace_id, logical_name, created_at, updated_at)
+    VALUES (
+      'restore-object', '202122232425262728292a2b2c2d2e2f', 'restore/empty',
+      unixepoch(), unixepoch()
+    );
+    INSERT INTO object_versions (
+      id, object_id, generation, manifest_sha256, plaintext_sha256,
+      plaintext_bytes, chunk_count, pack_count, state, created_at
+    ) VALUES (
+      'restore-version', 'restore-object', 1,
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      0, 0, 0, 'staging', unixepoch()
+    );
+    INSERT INTO recovery_manifests (
+      manifest_sha256, version_id, schema_version, r2_storage_key,
+      sidecar_driver_id, sidecar_storage_key, state, ciphertext_bytes,
+      verified_at, created_at, updated_at
+    ) VALUES (
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      'restore-version', 'carrack.recovery.v1', 'restore/manifest.json',
+      'restore-driver', 'restore/sidecar.json', 'durable', 1,
+      unixepoch(), unixepoch(), unixepoch()
+    );
+    UPDATE object_versions SET state = 'published', published_at = unixepoch()
+    WHERE id = 'restore-version';
+    UPDATE objects SET current_generation = 1, updated_at = unixepoch()
+    WHERE id = 'restore-object';
   " >/dev/null
 
 "${wrangler[@]}" dev \
@@ -87,6 +126,60 @@ fi
 base_url="http://127.0.0.1:$port"
 authorization="Authorization: Bearer $token"
 json='Content-Type: application/json'
+
+restore=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data '{
+    "namespace_id":"202122232425262728292a2b2c2d2e2f",
+    "manifest_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "idempotency_key":"worker-e2e-restore-1"
+  }' \
+  "$base_url/api/v1/restores")
+restore_id=$(jq -r .id <<<"$restore")
+jq -e '
+  .kind == "restore" and .state == "planned" and
+  .version_id == "restore-version" and .object_id == "restore-object" and
+  .generation == 1 and
+  .manifest_sha256 == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+' <<<"$restore" >/dev/null
+
+read_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/restores/$restore_id/claim")
+read_fence=$(jq -r .fencing_token <<<"$read_lease")
+jq -e --arg restore_id "$restore_id" '
+  .operation_id == $restore_id and .operation_state == "running" and
+  .version_id == "restore-version" and
+  .manifest_sha256 == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+' <<<"$read_lease" >/dev/null
+
+renewed_read_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/restores/$restore_id/claim")
+jq -e --argjson fence "$read_fence" '.fencing_token == $fence' \
+  <<<"$renewed_read_lease" >/dev/null
+
+completed_restore=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn \
+    --arg lease_id "$(jq -r .lease_id <<<"$read_lease")" \
+    --arg incarnation "$(jq -r .incarnation <<<"$read_lease")" \
+    --argjson fence "$read_fence" \
+    '{
+      lease_id: $lease_id,
+      incarnation: $incarnation,
+      fencing_token: $fence,
+      manifest_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      plaintext_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      plaintext_bytes: 0
+    }')" \
+  "$base_url/api/v1/restores/$restore_id/complete")
+jq -e --arg restore_id "$restore_id" '
+  .operation_id == $restore_id and .state == "succeeded" and
+  .manifest_sha256 == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+' <<<"$completed_restore" >/dev/null
 
 operation=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" \

@@ -81,6 +81,9 @@ ciphertext extent, authenticates every encrypted frame, and verifies the final
 plaintext identity before atomically publishing a local file. Interrupted
 restores retain a key-free journal and staging file; resume rehashes every
 claimed local plaintext span before skipping its network transfer.
+The control-plane restore protocol pins the immutable version before transfer,
+renews an operation-scoped read lease, and releases it only after the SDK's
+verified manifest and plaintext identities are committed as succeeded.
 
 The import path persists every random pack ID before transfer, then encrypts
 whole frame spans into bounded 64 MiB staging extents. Consecutive extents are
