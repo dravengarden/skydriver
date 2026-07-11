@@ -23,17 +23,19 @@ import (
 )
 
 const (
-	controlTokenEnvironment = "CARRACK_CONTROL_TOKEN"
-	epochKeyEnvironment     = "CARRACK_EPOCH_KEY"
-	aliyunTokenEnvironment  = "CARRACK_ALIYUN_ACCESS_TOKEN"  // #nosec G101 -- environment variable name, not a credential.
-	cliCredentialReference  = "cli/aliyundrive/access-token" // #nosec G101 -- opaque reference, not a credential.
-	defaultMaximumExtent    = uint64(65 << 20)
+	controlTokenEnvironment  = "CARRACK_CONTROL_TOKEN"
+	epochKeyEnvironment      = "CARRACK_EPOCH_KEY"
+	aliyunTokenEnvironment   = "CARRACK_ALIYUN_ACCESS_TOKEN"  // #nosec G101 -- environment variable name, not a credential.
+	aliyunRefreshEnvironment = "CARRACK_ALIYUN_REFRESH_TOKEN" // #nosec G101 -- environment variable name, not a credential.
+	credentialKeyEnvironment = "CARRACK_CREDENTIAL_KEY"       // #nosec G101 -- environment variable name, not a credential.
+	cliCredentialReference   = "cli/aliyundrive/oauth"        // #nosec G101 -- opaque reference, not a credential.
+	defaultMaximumExtent     = uint64(65 << 20)
 )
 
 var (
-	errAliyunTokenRequired = errors.New("Aliyun Drive access token is required") //nolint:staticcheck // Product name begins with a capital letter.
-	errEpochKeyEncoding    = errors.New("invalid Carrack epoch key encoding")
-	errUnknownCredential   = errors.New("unknown CLI credential reference")
+	errEpochKeyEncoding  = errors.New("invalid Carrack epoch key encoding")
+	errUnknownCredential = errors.New("unknown CLI credential reference")
+	errCredentialMode    = errors.New("invalid Aliyun Drive credential mode")
 )
 
 type restoreFlags struct {
@@ -44,6 +46,9 @@ type restoreFlags struct {
 	apiBaseURL      string
 	driveType       string
 	rootFolderID    string
+	renewEndpoint   string
+	renewDriver     string
+	credentialStore string
 	maximumExtent   uint64
 	leaseSeconds    uint64
 	renewalInterval time.Duration
@@ -73,6 +78,9 @@ func newRestoreCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
 	command.Flags().StringVar(&flags.apiBaseURL, "aliyun-api-base-url", "", "Aliyun Drive API base URL")
 	command.Flags().StringVar(&flags.driveType, "aliyun-drive-type", "", "Aliyun Drive type")
 	command.Flags().StringVar(&flags.rootFolderID, "aliyun-root-folder-id", "", "Aliyun Drive root folder ID")
+	command.Flags().StringVar(&flags.renewEndpoint, "aliyun-renew-endpoint", "", "Aliyun refresh-token renewal endpoint")
+	command.Flags().StringVar(&flags.renewDriver, "aliyun-renew-driver", "", "Aliyun renewal driver identifier")
+	command.Flags().StringVar(&flags.credentialStore, "credential-store", "", "encrypted refresh-token store path")
 	command.Flags().Uint64Var(&flags.maximumExtent, "maximum-extent-bytes", defaultMaximumExtent, "maximum ciphertext extent allocation")
 	command.Flags().Uint64Var(&flags.leaseSeconds, "lease-seconds", 60, "read lease duration")
 	command.Flags().DurationVar(&flags.renewalInterval, "renewal-interval", 30*time.Second, "read lease renewal interval")
@@ -105,11 +113,6 @@ func executeRestore(
 	}
 	defer clear(epochKey[:])
 
-	accessToken := getenv(aliyunTokenEnvironment)
-	if accessToken == "" {
-		return sdk.ControlledRestoreResult{}, fmt.Errorf("%w: set %s", errAliyunTokenRequired, aliyunTokenEnvironment)
-	}
-
 	httpClient := &http.Client{}
 
 	control, err := sdk.NewControlClient(flags.controlURL, controlToken, httpClient)
@@ -124,9 +127,9 @@ func executeRestore(
 		return sdk.ControlledRestoreResult{}, fmt.Errorf("encode Aliyun Drive configuration: %w", err)
 	}
 
-	credential, err := json.Marshal(aliyundrive.DriverCredential{AccessToken: accessToken}) // #nosec G117 -- secret remains in-memory for the typed factory.
+	credentials, err := restoreCredentialStore(ctx, flags, getenv)
 	if err != nil {
-		return sdk.ControlledRestoreResult{}, fmt.Errorf("encode Aliyun Drive credential: %w", err)
+		return sdk.ControlledRestoreResult{}, err
 	}
 
 	registry, err := provider.NewRegistry(aliyundrive.Factory{})
@@ -139,7 +142,7 @@ func executeRestore(
 		CredentialRef: cliCredentialReference,
 	}, provider.Dependencies{
 		HTTPClient:  httpClient,
-		Credentials: staticCredentialStore{payload: credential},
+		Credentials: credentials,
 	})
 	if err != nil {
 		return sdk.ControlledRestoreResult{}, fmt.Errorf("open restore provider: %w", err)
@@ -170,6 +173,55 @@ func executeRestore(
 	}
 
 	return result, nil
+}
+
+func restoreCredentialStore(
+	ctx context.Context,
+	flags restoreFlags,
+	getenv func(string) string,
+) (provider.CredentialStore, error) {
+	accessToken := getenv(aliyunTokenEnvironment)
+	refreshToken := getenv(aliyunRefreshEnvironment)
+
+	if flags.credentialStore == "" {
+		if accessToken == "" || refreshToken != "" {
+			return nil, fmt.Errorf("%w: set only %s for static mode", errCredentialMode, aliyunTokenEnvironment)
+		}
+
+		credential, err := json.Marshal(aliyundrive.DriverCredential{AccessToken: accessToken}) // #nosec G117 -- secret remains in-memory for the typed factory.
+		if err != nil {
+			return nil, fmt.Errorf("encode Aliyun Drive credential: %w", err)
+		}
+
+		return staticCredentialStore{payload: credential}, nil
+	}
+
+	if accessToken != "" {
+		return nil, fmt.Errorf("%w: %s cannot be used with --credential-store", errCredentialMode, aliyunTokenEnvironment)
+	}
+
+	store, err := newEncryptedCredentialStore(
+		flags.credentialStore,
+		getenv(credentialKeyEnvironment),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("construct encrypted credential store: %w", err)
+	}
+
+	if refreshToken != "" {
+		credential, marshalErr := json.Marshal(aliyundrive.DriverCredential{ // #nosec G117 -- encrypted before persistence.
+			RefreshToken: refreshToken, RenewEndpoint: flags.renewEndpoint, RenewDriver: flags.renewDriver,
+		})
+		if marshalErr != nil {
+			return nil, fmt.Errorf("encode Aliyun Drive refresh credential: %w", marshalErr)
+		}
+
+		if initializeErr := store.Initialize(ctx, credential); initializeErr != nil {
+			return nil, initializeErr
+		}
+	}
+
+	return store, nil
 }
 
 func parseEpochKey(encoded string) (cryptostream.EpochKey, error) {

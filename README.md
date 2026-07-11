@@ -138,9 +138,29 @@ carrack restore ./restored.bin \
 ```
 
 The control token and epoch key are unpadded base64url encodings of exactly 32
-bytes. The Aliyun value is a caller-managed static access token. Refresh-token
-renewal is intentionally unavailable in the CLI until rotated credentials can
-be persisted with an encrypted compare-and-swap store.
+bytes. The access-token form above is caller-managed and never persisted.
+
+For renewable credentials, initialize an encrypted compare-and-swap store once:
+
+```bash
+unset CARRACK_ALIYUN_ACCESS_TOKEN
+export CARRACK_CREDENTIAL_KEY="$(read-credential-key)"
+export CARRACK_ALIYUN_REFRESH_TOKEN="$(read-aliyun-refresh-token)"
+
+carrack restore ./restored.bin \
+  --control-url https://carrack.example.com \
+  --namespace 202122232425262728292a2b2c2d2e2f \
+  --manifest <manifest-sha256> \
+  --driver-id aliyun-main \
+  --credential-store ~/.local/state/carrack/aliyun-main.json
+```
+
+The credential key is a non-zero, unpadded base64url encoding of exactly 32
+bytes and must come from a separate secret store. Carrack writes the encrypted
+credential file with mode `0600`, binds its identity and revision into AES-GCM
+authenticated data, and atomically persists every rotated refresh token. After
+initialization, unset `CARRACK_ALIYUN_REFRESH_TOKEN`; subsequent restores load
+and update the encrypted file using only `CARRACK_CREDENTIAL_KEY`.
 
 This repository is private. Credentials belong in runtime secret stores, never
 in tracked files.

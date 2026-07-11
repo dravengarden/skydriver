@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -52,5 +54,38 @@ func TestExecuteRestoreRejectsMissingSecretsBeforeNetwork(t *testing.T) {
 	})
 	if !errors.Is(err, sdk.ErrInvalidControlPlane) {
 		t.Fatalf("missing control token returned unexpected error: %v", err)
+	}
+}
+
+func TestRestoreCredentialStoreInitializesEncryptedRefreshToken(t *testing.T) {
+	t.Parallel()
+
+	key := bytes.Repeat([]byte{9}, credentialKeyBytes)
+	values := map[string]string{
+		credentialKeyEnvironment: base64.RawURLEncoding.EncodeToString(key),
+		aliyunRefreshEnvironment: "refresh-secret",
+	}
+
+	store, err := restoreCredentialStore(
+		context.Background(),
+		restoreFlags{credentialStore: filepath.Join(t.TempDir(), "credential.json")},
+		func(name string) string { return values[name] },
+	)
+	if err != nil {
+		t.Fatalf("initialize refresh credential store: %v", err)
+	}
+
+	record, err := store.Load(context.Background(), cliCredentialReference)
+	if err != nil {
+		t.Fatalf("load initialized refresh credential: %v", err)
+	}
+
+	var credential map[string]string
+	if err := json.Unmarshal(record.Payload, &credential); err != nil {
+		t.Fatalf("decode initialized refresh credential: %v", err)
+	}
+
+	if credential["refresh_token"] != "refresh-secret" {
+		t.Fatalf("unexpected initialized credential: %v", credential)
 	}
 }
