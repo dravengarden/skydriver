@@ -233,6 +233,16 @@ completion rechecks the manifest and plaintext identities under the live read
 fence, advances the operation through verification and commit states, and
 releases the lease in one D1 batch.
 
+The portable recovery manifest is metadata and may be returned by the control
+plane, but only under that same live read fence. The Worker resolves the
+operation's pinned intent to its durable R2 object, revalidates the complete
+manifest and content identity, and never returns provider payload bytes.
+
+The SDK coordinator renews the read lease independently of provider progress.
+It always completes with the newest returned fence. If renewal fails, it
+cancels the restore context so pending provider reads terminate and the local
+staging file cannot be atomically published.
+
 ### Driver-to-driver transfer
 
 The same copy or move state machine applies whether the source is encrypted or

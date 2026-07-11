@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
 use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 
-use crate::clients::AuthenticatedClient;
+use crate::{clients::AuthenticatedClient, manifests};
 
 const DEFAULT_LEASE_SECONDS: u64 = 60;
 const MINIMUM_LEASE_SECONDS: u64 = 15;
@@ -32,6 +32,21 @@ struct CompleteRequest {
     manifest_sha256: String,
     plaintext_sha256: String,
     plaintext_bytes: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManifestRequest {
+    lease_id: String,
+    incarnation: String,
+    fencing_token: u64,
+}
+
+#[derive(Deserialize)]
+struct ManifestArchiveRow {
+    manifest_sha256: String,
+    r2_storage_key: String,
+    ciphertext_bytes: u64,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -356,6 +371,86 @@ pub(crate) async fn complete(
         manifest_sha256: completed.manifest_sha256,
         state: "succeeded".to_owned(),
     })
+}
+
+pub(crate) async fn fetch_manifest(
+    request: &mut Request,
+    env: &Env,
+    client: &AuthenticatedClient,
+    operation_id: &str,
+) -> Result<Response> {
+    if !valid_hex(operation_id, 32) {
+        return Response::error("invalid restore operation ID", 400);
+    }
+
+    let requested = request.json::<ManifestRequest>().await?;
+    if !valid_string(&requested.lease_id, 256)
+        || !valid_hex(&requested.incarnation, 32)
+        || requested.fencing_token == 0
+    {
+        return Response::error("invalid restore manifest fence", 400);
+    }
+
+    let database = env.d1("CARRACK_INDEX")?;
+    let archived = database
+        .prepare(
+            "SELECT intent.manifest_sha256, recovery.r2_storage_key, recovery.ciphertext_bytes \
+             FROM restore_intents AS intent \
+             JOIN operations AS operation ON operation.id = intent.operation_id \
+             JOIN recovery_manifests AS recovery \
+               ON recovery.version_id = intent.version_id \
+              AND recovery.manifest_sha256 = intent.manifest_sha256 \
+             JOIN leases AS lease ON lease.operation_id = operation.id \
+             JOIN control_plane_state AS state ON state.singleton = 1 \
+             WHERE operation.id = ?1 AND operation.kind = 'restore' \
+               AND operation.state = 'running' AND operation.requested_by = ?2 \
+               AND recovery.state = 'durable' AND recovery.verified_at IS NOT NULL \
+               AND lease.id = ?3 AND lease.owner_client_id = ?2 \
+               AND lease.incarnation = ?4 AND lease.fencing_token = ?5 \
+               AND lease.lease_kind = 'read' AND lease.released_at IS NULL \
+               AND lease.expires_at > unixepoch() AND state.mode = 'active' \
+               AND lease.incarnation = state.incarnation",
+        )
+        .bind(&[
+            JsValue::from_str(operation_id),
+            JsValue::from_str(&client.id),
+            JsValue::from_str(&requested.lease_id),
+            JsValue::from_str(&requested.incarnation),
+            JsValue::from_str(&requested.fencing_token.to_string()),
+        ])?
+        .first::<ManifestArchiveRow>(None)
+        .await?;
+    let Some(archived) = archived else {
+        return Response::error("restore manifest fence is stale or unavailable", 409);
+    };
+
+    let bucket = env.bucket("CARRACK_MANIFESTS")?;
+    let Some(object) = bucket.get(&archived.r2_storage_key).execute().await? else {
+        return Response::error("durable recovery manifest is missing", 503);
+    };
+    if object.size() != archived.ciphertext_bytes {
+        return Response::error("durable recovery manifest size changed", 503);
+    }
+    let Some(body) = object.body() else {
+        return Response::error("durable recovery manifest body is missing", 503);
+    };
+    let encoded = body.bytes().await?;
+    let Ok(validated) = manifests::validate(&encoded) else {
+        return Response::error("durable recovery manifest is corrupt", 503);
+    };
+    if validated.manifest_sha256 != archived.manifest_sha256 {
+        return Response::error("durable recovery manifest identity changed", 503);
+    }
+
+    let mut response = Response::from_bytes(encoded)?;
+    response
+        .headers_mut()
+        .set("Content-Type", "application/json")?;
+    response
+        .headers_mut()
+        .set("ETag", &format!("\"{}\"", archived.manifest_sha256))?;
+
+    Ok(response)
 }
 
 #[allow(

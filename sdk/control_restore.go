@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+
+	"github.com/dravengarden/carrack/manifest"
 )
 
 // CreateRestoreOperationRequest pins one published immutable manifest.
@@ -69,6 +71,12 @@ type completeRestoreBody struct {
 	PlaintextBytes  uint64 `json:"plaintext_bytes"`
 }
 
+type restoreManifestBody struct {
+	LeaseID      string `json:"lease_id"`
+	Incarnation  string `json:"incarnation"`
+	FencingToken uint64 `json:"fencing_token"`
+}
+
 // CreateRestoreOperation creates or returns an idempotent manifest pin.
 func (client *ControlClient) CreateRestoreOperation(
 	ctx context.Context,
@@ -126,6 +134,43 @@ func (client *ControlClient) ClaimRestoreOperation(
 		response.LeaseID == "" || response.OwnerClientID == "" || response.FencingToken == 0 ||
 		response.OperationRevision == 0 || response.OperationState != "running" {
 		return RestoreReadLease{}, fmt.Errorf("%w: invalid restore lease identity", ErrControlPlaneResponse)
+	}
+
+	return response, nil
+}
+
+// FetchRestoreManifest downloads the pinned portable metadata under a live read lease.
+func (client *ControlClient) FetchRestoreManifest(
+	ctx context.Context,
+	operation RestoreOperation,
+	lease RestoreReadLease,
+) (manifest.RecoveryManifest, error) {
+	if lease.OperationID != operation.ID || lease.Incarnation != operation.Incarnation ||
+		lease.VersionID != operation.VersionID || lease.ManifestSHA256 != operation.ManifestSHA256 ||
+		lease.LeaseID == "" || lease.FencingToken == 0 {
+		return manifest.RecoveryManifest{}, fmt.Errorf("%w: invalid restore manifest fence", ErrInvalidControlPlane)
+	}
+
+	body, err := json.Marshal(restoreManifestBody{
+		LeaseID: lease.LeaseID, Incarnation: lease.Incarnation, FencingToken: lease.FencingToken,
+	})
+	if err != nil {
+		return manifest.RecoveryManifest{}, fmt.Errorf("marshal restore manifest fence: %w", err)
+	}
+
+	var response manifest.RecoveryManifest
+
+	path := "/api/v1/restores/" + operation.ID + "/manifest"
+	if err := client.authenticatedPost(ctx, path, body, &response); err != nil {
+		return manifest.RecoveryManifest{}, err
+	}
+
+	if err := response.Validate(); err != nil {
+		return manifest.RecoveryManifest{}, fmt.Errorf("%w: invalid restore manifest: %w", ErrControlPlaneResponse, err)
+	}
+
+	if response.ManifestSHA256 != operation.ManifestSHA256 {
+		return manifest.RecoveryManifest{}, fmt.Errorf("%w: restore manifest identity changed", ErrControlPlaneResponse)
 	}
 
 	return response, nil

@@ -84,6 +84,11 @@ claimed local plaintext span before skipping its network transfer.
 The control-plane restore protocol pins the immutable version before transfer,
 renews an operation-scoped read lease, and releases it only after the SDK's
 verified manifest and plaintext identities are committed as succeeded.
+Portable recovery metadata is fetched from R2 only under that lease and is
+validated again before the client receives it; archive payload remains direct.
+The controlled restore SDK composes manifest pinning, read-lease renewal,
+metadata fetch, local restore, and fenced completion. A renewal failure cancels
+in-flight provider reads and prevents local publication.
 
 The import path persists every random pack ID before transfer, then encrypts
 whole frame spans into bounded 64 MiB staging extents. Consecutive extents are

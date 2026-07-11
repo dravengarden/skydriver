@@ -28,6 +28,37 @@ wrangler=(
 raw_token=0123456789abcdef0123456789abcdef
 token=$(printf '%s' "$raw_token" | base64 -w0 | tr '+/' '-_' | tr -d '=')
 verifier=$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)
+restore_content=$(jq -cn '{
+  schema_version: "carrack.manifest.v1",
+  namespace_id: "202122232425262728292a2b2c2d2e2f",
+  object_id: "restore-object",
+  generation: 1,
+  plaintext_size: 0,
+  plaintext_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  layout: {
+    physical_block_bytes: 67108864,
+    crypto_frame_bytes: 8388608,
+    logical_pack_bytes: 8589934592
+  },
+  crypto: {
+    suite: "carrack-aes128gcm-hkdfsha256-v1",
+    root_version: 1,
+    key_epoch: 1
+  },
+  packs: []
+}')
+restore_manifest_sha=$(printf '%s' "$restore_content" | sha256sum | cut -d' ' -f1)
+restore_recovery=$(jq -cn \
+  --arg manifest_sha "$restore_manifest_sha" \
+  --argjson manifest "$restore_content" \
+  '{
+    schema_version: "carrack.recovery.v1",
+    manifest_sha256: $manifest_sha,
+    manifest: $manifest,
+    locations: []
+  }')
+restore_recovery_bytes=${#restore_recovery}
+printf '%s' "$restore_recovery" >"$state_directory/restore-manifest.json"
 
 "${wrangler[@]}" d1 execute CARRACK_INDEX \
   --local \
@@ -78,7 +109,7 @@ verifier=$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)
       plaintext_bytes, chunk_count, pack_count, state, created_at
     ) VALUES (
       'restore-version', 'restore-object', 1,
-      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      '$restore_manifest_sha',
       'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
       0, 0, 0, 'staging', unixepoch()
     );
@@ -87,9 +118,9 @@ verifier=$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)
       sidecar_driver_id, sidecar_storage_key, state, ciphertext_bytes,
       verified_at, created_at, updated_at
     ) VALUES (
-      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      '$restore_manifest_sha',
       'restore-version', 'carrack.recovery.v1', 'restore/manifest.json',
-      'restore-driver', 'restore/sidecar.json', 'durable', 1,
+      'restore-driver', 'restore/sidecar.json', 'durable', $restore_recovery_bytes,
       unixepoch(), unixepoch(), unixepoch()
     );
     UPDATE object_versions SET state = 'published', published_at = unixepoch()
@@ -97,6 +128,11 @@ verifier=$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)
     UPDATE objects SET current_generation = 1, updated_at = unixepoch()
     WHERE id = 'restore-object';
   " >/dev/null
+
+"${wrangler[@]}" r2 object put carrack-manifests-preview/restore/manifest.json \
+  --local \
+  --persist-to "$state_directory" \
+  --file "$state_directory/restore-manifest.json" >/dev/null
 
 "${wrangler[@]}" dev \
   --local \
@@ -129,18 +165,18 @@ json='Content-Type: application/json'
 
 restore=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" \
-  --data '{
-    "namespace_id":"202122232425262728292a2b2c2d2e2f",
-    "manifest_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "idempotency_key":"worker-e2e-restore-1"
-  }' \
+  --data "$(jq -cn --arg manifest_sha "$restore_manifest_sha" '{
+    namespace_id: "202122232425262728292a2b2c2d2e2f",
+    manifest_sha256: $manifest_sha,
+    idempotency_key: "worker-e2e-restore-1"
+  }')" \
   "$base_url/api/v1/restores")
 restore_id=$(jq -r .id <<<"$restore")
-jq -e '
+jq -e --arg manifest_sha "$restore_manifest_sha" '
   .kind == "restore" and .state == "planned" and
   .version_id == "restore-version" and .object_id == "restore-object" and
   .generation == 1 and
-  .manifest_sha256 == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  .manifest_sha256 == $manifest_sha
 ' <<<"$restore" >/dev/null
 
 read_lease=$(curl --silent --show-error --fail-with-body \
@@ -148,11 +184,21 @@ read_lease=$(curl --silent --show-error --fail-with-body \
   --data '{"lease_seconds":60}' \
   "$base_url/api/v1/restores/$restore_id/claim")
 read_fence=$(jq -r .fencing_token <<<"$read_lease")
-jq -e --arg restore_id "$restore_id" '
+jq -e --arg restore_id "$restore_id" --arg manifest_sha "$restore_manifest_sha" '
   .operation_id == $restore_id and .operation_state == "running" and
   .version_id == "restore-version" and
-  .manifest_sha256 == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  .manifest_sha256 == $manifest_sha
 ' <<<"$read_lease" >/dev/null
+
+fetched_manifest=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn \
+    --arg lease_id "$(jq -r .lease_id <<<"$read_lease")" \
+    --arg incarnation "$(jq -r .incarnation <<<"$read_lease")" \
+    --argjson fence "$read_fence" \
+    '{lease_id: $lease_id, incarnation: $incarnation, fencing_token: $fence}')" \
+  "$base_url/api/v1/restores/$restore_id/manifest")
+[[ "$fetched_manifest" == "$restore_recovery" ]]
 
 renewed_read_lease=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" \
@@ -166,19 +212,20 @@ completed_restore=$(curl --silent --show-error --fail-with-body \
   --data "$(jq -cn \
     --arg lease_id "$(jq -r .lease_id <<<"$read_lease")" \
     --arg incarnation "$(jq -r .incarnation <<<"$read_lease")" \
+    --arg manifest_sha "$restore_manifest_sha" \
     --argjson fence "$read_fence" \
     '{
       lease_id: $lease_id,
       incarnation: $incarnation,
       fencing_token: $fence,
-      manifest_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      manifest_sha256: $manifest_sha,
       plaintext_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       plaintext_bytes: 0
     }')" \
   "$base_url/api/v1/restores/$restore_id/complete")
-jq -e --arg restore_id "$restore_id" '
+jq -e --arg restore_id "$restore_id" --arg manifest_sha "$restore_manifest_sha" '
   .operation_id == $restore_id and .state == "succeeded" and
-  .manifest_sha256 == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  .manifest_sha256 == $manifest_sha
 ' <<<"$completed_restore" >/dev/null
 
 operation=$(curl --silent --show-error --fail-with-body \

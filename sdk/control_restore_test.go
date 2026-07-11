@@ -13,10 +13,11 @@ func TestControlClientPinsRestoreAndClaimsReadLease(t *testing.T) {
 	t.Parallel()
 
 	token, encodedToken := testClientToken(t)
+	recovery := controlRecoveryManifest(t)
+	manifestID := recovery.ManifestSHA256
 
 	const (
 		namespaceID = "202122232425262728292a2b2c2d2e2f"
-		manifestID  = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 		operationID = "303132333435363738393a3b3c3d3e3f"
 		incarnation = "404142434445464748494a4b4c4d4e4f"
 	)
@@ -48,6 +49,21 @@ func TestControlClientPinsRestoreAndClaimsReadLease(t *testing.T) {
 				`"incarnation":"` + incarnation + `","fencing_token":1,"expires_at":100,` +
 				`"operation_revision":2,"operation_state":"running","version_id":"version-1",` +
 				`"manifest_sha256":"` + manifestID + `"}`))
+		case "/api/v1/restores/" + operationID + "/manifest":
+			assertJSONBody(t, request, map[string]any{
+				"lease_id":      "operation/" + operationID + "/read",
+				"incarnation":   incarnation,
+				"fencing_token": float64(1),
+			})
+
+			encoded, err := recovery.MarshalCanonical()
+			if err != nil {
+				t.Errorf("marshal recovery response: %v", err)
+
+				return
+			}
+
+			_, _ = response.Write(encoded)
 		case "/api/v1/restores/" + operationID + "/complete":
 			assertJSONBody(t, request, map[string]any{
 				"lease_id":         "operation/" + operationID + "/read",
@@ -85,6 +101,15 @@ func TestControlClientPinsRestoreAndClaimsReadLease(t *testing.T) {
 
 	if lease.VersionID != operation.VersionID || lease.ManifestSHA256 != operation.ManifestSHA256 {
 		t.Fatalf("restore pin changed across lease: operation=%+v lease=%+v", operation, lease)
+	}
+
+	fetched, err := client.FetchRestoreManifest(context.Background(), operation, lease)
+	if err != nil {
+		t.Fatalf("fetch restore manifest: %v", err)
+	}
+
+	if fetched.ManifestSHA256 != operation.ManifestSHA256 {
+		t.Fatalf("fetched restore manifest changed: %+v", fetched)
 	}
 
 	completed, err := client.CompleteRestoreOperation(
