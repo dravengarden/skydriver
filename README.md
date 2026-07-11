@@ -71,15 +71,17 @@ supports replica fallback and bounded concurrent batches, and has no crypto
 dependency. Integration tests compose the layers without merging them.
 
 The import path persists every random pack ID before transfer, then encrypts
-whole frame spans into bounded 64 MiB staging extents. Each content-addressed
-extent is uploaded and independently read back before it enters the portable
+whole frame spans into bounded 64 MiB staging extents. Consecutive extents are
+coalesced into exact-length, content-addressed provider objects under the
+driver's preferred and maximum sizes; locations retain each internal range.
+Every provider object is independently read back before it enters the portable
 manifest. The SDK writes a destination sidecar and submits the identical
 metadata to the Worker, which validates it again and stores it in a
 recovery-SHA-addressed R2 archive. Replaying the same persisted plan produces
 byte-identical ciphertext and safely converges with an earlier interrupted
-upload. The control client now exposes idempotent operation creation, renewable
-fenced claims, monotonic progress reporting, recovery staging, and atomic import
-publication; provider payload bytes still never enter the Worker.
+upload. The control client exposes idempotent operation creation, renewable
+fenced claims, monotonic progress reporting, recovery staging, and atomic
+import publication; provider payload bytes still never enter the Worker.
 
 Carrack prefers native drivers where Go already has a mature protocol or SDK:
 S3-compatible storage, R2, public HTTP, and local filesystems do not pass

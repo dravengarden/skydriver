@@ -83,6 +83,9 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 - Running an OpenList server MUST NOT be required.
 - Drivers MUST advertise capabilities, size limits, checksum support,
   resumability, safe concurrency, and rate-limit constraints.
+- Provider-object grouping MUST use only whole consecutive extents, respect a
+  driver's hard maximum, and emit an exact short tail. Changing provider-object
+  policy MUST NOT change bundle, frame, extent, or ciphertext identities.
 - Proxy policy MUST be injected below the driver and MUST NOT appear in object
   identity, manifests, or crypto metadata.
 - A driver MUST distinguish transient, throttled, authorization, quota,

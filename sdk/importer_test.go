@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"sync"
 	"testing"
 
@@ -180,7 +181,7 @@ func TestImporterProducesReconstructablePortableArchive(t *testing.T) {
 		t.Fatalf("plan import: %v", err)
 	}
 
-	epochKey := importEpochKey(t, importIdentifier(), 7)
+	epochKey := importEpochKey(t, importIdentifier())
 	stagingDirectory := t.TempDir()
 
 	result, err := importer.Execute(context.Background(), plan, epochKey, stagingDirectory)
@@ -196,6 +197,17 @@ func TestImporterProducesReconstructablePortableArchive(t *testing.T) {
 	if len(result.Manifest.Packs) != 3 || len(result.Recovery.Locations) != 5 {
 		t.Fatalf("unexpected import shape: packs=%d locations=%d", len(result.Manifest.Packs), len(result.Recovery.Locations))
 	}
+
+	providerObjects := make(map[string]struct{})
+	for _, location := range result.Recovery.Locations {
+		providerObjects[location.StorageKey] = struct{}{}
+	}
+
+	if len(providerObjects) != 3 {
+		t.Fatalf("expected one exact provider object per tiny test pack, got %d", len(providerObjects))
+	}
+
+	assertGaplessProviderLocations(t, destination, result.Recovery.Locations)
 
 	recoveryBytes := destination.object(result.RecoveryKey)
 
@@ -232,6 +244,120 @@ func TestImporterProducesReconstructablePortableArchive(t *testing.T) {
 
 	if !bytes.Equal(firstRecovery, secondRecovery) {
 		t.Fatal("repeating a persisted plan changed ciphertext recovery identity")
+	}
+}
+
+func TestImporterProviderObjectsUseExactRangesWithoutPadding(t *testing.T) {
+	t.Parallel()
+
+	plaintext := []byte("a deterministic thirty-five byte value")
+	source := &mutableMemorySource{data: plaintext, version: "source-v1"}
+	destination := newMemoryArchive()
+	layout := archive.Layout{
+		PhysicalBlockBytes: 8,
+		CryptoFrameBytes:   2,
+		LogicalPackBytes:   16,
+	}
+
+	importer, err := sdk.NewImporterWithOptions(source, destination, layout, sdk.ImporterOptions{
+		ProviderObjectTargetBytes:  100,
+		MaximumProviderObjectBytes: 100,
+	})
+	if err != nil {
+		t.Fatalf("construct bounded importer: %v", err)
+	}
+
+	plan, err := importer.PlanImport(context.Background(), sdk.ImportPlanRequest{
+		NamespaceID:         importIdentifier(),
+		ObjectID:            "object-exact-ranges",
+		Generation:          1,
+		RootVersion:         1,
+		KeyEpoch:            7,
+		SourceKey:           "source",
+		DestinationDriverID: "memory-primary",
+		DestinationPrefix:   "archive",
+	})
+	if err != nil {
+		t.Fatalf("plan bounded import: %v", err)
+	}
+
+	result, err := importer.Execute(
+		context.Background(),
+		plan,
+		importEpochKey(t, importIdentifier()),
+		t.TempDir(),
+	)
+	if err != nil {
+		t.Fatalf("execute bounded import: %v", err)
+	}
+
+	usedBytes := make(map[string]uint64)
+	for _, location := range result.Recovery.Locations {
+		usedBytes[location.StorageKey] = max(
+			usedBytes[location.StorageKey],
+			location.Offset+location.Length,
+		)
+	}
+
+	if len(usedBytes) != 5 {
+		t.Fatalf("100-byte target should keep five test extents separate, got %d objects", len(usedBytes))
+	}
+
+	for storageKey, expectedBytes := range usedBytes {
+		actualBytes := uint64(len(destination.object(storageKey)))
+		if actualBytes != expectedBytes || actualBytes > 100 {
+			t.Fatalf(
+				"provider object %q has %d bytes, referenced exact length is %d",
+				storageKey,
+				actualBytes,
+				expectedBytes,
+			)
+		}
+	}
+}
+
+func TestImporterRejectsExtentAboveDriverObjectMaximum(t *testing.T) {
+	t.Parallel()
+
+	plaintext := []byte("12345678")
+	source := &mutableMemorySource{data: plaintext, version: "source-v1"}
+	destination := newMemoryArchive()
+	layout := archive.Layout{
+		PhysicalBlockBytes: 8,
+		CryptoFrameBytes:   2,
+		LogicalPackBytes:   8,
+	}
+
+	importer, err := sdk.NewImporterWithOptions(source, destination, layout, sdk.ImporterOptions{
+		ProviderObjectTargetBytes:  71,
+		MaximumProviderObjectBytes: 71,
+	})
+	if err != nil {
+		t.Fatalf("construct maximum-bounded importer: %v", err)
+	}
+
+	plan, err := importer.PlanImport(context.Background(), sdk.ImportPlanRequest{
+		NamespaceID:         importIdentifier(),
+		ObjectID:            "object-too-small-driver-limit",
+		Generation:          1,
+		RootVersion:         1,
+		KeyEpoch:            7,
+		SourceKey:           "source",
+		DestinationDriverID: "memory-primary",
+		DestinationPrefix:   "archive",
+	})
+	if err != nil {
+		t.Fatalf("plan maximum-bounded import: %v", err)
+	}
+
+	_, err = importer.Execute(
+		context.Background(),
+		plan,
+		importEpochKey(t, importIdentifier()),
+		t.TempDir(),
+	)
+	if !errors.Is(err, sdk.ErrInvalidConfiguration) {
+		t.Fatalf("expected driver maximum rejection, got %v", err)
 	}
 }
 
@@ -273,7 +399,7 @@ func TestImporterRejectsChangedSourceAndCorruptDestination(t *testing.T) {
 	_, err = importer.Execute(
 		context.Background(),
 		plan,
-		importEpochKey(t, importIdentifier(), 7),
+		importEpochKey(t, importIdentifier()),
 		t.TempDir(),
 	)
 	if !errors.Is(err, sdk.ErrImportSourceChanged) {
@@ -290,7 +416,7 @@ func TestImporterRejectsChangedSourceAndCorruptDestination(t *testing.T) {
 	_, err = importer.Execute(
 		context.Background(),
 		plan,
-		importEpochKey(t, importIdentifier(), 7),
+		importEpochKey(t, importIdentifier()),
 		stagingDirectory,
 	)
 	if !errors.Is(err, sdk.ErrImportIntegrity) {
@@ -305,6 +431,49 @@ func (archiveStore *memoryArchive) object(key string) []byte {
 	defer archiveStore.mutex.RUnlock()
 
 	return bytes.Clone(archiveStore.objects[key])
+}
+
+func assertGaplessProviderLocations(
+	t *testing.T,
+	destination *memoryArchive,
+	locations []manifest.Location,
+) {
+	t.Helper()
+
+	byStorageKey := make(map[string][]manifest.Location)
+	for _, location := range locations {
+		byStorageKey[location.StorageKey] = append(byStorageKey[location.StorageKey], location)
+	}
+
+	for storageKey, objectLocations := range byStorageKey {
+		sort.Slice(objectLocations, func(left, right int) bool {
+			return objectLocations[left].Offset < objectLocations[right].Offset
+		})
+
+		var expectedOffset uint64
+		for _, location := range objectLocations {
+			if location.Offset != expectedOffset {
+				t.Fatalf(
+					"provider object %q has a gap: location starts at %d, expected %d",
+					storageKey,
+					location.Offset,
+					expectedOffset,
+				)
+			}
+
+			expectedOffset += location.Length
+		}
+
+		actualBytes := uint64(len(destination.object(storageKey)))
+		if actualBytes != expectedOffset {
+			t.Fatalf(
+				"provider object %q has %d bytes, exact referenced length is %d",
+				storageKey,
+				actualBytes,
+				expectedOffset,
+			)
+		}
+	}
 }
 
 func restoreMemoryArchive(
@@ -346,7 +515,13 @@ func restoreMemoryArchive(
 		for _, extent := range pack.Extents {
 			location := locations[extent.CiphertextSHA256]
 
-			ciphertext := destination.object(location.StorageKey)
+			providerObject := destination.object(location.StorageKey)
+			if location.Offset > uint64(len(providerObject)) ||
+				location.Length > uint64(len(providerObject))-location.Offset {
+				t.Fatalf("location range exceeds provider object: %+v", location)
+			}
+
+			ciphertext := providerObject[location.Offset : location.Offset+location.Length]
 			if _, err := packCipher.OpenFrames(
 				context.Background(),
 				&plaintext,
@@ -365,7 +540,6 @@ func restoreMemoryArchive(
 func importEpochKey(
 	t *testing.T,
 	namespaceID cryptostream.Identifier,
-	epochID uint64,
 ) cryptostream.EpochKey {
 	t.Helper()
 
@@ -376,7 +550,7 @@ func importEpochKey(
 
 	epochKey, err := cryptostream.DeriveEpochKey(root, cryptostream.EpochContext{
 		NamespaceID: namespaceID,
-		EpochID:     epochID,
+		EpochID:     7,
 	})
 	if err != nil {
 		t.Fatalf("derive import epoch key: %v", err)

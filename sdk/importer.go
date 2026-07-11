@@ -189,23 +189,33 @@ func (importer *Importer) executePack(
 	locations := make([]manifest.Location, 0, len(spans))
 	packHash := sha256.New()
 
-	for _, span := range spans {
-		extent, location, err := importer.executeExtent(
+	groups, err := planProviderObjectGroups(
+		packCipher,
+		spans,
+		importer.providerObjectBytes,
+		importer.maximumObjectBytes,
+	)
+	if err != nil {
+		return manifest.Pack{}, nil, fmt.Errorf("plan import pack %d provider objects: %w", planned.Ordinal, err)
+	}
+
+	for _, group := range groups {
+		extents, groupLocations, groupErr := importer.executeProviderObject(
 			ctx,
 			plan,
 			planned,
-			span,
+			group,
 			packCipher,
 			stagingDirectory,
 			plaintextHash,
 			packHash,
 		)
-		if err != nil {
-			return manifest.Pack{}, nil, err
+		if groupErr != nil {
+			return manifest.Pack{}, nil, groupErr
 		}
 
-		pack.Extents = append(pack.Extents, extent)
-		locations = append(locations, location)
+		pack.Extents = append(pack.Extents, extents...)
+		locations = append(locations, groupLocations...)
 	}
 
 	pack.CiphertextSHA256 = hex.EncodeToString(packHash.Sum(nil))
@@ -213,19 +223,83 @@ func (importer *Importer) executePack(
 	return pack, locations, nil
 }
 
-func (importer *Importer) executeExtent(
+type plannedCiphertextExtent struct {
+	span             archive.ExtentSpan
+	ciphertextOffset uint64
+	ciphertextBytes  uint64
+}
+
+type providerObjectGroup struct {
+	ciphertextBytes uint64
+	extents         []plannedCiphertextExtent
+}
+
+func planProviderObjectGroups(
+	packCipher *cryptostream.Cipher,
+	spans []archive.ExtentSpan,
+	targetBytes,
+	maximumBytes uint64,
+) ([]providerObjectGroup, error) {
+	groups := make([]providerObjectGroup, 0)
+	current := providerObjectGroup{extents: make([]plannedCiphertextExtent, 0)}
+
+	for _, span := range spans {
+		ciphertextOffset, ciphertextBytes, err := packCipher.Descriptor().CiphertextSpan(
+			span.FirstFrame,
+			span.FrameCount,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("calculate extent %d ciphertext span: %w", span.Ordinal, err)
+		}
+
+		if maximumBytes > 0 && ciphertextBytes > maximumBytes {
+			return nil, fmt.Errorf(
+				"%w: extent %d has %d ciphertext bytes, driver maximum is %d",
+				ErrInvalidConfiguration,
+				span.Ordinal,
+				ciphertextBytes,
+				maximumBytes,
+			)
+		}
+
+		if len(current.extents) > 0 &&
+			(current.ciphertextBytes >= targetBytes || ciphertextBytes > targetBytes-current.ciphertextBytes) {
+			groups = append(groups, current)
+			current = providerObjectGroup{extents: make([]plannedCiphertextExtent, 0)}
+		}
+
+		if ciphertextBytes > math.MaxUint64-current.ciphertextBytes {
+			return nil, fmt.Errorf("%w: provider-object group size overflows", ErrInvalidConfiguration)
+		}
+
+		current.extents = append(current.extents, plannedCiphertextExtent{
+			span:             span,
+			ciphertextOffset: ciphertextOffset,
+			ciphertextBytes:  ciphertextBytes,
+		})
+		current.ciphertextBytes += ciphertextBytes
+	}
+
+	if len(current.extents) > 0 {
+		groups = append(groups, current)
+	}
+
+	return groups, nil
+}
+
+func (importer *Importer) executeProviderObject(
 	ctx context.Context,
 	plan ImportPlan,
 	plannedPack PlannedPack,
-	span archive.ExtentSpan,
+	group providerObjectGroup,
 	packCipher *cryptostream.Cipher,
 	stagingDirectory string,
 	plaintextHash,
 	packHash hash.Hash,
-) (_ manifest.Extent, _ manifest.Location, returnErr error) {
-	temporary, err := os.CreateTemp(stagingDirectory, ".carrack-extent-*")
+) (_ []manifest.Extent, _ []manifest.Location, returnErr error) {
+	temporary, err := os.CreateTemp(stagingDirectory, ".carrack-provider-object-*")
 	if err != nil {
-		return manifest.Extent{}, manifest.Location{}, fmt.Errorf("create import extent staging file: %w", err)
+		return nil, nil, fmt.Errorf("create import provider-object staging file: %w", err)
 	}
 
 	temporaryPath := temporary.Name()
@@ -241,87 +315,96 @@ func (importer *Importer) executeExtent(
 		returnErr = errors.Join(returnErr, closeErr, removeErr)
 	}()
 
-	transformed, err := importer.encryptExtent(
-		ctx,
-		plan,
-		plannedPack,
-		span,
-		packCipher,
-		temporary,
-		plaintextHash,
-		packHash,
-	)
-	if err != nil {
-		return manifest.Extent{}, manifest.Location{}, err
+	extents := make([]manifest.Extent, 0, len(group.extents))
+	locations := make([]manifest.Location, 0, len(group.extents))
+	objectHash := sha256.New()
+	objectOffset := uint64(0)
+
+	for _, plannedExtent := range group.extents {
+		transformed, transformErr := importer.encryptExtent(
+			ctx,
+			plan,
+			plannedPack,
+			plannedExtent.span,
+			packCipher,
+			io.MultiWriter(temporary, objectHash),
+			plaintextHash,
+			packHash,
+		)
+		if transformErr != nil {
+			return nil, nil, transformErr
+		}
+
+		if transformed.PlaintextBytes != plannedExtent.span.PlaintextSize ||
+			transformed.CiphertextBytes != plannedExtent.ciphertextBytes {
+			return nil, nil, fmt.Errorf("%w: extent size changed", ErrImportIntegrity)
+		}
+
+		ciphertextDigest := hex.EncodeToString(transformed.CiphertextSHA256[:])
+		extents = append(extents, manifest.Extent{
+			Ordinal:          plannedExtent.span.Ordinal,
+			FirstFrame:       plannedExtent.span.FirstFrame,
+			FrameCount:       plannedExtent.span.FrameCount,
+			CiphertextOffset: plannedExtent.ciphertextOffset,
+			CiphertextSize:   plannedExtent.ciphertextBytes,
+			CiphertextSHA256: ciphertextDigest,
+		})
+		locations = append(locations, manifest.Location{
+			ExtentSHA256: ciphertextDigest,
+			DriverID:     plan.DestinationDriverID,
+			Offset:       objectOffset,
+			Length:       plannedExtent.ciphertextBytes,
+		})
+		objectOffset += plannedExtent.ciphertextBytes
 	}
 
-	if transformed.PlaintextBytes != span.PlaintextSize {
-		return manifest.Extent{}, manifest.Location{}, fmt.Errorf(
-			"%w: extent plaintext size changed",
-			ErrImportIntegrity,
-		)
+	if objectOffset != group.ciphertextBytes {
+		return nil, nil, fmt.Errorf("%w: provider-object group size changed", ErrImportIntegrity)
 	}
 
 	if _, seekErr := temporary.Seek(0, io.SeekStart); seekErr != nil {
-		return manifest.Extent{}, manifest.Location{}, fmt.Errorf("rewind import extent: %w", seekErr)
+		return nil, nil, fmt.Errorf("rewind import provider object: %w", seekErr)
 	}
 
-	ciphertextDigest := hex.EncodeToString(transformed.CiphertextSHA256[:])
-	storageKey := extentStorageKey(plan.DestinationPrefix, ciphertextDigest)
+	objectDigest := hex.EncodeToString(objectHash.Sum(nil))
+	storageKey := providerObjectStorageKey(plan.DestinationPrefix, objectDigest)
 
 	uploaded, err := importer.destination.Put(ctx, storageKey, temporary, provider.PutOptions{
-		SizeBytes: transformed.CiphertextBytes,
-		SHA256:    ciphertextDigest,
+		SizeBytes: group.ciphertextBytes,
+		SHA256:    objectDigest,
 	})
 	if err != nil {
-		return manifest.Extent{}, manifest.Location{}, fmt.Errorf("upload import extent %q: %w", storageKey, err)
+		return nil, nil, fmt.Errorf("upload import provider object %q: %w", storageKey, err)
 	}
 
-	if uploaded.SizeBytes != transformed.CiphertextBytes {
-		return manifest.Extent{}, manifest.Location{}, fmt.Errorf(
-			"%w: uploaded extent has %d bytes, expected %d",
+	if uploaded.SizeBytes != group.ciphertextBytes {
+		return nil, nil, fmt.Errorf(
+			"%w: uploaded provider object has %d bytes, expected %d",
 			ErrImportIntegrity,
 			uploaded.SizeBytes,
-			transformed.CiphertextBytes,
+			group.ciphertextBytes,
 		)
 	}
+
+	var objectStreamDigest cryptostream.StreamDigest
+	copy(objectStreamDigest[:], objectHash.Sum(nil))
 
 	if verifyErr := verifyProviderObject(
 		ctx,
 		importer.destination,
 		storageKey,
-		transformed.CiphertextBytes,
-		transformed.CiphertextSHA256,
+		group.ciphertextBytes,
+		objectStreamDigest,
 	); verifyErr != nil {
-		return manifest.Extent{}, manifest.Location{}, verifyErr
+		return nil, nil, verifyErr
 	}
 
-	ciphertextOffset, ciphertextSize, err := packCipher.Descriptor().CiphertextSpan(
-		span.FirstFrame,
-		span.FrameCount,
-	)
-	if err != nil {
-		return manifest.Extent{}, manifest.Location{}, fmt.Errorf(
-			"calculate import extent ciphertext span: %w",
-			err,
-		)
+	for index := range locations {
+		locations[index].StorageKey = storageKey
+		locations[index].ProviderVersion = uploaded.Version
 	}
 
-	return manifest.Extent{
-			Ordinal:          span.Ordinal,
-			FirstFrame:       span.FirstFrame,
-			FrameCount:       span.FrameCount,
-			CiphertextOffset: ciphertextOffset,
-			CiphertextSize:   ciphertextSize,
-			CiphertextSHA256: ciphertextDigest,
-		}, manifest.Location{
-			ExtentSHA256:    ciphertextDigest,
-			DriverID:        plan.DestinationDriverID,
-			StorageKey:      storageKey,
-			ProviderVersion: uploaded.Version,
-			Offset:          0,
-			Length:          transformed.CiphertextBytes,
-		}, nil
+	return extents, locations, nil
 }
 
 func (importer *Importer) encryptExtent(
@@ -514,8 +597,8 @@ func parseCryptoIdentifier(value string) (cryptostream.Identifier, error) {
 	return identifier, nil
 }
 
-func extentStorageKey(prefix, digest string) string {
-	return path.Join(prefix, "extents", digest[:2], digest)
+func providerObjectStorageKey(prefix, digest string) string {
+	return path.Join(prefix, "objects", digest[:2], digest)
 }
 
 func equalDigest(left, right []byte) bool {

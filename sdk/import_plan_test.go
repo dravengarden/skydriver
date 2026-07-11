@@ -115,6 +115,20 @@ func TestImportPlanPersistsRandomPackIdentitiesBeforeTransfer(t *testing.T) {
 	}
 }
 
+func TestImporterOptionsFollowDriverObjectCapabilities(t *testing.T) {
+	t.Parallel()
+
+	options := sdk.ImporterOptionsFromCapabilities(provider.Capabilities{
+		PreferredObjectBytes: 512 << 20,
+		MaximumObjectBytes:   2 << 30,
+	})
+
+	if options.ProviderObjectTargetBytes != 512<<20 ||
+		options.MaximumProviderObjectBytes != 2<<30 {
+		t.Fatalf("unexpected importer options: %+v", options)
+	}
+}
+
 func TestImportPlanRejectsCoverageIdentityAndUnknownFields(t *testing.T) {
 	t.Parallel()
 

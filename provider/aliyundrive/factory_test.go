@@ -65,7 +65,9 @@ func TestFactoryOpensTypedDriver(t *testing.T) {
 	}
 
 	if handle.Capabilities.SafeConcurrency != safeConcurrency ||
-		handle.Capabilities.PreferredPartBytes != 8<<20 {
+		handle.Capabilities.PreferredPartBytes != 8<<20 ||
+		handle.Capabilities.PreferredObjectBytes != 1<<30 ||
+		handle.Capabilities.MaximumObjectBytes != (8<<20)*maximumUploadParts {
 		t.Fatalf("unexpected capabilities: %+v", handle.Capabilities)
 	}
 }

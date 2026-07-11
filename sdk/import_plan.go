@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -21,9 +22,10 @@ import (
 
 const (
 	// ImportPlanSchemaVersion is the crash-resumable V1 import plan format.
-	ImportPlanSchemaVersion = "carrack.import-plan.v1"
-	maximumPlanBytes        = 64 << 20
-	identifierBytes         = 16
+	ImportPlanSchemaVersion    = "carrack.import-plan.v1"
+	maximumPlanBytes           = 64 << 20
+	identifierBytes            = 16
+	defaultProviderObjectBytes = uint64(1 << 30)
 )
 
 var (
@@ -77,9 +79,27 @@ type PlannedPack struct {
 
 // Importer executes bounded-memory encrypted imports.
 type Importer struct {
-	source      provider.Reader
-	destination provider.ReadWriter
-	layout      archive.Layout
+	source              provider.Reader
+	destination         provider.ReadWriter
+	layout              archive.Layout
+	providerObjectBytes uint64
+	maximumObjectBytes  uint64
+}
+
+// ImporterOptions controls provider placement independently from crypto and
+// integrity extent sizes. Targets never cause padding.
+type ImporterOptions struct {
+	ProviderObjectTargetBytes  uint64
+	MaximumProviderObjectBytes uint64
+}
+
+// ImporterOptionsFromCapabilities translates an opened driver policy without
+// coupling archive identity to that driver.
+func ImporterOptionsFromCapabilities(capabilities provider.Capabilities) ImporterOptions {
+	return ImporterOptions{
+		ProviderObjectTargetBytes:  capabilities.PreferredObjectBytes,
+		MaximumProviderObjectBytes: capabilities.MaximumObjectBytes,
+	}
 }
 
 // NewImporter constructs a direct source-to-destination importer.
@@ -87,6 +107,17 @@ func NewImporter(
 	source provider.Reader,
 	destination provider.ReadWriter,
 	layout archive.Layout,
+) (*Importer, error) {
+	return NewImporterWithOptions(source, destination, layout, ImporterOptions{})
+}
+
+// NewImporterWithOptions constructs an importer with an exact-length provider
+// object grouping policy.
+func NewImporterWithOptions(
+	source provider.Reader,
+	destination provider.ReadWriter,
+	layout archive.Layout,
+	options ImporterOptions,
 ) (*Importer, error) {
 	if source == nil || destination == nil {
 		return nil, fmt.Errorf("%w: source and readable destination are required", ErrInvalidConfiguration)
@@ -96,7 +127,26 @@ func NewImporter(
 		return nil, fmt.Errorf("%w: %w", ErrInvalidConfiguration, err)
 	}
 
-	return &Importer{source: source, destination: destination, layout: layout}, nil
+	target := options.ProviderObjectTargetBytes
+	if target == 0 {
+		target = defaultProviderObjectBytes
+	}
+
+	if options.MaximumProviderObjectBytes > 0 {
+		target = min(target, options.MaximumProviderObjectBytes)
+	}
+
+	if target == 0 || target > math.MaxInt64 || options.MaximumProviderObjectBytes > math.MaxInt64 {
+		return nil, fmt.Errorf("%w: provider object target is out of range", ErrInvalidConfiguration)
+	}
+
+	return &Importer{
+		source:              source,
+		destination:         destination,
+		layout:              layout,
+		providerObjectBytes: target,
+		maximumObjectBytes:  options.MaximumProviderObjectBytes,
+	}, nil
 }
 
 // PlanImport pins the source identity and generates all pack IDs before any

@@ -33,15 +33,16 @@ type DriverSpec struct {
 // Capabilities describes operations and safe physical limits exposed by a
 // concrete driver instance.
 type Capabilities struct {
-	RangeRead          bool   `json:"range_read"`
-	StreamingWrite     bool   `json:"streaming_write"`
-	Delete             bool   `json:"delete"`
-	Inventory          bool   `json:"inventory"`
-	ServerSideCopy     bool   `json:"server_side_copy"`
-	ResumableWrite     bool   `json:"resumable_write"`
-	MaximumObjectBytes uint64 `json:"maximum_object_bytes,omitempty"`
-	PreferredPartBytes uint64 `json:"preferred_part_bytes,omitempty"`
-	SafeConcurrency    uint32 `json:"safe_concurrency"`
+	RangeRead            bool   `json:"range_read"`
+	StreamingWrite       bool   `json:"streaming_write"`
+	Delete               bool   `json:"delete"`
+	Inventory            bool   `json:"inventory"`
+	ServerSideCopy       bool   `json:"server_side_copy"`
+	ResumableWrite       bool   `json:"resumable_write"`
+	MaximumObjectBytes   uint64 `json:"maximum_object_bytes,omitempty"`
+	PreferredObjectBytes uint64 `json:"preferred_object_bytes,omitempty"`
+	PreferredPartBytes   uint64 `json:"preferred_part_bytes,omitempty"`
+	SafeConcurrency      uint32 `json:"safe_concurrency"`
 }
 
 // Handle contains the optional interfaces implemented by an opened driver.
@@ -195,6 +196,11 @@ func (handle Handle) validate(specification DriverSpec) error {
 
 	if handle.Capabilities.SafeConcurrency == 0 {
 		return fmt.Errorf("%w: safe concurrency must be positive", ErrInvalidDriver)
+	}
+
+	if handle.Capabilities.MaximumObjectBytes > 0 &&
+		handle.Capabilities.PreferredObjectBytes > handle.Capabilities.MaximumObjectBytes {
+		return fmt.Errorf("%w: preferred object size exceeds driver maximum", ErrInvalidDriver)
 	}
 
 	return nil

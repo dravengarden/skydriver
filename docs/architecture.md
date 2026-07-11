@@ -81,6 +81,15 @@ may divide that object into smaller provider-specific upload parts. The control
 plane assigns work in batches; it is never on the synchronous path between two
 chunks. SDK-local pipelining and bounded concurrency determine throughput.
 
+The importer groups only consecutive complete extents. It uses the driver's
+preferred provider-object size, capped by the advertised maximum, and defaults
+to a 1 GiB target when no preference is available. A group closes before adding
+an extent that would exceed its target; an exact short tail is uploaded without
+padding. If one immutable extent exceeds a hard driver maximum, the plan is
+rejected instead of silently changing crypto boundaries. Every group is staged,
+hashed, uploaded once, and independently read back. Its locations share one
+storage key and record disjoint exact offsets and lengths.
+
 ### Leaf merging and compaction
 
 Leaf merging never mutates an existing pack. A client builds a new pack,
