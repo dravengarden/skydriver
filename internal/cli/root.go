@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/dravengarden/carrack/archive"
+	"github.com/dravengarden/carrack/sdk"
 )
 
 const developmentVersion = "0.1.0-dev"
@@ -24,7 +25,7 @@ var (
 
 // Run executes Carrack with explicit process dependencies.
 func Run(ctx context.Context, arguments []string, stdout, stderr io.Writer) error {
-	command := newRootCommand(stdout, stderr)
+	command := newRootCommand(ctx, stdout, stderr)
 	command.SetArgs(arguments)
 
 	if err := command.ExecuteContext(ctx); err != nil {
@@ -34,7 +35,7 @@ func Run(ctx context.Context, arguments []string, stdout, stderr io.Writer) erro
 	return nil
 }
 
-func newRootCommand(stdout, stderr io.Writer) *cobra.Command {
+func newRootCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	command := &cobra.Command{
 		Use:           "carrack",
 		Short:         "Move and archive datasets across storage providers",
@@ -43,7 +44,7 @@ func newRootCommand(stdout, stderr io.Writer) *cobra.Command {
 	}
 	command.SetOut(stdout)
 	command.SetErr(stderr)
-	command.AddCommand(newVersionCommand(stdout), newLayoutCommand(stdout))
+	command.AddCommand(newVersionCommand(stdout), newLayoutCommand(stdout), newRestoreCommand(ctx, stdout))
 
 	return command
 }
@@ -128,6 +129,18 @@ func writeTable(writer io.Writer, value any) error {
 	case map[string]string:
 		if _, err := fmt.Fprintf(table, "VERSION\n%s\n", typedValue["version"]); err != nil {
 			return fmt.Errorf("write version table: %w", err)
+		}
+	case sdk.ControlledRestoreResult:
+		if _, err := fmt.Fprintf(
+			table,
+			"OPERATION\tMANIFEST SHA-256\tDESTINATION\tPLAINTEXT BYTES\tSTATE\n%s\t%s\t%s\t%d\t%s\n",
+			typedValue.Operation.ID,
+			typedValue.Restore.ManifestSHA256,
+			typedValue.Restore.Destination,
+			typedValue.Restore.PlaintextBytes,
+			typedValue.Completion.State,
+		); err != nil {
+			return fmt.Errorf("write restore table: %w", err)
 		}
 	default:
 		return fmt.Errorf("%w for %T", errUnsupportedTable, value)

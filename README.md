@@ -122,5 +122,25 @@ just verify
 Cloudflare operator authentication, D1 migrations, runtime secrets, and deploy
 commands are documented in `docs/cloudflare.md`.
 
+The initial restore CLI opens the compiled `aliyundrive-open/v1` driver and
+accepts secrets only through process environment variables:
+
+```bash
+export CARRACK_CONTROL_TOKEN="$(read-control-token)"
+export CARRACK_EPOCH_KEY="$(read-epoch-key)"
+export CARRACK_ALIYUN_ACCESS_TOKEN="$(read-aliyun-access-token)"
+
+carrack restore ./restored.bin \
+  --control-url https://carrack.example.com \
+  --namespace 202122232425262728292a2b2c2d2e2f \
+  --manifest <manifest-sha256> \
+  --driver-id aliyun-main
+```
+
+The control token and epoch key are unpadded base64url encodings of exactly 32
+bytes. The Aliyun value is a caller-managed static access token. Refresh-token
+renewal is intentionally unavailable in the CLI until rotated credentials can
+be persisted with an encrypted compare-and-swap store.
+
 This repository is private. Credentials belong in runtime secret stores, never
 in tracked files.
