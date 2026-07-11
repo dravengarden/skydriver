@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "carrack-control-plane",
+  "main": "build/worker/shim.mjs",
+  "compatibility_date": "2026-07-11",
+  "build": {
+    "command": "worker-build control-plane --release"
+  },
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "../web/dist/client",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "CARRACK_INDEX",
+      "database_name": "carrack-index",
+      "database_id": "replace-after-d1-create",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

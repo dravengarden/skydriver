@@ -1,0 +1,12 @@
+packages:
+  - web
+
+# Vite and Wrangler ship platform binaries through these lifecycle scripts.
+onlyBuiltDependencies:
+  - esbuild
+  - sharp
+  - workerd
+allowBuilds:
+  esbuild: true
+  sharp: true
+  workerd: true

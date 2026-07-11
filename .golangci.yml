@@ -1,0 +1,165 @@
+## golangci-lint v2 — MAXIMUM STRICTNESS
+##
+## Strategy: `default: all`, then disable only:
+##   - linters that require project-specific config to even load
+##   - linters that are deprecated or hard-conflict with another enabled one
+##
+## Everything else stays on, including the noisy ones (varnamelen,
+## exhaustruct, gochecknoglobals, wsl_v5, etc). Code is AI-written —
+## the AI fixes the violations.
+
+version: "2"
+
+run:
+  timeout: 10m
+  tests: true
+  go: "1.26"
+
+linters:
+  default: all
+  disable:
+    # Require project-specific config to function — would fail at load.
+    - depguard
+    - goheader
+    - gomodguard
+    # Deprecated; replaced by wsl_v5.
+    - wsl
+    # Hard conflict: wsl_v5 ↔ nlreturn ↔ whitespace argue about the same
+    # blank lines. Pick wsl_v5 (the most opinionated) and silence the
+    # other two so we get one consistent set of suggestions.
+    - nlreturn
+    - whitespace
+    # Auto-fix produces invalid Go when multiple `err :=` exist in the
+    # same scope (re-declared err). Disable until upstream fixes it.
+    - noinlineerr
+    # --- Wrong for THIS codebase (a CLI tool with cobra) ---
+    # exhaustruct: cobra.Command has ~50 fields, listing them all on
+    #   every subcommand is ridiculous. yaml.Node similar.
+    - exhaustruct
+    # forbidigo: bans fmt.Print*, but we are a CLI — printing IS the job.
+    - forbidigo
+    # gochecknoglobals: cobra subcommands + sentinel slices are inherent
+    #   globals; this lint is for libraries, not CLIs.
+    - gochecknoglobals
+    # ireturn: a single table.Writer (3rd-party interface) is the only
+    #   hit, and that's the legitimate API of go-pretty.
+    - ireturn
+    # nonamedreturns: occasional named returns aid readability of multi-
+    #   value returns; don't ban categorically.
+    - nonamedreturns
+    # tagliatelle: yaml/json field names follow upstream conventions
+    #   (e.g. lower_snake for Helm); not negotiable per-project.
+    - tagliatelle
+    # mnd: 0o644/0o755 file perms aren't "magic numbers", they're octal
+    #   constants. Tuning ignored-numbers list is more noise than signal.
+    - mnd
+    # lll: one 142-char line; not worth a wholesale line-length police.
+    - lll
+
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        # fieldalignment forces struct reordering for memory layout —
+        # readability cost is huge on a CLI tool with no hot paths.
+        - fieldalignment
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    staticcheck:
+      checks: ["all"]
+    revive:
+      severity: warning
+      enable-all-rules: true
+      rules:
+        # These three want extra config we don't care to provide.
+        - { name: file-header, disabled: true }
+        - { name: max-public-structs, disabled: true }
+        - { name: function-length, disabled: true }
+        - { name: cognitive-complexity, disabled: true }
+        - { name: cyclomatic, disabled: true }
+        - { name: line-length-limit, disabled: true }
+        - { name: argument-limit, disabled: true }
+        - { name: banned-characters, disabled: true }
+        - { name: add-constant, disabled: true }
+    gocritic:
+      enable-all: true
+      disabled-checks:
+        - hugeParam
+        - rangeValCopy
+        - unnamedResult
+        - whyNoLint
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+    gosec:
+      severity: low
+      confidence: low
+    nilnil:
+      checked-types: [ptr, func, iface, map, chan, uintptr, unsafeptr]
+    exhaustruct:
+      # Empty include = check nothing by default. Opt structs in here
+      # later if we want exhaustive init for specific types.
+      include: []
+    varnamelen:
+      min-name-length: 2
+      ignore-names: [i, j, k, w, r, t, b, n, ok, id, db, fs]
+      ignore-decls:
+        - i int
+        - n int
+        - w io.Writer
+        - r io.Reader
+        - t *testing.T
+    funlen:
+      lines: 120
+      statements: 60
+    cyclop:
+      max-complexity: 20
+    gocyclo:
+      min-complexity: 20
+    gocognit:
+      min-complexity: 25
+    nestif:
+      min-complexity: 6
+    lll:
+      line-length: 140
+    mnd:
+      ignored-numbers: ["0", "1", "2", "10", "100", "1000"]
+
+  exclusions:
+    rules:
+      # Tests get the same scrutiny minus a few of the worst.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - funlen
+          - gocognit
+          - gocyclo
+          - cyclop
+          - dupl
+          - goconst
+          - gosec
+          - mnd
+          - varnamelen
+          - revive
+          - exhaustruct
+          - wrapcheck
+          - forcetypeassert
+          - errorlint
+          - paralleltest
+          - testpackage
+      # main.go thin entrypoints — exempt from package-level rules.
+      - path: 'cmd/[^/]+/main\.go'
+        linters: [forbidigo, gochecknoglobals, gochecknoinits, revive]
+
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes: [github.com/dravengarden/carrack]
+    gofumpt:
+      extra-rules: true

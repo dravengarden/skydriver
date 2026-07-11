@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.carrack.dev/manifest.v1.schema.json",
+  "title": "Carrack manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "object_id",
+    "source_uri",
+    "plaintext_size",
+    "layout",
+    "blocks"
+  ],
+  "properties": {
+    "schema_version": { "const": "carrack.manifest.v1" },
+    "object_id": { "type": "string", "minLength": 1 },
+    "source_uri": { "type": "string", "minLength": 1 },
+    "plaintext_size": { "type": "integer", "minimum": 0 },
+    "plaintext_sha256": { "$ref": "#/$defs/sha256" },
+    "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["physical_block_bytes", "crypto_frame_bytes", "logical_pack_bytes"],
+      "properties": {
+        "physical_block_bytes": { "type": "integer", "minimum": 1 },
+        "crypto_frame_bytes": { "type": "integer", "minimum": 1 },
+        "logical_pack_bytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "blocks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/block" }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordinal",
+        "plaintext_offset",
+        "plaintext_size",
+        "ciphertext_size",
+        "ciphertext_sha256",
+        "storage_key"
+      ],
+      "properties": {
+        "ordinal": { "type": "integer", "minimum": 0 },
+        "plaintext_offset": { "type": "integer", "minimum": 0 },
+        "plaintext_size": { "type": "integer", "minimum": 1 },
+        "ciphertext_size": { "type": "integer", "minimum": 1 },
+        "ciphertext_sha256": { "$ref": "#/$defs/sha256" },
+        "storage_key": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

@@ -1,0 +1,11 @@
+/bin/
+/result
+/.direnv/
+/.env
+/.dev.vars
+/target/
+/control-plane/build/
+/node_modules/
+/web/dist/
+/web/node_modules/
+*.log
