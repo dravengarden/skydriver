@@ -14,6 +14,7 @@ import (
 
 	"github.com/dravengarden/carrack/provider"
 	"github.com/dravengarden/carrack/provider/aliyundrive"
+	"github.com/dravengarden/carrack/provider/localfs"
 	"github.com/dravengarden/carrack/provider/publichttp"
 	"github.com/dravengarden/carrack/sdk"
 )
@@ -119,5 +120,62 @@ func TestOpenRestoreReadersSupportsPublicHTTPWithoutCredentials(t *testing.T) {
 
 	if len(readers) != 1 || readers["public-replica"] == nil {
 		t.Fatalf("unexpected restore readers: %v", readers)
+	}
+}
+
+func TestOpenRestoreReadersSupportsLocalFilesystemWithoutCredentials(t *testing.T) {
+	t.Parallel()
+
+	registry, err := provider.NewRegistry(localfs.Factory{})
+	if err != nil {
+		t.Fatalf("construct local restore registry: %v", err)
+	}
+
+	readers, err := openRestoreReaders(
+		context.Background(),
+		registry,
+		&http.Client{},
+		restoreFlags{localDriverID: "local-replica", localRoot: t.TempDir()},
+		func(string) string { return "" },
+	)
+	if err != nil {
+		t.Fatalf("open local restore reader: %v", err)
+	}
+
+	if len(readers) != 1 || readers["local-replica"] == nil {
+		t.Fatalf("unexpected restore readers: %v", readers)
+	}
+}
+
+func TestOpenRestoreReadersRejectsIncompleteAndDuplicateDriverConfiguration(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(server.Close)
+
+	registry, err := provider.NewRegistry(publichttp.Factory{}, localfs.Factory{})
+	if err != nil {
+		t.Fatalf("construct multi-driver restore registry: %v", err)
+	}
+
+	for _, flags := range []restoreFlags{
+		{localDriverID: "local-only"},
+		{localRoot: t.TempDir()},
+		{publicDriverID: "public-only"},
+		{publicBaseURL: server.URL},
+		{
+			publicDriverID: "duplicate", publicBaseURL: server.URL,
+			localDriverID: "duplicate", localRoot: t.TempDir(),
+		},
+	} {
+		if _, openErr := openRestoreReaders(
+			context.Background(),
+			registry,
+			server.Client(),
+			flags,
+			func(string) string { return "" },
+		); !errors.Is(openErr, errRestoreDrivers) {
+			t.Fatalf("invalid restore drivers were not rejected: flags=%+v error=%v", flags, openErr)
+		}
 	}
 }

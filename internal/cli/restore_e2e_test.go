@@ -33,6 +33,8 @@ func TestRestoreCommandEndToEnd(t *testing.T) {
 
 	var progressReports atomic.Uint64
 
+	var retryCount atomic.Uint64
+
 	var publicReads atomic.Uint64
 
 	aliyun := newFakeAliyunRestore(t, ciphertext)
@@ -50,6 +52,14 @@ func TestRestoreCommandEndToEnd(t *testing.T) {
 		_, _ = response.Write(corruptPublic)
 	}))
 	t.Cleanup(publicServer.Close)
+
+	localRoot := t.TempDir()
+	corruptLocal := bytes.Clone(ciphertext)
+	corruptLocal[len(corruptLocal)-1] ^= 1
+
+	if err := os.WriteFile(filepath.Join(localRoot, "payload.bin"), corruptLocal, 0o600); err != nil {
+		t.Fatalf("write corrupt local restore replica: %v", err)
+	}
 
 	control := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
@@ -97,6 +107,8 @@ func TestRestoreCommandEndToEnd(t *testing.T) {
 				return
 			}
 
+			retryCount.Store(sample.RetryCount)
+
 			writeCLIJSON(t, response, sdk.ProgressSnapshot{
 				ComponentID: operationID + "/restore", Attempt: 1,
 				Sequence: sample.Sequence, WireBytesRead: sample.WireBytesRead,
@@ -135,6 +147,8 @@ func TestRestoreCommandEndToEnd(t *testing.T) {
 		"--aliyun-api-base-url", aliyunServer.URL,
 		"--public-http-driver-id", "public-mirror",
 		"--public-http-base-url", publicServer.URL,
+		"--local-driver-id", "local-mirror",
+		"--local-root", localRoot,
 		"--format", "json",
 	}, &stdout, &stderr)
 	if err != nil {
@@ -150,12 +164,12 @@ func TestRestoreCommandEndToEnd(t *testing.T) {
 		t.Fatalf("CLI restored %q, want %q", restored, plaintext)
 	}
 
-	if keyGrants.Load() != 1 || progressReports.Load() == 0 || publicReads.Load() == 0 ||
+	if keyGrants.Load() != 1 || progressReports.Load() == 0 || retryCount.Load() < 2 || publicReads.Load() == 0 ||
 		!strings.Contains(stdout.String(), `"state": "succeeded"`) ||
 		!strings.Contains(stdout.String(), `"TelemetryWarning": ""`) {
 		t.Fatalf(
-			"CLI did not complete fallback protocol: grants=%d progress=%d public=%d output=%s",
-			keyGrants.Load(), progressReports.Load(), publicReads.Load(), stdout.String(),
+			"CLI did not complete fallback protocol: grants=%d progress=%d retries=%d public=%d output=%s",
+			keyGrants.Load(), progressReports.Load(), retryCount.Load(), publicReads.Load(), stdout.String(),
 		)
 	}
 }
@@ -271,6 +285,10 @@ func cliRestoreFixture(
 	}
 
 	recovery, err := manifest.NewRecoveryManifest(content, []manifest.Location{
+		{
+			ExtentSHA256: digestHex, DriverID: "local-mirror", StorageKey: "payload.bin",
+			Length: uint64(len(ciphertext)),
+		},
 		{
 			ExtentSHA256: digestHex, DriverID: "public-mirror", StorageKey: "payload.bin",
 			Length: uint64(len(ciphertext)),

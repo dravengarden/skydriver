@@ -144,11 +144,14 @@ Drivers advertise capabilities rather than forcing the SDK to guess:
 - safe concurrency and per-operation request limits;
 - checksum algorithms exposed by the provider.
 
-The initial registry contains `aliyundrive-open/v1` and the read-only native
-`public-http/v1`. Public HTTP accepts only operator-configured HTTPS or
-loopback origins, same-origin redirects, canonical relative keys, and exact
-range responses. S3, R2, Google Drive, and local filesystem drivers are added
-behind the same contract.
+The initial registry contains `aliyundrive-open/v1`, the read-only native
+`public-http/v1`, and the native read/write `local-filesystem/v1`. Public HTTP
+accepts only operator-configured HTTPS or loopback origins, same-origin
+redirects, canonical relative keys, and exact range responses. The local
+driver confines canonical keys beneath an existing root, derives identity from
+the complete file SHA-256, and atomically publishes exact-length verified
+objects without replacement. S3, R2, and Google Drive drivers are added behind
+the same contract.
 
 Driver implementations follow a value-based split:
 

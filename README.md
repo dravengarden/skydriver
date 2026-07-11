@@ -43,15 +43,23 @@ and applies the same conservative per-operation request limits as OpenList.
 
 Providers are selected through an immutable runtime registry of versioned,
 compiled factories. A control-plane `DriverSpec` carries a kind, strict
-non-secret JSON configuration, and an encrypted credential reference. The
-initial kind is `aliyundrive-open/v1`; unsupported kinds and unknown config
-fields are rejected before any network request.
+non-secret JSON configuration, and an optional encrypted credential reference.
+The compiled kinds are `aliyundrive-open/v1`, `public-http/v1`, and
+`local-filesystem/v1`; unsupported kinds and unknown config fields are rejected
+before provider access.
 
 The read-only native `public-http/v1` driver supports public HTTPS archives and
 loopback test servers. It requires canonical relative keys, same-origin
 redirects, identity encoding, and an exact `206 Content-Range`; whole-object or
 ambiguous range responses are rejected. Restore may open both Aliyun and public
 HTTP drivers and follows each extent's ordered replica locations for fallback.
+
+The native `local-filesystem/v1` driver confines canonical keys beneath one
+existing root with Go's traversal-resistant rooted filesystem API. It provides
+content-derived object identity and exact range reads. Writes stream into a
+private temporary file, verify the declared length and SHA-256, sync it, and
+atomically publish without replacing an existing object. A retry succeeds only
+when the existing object has identical bytes.
 
 OpenList cannot be consumed as a normal Go SDK because its public driver
 packages expose contracts from Go `internal` packages. Carrack therefore owns
@@ -135,8 +143,8 @@ just verify
 Cloudflare operator authentication, D1 migrations, runtime secrets, and deploy
 commands are documented in `docs/cloudflare.md`.
 
-The initial restore CLI opens the compiled `aliyundrive-open/v1` driver and
-accepts secrets only through process environment variables:
+The restore CLI opens any configured compiled driver and accepts secrets only
+through process environment variables:
 
 ```bash
 export CARRACK_CONTROL_TOKEN="$(read-control-token)"
@@ -160,6 +168,20 @@ carrack restore ./restored.bin \
   --public-http-driver-id public-mirror \
   --public-http-base-url https://archives.example.com/carrack
 ```
+
+A local archive replica can be used alone or alongside either remote driver:
+
+```bash
+carrack restore ./restored.bin \
+  --control-url https://carrack.example.com \
+  --namespace 202122232425262728292a2b2c2d2e2f \
+  --manifest <manifest-sha256> \
+  --local-driver-id local-mirror \
+  --local-root /srv/carrack/archive
+```
+
+Driver IDs must match the manifest locations. The local root must already
+exist; Carrack creates only object-key subdirectories beneath it.
 
 The control token is an unpadded base64url encoding of exactly 32 bytes. Under
 the active read fence, the Worker derives the manifest's epoch key from its
