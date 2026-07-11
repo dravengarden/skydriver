@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/dravengarden/carrack/manifest"
 )
 
 const (
@@ -52,6 +54,19 @@ type ControlHealth struct {
 	Revision            uint64 `json:"revision"`
 	ExternalMaintenance bool   `json:"external_maintenance"`
 	MutationsAllowed    bool   `json:"mutations_allowed"`
+}
+
+// StagedRecovery identifies one portable recovery manifest durably archived in
+// the control-plane R2 bucket but not yet published in D1.
+type StagedRecovery struct {
+	ManifestSHA256 string `json:"manifest_sha256"`
+	RecoverySHA256 string `json:"recovery_sha256"`
+	NamespaceID    string `json:"namespace_id"`
+	ObjectID       string `json:"object_id"`
+	Generation     uint64 `json:"generation"`
+	R2Key          string `json:"r2_key"`
+	R2Version      string `json:"r2_version"`
+	Bytes          uint64 `json:"bytes"`
 }
 
 // ParseClientToken decodes the one-time base64url token returned at enrollment.
@@ -109,7 +124,7 @@ func NewControlClient(
 // Health reads public control-plane availability without sending the token.
 func (client *ControlClient) Health(ctx context.Context) (ControlHealth, error) {
 	var response ControlHealth
-	if err := client.request(ctx, http.MethodGet, "/api/health", "", &response); err != nil {
+	if err := client.request(ctx, http.MethodGet, "/api/health", "", nil, &response); err != nil {
 		return ControlHealth{}, err
 	}
 
@@ -121,8 +136,47 @@ func (client *ControlClient) Session(ctx context.Context) (ClientSession, error)
 	var response ClientSession
 
 	authorization := "Bearer " + base64.RawURLEncoding.EncodeToString(client.token[:])
-	if err := client.request(ctx, http.MethodGet, "/api/client/session", authorization, &response); err != nil {
+	if err := client.request(ctx, http.MethodGet, "/api/client/session", authorization, nil, &response); err != nil {
 		return ClientSession{}, err
+	}
+
+	return response, nil
+}
+
+// StageRecovery archives a validated portable manifest in control-plane R2.
+// It does not make the object version visible in D1.
+func (client *ControlClient) StageRecovery(
+	ctx context.Context,
+	recovery manifest.RecoveryManifest,
+) (StagedRecovery, error) {
+	encoded, err := recovery.MarshalCanonical()
+	if err != nil {
+		return StagedRecovery{}, fmt.Errorf("marshal recovery manifest for staging: %w", err)
+	}
+
+	authorization := "Bearer " + base64.RawURLEncoding.EncodeToString(client.token[:])
+
+	var response StagedRecovery
+
+	if err := client.request(
+		ctx,
+		http.MethodPost,
+		"/api/v1/recovery-manifests/stage",
+		authorization,
+		encoded,
+		&response,
+	); err != nil {
+		return StagedRecovery{}, err
+	}
+
+	if response.ManifestSHA256 != recovery.ManifestSHA256 ||
+		response.NamespaceID != recovery.Manifest.NamespaceID ||
+		response.ObjectID != recovery.Manifest.ObjectID ||
+		response.Generation != recovery.Manifest.Generation {
+		return StagedRecovery{}, fmt.Errorf(
+			"%w: staged recovery identity changed",
+			ErrControlPlaneResponse,
+		)
 	}
 
 	return response, nil
@@ -132,6 +186,7 @@ func (client *ControlClient) request(
 	ctx context.Context,
 	method, path string,
 	authorization string,
+	body []byte,
 	destination any,
 ) error {
 	if client == nil || client.baseURL == nil || client.httpClient == nil {
@@ -141,7 +196,12 @@ func (client *ControlClient) request(
 	endpoint := *client.baseURL
 	endpoint.Path += path
 
-	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), http.NoBody)
+	requestBody := io.Reader(http.NoBody)
+	if body != nil {
+		requestBody = bytes.NewReader(body)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), requestBody)
 	if err != nil {
 		return fmt.Errorf("create Carrack control-plane request: %w", err)
 	}
@@ -150,6 +210,10 @@ func (client *ControlClient) request(
 
 	if authorization != "" {
 		request.Header.Set("Authorization", authorization)
+	}
+
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
 	}
 
 	response, err := client.httpClient.Do(request)

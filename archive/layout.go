@@ -28,6 +28,23 @@ type BlockSpan struct {
 	Size    uint64 `json:"size"    yaml:"size"`
 }
 
+// PackSpan identifies one independently keyed plaintext range.
+type PackSpan struct {
+	Ordinal uint64 `json:"ordinal" yaml:"ordinal"`
+	Offset  uint64 `json:"offset"  yaml:"offset"`
+	Size    uint64 `json:"size"    yaml:"size"`
+}
+
+// ExtentSpan identifies one independently transferable group of whole crypto
+// frames inside a pack.
+type ExtentSpan struct {
+	Ordinal         uint64 `json:"ordinal"          yaml:"ordinal"`
+	PlaintextOffset uint64 `json:"plaintext_offset" yaml:"plaintext_offset"`
+	PlaintextSize   uint64 `json:"plaintext_size"   yaml:"plaintext_size"`
+	FirstFrame      uint64 `json:"first_frame"      yaml:"first_frame"`
+	FrameCount      uint64 `json:"frame_count"      yaml:"frame_count"`
+}
+
 // DefaultLayout returns the initial Carrack storage profile.
 func DefaultLayout() Layout {
 	return Layout{
@@ -82,4 +99,57 @@ func (layout Layout) Plan(objectSize uint64) ([]BlockSpan, error) {
 	}
 
 	return spans, nil
+}
+
+// PlanPacks divides an object into ordered independently keyed pack ranges.
+func (layout Layout) PlanPacks(objectSize uint64) ([]PackSpan, error) {
+	if err := layout.Validate(); err != nil {
+		return nil, err
+	}
+
+	if objectSize == 0 {
+		return []PackSpan{}, nil
+	}
+
+	packCount := 1 + (objectSize-1)/layout.LogicalPackBytes
+	packs := make([]PackSpan, packCount)
+
+	for ordinal := range packCount {
+		offset := ordinal * layout.LogicalPackBytes
+		size := min(layout.LogicalPackBytes, objectSize-offset)
+		packs[ordinal] = PackSpan{Ordinal: ordinal, Offset: offset, Size: size}
+	}
+
+	return packs, nil
+}
+
+// PlanExtents divides one pack into physical leaves without splitting a crypto
+// frame. The final extent may contain a partial final frame.
+func (layout Layout) PlanExtents(packSize uint64) ([]ExtentSpan, error) {
+	if err := layout.Validate(); err != nil {
+		return nil, err
+	}
+
+	if packSize == 0 || packSize > layout.LogicalPackBytes {
+		return nil, fmt.Errorf("%w: pack size is out of range", ErrInvalidLayout)
+	}
+
+	extentCount := 1 + (packSize-1)/layout.PhysicalBlockBytes
+	extents := make([]ExtentSpan, extentCount)
+	framesPerExtent := layout.PhysicalBlockBytes / layout.CryptoFrameBytes
+
+	for ordinal := range extentCount {
+		offset := ordinal * layout.PhysicalBlockBytes
+		size := min(layout.PhysicalBlockBytes, packSize-offset)
+		frameCount := 1 + (size-1)/layout.CryptoFrameBytes
+		extents[ordinal] = ExtentSpan{
+			Ordinal:         ordinal,
+			PlaintextOffset: offset,
+			PlaintextSize:   size,
+			FirstFrame:      ordinal * framesPerExtent,
+			FrameCount:      frameCount,
+		}
+	}
+
+	return extents, nil
 }

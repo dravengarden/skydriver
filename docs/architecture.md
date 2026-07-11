@@ -149,11 +149,14 @@ Manifest publication is last. A crash before publication leaves only staging
 locations, never a partially readable object version.
 
 Publication also has a recovery barrier. The client writes a portable,
-immutable recovery manifest to the control-plane R2 archive and to the
-destination driver before D1 publishes the object version. If D1 later rolls
-back, inventory can adopt manifests created after the restored point. If D1 is
-lost, root recovery material, portable manifests, and ciphertext are sufficient
-to reconstruct the data index.
+immutable recovery sidecar to the destination driver, then submits the same
+small metadata document to the Worker. The Worker validates its complete
+pack/frame/extent/location structure and archives it under a recovery-hash key
+in control-plane R2 before D1 publishes the object version. Payload extents
+never pass through the Worker. If D1 later rolls back, inventory can adopt
+manifests created after the restored point. If D1 is lost, root recovery
+material, portable manifests, and ciphertext are sufficient to reconstruct the
+data index.
 
 ### Copy
 

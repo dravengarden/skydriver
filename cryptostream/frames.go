@@ -73,6 +73,15 @@ func NewCipher(packKey PackKey, descriptor Descriptor) (*Cipher, error) {
 	}, nil
 }
 
+// Descriptor returns the immutable public context for this pack.
+func (packCipher *Cipher) Descriptor() Descriptor {
+	if packCipher == nil {
+		return Descriptor{}
+	}
+
+	return packCipher.descriptor
+}
+
 // Validate checks the versioned pack encryption context.
 func (descriptor Descriptor) Validate() error {
 	if descriptor.Suite != SuiteAES128GCMHKDFSHA256V1 {

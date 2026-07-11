@@ -5,6 +5,8 @@
 
 mod clients;
 pub mod keys;
+mod manifest_archive;
+mod manifests;
 pub mod protocol;
 
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
@@ -144,6 +146,20 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
                 None => Response::error("client authentication required", 401),
             }
         })
+        .post_async(
+            "/api/v1/recovery-manifests/stage",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+
+                manifest_archive::stage(&mut request, &context.env, &client).await
+            },
+        )
         .get_async("/api/summary", |request, context| async move {
             summary(&request, &context.env).await
         })

@@ -15,6 +15,18 @@ Carrack has one initial D1 database, `carrack-index`. Its public database UUID
 is committed in `control-plane/wrangler.jsonc`; credentials and Worker runtime
 secrets are never committed.
 
+Carrack also uses the `carrack-manifests` R2 bucket for small portable recovery
+metadata. Create the production and preview buckets once before the first
+deployment:
+
+```bash
+pnpm exec wrangler r2 bucket create carrack-manifests
+pnpm exec wrangler r2 bucket create carrack-manifests-preview
+```
+
+The R2 binding never carries payload extents. SDK clients upload those directly
+to their selected storage drivers.
+
 Apply migrations before deploying:
 
 ```bash

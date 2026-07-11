@@ -30,3 +30,9 @@ type Reader interface {
 type Writer interface {
 	Put(ctx context.Context, key string, body io.Reader, options PutOptions) (Object, error)
 }
+
+// ReadWriter supports upload followed by independent integrity verification.
+type ReadWriter interface {
+	Reader
+	Writer
+}

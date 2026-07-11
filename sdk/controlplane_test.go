@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/dravengarden/carrack/archive"
+	"github.com/dravengarden/carrack/cryptostream"
+	"github.com/dravengarden/carrack/manifest"
 	"github.com/dravengarden/carrack/sdk"
 )
 
@@ -144,6 +148,58 @@ func TestClientTokenParsingAndClear(t *testing.T) {
 	}
 }
 
+func TestControlClientStagesExactRecoveryManifest(t *testing.T) {
+	t.Parallel()
+
+	token, encodedToken := testClientToken(t)
+	recovery := controlRecoveryManifest(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != "Bearer "+encodedToken ||
+			request.Header.Get("Content-Type") != "application/json" {
+			http.Error(response, "invalid request metadata", http.StatusUnauthorized)
+
+			return
+		}
+
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			http.Error(response, "read body", http.StatusBadRequest)
+
+			return
+		}
+
+		parsed, err := manifest.ParseRecovery(body)
+		if err != nil {
+			http.Error(response, "invalid recovery", http.StatusBadRequest)
+
+			return
+		}
+
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = response.Write([]byte(`{"manifest_sha256":"` + parsed.ManifestSHA256 +
+			`","recovery_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",` +
+			`"namespace_id":"` + parsed.Manifest.NamespaceID + `","object_id":"` +
+			parsed.Manifest.ObjectID + `","generation":1,"r2_key":"manifests/test.json",` +
+			`"r2_version":"v1","bytes":1024}`))
+	}))
+	defer server.Close()
+
+	client, err := sdk.NewControlClient(server.URL, token, server.Client())
+	if err != nil {
+		t.Fatalf("construct control client: %v", err)
+	}
+
+	staged, err := client.StageRecovery(context.Background(), recovery)
+	if err != nil {
+		t.Fatalf("stage recovery manifest: %v", err)
+	}
+
+	if staged.ManifestSHA256 != recovery.ManifestSHA256 || staged.R2Version != "v1" {
+		t.Fatalf("unexpected staged recovery: %+v", staged)
+	}
+}
+
 func testClientToken(t *testing.T) (sdk.ClientToken, string) {
 	t.Helper()
 
@@ -160,4 +216,62 @@ func testClientToken(t *testing.T) (sdk.ClientToken, string) {
 	}
 
 	return token, encoded
+}
+
+func controlRecoveryManifest(t *testing.T) manifest.RecoveryManifest {
+	t.Helper()
+
+	content := manifest.Manifest{
+		SchemaVersion:   manifest.SchemaVersion,
+		NamespaceID:     "202122232425262728292a2b2c2d2e2f",
+		ObjectID:        "object-1",
+		Generation:      1,
+		PlaintextSize:   2,
+		PlaintextSHA256: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+		Layout: archive.Layout{
+			PhysicalBlockBytes: 2,
+			CryptoFrameBytes:   2,
+			LogicalPackBytes:   2,
+		},
+		Crypto: manifest.Crypto{
+			Suite:       cryptostream.SuiteAES128GCMHKDFSHA256V1,
+			RootVersion: 1,
+			KeyEpoch:    7,
+		},
+		Packs: []manifest.Pack{
+			{
+				Ordinal:          0,
+				PackID:           "404142434445464748494a4b4c4d4e4f",
+				PlaintextOffset:  0,
+				PlaintextSize:    2,
+				CiphertextSize:   18,
+				CiphertextSHA256: "1111111111111111111111111111111111111111111111111111111111111111",
+				Extents: []manifest.Extent{
+					{
+						Ordinal:          0,
+						FirstFrame:       0,
+						FrameCount:       1,
+						CiphertextOffset: 0,
+						CiphertextSize:   18,
+						CiphertextSHA256: "2222222222222222222222222222222222222222222222222222222222222222",
+					},
+				},
+			},
+		},
+	}
+
+	recovery, err := manifest.NewRecoveryManifest(content, []manifest.Location{
+		{
+			ExtentSHA256: "2222222222222222222222222222222222222222222222222222222222222222",
+			DriverID:     "memory",
+			StorageKey:   "extent",
+			Offset:       0,
+			Length:       18,
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct control recovery manifest: %v", err)
+	}
+
+	return recovery
 }

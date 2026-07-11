@@ -19,5 +19,12 @@
       "database_id": "2ad6b7c9-88a2-4580-ae5a-db87847e7296",
       "migrations_dir": "migrations"
     }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "CARRACK_MANIFESTS",
+      "bucket_name": "carrack-manifests",
+      "preview_bucket_name": "carrack-manifests-preview"
+    }
   ]
 }
