@@ -65,6 +65,32 @@ type PublishedImport struct {
 	State          string `json:"state"`
 }
 
+// ProgressSample contains cumulative counters for one fenced operation attempt.
+type ProgressSample struct {
+	Sequence            uint64
+	WireBytesRead       uint64
+	WireBytesWritten    uint64
+	UsefulBytesVerified uint64
+	ActiveNanoseconds   uint64
+	RetryCount          uint64
+	ThrottleCount       uint64
+}
+
+// ProgressSnapshot is the control plane's current accepted attempt state.
+type ProgressSnapshot struct {
+	ComponentID         string `json:"component_id"`
+	Attempt             uint64 `json:"attempt"`
+	Sequence            uint64 `json:"sequence"`
+	WireBytesRead       uint64 `json:"wire_bytes_read"`
+	WireBytesWritten    uint64 `json:"wire_bytes_written"`
+	UsefulBytesVerified uint64 `json:"useful_bytes_verified"`
+	ActiveNanoseconds   uint64 `json:"active_nanoseconds"`
+	RetryCount          uint64 `json:"retry_count"`
+	ThrottleCount       uint64 `json:"throttle_count"`
+	ObservedAt          uint64 `json:"observed_at"`
+	Disposition         string `json:"disposition"`
+}
+
 type createImportOperationBody struct {
 	NamespaceID      string  `json:"namespace_id"`
 	IdempotencyKey   string  `json:"idempotency_key"`
@@ -87,6 +113,20 @@ type publishImportBody struct {
 	SidecarDriverID        string `json:"sidecar_driver_id"`
 	SidecarStorageKey      string `json:"sidecar_storage_key"`
 	ExpectedObjectRevision uint64 `json:"expected_object_revision"`
+}
+
+type progressBody struct {
+	LeaseID             string `json:"lease_id"`
+	Incarnation         string `json:"incarnation"`
+	FencingToken        uint64 `json:"fencing_token"`
+	Attempt             uint64 `json:"attempt"`
+	Sequence            uint64 `json:"sequence"`
+	WireBytesRead       uint64 `json:"wire_bytes_read"`
+	WireBytesWritten    uint64 `json:"wire_bytes_written"`
+	UsefulBytesVerified uint64 `json:"useful_bytes_verified"`
+	ActiveNanoseconds   uint64 `json:"active_nanoseconds"`
+	RetryCount          uint64 `json:"retry_count"`
+	ThrottleCount       uint64 `json:"throttle_count"`
 }
 
 // CreateImportOperation creates or returns one client-owned idempotent import.
@@ -146,6 +186,49 @@ func (client *ControlClient) ClaimImportOperation(
 		response.LeaseID == "" || response.OwnerClientID == "" || response.FencingToken == 0 ||
 		response.OperationRevision == 0 || response.OperationState != "running" {
 		return OperationLease{}, fmt.Errorf("%w: invalid operation lease identity", ErrControlPlaneResponse)
+	}
+
+	return response, nil
+}
+
+// ReportProgress idempotently records one cumulative sample. Reordered samples
+// return the newer current snapshot without moving counters backwards.
+func (client *ControlClient) ReportProgress(
+	ctx context.Context,
+	operation ImportOperation,
+	lease OperationLease,
+	sample ProgressSample,
+) (ProgressSnapshot, error) {
+	if err := validateProgressRequest(operation, lease, sample); err != nil {
+		return ProgressSnapshot{}, err
+	}
+
+	body, err := json.Marshal(progressBody{
+		LeaseID:             lease.LeaseID,
+		Incarnation:         lease.Incarnation,
+		FencingToken:        lease.FencingToken,
+		Attempt:             lease.FencingToken,
+		Sequence:            sample.Sequence,
+		WireBytesRead:       sample.WireBytesRead,
+		WireBytesWritten:    sample.WireBytesWritten,
+		UsefulBytesVerified: sample.UsefulBytesVerified,
+		ActiveNanoseconds:   sample.ActiveNanoseconds,
+		RetryCount:          sample.RetryCount,
+		ThrottleCount:       sample.ThrottleCount,
+	})
+	if err != nil {
+		return ProgressSnapshot{}, fmt.Errorf("marshal operation progress: %w", err)
+	}
+
+	var response ProgressSnapshot
+
+	path := "/api/v1/operations/" + operation.ID + "/progress"
+	if err := client.authenticatedPost(ctx, path, body, &response); err != nil {
+		return ProgressSnapshot{}, err
+	}
+
+	if !validProgressResponse(response, lease, sample) {
+		return ProgressSnapshot{}, fmt.Errorf("%w: invalid operation progress identity", ErrControlPlaneResponse)
 	}
 
 	return response, nil
@@ -225,6 +308,57 @@ func validatePublication(requested PublishImportRequest) error {
 	}
 
 	return nil
+}
+
+func validateProgressRequest(
+	operation ImportOperation,
+	lease OperationLease,
+	sample ProgressSample,
+) error {
+	if !validControlHex(operation.ID, 32) || lease.OperationID != operation.ID ||
+		lease.LeaseID == "" || lease.Incarnation != operation.Incarnation ||
+		lease.FencingToken == 0 || sample.Sequence == 0 ||
+		!signedProgressCounters(sample) {
+		return fmt.Errorf("%w: invalid operation progress", ErrInvalidControlPlane)
+	}
+
+	return nil
+}
+
+func validProgressResponse(
+	response ProgressSnapshot,
+	lease OperationLease,
+	sample ProgressSample,
+) bool {
+	if response.ComponentID == "" || response.Attempt != lease.FencingToken {
+		return false
+	}
+
+	switch response.Disposition {
+	case "current":
+		return response.Sequence == sample.Sequence && progressMatches(response, sample)
+	case "superseded":
+		return response.Sequence > sample.Sequence
+	default:
+		return false
+	}
+}
+
+func progressMatches(response ProgressSnapshot, sample ProgressSample) bool {
+	return response.WireBytesRead == sample.WireBytesRead &&
+		response.WireBytesWritten == sample.WireBytesWritten &&
+		response.UsefulBytesVerified == sample.UsefulBytesVerified &&
+		response.ActiveNanoseconds == sample.ActiveNanoseconds &&
+		response.RetryCount == sample.RetryCount &&
+		response.ThrottleCount == sample.ThrottleCount
+}
+
+func signedProgressCounters(sample ProgressSample) bool {
+	return sample.WireBytesRead <= math.MaxInt64 &&
+		sample.WireBytesWritten <= math.MaxInt64 &&
+		sample.UsefulBytesVerified <= math.MaxInt64 &&
+		sample.ActiveNanoseconds <= math.MaxInt64 &&
+		sample.RetryCount <= math.MaxInt64 && sample.ThrottleCount <= math.MaxInt64
 }
 
 func validControlHex(value string, characters int) bool {

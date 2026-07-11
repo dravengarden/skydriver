@@ -284,6 +284,14 @@ throttle_events
 active_nanoseconds
 ```
 
+V1 import operation creation also creates one deterministic transfer component.
+Claiming the operation starts an attempt whose number is the current fencing
+token. Progress ingestion atomically records per-minute counter deltas and the
+new cumulative attempt, component, and operation totals. Exact duplicates are
+idempotent, older sequences return the newer snapshot, and regressions or stale
+fences are rejected. Later multi-leg schedulers can add components without
+changing this attempt protocol.
+
 The control plane accepts a sample only when its sequence is newer, its
 counters do not go backwards within an attempt, and its fencing token still
 owns the component. Retransmitted samples are idempotent. A resumed component

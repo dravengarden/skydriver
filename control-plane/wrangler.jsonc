@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "carrack-control-plane",
   "main": "build/worker/shim.mjs",
-  "compatibility_date": "2026-07-11",
+  "compatibility_date": "2026-07-02",
   "build": {
     "command": "worker-build control-plane --release"
   },

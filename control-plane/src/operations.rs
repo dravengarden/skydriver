@@ -112,13 +112,44 @@ pub(crate) async fn create(
         .first::<OperationRow>(None)
         .await?;
 
-    match operation {
-        Some(value) => Response::from_json(&value),
-        None => Response::error(
+    let Some(operation) = operation else {
+        return Response::error(
             "operation rejected or idempotency key belongs to another client",
             409,
-        ),
-    }
+        );
+    };
+
+    ensure_transfer_component(&database, &operation).await?;
+
+    Response::from_json(&operation)
+}
+
+async fn ensure_transfer_component(
+    database: &worker::D1Database,
+    operation: &OperationRow,
+) -> Result<()> {
+    let component_id = format!("{}/transfer", operation.id);
+    let total = operation.useful_bytes_total.map(|value| value.to_string());
+    database
+        .prepare(
+            "INSERT OR IGNORE INTO operation_components (\
+                 id, operation_id, client_id, component_kind, state, useful_bytes_total, \
+                 created_at, updated_at\
+             ) VALUES (?1, ?2, ?3, 'transfer', 'pending', ?4, ?5, ?5)",
+        )
+        .bind(&[
+            JsValue::from_str(&component_id),
+            JsValue::from_str(&operation.id),
+            JsValue::from_str(&operation.requested_by),
+            total
+                .as_deref()
+                .map_or_else(JsValue::null, JsValue::from_str),
+            JsValue::from_str(&operation.created_at.to_string()),
+        ])?
+        .run()
+        .await?;
+
+    Ok(())
 }
 
 pub(crate) async fn claim(
@@ -138,11 +169,56 @@ pub(crate) async fn claim(
     }
 
     let now = current_unix_seconds();
-    let expires_at = now + lease_seconds;
-    let now_binding = now.to_string();
-    let expiry_binding = expires_at.to_string();
-    let lease_id = format!("operation/{operation_id}/write");
+    let claim = ClaimBindings {
+        lease_id: format!("operation/{operation_id}/write"),
+        client_id: client.id.clone(),
+        operation_id: operation_id.to_owned(),
+        now: now.to_string(),
+        expiry: (now + lease_seconds).to_string(),
+    };
     let database = env.d1("CARRACK_INDEX")?;
+    let mut statements = lease_statements(&database, &claim)?;
+    statements.extend(attempt_statements(&database, &claim)?);
+    database.batch(statements).await?;
+
+    let lease = database
+        .prepare(
+            "SELECT operation.id AS operation_id, lease.id AS lease_id, \
+                    lease.owner_client_id, lease.incarnation, lease.fencing_token, \
+                    lease.expires_at, operation.revision AS operation_revision, \
+                    operation.state AS operation_state \
+             FROM leases AS lease \
+             JOIN operations AS operation ON operation.id = lease.operation_id \
+             JOIN control_plane_state AS state ON state.singleton = 1 \
+             WHERE lease.id = ?1 AND lease.owner_client_id = ?2 \
+               AND lease.incarnation = state.incarnation AND state.mode = 'active' \
+               AND lease.released_at IS NULL AND lease.expires_at > unixepoch()",
+        )
+        .bind(&[
+            JsValue::from_str(&claim.lease_id),
+            JsValue::from_str(&client.id),
+        ])?
+        .first::<LeaseRow>(None)
+        .await?;
+
+    match lease {
+        Some(value) => Response::from_json(&value),
+        None => Response::error("operation is unavailable or leased by another client", 409),
+    }
+}
+
+struct ClaimBindings {
+    lease_id: String,
+    client_id: String,
+    operation_id: String,
+    now: String,
+    expiry: String,
+}
+
+fn lease_statements(
+    database: &worker::D1Database,
+    claim: &ClaimBindings,
+) -> Result<Vec<worker::D1PreparedStatement>> {
     let lease_upsert = database
         .prepare(
             "INSERT INTO leases (\
@@ -176,11 +252,11 @@ pub(crate) async fn claim(
                 OR leases.incarnation != excluded.incarnation",
         )
         .bind(&[
-            JsValue::from_str(&lease_id),
-            JsValue::from_str(&client.id),
-            JsValue::from_str(&expiry_binding),
-            JsValue::from_str(&now_binding),
-            JsValue::from_str(operation_id),
+            JsValue::from_str(&claim.lease_id),
+            JsValue::from_str(&claim.client_id),
+            JsValue::from_str(&claim.expiry),
+            JsValue::from_str(&claim.now),
+            JsValue::from_str(&claim.operation_id),
         ])?;
     let start_operation = database
         .prepare(
@@ -195,35 +271,86 @@ pub(crate) async fn claim(
                             AND released_at IS NULL AND expires_at > ?1)",
         )
         .bind(&[
-            JsValue::from_str(&now_binding),
-            JsValue::from_str(operation_id),
-            JsValue::from_str(&lease_id),
-            JsValue::from_str(&client.id),
+            JsValue::from_str(&claim.now),
+            JsValue::from_str(&claim.operation_id),
+            JsValue::from_str(&claim.lease_id),
+            JsValue::from_str(&claim.client_id),
         ])?;
 
-    database.batch(vec![lease_upsert, start_operation]).await?;
+    Ok(vec![lease_upsert, start_operation])
+}
 
-    let lease = database
+fn attempt_statements(
+    database: &worker::D1Database,
+    claim: &ClaimBindings,
+) -> Result<Vec<worker::D1PreparedStatement>> {
+    let supersede_attempts = database
         .prepare(
-            "SELECT operation.id AS operation_id, lease.id AS lease_id, \
-                    lease.owner_client_id, lease.incarnation, lease.fencing_token, \
-                    lease.expires_at, operation.revision AS operation_revision, \
-                    operation.state AS operation_state \
-             FROM leases AS lease \
-             JOIN operations AS operation ON operation.id = lease.operation_id \
-             JOIN control_plane_state AS state ON state.singleton = 1 \
-             WHERE lease.id = ?1 AND lease.owner_client_id = ?2 \
-               AND lease.incarnation = state.incarnation AND state.mode = 'active' \
-               AND lease.released_at IS NULL AND lease.expires_at > unixepoch()",
+            "UPDATE operation_attempts \
+             SET state = 'superseded', finished_at = ?1 \
+             WHERE component_id IN (SELECT id FROM operation_components WHERE operation_id = ?2) \
+               AND state = 'running' \
+               AND attempt != (SELECT fencing_token FROM leases WHERE id = ?3) \
+               AND EXISTS(SELECT 1 FROM leases \
+                          WHERE id = ?3 AND owner_client_id = ?4 \
+                            AND incarnation = (SELECT incarnation FROM control_plane_state \
+                                               WHERE singleton = 1 AND mode = 'active') \
+                            AND released_at IS NULL AND expires_at > ?1)",
         )
-        .bind(&[JsValue::from_str(&lease_id), JsValue::from_str(&client.id)])?
-        .first::<LeaseRow>(None)
-        .await?;
+        .bind(&[
+            JsValue::from_str(&claim.now),
+            JsValue::from_str(&claim.operation_id),
+            JsValue::from_str(&claim.lease_id),
+            JsValue::from_str(&claim.client_id),
+        ])?;
+    let start_attempt = database
+        .prepare(
+            "INSERT OR IGNORE INTO operation_attempts (\
+                 component_id, attempt, client_id, lease_id, fencing_token, incarnation, \
+                 state, started_at\
+             ) \
+             SELECT component.id, lease.fencing_token, ?1, lease.id, lease.fencing_token, \
+                    lease.incarnation, 'running', ?2 \
+             FROM operation_components AS component \
+             JOIN leases AS lease ON lease.operation_id = component.operation_id \
+             JOIN control_plane_state AS state ON state.singleton = 1 \
+             WHERE component.operation_id = ?3 AND lease.id = ?4 \
+               AND lease.owner_client_id = ?1 AND lease.incarnation = state.incarnation \
+               AND state.mode = 'active' AND lease.released_at IS NULL \
+               AND lease.expires_at > ?2",
+        )
+        .bind(&[
+            JsValue::from_str(&claim.client_id),
+            JsValue::from_str(&claim.now),
+            JsValue::from_str(&claim.operation_id),
+            JsValue::from_str(&claim.lease_id),
+        ])?;
+    let start_component = database
+        .prepare(
+            "UPDATE operation_components \
+             SET client_id = ?1, state = 'running', \
+                 last_sequence = CASE \
+                     WHEN current_attempt != (SELECT fencing_token FROM leases WHERE id = ?2) \
+                     THEN 0 ELSE last_sequence END, \
+                 current_attempt = (SELECT fencing_token FROM leases WHERE id = ?2), \
+                 lease_id = ?2, \
+                 fencing_token = (SELECT fencing_token FROM leases WHERE id = ?2), \
+                 started_at = COALESCE(started_at, ?3), revision = revision + 1, updated_at = ?3 \
+             WHERE operation_id = ?4 AND state IN ('pending', 'running', 'stalled') \
+               AND EXISTS(SELECT 1 FROM leases \
+                          WHERE id = ?2 AND owner_client_id = ?1 \
+                            AND incarnation = (SELECT incarnation FROM control_plane_state \
+                                               WHERE singleton = 1 AND mode = 'active') \
+                            AND released_at IS NULL AND expires_at > ?3)",
+        )
+        .bind(&[
+            JsValue::from_str(&claim.client_id),
+            JsValue::from_str(&claim.lease_id),
+            JsValue::from_str(&claim.now),
+            JsValue::from_str(&claim.operation_id),
+        ])?;
 
-    match lease {
-        Some(value) => Response::from_json(&value),
-        None => Response::error("operation is unavailable or leased by another client", 409),
-    }
+    Ok(vec![supersede_attempts, start_attempt, start_component])
 }
 
 fn random_hex() -> Result<String> {

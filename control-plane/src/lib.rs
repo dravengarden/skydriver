@@ -10,6 +10,7 @@ mod manifests;
 mod operations;
 pub mod protocol;
 mod publication;
+mod telemetry;
 
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -204,6 +205,13 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
                 publication::publish(&mut request, &context.env, &client).await
             },
         )
+        .post_async(
+            "/api/v1/operations/:id/progress",
+            |mut request, context| async move {
+                let operation_id = context.param("id").cloned();
+                report_progress(&mut request, &context.env, operation_id.as_deref()).await
+            },
+        )
         .get_async("/api/summary", |request, context| async move {
             summary(&request, &context.env).await
         })
@@ -221,6 +229,25 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
         )
         .run(request, env)
         .await
+}
+
+async fn report_progress(
+    request: &mut Request,
+    env: &Env,
+    operation_id: Option<&str>,
+) -> Result<Response> {
+    if external_maintenance(env) {
+        return Response::error("control-plane mutations are disabled", 409);
+    }
+
+    let Some(client) = clients::authenticate(request, env).await? else {
+        return Response::error("client authentication required", 401);
+    };
+    let Some(operation_id) = operation_id else {
+        return Response::error("operation ID is required", 400);
+    };
+
+    telemetry::report(request, env, &client, operation_id).await
 }
 
 async fn health(env: &Env) -> Result<Response> {

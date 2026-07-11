@@ -58,6 +58,26 @@ func TestControlClientPublishesImportUnderExactFence(t *testing.T) {
 				`","incarnation":"` + incarnation +
 				`","fencing_token":7,"expires_at":100,"operation_revision":2,` +
 				`"operation_state":"running"}`))
+		case "/api/v1/operations/" + operationID + "/progress":
+			assertJSONBody(t, request, map[string]any{
+				"lease_id":              leaseID,
+				"incarnation":           incarnation,
+				"fencing_token":         float64(7),
+				"attempt":               float64(7),
+				"sequence":              float64(1),
+				"wire_bytes_read":       float64(2),
+				"wire_bytes_written":    float64(18),
+				"useful_bytes_verified": float64(2),
+				"active_nanoseconds":    float64(1_000),
+				"retry_count":           float64(0),
+				"throttle_count":        float64(0),
+			})
+
+			_, _ = response.Write([]byte(`{"component_id":"` + operationID +
+				`/transfer","attempt":7,"sequence":1,"wire_bytes_read":2,` +
+				`"wire_bytes_written":18,"useful_bytes_verified":2,` +
+				`"active_nanoseconds":1000,"retry_count":0,"throttle_count":0,` +
+				`"observed_at":2,"disposition":"current"}`))
 		case "/api/v1/imports/publish":
 			assertJSONBody(t, request, map[string]any{
 				"operation_id":             operationID,
@@ -102,6 +122,21 @@ func TestControlClientPublishesImportUnderExactFence(t *testing.T) {
 	lease, err := client.ClaimImportOperation(context.Background(), operation, 60)
 	if err != nil {
 		t.Fatalf("claim import operation: %v", err)
+	}
+
+	progress, err := client.ReportProgress(context.Background(), operation, lease, sdk.ProgressSample{
+		Sequence:            1,
+		WireBytesRead:       2,
+		WireBytesWritten:    18,
+		UsefulBytesVerified: 2,
+		ActiveNanoseconds:   1_000,
+	})
+	if err != nil {
+		t.Fatalf("report import progress: %v", err)
+	}
+
+	if progress.Sequence != 1 || progress.Disposition != "current" {
+		t.Fatalf("unexpected progress snapshot: %+v", progress)
 	}
 
 	published, err := client.PublishImport(context.Background(), sdk.PublishImportRequest{

@@ -25,6 +25,7 @@ test:
     cargo test --workspace --all-features
     pnpm --filter @carrack/web test
     control-plane/tests/core-protocol.sh
+    control-plane/tests/worker-protocol.sh
 
 build:
     go build ./...
