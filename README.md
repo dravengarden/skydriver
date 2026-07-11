@@ -76,6 +76,12 @@ produces separately owned and separately hashed extent buffers. A failed or
 corrupt coalesced read falls back to the normal ordered multi-replica path, so
 the optimization cannot weaken correctness or change ciphertext identity.
 
+The restore SDK pins one portable recovery manifest, verifies each downloaded
+ciphertext extent, authenticates every encrypted frame, and verifies the final
+plaintext identity before atomically publishing a local file. Interrupted
+restores retain a key-free journal and staging file; resume rehashes every
+claimed local plaintext span before skipping its network transfer.
+
 The import path persists every random pack ID before transfer, then encrypts
 whole frame spans into bounded 64 MiB staging extents. Consecutive extents are
 coalesced into exact-length, content-addressed provider objects under the
