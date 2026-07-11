@@ -6,14 +6,42 @@ const SessionSchema = v.object({
 });
 
 const SummarySchema = v.object({
-    jobs: v.number(),
+    operations: v.number(),
     objects: v.number(),
-    blocks: v.number(),
-    replicas: v.number(),
+    packs: v.number(),
+    verified_locations: v.number(),
+});
+
+const LiveComponentSchema = v.object({
+    component_id: v.string(),
+    operation_id: v.string(),
+    operation_kind: v.string(),
+    operation_phase: v.string(),
+    component_kind: v.string(),
+    component_state: v.string(),
+    client_name: v.nullable(v.string()),
+    useful_bytes_total: v.nullable(v.number()),
+    useful_bytes_verified: v.number(),
+    wire_bytes_read: v.number(),
+    wire_bytes_written: v.number(),
+    retry_count: v.number(),
+    throttle_count: v.number(),
+    last_sample_at: v.nullable(v.number()),
+    rate_1m_bps: v.number(),
+    rate_5m_bps: v.number(),
+    rate_15m_bps: v.number(),
+    lifetime_active_bps: v.number(),
+});
+
+const LiveComponentsSchema = v.object({
+    observed_at: v.number(),
+    components: v.array(LiveComponentSchema),
 });
 
 export type Session = v.InferOutput<typeof SessionSchema>;
 export type Summary = v.InferOutput<typeof SummarySchema>;
+export type LiveComponent = v.InferOutput<typeof LiveComponentSchema>;
+export type LiveComponents = v.InferOutput<typeof LiveComponentsSchema>;
 
 export function parseSession(input: unknown): Session {
     return v.parse(SessionSchema, input);
@@ -55,4 +83,8 @@ export function logout(): Promise<Session> {
 
 export function fetchSummary(): Promise<Summary> {
     return requestJson("/api/summary", undefined, SummarySchema);
+}
+
+export function fetchLiveComponents(): Promise<LiveComponents> {
+    return requestJson("/api/components/live", undefined, LiveComponentsSchema);
 }

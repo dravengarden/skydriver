@@ -1,0 +1,9 @@
+{
+  "suite": "carrack-aes128gcm-hkdfsha256-v1",
+  "root_seed_base64": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+  "namespace_id_base64": "ICEiIyQlJicoKSorLC0uLw==",
+  "epoch_id": 7,
+  "pack_id_base64": "QEFCQ0RFRkdISUpLTE1OTw==",
+  "epoch_key_base64": "gFJYocreVdq4o7taC21pJ1P8jLoqaibruBF6HNpPbbA=",
+  "pack_key_base64": "ev4O5gPB1Kd9MvAlPE0bMg=="
+}

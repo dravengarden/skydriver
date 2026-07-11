@@ -44,6 +44,38 @@ func NewClient(source provider.Reader, destination provider.Writer, layout archi
 	return &Client{source: source, destination: destination, layout: layout}, nil
 }
 
+// NewClientFromRegistry opens versioned driver specifications and constructs a
+// direct-transfer client. The same entry point is used by every Carrack SDK
+// consumer, regardless of which provider pair it selects at runtime.
+func NewClientFromRegistry(
+	ctx context.Context,
+	registry *provider.Registry,
+	sourceSpecification provider.DriverSpec,
+	destinationSpecification provider.DriverSpec,
+	dependencies provider.Dependencies,
+	layout archive.Layout,
+) (*Client, error) {
+	source, err := registry.Open(ctx, sourceSpecification, dependencies)
+	if err != nil {
+		return nil, fmt.Errorf("%w: open source driver: %w", ErrInvalidConfiguration, err)
+	}
+
+	if source.Reader == nil {
+		return nil, fmt.Errorf("%w: source driver does not support range reads", ErrInvalidConfiguration)
+	}
+
+	destination, err := registry.Open(ctx, destinationSpecification, dependencies)
+	if err != nil {
+		return nil, fmt.Errorf("%w: open destination driver: %w", ErrInvalidConfiguration, err)
+	}
+
+	if destination.Writer == nil {
+		return nil, fmt.Errorf("%w: destination driver does not support streaming writes", ErrInvalidConfiguration)
+	}
+
+	return NewClient(source.Reader, destination.Writer, layout)
+}
+
 // Plan inspects the source and returns an ordered physical block plan.
 func (client *Client) Plan(ctx context.Context, sourceKey, destinationKey string) (TransferPlan, error) {
 	object, err := client.source.Stat(ctx, sourceKey)

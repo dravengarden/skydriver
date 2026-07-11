@@ -33,6 +33,7 @@ export function App() {
         onSuccess: (value) => {
             queryClient.setQueryData(["session"], value);
             queryClient.removeQueries({ queryKey: ["summary"] });
+            queryClient.removeQueries({ queryKey: ["live-components"] });
         },
     });
 

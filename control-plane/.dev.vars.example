@@ -1,3 +1,2 @@
-CARRACK_ADMIN_USERNAME=admin
-CARRACK_ADMIN_PASSWORD_HASH=$argon2id$v=19$m=19456,t=2,p=1$replace-with-salt$replace-with-hash
 CARRACK_SESSION_KEY=replace-with-at-least-32-random-bytes
+CARRACK_MAINTENANCE=0

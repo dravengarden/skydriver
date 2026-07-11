@@ -2,6 +2,7 @@
 /result
 /.direnv/
 /.env
+/.admin-password
 /.dev.vars
 /target/
 /control-plane/build/

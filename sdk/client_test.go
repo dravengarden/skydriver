@@ -43,6 +43,39 @@ func (destinationProvider) Put(
 	return provider.Object{}, errUnexpectedProviderCall
 }
 
+const registryDriverKind provider.DriverKind = "registry-test/v1"
+
+type registryFactory struct{}
+
+func (registryFactory) Kind() provider.DriverKind {
+	return registryDriverKind
+}
+
+func (registryFactory) Open(
+	_ context.Context,
+	specification provider.DriverSpec,
+	_ provider.Dependencies,
+) (provider.Handle, error) {
+	handle := provider.Handle{
+		ID:   specification.ID,
+		Kind: specification.Kind,
+		Capabilities: provider.Capabilities{
+			SafeConcurrency: 1,
+		},
+	}
+
+	switch specification.ID {
+	case "source":
+		handle.Capabilities.RangeRead = true
+		handle.Reader = sourceProvider{object: provider.Object{Key: "source", SizeBytes: 18}}
+	case "destination":
+		handle.Capabilities.StreamingWrite = true
+		handle.Writer = destinationProvider{}
+	}
+
+	return handle, nil
+}
+
 func TestClientPlansDirectTransfer(t *testing.T) {
 	t.Parallel()
 
@@ -78,6 +111,36 @@ func TestClientWrapsSourceFailure(t *testing.T) {
 
 	if err == nil || !strings.Contains(err.Error(), errSourceUnavailable.Error()) {
 		t.Fatalf("expected wrapped source failure, got %v", err)
+	}
+}
+
+func TestClientOpensDriversFromRegistry(t *testing.T) {
+	t.Parallel()
+
+	registry, err := provider.NewRegistry(registryFactory{})
+	if err != nil {
+		t.Fatalf("create registry: %v", err)
+	}
+
+	client, err := sdk.NewClientFromRegistry(
+		context.Background(),
+		registry,
+		provider.DriverSpec{ID: "source", Kind: registryDriverKind, Config: []byte(`{}`)},
+		provider.DriverSpec{ID: "destination", Kind: registryDriverKind, Config: []byte(`{}`)},
+		provider.Dependencies{},
+		archive.Layout{PhysicalBlockBytes: 8, CryptoFrameBytes: 2, LogicalPackBytes: 16},
+	)
+	if err != nil {
+		t.Fatalf("create registry-backed client: %v", err)
+	}
+
+	plan, err := client.Plan(context.Background(), "source", "destination")
+	if err != nil {
+		t.Fatalf("plan transfer: %v", err)
+	}
+
+	if len(plan.Blocks) != 3 {
+		t.Fatalf("unexpected transfer plan: %+v", plan)
 	}
 }
 

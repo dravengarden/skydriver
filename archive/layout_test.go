@@ -14,6 +14,10 @@ func TestDefaultLayout(t *testing.T) {
 	if err := layout.Validate(); err != nil {
 		t.Fatalf("default layout must be valid: %v", err)
 	}
+
+	if layout.PhysicalBlockBytes != 64<<20 {
+		t.Fatalf("default physical block must be 64 MiB, got %d bytes", layout.PhysicalBlockBytes)
+	}
 }
 
 func TestLayoutRejectsMisalignedFrames(t *testing.T) {

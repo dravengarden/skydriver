@@ -1,12 +1,13 @@
 # AGENTS.md — Carrack
 
-Carrack is a low-cost, content-addressed data transport system. The first
-source is Hyperliquid public data, but transport and storage abstractions must
-remain source-neutral.
+Carrack is a business-neutral, content-addressed data transport and encrypted
+archive system. It must not contain exchange adapters, dataset catalogs,
+ingestion schedules, trading semantics, or other consumer-specific behavior.
 
 ## Architecture
 
-- `cmd/carrack/`, `archive/`, `manifest/`, `provider/`, `sdk/`: Go CLI and SDK.
+- `cmd/carrack/`, `archive/`, `manifest/`, `provider/`, `sdk/`: Go client SDK
+  and its CLI surface. Provider packages implement pluggable storage drivers.
 - `control-plane/`: Rust Cloudflare Worker for auth, index, jobs, and status.
 - `web/`: strict TypeScript SPA using React, TanStack, and MUI.
 - `schemas/`: language-neutral wire contracts.
@@ -15,13 +16,21 @@ V1 supports direct transfer only. Data bytes flow between a Carrack agent and
 storage providers. The Worker is a control plane and must never relay object or
 block payloads.
 
+The control plane and client SDK are the only product components. Long-running
+CLI/agent processes are SDK consumers, not a third architectural component.
+
 ## Rules
 
 - All code, comments, commit messages, and docs are English.
-- Carrack is the canonical product, repository, CLI, SDK, agent, and protocol
-  name. Do not introduce `dp`, `data-pipeline`, or similar aliases.
+- Carrack is the canonical product, repository, CLI, SDK, client, and protocol
+  name. Consumer projects depend on Carrack; Carrack never depends on them.
 - Go uses the Columbus maximum-strictness golangci-lint profile.
 - TypeScript is strict: no `any`, no unchecked boundary casts.
-- Secrets and credentials never enter Git. Preset UI credentials are supplied
-  through Cloudflare secrets as a username and an Argon2id PHC password hash.
+- Secrets and credentials never enter Git. D1 stores only password hashes,
+  token verifiers, and encrypted provider-credential envelopes. Pack keys are
+  derived rather than stored. Root seeds stay in Cloudflare secrets or Secrets
+  Store and have offline recovery copies.
 - Run `just verify` before committing.
+- Treat `docs/requirements.md` as the normative product and correctness
+  baseline. Architecture and implementation changes must preserve its MUST and
+  MUST NOT guarantees or revise the requirements deliberately.

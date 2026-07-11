@@ -31,7 +31,7 @@ type BlockSpan struct {
 // DefaultLayout returns the initial Carrack storage profile.
 func DefaultLayout() Layout {
 	return Layout{
-		PhysicalBlockBytes: 128 * mebibyte,
+		PhysicalBlockBytes: 64 * mebibyte,
 		CryptoFrameBytes:   8 * mebibyte,
 		LogicalPackBytes:   8 * gibibyte,
 	}
