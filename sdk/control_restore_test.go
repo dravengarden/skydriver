@@ -76,6 +76,17 @@ func TestControlClientPinsRestoreAndClaimsReadLease(t *testing.T) {
 
 			_, _ = response.Write([]byte(`{"operation_id":"` + operationID +
 				`","manifest_sha256":"` + manifestID + `","state":"succeeded"}`))
+		case "/api/v1/restores/" + operationID + "/fail":
+			assertJSONBody(t, request, map[string]any{
+				"lease_id":        "operation/" + operationID + "/read",
+				"incarnation":     incarnation,
+				"fencing_token":   float64(1),
+				"manifest_sha256": manifestID,
+				"error_code":      "plaintext_integrity",
+			})
+
+			_, _ = response.Write([]byte(`{"operation_id":"` + operationID +
+				`","manifest_sha256":"` + manifestID + `","state":"failed"}`))
 		default:
 			http.NotFound(response, request)
 		}
@@ -125,5 +136,16 @@ func TestControlClientPinsRestoreAndClaimsReadLease(t *testing.T) {
 
 	if completed.State != "succeeded" {
 		t.Fatalf("unexpected restore completion: %+v", completed)
+	}
+
+	failed, err := client.FailRestoreOperation(
+		context.Background(), operation, lease, "plaintext_integrity",
+	)
+	if err != nil {
+		t.Fatalf("fail restore operation: %v", err)
+	}
+
+	if failed.State != "failed" {
+		t.Fatalf("unexpected restore failure: %+v", failed)
 	}
 }

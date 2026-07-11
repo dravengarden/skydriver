@@ -43,6 +43,16 @@ struct ManifestRequest {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FailRequest {
+    lease_id: String,
+    incarnation: String,
+    fencing_token: u64,
+    manifest_sha256: String,
+    error_code: String,
+}
+
+#[derive(Deserialize)]
 struct ManifestArchiveRow {
     manifest_sha256: String,
     r2_storage_key: String,
@@ -451,6 +461,101 @@ pub(crate) async fn fetch_manifest(
         .set("ETag", &format!("\"{}\"", archived.manifest_sha256))?;
 
     Ok(response)
+}
+
+pub(crate) async fn fail(
+    request: &mut Request,
+    env: &Env,
+    client: &AuthenticatedClient,
+    operation_id: &str,
+) -> Result<Response> {
+    if !valid_hex(operation_id, 32) {
+        return Response::error("invalid restore operation ID", 400);
+    }
+
+    let failed = request.json::<FailRequest>().await?;
+    if !valid_string(&failed.lease_id, 256)
+        || !valid_hex(&failed.incarnation, 32)
+        || failed.fencing_token == 0
+        || !valid_hex(&failed.manifest_sha256, 64)
+        || !valid_string(&failed.error_code, 128)
+    {
+        return Response::error("invalid restore failure", 400);
+    }
+
+    let now = current_unix_seconds().to_string();
+    let database = env.d1("CARRACK_INDEX")?;
+    let mark_failed = database
+        .prepare(
+            "UPDATE operations SET state = 'failed', phase = 'failed', error_code = ?1, \
+                    error_message = NULL, revision = revision + 1, finished_at = ?2, updated_at = ?2 \
+             WHERE id = ?3 AND kind = 'restore' AND state = 'running' AND requested_by = ?4 \
+               AND EXISTS(SELECT 1 FROM restore_intents WHERE operation_id = ?3 \
+                          AND manifest_sha256 = ?5) \
+               AND EXISTS(SELECT 1 FROM leases WHERE id = ?6 AND operation_id = ?3 \
+                          AND owner_client_id = ?4 AND incarnation = ?7 \
+                          AND fencing_token = ?8 AND lease_kind = 'read' \
+                          AND released_at IS NULL AND expires_at > ?2)",
+        )
+        .bind(&[
+            JsValue::from_str(&failed.error_code),
+            JsValue::from_str(&now),
+            JsValue::from_str(operation_id),
+            JsValue::from_str(&client.id),
+            JsValue::from_str(&failed.manifest_sha256),
+            JsValue::from_str(&failed.lease_id),
+            JsValue::from_str(&failed.incarnation),
+            JsValue::from_str(&failed.fencing_token.to_string()),
+        ])?;
+    let release = database
+        .prepare(
+            "UPDATE leases SET released_at = ?1, updated_at = ?1 \
+             WHERE id = ?2 AND operation_id = ?3 AND owner_client_id = ?4 \
+               AND incarnation = ?5 AND fencing_token = ?6 AND lease_kind = 'read' \
+               AND released_at IS NULL AND expires_at > ?1 \
+               AND EXISTS(SELECT 1 FROM operations WHERE id = ?3 AND state = 'failed')",
+        )
+        .bind(&[
+            JsValue::from_str(&now),
+            JsValue::from_str(&failed.lease_id),
+            JsValue::from_str(operation_id),
+            JsValue::from_str(&client.id),
+            JsValue::from_str(&failed.incarnation),
+            JsValue::from_str(&failed.fencing_token.to_string()),
+        ])?;
+    database.batch(vec![mark_failed, release]).await?;
+
+    let state = database
+        .prepare(
+            "SELECT state FROM operations WHERE id = ?1 AND kind = 'restore' \
+               AND requested_by = ?2 AND state = 'failed' AND error_code = ?3 \
+               AND EXISTS(SELECT 1 FROM restore_intents WHERE operation_id = ?1 \
+                          AND manifest_sha256 = ?4) \
+               AND EXISTS(SELECT 1 FROM leases WHERE id = ?5 AND operation_id = ?1 \
+                          AND owner_client_id = ?2 AND incarnation = ?6 \
+                          AND fencing_token = ?7 AND lease_kind = 'read' \
+                          AND released_at IS NOT NULL)",
+        )
+        .bind(&[
+            JsValue::from_str(operation_id),
+            JsValue::from_str(&client.id),
+            JsValue::from_str(&failed.error_code),
+            JsValue::from_str(&failed.manifest_sha256),
+            JsValue::from_str(&failed.lease_id),
+            JsValue::from_str(&failed.incarnation),
+            JsValue::from_str(&failed.fencing_token.to_string()),
+        ])?
+        .first::<String>(Some("state"))
+        .await?;
+    if state.as_deref() != Some("failed") {
+        return Response::error("restore failure fence is stale or identity changed", 409);
+    }
+
+    Response::from_json(&CompletedRestore {
+        operation_id: operation_id.to_owned(),
+        manifest_sha256: failed.manifest_sha256,
+        state: "failed".to_owned(),
+    })
 }
 
 #[allow(

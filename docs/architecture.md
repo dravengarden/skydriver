@@ -243,6 +243,12 @@ It always completes with the newest returned fence. If renewal fails, it
 cancels the restore context so pending provider reads terminate and the local
 staging file cannot be atomically published.
 
+A terminal frame-authentication or final plaintext-integrity failure is
+recorded under the current read fence using a stable, non-sensitive error code;
+the operation becomes failed and the lease is released in one D1 batch.
+Transient provider and cancellation failures remain resumable and simply let
+their read lease expire rather than being mislabeled as permanent corruption.
+
 ### Driver-to-driver transfer
 
 The same copy or move state machine applies whether the source is encrypted or

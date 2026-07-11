@@ -228,6 +228,38 @@ jq -e --arg restore_id "$restore_id" --arg manifest_sha "$restore_manifest_sha" 
   .manifest_sha256 == $manifest_sha
 ' <<<"$completed_restore" >/dev/null
 
+failed_restore=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn --arg manifest_sha "$restore_manifest_sha" '{
+    namespace_id: "202122232425262728292a2b2c2d2e2f",
+    manifest_sha256: $manifest_sha,
+    idempotency_key: "worker-e2e-restore-failure"
+  }')" \
+  "$base_url/api/v1/restores")
+failed_restore_id=$(jq -r .id <<<"$failed_restore")
+failed_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/restores/$failed_restore_id/claim")
+failed_result=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn \
+    --arg lease_id "$(jq -r .lease_id <<<"$failed_lease")" \
+    --arg incarnation "$(jq -r .incarnation <<<"$failed_lease")" \
+    --arg manifest_sha "$restore_manifest_sha" \
+    --argjson fence "$(jq -r .fencing_token <<<"$failed_lease")" \
+    '{
+      lease_id: $lease_id,
+      incarnation: $incarnation,
+      fencing_token: $fence,
+      manifest_sha256: $manifest_sha,
+      error_code: "plaintext_integrity"
+    }')" \
+  "$base_url/api/v1/restores/$failed_restore_id/fail")
+jq -e --arg restore_id "$failed_restore_id" '
+  .operation_id == $restore_id and .state == "failed"
+' <<<"$failed_result" >/dev/null
+
 operation=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" \
   --data '{

@@ -110,6 +110,17 @@ func (coordinator *ControlledRestorer) Restore(
 
 	renewalErr := receiveRenewalError(renewalErrors)
 	if restoreErr != nil || renewalErr != nil {
+		if renewalErr == nil && terminalRestoreFailure(restoreErr) {
+			_, failureErr := coordinator.control.FailRestoreOperation(
+				ctx,
+				operation,
+				leaseState.current(),
+				"plaintext_integrity",
+			)
+
+			return ControlledRestoreResult{}, errors.Join(restoreErr, failureErr)
+		}
+
 		return ControlledRestoreResult{}, errors.Join(restoreErr, renewalErr)
 	}
 
@@ -125,6 +136,10 @@ func (coordinator *ControlledRestorer) Restore(
 	}
 
 	return ControlledRestoreResult{Operation: operation, Restore: restored, Completion: completion}, nil
+}
+
+func terminalRestoreFailure(err error) bool {
+	return errors.Is(err, cryptostream.ErrFrameAuthentication) || errors.Is(err, ErrRestoreIntegrity)
 }
 
 type renewedRestoreLease struct {
@@ -169,6 +184,10 @@ func (coordinator *ControlledRestorer) renewLease(
 				coordinator.leaseSeconds,
 			)
 			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+
 				select {
 				case renewalErrors <- fmt.Errorf("%w: %w", ErrRestoreLeaseLost, err):
 				default:

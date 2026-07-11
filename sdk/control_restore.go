@@ -71,6 +71,14 @@ type completeRestoreBody struct {
 	PlaintextBytes  uint64 `json:"plaintext_bytes"`
 }
 
+type failRestoreBody struct {
+	LeaseID        string `json:"lease_id"`
+	Incarnation    string `json:"incarnation"`
+	FencingToken   uint64 `json:"fencing_token"`
+	ManifestSHA256 string `json:"manifest_sha256"`
+	ErrorCode      string `json:"error_code"`
+}
+
 type restoreManifestBody struct {
 	LeaseID      string `json:"lease_id"`
 	Incarnation  string `json:"incarnation"`
@@ -210,6 +218,42 @@ func (client *ControlClient) CompleteRestoreOperation(
 	if response.OperationID != operation.ID || response.ManifestSHA256 != operation.ManifestSHA256 ||
 		response.State != "succeeded" {
 		return CompletedRestore{}, fmt.Errorf("%w: invalid restore completion identity", ErrControlPlaneResponse)
+	}
+
+	return response, nil
+}
+
+// FailRestoreOperation records a terminal local integrity failure and releases the read lease.
+func (client *ControlClient) FailRestoreOperation(
+	ctx context.Context,
+	operation RestoreOperation,
+	lease RestoreReadLease,
+	errorCode string,
+) (CompletedRestore, error) {
+	if lease.OperationID != operation.ID || lease.Incarnation != operation.Incarnation ||
+		lease.VersionID != operation.VersionID || lease.ManifestSHA256 != operation.ManifestSHA256 ||
+		lease.LeaseID == "" || lease.FencingToken == 0 || !validControlString(errorCode, 128) {
+		return CompletedRestore{}, fmt.Errorf("%w: invalid restore failure", ErrInvalidControlPlane)
+	}
+
+	body, err := json.Marshal(failRestoreBody{
+		LeaseID: lease.LeaseID, Incarnation: lease.Incarnation, FencingToken: lease.FencingToken,
+		ManifestSHA256: operation.ManifestSHA256, ErrorCode: errorCode,
+	})
+	if err != nil {
+		return CompletedRestore{}, fmt.Errorf("marshal restore failure: %w", err)
+	}
+
+	var response CompletedRestore
+
+	path := "/api/v1/restores/" + operation.ID + "/fail"
+	if err := client.authenticatedPost(ctx, path, body, &response); err != nil {
+		return CompletedRestore{}, err
+	}
+
+	if response.OperationID != operation.ID || response.ManifestSHA256 != operation.ManifestSHA256 ||
+		response.State != "failed" {
+		return CompletedRestore{}, fmt.Errorf("%w: invalid restore failure identity", ErrControlPlaneResponse)
 	}
 
 	return response, nil

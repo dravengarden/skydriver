@@ -89,6 +89,9 @@ validated again before the client receives it; archive payload remains direct.
 The controlled restore SDK composes manifest pinning, read-lease renewal,
 metadata fetch, local restore, and fenced completion. A renewal failure cancels
 in-flight provider reads and prevents local publication.
+Terminal authenticated-decryption or plaintext-identity failures close the
+operation and release its lease immediately; transient provider failures keep
+the key-free local resume state and are not reported as permanent corruption.
 
 The import path persists every random pack ID before transfer, then encrypts
 whole frame spans into bounded 64 MiB staging extents. Consecutive extents are

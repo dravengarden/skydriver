@@ -244,6 +244,19 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
             },
         )
         .post_async(
+            "/api/v1/restores/:id/fail",
+            |mut request, context| async move {
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+                let Some(operation_id) = context.param("id") else {
+                    return Response::error("operation ID is required", 400);
+                };
+
+                restoration::fail(&mut request, &context.env, &client, operation_id).await
+            },
+        )
+        .post_async(
             "/api/v1/operations/:id/claim",
             |mut request, context| async move {
                 if external_maintenance(&context.env) {

@@ -45,15 +45,20 @@ func (reader delayedRestoreReader) OpenRange(
 
 func TestControlledRestorerRenewsLeaseDuringProviderIO(t *testing.T) {
 	t.Parallel()
-	runControlledRestore(t, false)
+	runControlledRestore(t, false, false)
 }
 
 func TestControlledRestorerCancelsProviderIOAfterLeaseLoss(t *testing.T) {
 	t.Parallel()
-	runControlledRestore(t, true)
+	runControlledRestore(t, true, false)
 }
 
-func runControlledRestore(t *testing.T, failRenewal bool) {
+func TestControlledRestorerClosesTerminalIntegrityFailure(t *testing.T) {
+	t.Parallel()
+	runControlledRestore(t, false, true)
+}
+
+func runControlledRestore(t *testing.T, failRenewal, wrongKey bool) {
 	t.Helper()
 
 	plaintext := []byte("a controlled restore remains leased throughout provider reads")
@@ -61,6 +66,8 @@ func runControlledRestore(t *testing.T, failRenewal bool) {
 	token, encodedToken := testClientToken(t)
 
 	var claims atomic.Uint64
+
+	var failures atomic.Uint64
 
 	const (
 		operationID = "303132333435363738393a3b3c3d3e3f"
@@ -108,6 +115,12 @@ func runControlledRestore(t *testing.T, failRenewal bool) {
 				OperationID: operationID, ManifestSHA256: imported.Recovery.ManifestSHA256,
 				State: "succeeded",
 			})
+		case "/api/v1/restores/" + operationID + "/fail":
+			failures.Add(1)
+			writeTestJSON(t, response, sdk.CompletedRestore{
+				OperationID: operationID, ManifestSHA256: imported.Recovery.ManifestSHA256,
+				State: "failed",
+			})
 		default:
 			http.NotFound(response, request)
 		}
@@ -133,9 +146,14 @@ func runControlledRestore(t *testing.T, failRenewal bool) {
 
 	destination := filepath.Join(t.TempDir(), "restored.bin")
 
+	requestedEpochKey := epochKey
+	if wrongKey {
+		requestedEpochKey[0] ^= 1
+	}
+
 	result, err := coordinator.Restore(context.Background(), sdk.ControlledRestoreRequest{
 		NamespaceID: imported.Manifest.NamespaceID, ManifestSHA256: imported.Recovery.ManifestSHA256,
-		IdempotencyKey: "controlled-restore-1", EpochKey: epochKey,
+		IdempotencyKey: "controlled-restore-1", EpochKey: requestedEpochKey,
 		Destination: destination,
 	})
 	if failRenewal {
@@ -145,6 +163,18 @@ func runControlledRestore(t *testing.T, failRenewal bool) {
 
 		if _, statErr := os.Stat(destination); !errors.Is(statErr, os.ErrNotExist) {
 			t.Fatalf("lease-lost restore published destination: %v", statErr)
+		}
+
+		return
+	}
+
+	if wrongKey {
+		if err == nil || failures.Load() != 1 {
+			t.Fatalf("terminal integrity failure was not closed: err=%v failures=%d", err, failures.Load())
+		}
+
+		if _, statErr := os.Stat(destination); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("integrity-failed restore published destination: %v", statErr)
 		}
 
 		return
