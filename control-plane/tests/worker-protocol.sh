@@ -33,19 +33,34 @@ restore_content=$(jq -cn '{
   namespace_id: "202122232425262728292a2b2c2d2e2f",
   object_id: "restore-object",
   generation: 1,
-  plaintext_size: 0,
-  plaintext_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  plaintext_size: 2,
+  plaintext_sha256: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
   layout: {
-    physical_block_bytes: 67108864,
-    crypto_frame_bytes: 8388608,
-    logical_pack_bytes: 8589934592
+    physical_block_bytes: 2,
+    crypto_frame_bytes: 2,
+    logical_pack_bytes: 2
   },
   crypto: {
     suite: "carrack-aes128gcm-hkdfsha256-v1",
     root_version: 1,
-    key_epoch: 1
+    key_epoch: 7
   },
-  packs: []
+  packs: [{
+    ordinal: 0,
+    pack_id: "404142434445464748494a4b4c4d4e4f",
+    plaintext_offset: 0,
+    plaintext_size: 2,
+    ciphertext_size: 18,
+    ciphertext_sha256: "1111111111111111111111111111111111111111111111111111111111111111",
+    extents: [{
+      ordinal: 0,
+      first_frame: 0,
+      frame_count: 1,
+      ciphertext_offset: 0,
+      ciphertext_size: 18,
+      ciphertext_sha256: "2222222222222222222222222222222222222222222222222222222222222222"
+    }]
+  }]
 }')
 restore_manifest_sha=$(printf '%s' "$restore_content" | sha256sum | cut -d' ' -f1)
 restore_recovery=$(jq -cn \
@@ -55,7 +70,13 @@ restore_recovery=$(jq -cn \
     schema_version: "carrack.recovery.v1",
     manifest_sha256: $manifest_sha,
     manifest: $manifest,
-    locations: []
+    locations: [{
+      extent_sha256: "2222222222222222222222222222222222222222222222222222222222222222",
+      driver_id: "restore-driver",
+      storage_key: "restore/payload",
+      offset: 0,
+      length: 18
+    }]
   }')
 restore_recovery_bytes=${#restore_recovery}
 printf '%s' "$restore_recovery" >"$state_directory/restore-manifest.json"
@@ -110,9 +131,39 @@ printf '%s' "$restore_recovery" >"$state_directory/restore-manifest.json"
     ) VALUES (
       'restore-version', 'restore-object', 1,
       '$restore_manifest_sha',
-      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
-      0, 0, 0, 'staging', unixepoch()
+      'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789',
+      2, 1, 1, 'staging', unixepoch()
     );
+    INSERT INTO packs (
+      id, namespace_id, crypto_suite, root_key_version, key_epoch,
+      ciphertext_sha256, plaintext_bytes, ciphertext_bytes, frame_bytes, created_at
+    ) VALUES (
+      '404142434445464748494a4b4c4d4e4f',
+      '202122232425262728292a2b2c2d2e2f',
+      'carrack-aes128gcm-hkdfsha256-v1', 1, 7,
+      '1111111111111111111111111111111111111111111111111111111111111111',
+      2, 18, 2, unixepoch()
+    );
+    INSERT INTO extents (
+      id, pack_id, ordinal, first_frame, frame_count, ciphertext_offset,
+      ciphertext_bytes, ciphertext_sha256, created_at
+    ) VALUES (
+      'restore-extent', '404142434445464748494a4b4c4d4e4f', 0, 0, 1, 0, 18,
+      '2222222222222222222222222222222222222222222222222222222222222222',
+      unixepoch()
+    );
+    INSERT INTO version_packs (version_id, ordinal, pack_id, plaintext_offset)
+    VALUES ('restore-version', 0, '404142434445464748494a4b4c4d4e4f', 0);
+    INSERT INTO locations (
+      id, extent_id, driver_id, storage_key, storage_offset, storage_length,
+      ciphertext_sha256, ciphertext_bytes, state, created_at, updated_at
+    ) VALUES (
+      'restore-location', 'restore-extent', 'restore-driver', 'restore/payload', 0, 18,
+      '2222222222222222222222222222222222222222222222222222222222222222',
+      18, 'staging', unixepoch(), unixepoch()
+    );
+    UPDATE locations SET state = 'verified', verified_at = unixepoch(), updated_at = unixepoch()
+    WHERE id = 'restore-location';
     INSERT INTO recovery_manifests (
       manifest_sha256, version_id, schema_version, r2_storage_key,
       sidecar_driver_id, sidecar_storage_key, state, ciphertext_bytes,
@@ -139,6 +190,7 @@ printf '%s' "$restore_recovery" >"$state_directory/restore-manifest.json"
   --persist-to "$state_directory" \
   --port "$port" \
   --inspector-port 0 \
+  --var CARRACK_ROOT_KEY_V1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
   --show-interactive-dev-session=false >"$server_log" 2>&1 &
 server_pid=$!
 
@@ -200,6 +252,27 @@ fetched_manifest=$(curl --silent --show-error --fail-with-body \
   "$base_url/api/v1/restores/$restore_id/manifest")
 [[ "$fetched_manifest" == "$restore_recovery" ]]
 
+key_grant=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn \
+    --arg lease_id "$(jq -r .lease_id <<<"$read_lease")" \
+    --arg incarnation "$(jq -r .incarnation <<<"$read_lease")" \
+    --arg manifest_sha "$restore_manifest_sha" \
+    --argjson fence "$read_fence" \
+    '{
+      lease_id: $lease_id,
+      incarnation: $incarnation,
+      fencing_token: $fence,
+      manifest_sha256: $manifest_sha,
+      root_version: 1,
+      key_epoch: 7
+    }')" \
+  "$base_url/api/v1/restores/$restore_id/key")
+jq -e '
+  .root_version == 1 and .key_epoch == 7 and
+  .epoch_key == "gFJYocreVdq4o7taC21pJ1P8jLoqaibruBF6HNpPbbA"
+' <<<"$key_grant" >/dev/null
+
 renewed_read_lease=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" \
   --data '{"lease_seconds":60}' \
@@ -219,9 +292,9 @@ restore_progress=$(curl --silent --show-error --fail-with-body \
       fencing_token: $fence,
       attempt: $fence,
       sequence: 1,
-      wire_bytes_read: 0,
+      wire_bytes_read: 18,
       wire_bytes_written: 0,
-      useful_bytes_verified: 0,
+      useful_bytes_verified: 2,
       active_nanoseconds: 1,
       retry_count: 0,
       throttle_count: 0
@@ -243,8 +316,8 @@ completed_restore=$(curl --silent --show-error --fail-with-body \
       incarnation: $incarnation,
       fencing_token: $fence,
       manifest_sha256: $manifest_sha,
-      plaintext_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      plaintext_bytes: 0
+      plaintext_sha256: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+      plaintext_bytes: 2
     }')" \
   "$base_url/api/v1/restores/$restore_id/complete")
 jq -e --arg restore_id "$restore_id" --arg manifest_sha "$restore_manifest_sha" '

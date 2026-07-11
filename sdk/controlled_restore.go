@@ -85,6 +85,15 @@ func (coordinator *ControlledRestorer) Restore(
 		return ControlledRestoreResult{}, fmt.Errorf("fetch controlled restore manifest: %w", err)
 	}
 
+	epochKey := requested.EpochKey
+	if recovery.Manifest.PlaintextSize > 0 && epochKeyIsZero(epochKey) {
+		epochKey, err = coordinator.control.GrantRestoreEpochKey(ctx, operation, lease, recovery)
+		if err != nil {
+			return ControlledRestoreResult{}, fmt.Errorf("grant controlled restore key: %w", err)
+		}
+	}
+	defer clear(epochKey[:])
+
 	transferContext, cancelTransfer := context.WithCancel(ctx)
 	leaseState := &renewedRestoreLease{lease: lease}
 	progressReporter := &restoreProgressReporter{
@@ -105,7 +114,7 @@ func (coordinator *ControlledRestorer) Restore(
 	restored, restoreErr := coordinator.restorer.RestoreWithProgress(
 		transferContext,
 		recovery,
-		requested.EpochKey,
+		epochKey,
 		requested.Destination,
 		func(progress RestoreProgress) {
 			progressReporter.observe(transferContext, progress)
@@ -148,6 +157,15 @@ func (coordinator *ControlledRestorer) Restore(
 		Operation: operation, Restore: restored, Completion: completion,
 		TelemetryWarning: progressReporter.warning(),
 	}, nil
+}
+
+func epochKeyIsZero(key cryptostream.EpochKey) bool {
+	var combined byte
+	for _, value := range key {
+		combined |= value
+	}
+
+	return combined == 0
 }
 
 func terminalRestoreFailure(err error) bool {

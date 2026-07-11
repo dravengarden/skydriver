@@ -2,6 +2,7 @@ package sdk_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -45,20 +46,25 @@ func (reader delayedRestoreReader) OpenRange(
 
 func TestControlledRestorerRenewsLeaseDuringProviderIO(t *testing.T) {
 	t.Parallel()
-	runControlledRestore(t, false, false)
+	runControlledRestore(t, false, false, false)
 }
 
 func TestControlledRestorerCancelsProviderIOAfterLeaseLoss(t *testing.T) {
 	t.Parallel()
-	runControlledRestore(t, true, false)
+	runControlledRestore(t, true, false, false)
 }
 
 func TestControlledRestorerClosesTerminalIntegrityFailure(t *testing.T) {
 	t.Parallel()
-	runControlledRestore(t, false, true)
+	runControlledRestore(t, false, true, false)
 }
 
-func runControlledRestore(t *testing.T, failRenewal, wrongKey bool) {
+func TestControlledRestorerObtainsEpochKeyFromControlPlane(t *testing.T) {
+	t.Parallel()
+	runControlledRestore(t, false, false, true)
+}
+
+func runControlledRestore(t *testing.T, failRenewal, wrongKey, useKeyGrant bool) {
 	t.Helper()
 
 	plaintext := []byte("a controlled restore remains leased throughout provider reads")
@@ -112,6 +118,13 @@ func runControlledRestore(t *testing.T, failRenewal, wrongKey bool) {
 			})
 		case "/api/v1/restores/" + operationID + "/manifest":
 			writeTestJSON(t, response, imported.Recovery)
+		case "/api/v1/restores/" + operationID + "/key":
+			writeTestJSON(t, response, map[string]any{
+				"operation_id": operationID, "manifest_sha256": imported.Recovery.ManifestSHA256,
+				"root_version": imported.Manifest.Crypto.RootVersion,
+				"key_epoch":    imported.Manifest.Crypto.KeyEpoch,
+				"epoch_key":    base64.RawURLEncoding.EncodeToString(epochKey[:]),
+			})
 		case "/api/v1/restores/" + operationID + "/complete":
 			writeTestJSON(t, response, sdk.CompletedRestore{
 				OperationID: operationID, ManifestSHA256: imported.Recovery.ManifestSHA256,
@@ -172,6 +185,8 @@ func runControlledRestore(t *testing.T, failRenewal, wrongKey bool) {
 	requestedEpochKey := epochKey
 	if wrongKey {
 		requestedEpochKey[0] ^= 1
+	} else if useKeyGrant {
+		clear(requestedEpochKey[:])
 	}
 
 	result, err := coordinator.Restore(context.Background(), sdk.ControlledRestoreRequest{

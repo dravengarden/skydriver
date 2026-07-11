@@ -107,9 +107,12 @@ func executeRestore(
 	}
 	defer controlToken.Clear()
 
-	epochKey, err := parseEpochKey(getenv(epochKeyEnvironment))
-	if err != nil {
-		return sdk.ControlledRestoreResult{}, err
+	var epochKey cryptostream.EpochKey
+	if encodedEpochKey := getenv(epochKeyEnvironment); encodedEpochKey != "" {
+		epochKey, err = parseEpochKey(encodedEpochKey)
+		if err != nil {
+			return sdk.ControlledRestoreResult{}, err
+		}
 	}
 	defer clear(epochKey[:])
 

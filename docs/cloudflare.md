@@ -45,9 +45,15 @@ Set the session signing key through Wrangler:
 ```bash
 pnpm exec wrangler secret put CARRACK_SESSION_KEY \
   --config control-plane/wrangler.jsonc
+
+pnpm exec wrangler secret put CARRACK_ROOT_KEY_V1 \
+  --config control-plane/wrangler.jsonc
 ```
 
 `CARRACK_SESSION_KEY` must be an independently generated high-entropy value.
+`CARRACK_ROOT_KEY_V1` must be the unpadded base64url encoding of exactly 32
+random bytes with a tested offline recovery copy. Add a new versioned binding
+for rotation; never replace an old root while published manifests reference it.
 Account provisioning is an operator action performed after the D1 migration;
 do not commit password hashes as migration seed data.
 

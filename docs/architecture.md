@@ -461,6 +461,12 @@ plane is temporarily unavailable. Possession of an epoch key permits deriving
 every pack key in that epoch; this is an explicit V1 tradeoff for non-sensitive
 archive data.
 
+For restore, the grant request also pins the portable manifest digest, root
+version, and key epoch. D1 proves that every pack in the immutable version uses
+that same crypto context before the Worker reads the versioned root secret.
+The audit event records only operation and public crypto identities; root and
+epoch key bytes never enter D1 or logs.
+
 The initial data suite is versioned and fixed:
 
 ```text

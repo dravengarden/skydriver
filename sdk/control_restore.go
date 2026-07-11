@@ -2,10 +2,12 @@ package sdk
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math"
 
+	"github.com/dravengarden/carrack/cryptostream"
 	"github.com/dravengarden/carrack/manifest"
 )
 
@@ -83,6 +85,23 @@ type restoreManifestBody struct {
 	LeaseID      string `json:"lease_id"`
 	Incarnation  string `json:"incarnation"`
 	FencingToken uint64 `json:"fencing_token"`
+}
+
+type restoreKeyGrantBody struct {
+	LeaseID        string `json:"lease_id"`
+	Incarnation    string `json:"incarnation"`
+	FencingToken   uint64 `json:"fencing_token"`
+	ManifestSHA256 string `json:"manifest_sha256"`
+	RootVersion    uint32 `json:"root_version"`
+	KeyEpoch       uint64 `json:"key_epoch"`
+}
+
+type restoreKeyGrant struct {
+	OperationID    string `json:"operation_id"`
+	ManifestSHA256 string `json:"manifest_sha256"`
+	RootVersion    uint32 `json:"root_version"`
+	KeyEpoch       uint64 `json:"key_epoch"`
+	EpochKey       string `json:"epoch_key"`
 }
 
 // CreateRestoreOperation creates or returns an idempotent manifest pin.
@@ -182,6 +201,60 @@ func (client *ControlClient) FetchRestoreManifest(
 	}
 
 	return response, nil
+}
+
+// GrantRestoreEpochKey derives the pinned namespace epoch under a live read fence.
+func (client *ControlClient) GrantRestoreEpochKey(
+	ctx context.Context,
+	operation RestoreOperation,
+	lease RestoreReadLease,
+	recovery manifest.RecoveryManifest,
+) (cryptostream.EpochKey, error) {
+	if lease.OperationID != operation.ID || lease.Incarnation != operation.Incarnation ||
+		lease.ManifestSHA256 != operation.ManifestSHA256 ||
+		recovery.ManifestSHA256 != operation.ManifestSHA256 || lease.LeaseID == "" ||
+		lease.FencingToken == 0 {
+		return cryptostream.EpochKey{}, fmt.Errorf("%w: invalid restore key fence", ErrInvalidControlPlane)
+	}
+
+	body, err := json.Marshal(restoreKeyGrantBody{
+		LeaseID: lease.LeaseID, Incarnation: lease.Incarnation,
+		FencingToken: lease.FencingToken, ManifestSHA256: operation.ManifestSHA256,
+		RootVersion: recovery.Manifest.Crypto.RootVersion,
+		KeyEpoch:    recovery.Manifest.Crypto.KeyEpoch,
+	})
+	if err != nil {
+		return cryptostream.EpochKey{}, fmt.Errorf("marshal restore key grant: %w", err)
+	}
+
+	var response restoreKeyGrant
+
+	path := "/api/v1/restores/" + operation.ID + "/key"
+	if requestErr := client.authenticatedPost(ctx, path, body, &response); requestErr != nil {
+		return cryptostream.EpochKey{}, requestErr
+	}
+
+	if response.OperationID != operation.ID || response.ManifestSHA256 != operation.ManifestSHA256 ||
+		response.RootVersion != recovery.Manifest.Crypto.RootVersion ||
+		response.KeyEpoch != recovery.Manifest.Crypto.KeyEpoch {
+		return cryptostream.EpochKey{}, fmt.Errorf("%w: restore key identity changed", ErrControlPlaneResponse)
+	}
+
+	decoded, err := base64.RawURLEncoding.DecodeString(response.EpochKey)
+	if err != nil || len(decoded) != len(cryptostream.EpochKey{}) {
+		return cryptostream.EpochKey{}, fmt.Errorf("%w: invalid restore epoch key", ErrControlPlaneResponse)
+	}
+
+	var combined byte
+	for _, value := range decoded {
+		combined |= value
+	}
+
+	if combined == 0 {
+		return cryptostream.EpochKey{}, fmt.Errorf("%w: zero restore epoch key", ErrControlPlaneResponse)
+	}
+
+	return cryptostream.EpochKey(decoded), nil
 }
 
 // ReportRestoreProgress idempotently records cumulative restore counters.

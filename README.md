@@ -134,7 +134,6 @@ accepts secrets only through process environment variables:
 
 ```bash
 export CARRACK_CONTROL_TOKEN="$(read-control-token)"
-export CARRACK_EPOCH_KEY="$(read-epoch-key)"
 export CARRACK_ALIYUN_ACCESS_TOKEN="$(read-aliyun-access-token)"
 
 carrack restore ./restored.bin \
@@ -144,8 +143,12 @@ carrack restore ./restored.bin \
   --driver-id aliyun-main
 ```
 
-The control token and epoch key are unpadded base64url encodings of exactly 32
-bytes. The access-token form above is caller-managed and never persisted.
+The control token is an unpadded base64url encoding of exactly 32 bytes. Under
+the active read fence, the Worker derives the manifest's epoch key from its
+versioned root secret, audits the grant without key material, and returns it to
+the SDK over HTTPS. `CARRACK_EPOCH_KEY` remains an optional 32-byte base64url
+override for offline recovery and controlled testing. The access-token form
+above is caller-managed and never persisted.
 
 For renewable credentials, initialize an encrypted compare-and-swap store once:
 

@@ -1,7 +1,9 @@
 package sdk_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -64,6 +66,18 @@ func TestControlClientPinsRestoreAndClaimsReadLease(t *testing.T) {
 			}
 
 			_, _ = response.Write(encoded)
+		case "/api/v1/restores/" + operationID + "/key":
+			assertJSONBody(t, request, map[string]any{
+				"lease_id":        "operation/" + operationID + "/read",
+				"incarnation":     incarnation,
+				"fencing_token":   float64(1),
+				"manifest_sha256": manifestID,
+				"root_version":    float64(recovery.Manifest.Crypto.RootVersion),
+				"key_epoch":       float64(recovery.Manifest.Crypto.KeyEpoch),
+			})
+			_, _ = response.Write([]byte(`{"operation_id":"` + operationID +
+				`","manifest_sha256":"` + manifestID + `","root_version":1,"key_epoch":7,` +
+				`"epoch_key":"` + base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32)) + `"}`))
 		case "/api/v1/restores/" + operationID + "/complete":
 			assertJSONBody(t, request, map[string]any{
 				"lease_id":         "operation/" + operationID + "/read",
@@ -121,6 +135,15 @@ func TestControlClientPinsRestoreAndClaimsReadLease(t *testing.T) {
 
 	if fetched.ManifestSHA256 != operation.ManifestSHA256 {
 		t.Fatalf("fetched restore manifest changed: %+v", fetched)
+	}
+
+	granted, err := client.GrantRestoreEpochKey(context.Background(), operation, lease, fetched)
+	if err != nil {
+		t.Fatalf("grant restore epoch key: %v", err)
+	}
+
+	if granted[0] != 1 || granted[len(granted)-1] != 1 {
+		t.Fatalf("unexpected restore epoch key: %x", granted)
 	}
 
 	completed, err := client.CompleteRestoreOperation(

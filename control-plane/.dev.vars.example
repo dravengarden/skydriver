@@ -1,2 +1,3 @@
 CARRACK_SESSION_KEY=replace-with-at-least-32-random-bytes
+CARRACK_ROOT_KEY_V1=replace-with-unpadded-base64url-for-32-random-bytes
 CARRACK_MAINTENANCE=0
