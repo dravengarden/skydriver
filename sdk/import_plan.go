@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -127,17 +127,12 @@ func NewImporterWithOptions(
 		return nil, fmt.Errorf("%w: %w", ErrInvalidConfiguration, err)
 	}
 
-	target := options.ProviderObjectTargetBytes
-	if target == 0 {
-		target = defaultProviderObjectBytes
-	}
-
-	if options.MaximumProviderObjectBytes > 0 {
-		target = min(target, options.MaximumProviderObjectBytes)
-	}
-
-	if target == 0 || target > math.MaxInt64 || options.MaximumProviderObjectBytes > math.MaxInt64 {
-		return nil, fmt.Errorf("%w: provider object target is out of range", ErrInvalidConfiguration)
+	target, err := providerObjectTarget(
+		options.ProviderObjectTargetBytes,
+		options.MaximumProviderObjectBytes,
+	)
+	if err != nil {
+		return nil, err
 	}
 
 	return &Importer{
@@ -430,8 +425,16 @@ func validPlanString(value string, maximumBytes int) bool {
 }
 
 func validDestinationPrefix(value string) bool {
-	return validPlanString(value, 4_096) && path.Clean(value) == value &&
-		value != "." && value != ".." && !strings.HasPrefix(value, "../")
+	const digestCharacters = sha256.Size * 2
+
+	return validPlanString(value, maximumProviderKeyBytes) && path.Clean(value) == value &&
+		value != "." && value != ".." && !strings.HasPrefix(value, "/") &&
+		!strings.HasPrefix(value, "../") && !strings.Contains(value, "\\") &&
+		len(recoverySidecarStorageKey(
+			value,
+			strings.Repeat("0", digestCharacters),
+			strings.Repeat("0", digestCharacters),
+		)) <= maximumProviderKeyBytes
 }
 
 func allZeroBytes(value []byte) bool {

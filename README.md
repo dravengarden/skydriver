@@ -124,6 +124,17 @@ upload. The control client exposes idempotent operation creation, renewable
 fenced claims, monotonic progress reporting, recovery staging, and atomic
 import publication; provider payload bytes still never enter the Worker.
 
+The provider-neutral replication SDK supplies the data path for copy and
+repair. It reads each immutable ciphertext extent through ordered replica
+fallback, verifies its SHA-256, groups only complete extents into bounded
+content-addressed destination objects, and independently reads every object
+back before returning a new location. Only after all payload groups verify does
+it write an immutable recovery sidecar addressed by both the logical manifest
+and complete recovery-document SHA-256. Replaying the same copy converges on
+the same objects and does not duplicate locations. This SDK stage never
+publishes control-plane metadata and never deletes a source; fenced copy
+publication and the later move saga remain separate operation steps.
+
 Carrack prefers native drivers where Go already has a mature protocol or SDK:
 S3-compatible storage, R2, public HTTP, and local filesystems do not pass
 through OpenList. OpenList-derived adapters are reserved for long-tail consumer

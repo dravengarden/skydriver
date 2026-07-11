@@ -261,7 +261,7 @@ func TestImporterProviderObjectsUseExactRangesWithoutPadding(t *testing.T) {
 
 	importer, err := sdk.NewImporterWithOptions(source, destination, layout, sdk.ImporterOptions{
 		ProviderObjectTargetBytes:  100,
-		MaximumProviderObjectBytes: 100,
+		MaximumProviderObjectBytes: 1 << 20,
 	})
 	if err != nil {
 		t.Fatalf("construct bounded importer: %v", err)

@@ -210,6 +210,23 @@ writes a destination location. The control plane records the destination only
 after verification. Server-side copy is allowed only when a driver advertises
 it and Carrack can still verify the resulting object identity.
 
+The initial copy data path is a provider-neutral ciphertext replicator. It
+uses each extent's ordered locations for corruption and availability fallback,
+groups only complete extents under the destination's target and hard maximum,
+and uses a SHA-256-derived object key so a lost response can be retried
+idempotently. Each destination object is fully read back and hashed before its
+locations enter the result. The original recovery locations remain unchanged;
+new physical identities are appended once and exact replays are deduplicated.
+
+After every payload object verifies, the replicator writes the complete updated
+recovery document under
+`<prefix>/manifests/<manifest-prefix>/<manifest-sha256>/<recovery-sha256>.json`.
+Including the recovery digest allows multiple immutable location-set snapshots
+for one logical manifest without sidecar-key collisions. The replicator does
+not mutate D1 itself. A later fenced copy publication endpoint consumes this
+verified result, so a client crash can leave only content-addressed staging
+objects and an unreachable sidecar.
+
 ### Move
 
 Move is a saga, not a cross-provider transaction:
