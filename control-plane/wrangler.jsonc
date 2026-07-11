@@ -16,7 +16,7 @@
     {
       "binding": "CARRACK_INDEX",
       "database_name": "carrack-index",
-      "database_id": "replace-after-d1-create",
+      "database_id": "2ad6b7c9-88a2-4580-ae5a-db87847e7296",
       "migrations_dir": "migrations"
     }
   ]
