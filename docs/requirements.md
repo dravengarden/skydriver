@@ -45,6 +45,10 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
   within protocol-safe bounds.
 - Chunk size, crypto frame size, provider object size, multipart part size,
   and transfer concurrency MUST remain independent controls.
+- A download scheduler MAY coalesce only exactly adjacent preferred ranges
+  with the same driver and storage key. It MUST enforce a configured range
+  bound, verify every constituent extent independently before consumption, and
+  fall back to ordinary per-extent replica selection after a coalesced failure.
 - Compaction MUST create and conditionally publish a new immutable pack. It
   MUST NOT rewrite an existing pack in place.
 
@@ -68,8 +72,8 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 - Encryption and decryption MUST be fast enough that storage or network I/O,
   rather than crypto, remains the expected bottleneck on supported modern
   amd64 and arm64 clients.
-- Memory use MUST be bounded by configured frame and concurrency limits, not by
-  object or pack size.
+- Memory use MUST be bounded by configured frame, transfer-window, and
+  concurrency limits, not by object or pack size.
 - Bundle membership, canonical paths, declared lengths, and ordering MUST be
   fixed before transfer. A retry MUST NOT silently regroup or reorder members.
 

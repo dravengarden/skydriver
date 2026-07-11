@@ -24,6 +24,14 @@ var (
 type Fetcher struct {
 	readers            map[string]provider.Reader
 	maximumExtentBytes uint64
+	maximumRangeBytes  uint64
+}
+
+// FetcherOptions bounds logical extent buffers and coalesced provider reads.
+// MaximumRangeBytes defaults to MaximumExtentBytes for compatibility.
+type FetcherOptions struct {
+	MaximumExtentBytes uint64
+	MaximumRangeBytes  uint64
 }
 
 // VerifiedExtent owns ciphertext bytes that matched the requested SHA-256.
@@ -35,12 +43,42 @@ type VerifiedExtent struct {
 
 // NewFetcher copies its reader registry and applies an explicit memory bound.
 func NewFetcher(readers map[string]provider.Reader, maximumExtentBytes uint64) (*Fetcher, error) {
+	return NewFetcherWithOptions(readers, FetcherOptions{
+		MaximumExtentBytes: maximumExtentBytes,
+		MaximumRangeBytes:  maximumExtentBytes,
+	})
+}
+
+// NewFetcherWithOptions constructs a fetcher with an independent upper bound
+// for contiguous provider reads. The range bound affects placement I/O only;
+// it does not change extent identity or verification.
+func NewFetcherWithOptions(
+	readers map[string]provider.Reader,
+	options FetcherOptions,
+) (*Fetcher, error) {
 	if len(readers) == 0 {
 		return nil, fmt.Errorf("%w: at least one reader is required", ErrInvalidFetcher)
 	}
 
-	if maximumExtentBytes == 0 {
+	if options.MaximumExtentBytes == 0 {
 		return nil, fmt.Errorf("%w: maximum extent size must be positive", ErrInvalidFetcher)
+	}
+
+	maximumInt := uint64(^uint(0) >> 1)
+	if options.MaximumExtentBytes > maximumInt {
+		return nil, fmt.Errorf("%w: maximum extent size exceeds address space", ErrInvalidFetcher)
+	}
+
+	maximumRangeBytes := options.MaximumRangeBytes
+	if maximumRangeBytes == 0 {
+		maximumRangeBytes = options.MaximumExtentBytes
+	}
+
+	if maximumRangeBytes < options.MaximumExtentBytes || maximumRangeBytes > maximumInt {
+		return nil, fmt.Errorf(
+			"%w: maximum range size must fit memory and cover one maximum extent",
+			ErrInvalidFetcher,
+		)
 	}
 
 	registered := make(map[string]provider.Reader, len(readers))
@@ -52,7 +90,11 @@ func NewFetcher(readers map[string]provider.Reader, maximumExtentBytes uint64) (
 		registered[driverID] = reader
 	}
 
-	return &Fetcher{readers: registered, maximumExtentBytes: maximumExtentBytes}, nil
+	return &Fetcher{
+		readers:            registered,
+		maximumExtentBytes: options.MaximumExtentBytes,
+		maximumRangeBytes:  maximumRangeBytes,
+	}, nil
 }
 
 // Fetch tries locations in plan order until exact length and hash verification

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -80,6 +81,10 @@ func (location Location) validate(expectedBytes uint64) error {
 			location.Length,
 			expectedBytes,
 		)
+	}
+
+	if location.Offset > math.MaxUint64-location.Length {
+		return fmt.Errorf("%w: provider range overflows", ErrInvalidExtent)
 	}
 
 	return nil

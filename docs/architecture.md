@@ -90,6 +90,16 @@ rejected instead of silently changing crypto boundaries. Every group is staged,
 hashed, uploaded once, and independently read back. Its locations share one
 storage key and record disjoint exact offsets and lengths.
 
+The download scheduler performs the inverse placement optimization without
+joining logical extents. Consecutive inputs whose preferred locations have the
+same driver and storage key and exactly adjacent offsets may share one
+`OpenRange` call up to a configured maximum range size. The range is read into
+separately owned extent buffers, and every extent SHA-256 is verified before
+any buffer reaches its consumer. A range, length, close, or hash failure causes
+the whole window to retry through the ordinary per-extent ordered replica
+path. Download concurrency and maximum range size jointly bound memory and may
+be tuned without changing manifests or cryptography.
+
 ### Leaf merging and compaction
 
 Leaf merging never mutates an existing pack. A client builds a new pack,

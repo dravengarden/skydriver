@@ -70,6 +70,12 @@ layer. The transfer layer sees opaque SHA-256-addressed ciphertext extents,
 supports replica fallback and bounded concurrent batches, and has no crypto
 dependency. Integration tests compose the layers without merging them.
 
+Batch downloads coalesce only adjacent primary ranges from the same provider
+object, up to an independent memory bound. One exact provider read still
+produces separately owned and separately hashed extent buffers. A failed or
+corrupt coalesced read falls back to the normal ordered multi-replica path, so
+the optimization cannot weaken correctness or change ciphertext identity.
+
 The import path persists every random pack ID before transfer, then encrypts
 whole frame spans into bounded 64 MiB staging extents. Consecutive extents are
 coalesced into exact-length, content-addressed provider objects under the
