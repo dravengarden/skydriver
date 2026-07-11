@@ -249,6 +249,14 @@ the operation becomes failed and the lease is released in one D1 batch.
 Transient provider and cancellation failures remain resumable and simply let
 their read lease expire rather than being mislabeled as permanent corruption.
 
+Restore creates one `restore` operation component and one attempt per fencing
+token. The SDK reports cumulative wire-read, useful-verified, active-time, and
+replica-retry counters after each verified extent. Samples use the existing
+sequence and monotonic-counter protocol, so duplicate responses and reordered
+delivery cannot move progress backwards. Telemetry remains isolated from
+restore correctness; an unreported final sample becomes an explicit client
+warning rather than a false restore failure.
+
 ### Driver-to-driver transfer
 
 The same copy or move state machine applies whether the source is encrypted or

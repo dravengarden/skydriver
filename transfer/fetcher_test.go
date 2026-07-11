@@ -71,7 +71,7 @@ func TestFetcherFallsBackFromCorruptReplica(t *testing.T) {
 		t.Fatalf("fetch extent: %v", err)
 	}
 
-	if !bytes.Equal(verified.Data, expected) || verified.Location.DriverID != "healthy" {
+	if !bytes.Equal(verified.Data, expected) || verified.Location.DriverID != "healthy" || verified.Attempts != 2 {
 		t.Fatalf("unexpected verified extent: %+v", verified)
 	}
 }

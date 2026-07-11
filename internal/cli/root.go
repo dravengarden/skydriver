@@ -133,12 +133,13 @@ func writeTable(writer io.Writer, value any) error {
 	case sdk.ControlledRestoreResult:
 		if _, err := fmt.Fprintf(
 			table,
-			"OPERATION\tMANIFEST SHA-256\tDESTINATION\tPLAINTEXT BYTES\tSTATE\n%s\t%s\t%s\t%d\t%s\n",
+			"OPERATION\tMANIFEST SHA-256\tDESTINATION\tPLAINTEXT BYTES\tSTATE\tTELEMETRY WARNING\n%s\t%s\t%s\t%d\t%s\t%s\n",
 			typedValue.Operation.ID,
 			typedValue.Restore.ManifestSHA256,
 			typedValue.Restore.Destination,
 			typedValue.Restore.PlaintextBytes,
 			typedValue.Completion.State,
+			typedValue.TelemetryWarning,
 		); err != nil {
 			return fmt.Errorf("write restore table: %w", err)
 		}

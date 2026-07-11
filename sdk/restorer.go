@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/dravengarden/carrack/cryptostream"
 	"github.com/dravengarden/carrack/manifest"
@@ -40,6 +41,17 @@ type RestoreResult struct {
 	FetchedExtents uint64
 }
 
+// RestoreProgress contains cumulative local and provider counters.
+type RestoreProgress struct {
+	WireBytesRead       uint64
+	UsefulBytesVerified uint64
+	ActiveNanoseconds   uint64
+	RetryCount          uint64
+}
+
+// RestoreProgressObserver receives one cumulative sample per verified extent.
+type RestoreProgressObserver func(RestoreProgress)
+
 type restoreJournal struct {
 	SchemaVersion  string                  `json:"schema_version"`
 	ManifestSHA256 string                  `json:"manifest_sha256"`
@@ -67,13 +79,24 @@ func NewRestorer(readers map[string]provider.Reader, maximumExtentBytes uint64) 
 
 // Restore pins the supplied immutable recovery manifest and atomically replaces
 // destination only after every ciphertext, frame, and plaintext identity passes.
-//
-//nolint:cyclop,funlen,gocognit,gocyclo // The ordered verification and publication protocol is intentionally explicit.
 func (restorer *Restorer) Restore(
 	ctx context.Context,
 	recovery manifest.RecoveryManifest,
 	epochKey cryptostream.EpochKey,
 	destination string,
+) (RestoreResult, error) {
+	return restorer.RestoreWithProgress(ctx, recovery, epochKey, destination, nil)
+}
+
+// RestoreWithProgress performs Restore and observes cumulative verified extents.
+//
+//nolint:cyclop,funlen,gocognit,gocyclo // The ordered verification and publication protocol is intentionally explicit.
+func (restorer *Restorer) RestoreWithProgress(
+	ctx context.Context,
+	recovery manifest.RecoveryManifest,
+	epochKey cryptostream.EpochKey,
+	destination string,
+	observer RestoreProgressObserver,
 ) (RestoreResult, error) {
 	if restorer == nil || restorer.fetcher == nil || destination == "" {
 		return RestoreResult{}, fmt.Errorf("%w: restorer and destination are required", ErrInvalidRestore)
@@ -128,6 +151,8 @@ func (restorer *Restorer) Restore(
 	}
 
 	result := RestoreResult{ManifestSHA256: recovery.ManifestSHA256, Destination: destination, PlaintextBytes: recovery.Manifest.PlaintextSize}
+	started := time.Now()
+	progress := RestoreProgress{}
 
 	for _, pack := range recovery.Manifest.Packs {
 		packID, parseErr := parseCryptoIdentifier(pack.PackID)
@@ -159,6 +184,9 @@ func (restorer *Restorer) Restore(
 
 			if span, ok := journal.Completed[extent.CiphertextSHA256]; ok && span.Offset == plaintextOffset && span.Length == plaintextLength && verifyLocalSpan(output, span) {
 				result.ResumedExtents++
+				progress.UsefulBytesVerified += plaintextLength
+				observeRestoreProgress(observer, &progress, started)
+
 				continue
 			}
 
@@ -192,6 +220,10 @@ func (restorer *Restorer) Restore(
 			}
 
 			result.FetchedExtents++
+			progress.WireBytesRead += uint64(len(verified.Data))
+			progress.UsefulBytesVerified += opened.PlaintextBytes
+			progress.RetryCount += verified.Attempts - 1
+			observeRestoreProgress(observer, &progress, started)
 		}
 	}
 
@@ -221,6 +253,29 @@ func (restorer *Restorer) Restore(
 	}
 
 	return result, nil
+}
+
+func observeRestoreProgress(
+	observer RestoreProgressObserver,
+	progress *RestoreProgress,
+	started time.Time,
+) {
+	if observer == nil {
+		return
+	}
+
+	progress.ActiveNanoseconds = activeNanoseconds(started)
+	observer(*progress)
+}
+
+func activeNanoseconds(started time.Time) uint64 {
+	elapsed := time.Since(started)
+	if elapsed <= 0 {
+		return 0
+	}
+
+	// #nosec G115 -- a positive time.Duration always fits uint64.
+	return uint64(elapsed.Nanoseconds())
 }
 
 func loadRestoreJournal(path string, recovery manifest.RecoveryManifest) (restoreJournal, error) {

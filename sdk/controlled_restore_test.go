@@ -69,6 +69,8 @@ func runControlledRestore(t *testing.T, failRenewal, wrongKey bool) {
 
 	var failures atomic.Uint64
 
+	var progressReports atomic.Uint64
+
 	const (
 		operationID = "303132333435363738393a3b3c3d3e3f"
 		incarnation = "404142434445464748494a4b4c4d4e4f"
@@ -120,6 +122,27 @@ func runControlledRestore(t *testing.T, failRenewal, wrongKey bool) {
 			writeTestJSON(t, response, sdk.CompletedRestore{
 				OperationID: operationID, ManifestSHA256: imported.Recovery.ManifestSHA256,
 				State: "failed",
+			})
+		case "/api/v1/operations/" + operationID + "/progress":
+			progressReports.Add(1)
+
+			var sample struct {
+				Sequence            uint64 `json:"sequence"`
+				WireBytesRead       uint64 `json:"wire_bytes_read"`
+				UsefulBytesVerified uint64 `json:"useful_bytes_verified"`
+				ActiveNanoseconds   uint64 `json:"active_nanoseconds"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&sample); err != nil {
+				t.Errorf("decode progress sample: %v", err)
+
+				return
+			}
+
+			writeTestJSON(t, response, sdk.ProgressSnapshot{
+				ComponentID: operationID + "/restore", Attempt: 1,
+				Sequence: sample.Sequence, WireBytesRead: sample.WireBytesRead,
+				UsefulBytesVerified: sample.UsefulBytesVerified,
+				ActiveNanoseconds:   sample.ActiveNanoseconds, Disposition: "current",
 			})
 		default:
 			http.NotFound(response, request)
@@ -190,6 +213,10 @@ func runControlledRestore(t *testing.T, failRenewal, wrongKey bool) {
 
 	if result.Completion.State != "succeeded" || result.Restore.PlaintextBytes != uint64(len(plaintext)) {
 		t.Fatalf("unexpected controlled restore result: %+v", result)
+	}
+
+	if progressReports.Load() == 0 || result.TelemetryWarning != "" {
+		t.Fatalf("restore telemetry was not accepted: reports=%d warning=%q", progressReports.Load(), result.TelemetryWarning)
 	}
 }
 

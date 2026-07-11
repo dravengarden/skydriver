@@ -92,6 +92,10 @@ in-flight provider reads and prevents local publication.
 Terminal authenticated-decryption or plaintext-identity failures close the
 operation and release its lease immediately; transient provider failures keep
 the key-free local resume state and are not reported as permanent corruption.
+Each verified extent emits cumulative wire-read, useful-verified, active-time,
+and replica-retry counters through the same fenced, reorder-safe telemetry
+protocol used by imports. Telemetry failure does not invalidate restored data;
+the CLI surfaces an explicit warning after retrying the latest sample.
 
 The import path persists every random pack ID before transfer, then encrypts
 whole frame spans into bounded 64 MiB staging extents. Consecutive extents are

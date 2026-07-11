@@ -207,6 +207,30 @@ renewed_read_lease=$(curl --silent --show-error --fail-with-body \
 jq -e --argjson fence "$read_fence" '.fencing_token == $fence' \
   <<<"$renewed_read_lease" >/dev/null
 
+restore_progress=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn \
+    --arg lease_id "$(jq -r .lease_id <<<"$read_lease")" \
+    --arg incarnation "$(jq -r .incarnation <<<"$read_lease")" \
+    --argjson fence "$read_fence" \
+    '{
+      lease_id: $lease_id,
+      incarnation: $incarnation,
+      fencing_token: $fence,
+      attempt: $fence,
+      sequence: 1,
+      wire_bytes_read: 0,
+      wire_bytes_written: 0,
+      useful_bytes_verified: 0,
+      active_nanoseconds: 1,
+      retry_count: 0,
+      throttle_count: 0
+    }')" \
+  "$base_url/api/v1/operations/$restore_id/progress")
+jq -e --arg component_id "$restore_id/restore" '
+  .component_id == $component_id and .sequence == 1 and .disposition == "current"
+' <<<"$restore_progress" >/dev/null
+
 completed_restore=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" \
   --data "$(jq -cn \

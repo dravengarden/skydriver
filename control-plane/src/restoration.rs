@@ -157,8 +157,26 @@ pub(crate) async fn create(
             JsValue::from_str(&requested.idempotency_key),
             JsValue::from_str(&client.id),
         ])?;
+    let insert_component = database
+        .prepare(
+            "INSERT OR IGNORE INTO operation_components (\
+                 id, operation_id, client_id, component_kind, state, useful_bytes_total, \
+                 created_at, updated_at\
+             ) \
+             SELECT operation.id || '/restore', operation.id, ?1, 'restore', 'pending', \
+                    operation.useful_bytes_total, ?2, ?2 \
+             FROM operations AS operation \
+             WHERE operation.namespace_id = ?3 AND operation.idempotency_key = ?4 \
+               AND operation.requested_by = ?1 AND operation.kind = 'restore'",
+        )
+        .bind(&[
+            JsValue::from_str(&client.id),
+            JsValue::from_str(&now),
+            JsValue::from_str(&requested.namespace_id),
+            JsValue::from_str(&requested.idempotency_key),
+        ])?;
     database
-        .batch(vec![insert_operation, insert_intent])
+        .batch(vec![insert_operation, insert_intent, insert_component])
         .await?;
 
     let operation = find_operation(
@@ -252,7 +270,15 @@ pub(crate) async fn claim(
             JsValue::from_str(&lease_id),
             JsValue::from_str(&client.id),
         ])?;
-    database.batch(vec![upsert, start]).await?;
+    let mut statements = vec![upsert, start];
+    statements.extend(restore_attempt_statements(
+        &database,
+        operation_id,
+        &lease_id,
+        &client.id,
+        &now.to_string(),
+    )?);
+    database.batch(statements).await?;
 
     let lease = database
         .prepare(
@@ -278,6 +304,80 @@ pub(crate) async fn claim(
     }
 }
 
+fn restore_attempt_statements(
+    database: &worker::D1Database,
+    operation_id: &str,
+    lease_id: &str,
+    client_id: &str,
+    now: &str,
+) -> Result<Vec<worker::D1PreparedStatement>> {
+    let supersede = database
+        .prepare(
+            "UPDATE operation_attempts SET state = 'superseded', finished_at = ?1 \
+             WHERE component_id = ?2 || '/restore' AND state = 'running' \
+               AND attempt != (SELECT fencing_token FROM leases WHERE id = ?3) \
+               AND EXISTS(SELECT 1 FROM leases WHERE id = ?3 AND owner_client_id = ?4 \
+                          AND released_at IS NULL AND expires_at > ?1)",
+        )
+        .bind(&[
+            JsValue::from_str(now),
+            JsValue::from_str(operation_id),
+            JsValue::from_str(lease_id),
+            JsValue::from_str(client_id),
+        ])?;
+    let start_attempt = database
+        .prepare(
+            "INSERT OR IGNORE INTO operation_attempts (\
+                 component_id, attempt, client_id, lease_id, fencing_token, incarnation, \
+                 state, started_at\
+             ) \
+             SELECT component.id, lease.fencing_token, ?1, lease.id, lease.fencing_token, \
+                    lease.incarnation, 'running', ?2 \
+             FROM operation_components AS component \
+             JOIN leases AS lease ON lease.operation_id = component.operation_id \
+             JOIN control_plane_state AS state ON state.singleton = 1 \
+             WHERE component.operation_id = ?3 AND component.component_kind = 'restore' \
+               AND lease.id = ?4 AND lease.owner_client_id = ?1 \
+               AND lease.incarnation = state.incarnation AND state.mode = 'active' \
+               AND lease.released_at IS NULL AND lease.expires_at > ?2",
+        )
+        .bind(&[
+            JsValue::from_str(client_id),
+            JsValue::from_str(now),
+            JsValue::from_str(operation_id),
+            JsValue::from_str(lease_id),
+        ])?;
+    let start_component = database
+        .prepare(
+            "UPDATE operation_components \
+             SET client_id = ?1, state = 'running', \
+                 last_sequence = CASE \
+                     WHEN current_attempt != (SELECT fencing_token FROM leases WHERE id = ?2) \
+                     THEN 0 ELSE last_sequence END, \
+                 current_attempt = (SELECT fencing_token FROM leases WHERE id = ?2), \
+                 lease_id = ?2, fencing_token = (SELECT fencing_token FROM leases WHERE id = ?2), \
+                 started_at = COALESCE(started_at, ?3), revision = revision + 1, updated_at = ?3 \
+             WHERE operation_id = ?4 AND component_kind = 'restore' \
+               AND state IN ('pending', 'running', 'stalled') \
+               AND EXISTS(SELECT 1 FROM leases WHERE id = ?2 AND owner_client_id = ?1 \
+                          AND incarnation = (SELECT incarnation FROM control_plane_state \
+                                             WHERE singleton = 1 AND mode = 'active') \
+                          AND released_at IS NULL AND expires_at > ?3)",
+        )
+        .bind(&[
+            JsValue::from_str(client_id),
+            JsValue::from_str(lease_id),
+            JsValue::from_str(now),
+            JsValue::from_str(operation_id),
+        ])?;
+
+    Ok(vec![supersede, start_attempt, start_component])
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the complete transaction keeps every fenced state transition visible"
+)]
 pub(crate) async fn complete(
     request: &mut Request,
     env: &Env,
@@ -347,8 +447,33 @@ pub(crate) async fn complete(
             JsValue::from_str(&completed.incarnation),
             JsValue::from_str(&completed.fencing_token.to_string()),
         ])?;
+    let finish_attempt = finish_attempt_statement(
+        &database,
+        operation_id,
+        client,
+        &completed.lease_id,
+        &completed.incarnation,
+        completed.fencing_token,
+        "succeeded",
+        &now,
+    )?;
+    let finish_component = finish_component_statement(
+        &database,
+        operation_id,
+        &completed.lease_id,
+        completed.fencing_token,
+        "succeeded",
+        &now,
+    )?;
     database
-        .batch(vec![verifying, committing, succeeded, release])
+        .batch(vec![
+            verifying,
+            committing,
+            succeeded,
+            finish_attempt,
+            finish_component,
+            release,
+        ])
         .await?;
 
     let state = database
@@ -463,6 +588,10 @@ pub(crate) async fn fetch_manifest(
     Ok(response)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the failure transaction keeps operation, attempt, component, and lease closure visible"
+)]
 pub(crate) async fn fail(
     request: &mut Request,
     env: &Env,
@@ -523,7 +652,27 @@ pub(crate) async fn fail(
             JsValue::from_str(&failed.incarnation),
             JsValue::from_str(&failed.fencing_token.to_string()),
         ])?;
-    database.batch(vec![mark_failed, release]).await?;
+    let fail_attempt = finish_attempt_statement(
+        &database,
+        operation_id,
+        client,
+        &failed.lease_id,
+        &failed.incarnation,
+        failed.fencing_token,
+        "failed",
+        &now,
+    )?;
+    let fail_component = finish_component_statement(
+        &database,
+        operation_id,
+        &failed.lease_id,
+        failed.fencing_token,
+        "failed",
+        &now,
+    )?;
+    database
+        .batch(vec![mark_failed, fail_attempt, fail_component, release])
+        .await?;
 
     let state = database
         .prepare(
@@ -556,6 +705,63 @@ pub(crate) async fn fail(
         manifest_sha256: failed.manifest_sha256,
         state: "failed".to_owned(),
     })
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the attempt fence remains explicit in every SQL binding"
+)]
+fn finish_attempt_statement(
+    database: &worker::D1Database,
+    operation_id: &str,
+    client: &AuthenticatedClient,
+    lease_id: &str,
+    incarnation: &str,
+    fencing_token: u64,
+    state: &str,
+    now: &str,
+) -> Result<worker::D1PreparedStatement> {
+    database
+        .prepare(
+            "UPDATE operation_attempts SET state = ?1, finished_at = ?2 \
+             WHERE component_id = ?3 || '/restore' AND attempt = ?4 AND client_id = ?5 \
+               AND lease_id = ?6 AND incarnation = ?7 AND fencing_token = ?4 \
+               AND state = 'running'",
+        )
+        .bind(&[
+            JsValue::from_str(state),
+            JsValue::from_str(now),
+            JsValue::from_str(operation_id),
+            JsValue::from_str(&fencing_token.to_string()),
+            JsValue::from_str(&client.id),
+            JsValue::from_str(lease_id),
+            JsValue::from_str(incarnation),
+        ])
+}
+
+fn finish_component_statement(
+    database: &worker::D1Database,
+    operation_id: &str,
+    lease_id: &str,
+    fencing_token: u64,
+    state: &str,
+    now: &str,
+) -> Result<worker::D1PreparedStatement> {
+    database
+        .prepare(
+            "UPDATE operation_components SET state = ?1, finished_at = ?2, \
+                    revision = revision + 1, updated_at = ?2 \
+             WHERE operation_id = ?3 AND component_kind = 'restore' \
+               AND current_attempt = ?4 AND lease_id = ?5 AND fencing_token = ?4 \
+               AND state = 'running'",
+        )
+        .bind(&[
+            JsValue::from_str(state),
+            JsValue::from_str(now),
+            JsValue::from_str(operation_id),
+            JsValue::from_str(&fencing_token.to_string()),
+            JsValue::from_str(lease_id),
+        ])
 }
 
 #[allow(

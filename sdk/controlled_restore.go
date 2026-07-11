@@ -32,9 +32,10 @@ type ControlledRestoreRequest struct {
 
 // ControlledRestoreResult contains both local and control-plane publication results.
 type ControlledRestoreResult struct {
-	Operation  RestoreOperation
-	Restore    RestoreResult
-	Completion CompletedRestore
+	Operation        RestoreOperation
+	Restore          RestoreResult
+	Completion       CompletedRestore
+	TelemetryWarning string
 }
 
 // NewControlledRestorer constructs a restore coordinator with an explicit renewal cadence.
@@ -86,6 +87,9 @@ func (coordinator *ControlledRestorer) Restore(
 
 	transferContext, cancelTransfer := context.WithCancel(ctx)
 	leaseState := &renewedRestoreLease{lease: lease}
+	progressReporter := &restoreProgressReporter{
+		control: coordinator.control, operation: operation, leaseState: leaseState,
+	}
 	renewalErrors := make(chan error, 1)
 	renewalDone := make(chan struct{})
 
@@ -98,11 +102,14 @@ func (coordinator *ControlledRestorer) Restore(
 		renewalDone,
 	)
 
-	restored, restoreErr := coordinator.restorer.Restore(
+	restored, restoreErr := coordinator.restorer.RestoreWithProgress(
 		transferContext,
 		recovery,
 		requested.EpochKey,
 		requested.Destination,
+		func(progress RestoreProgress) {
+			progressReporter.observe(transferContext, progress)
+		},
 	)
 
 	cancelTransfer()
@@ -124,6 +131,8 @@ func (coordinator *ControlledRestorer) Restore(
 		return ControlledRestoreResult{}, errors.Join(restoreErr, renewalErr)
 	}
 
+	progressReporter.flush(ctx)
+
 	completion, err := coordinator.control.CompleteRestoreOperation(
 		ctx,
 		operation,
@@ -135,7 +144,10 @@ func (coordinator *ControlledRestorer) Restore(
 		return ControlledRestoreResult{}, fmt.Errorf("complete controlled restore: %w", err)
 	}
 
-	return ControlledRestoreResult{Operation: operation, Restore: restored, Completion: completion}, nil
+	return ControlledRestoreResult{
+		Operation: operation, Restore: restored, Completion: completion,
+		TelemetryWarning: progressReporter.warning(),
+	}, nil
 }
 
 func terminalRestoreFailure(err error) bool {
@@ -210,4 +222,70 @@ func receiveRenewalError(renewalErrors <-chan error) error {
 	default:
 		return nil
 	}
+}
+
+type restoreProgressReporter struct {
+	control    *ControlClient
+	operation  RestoreOperation
+	leaseState *renewedRestoreLease
+	sequence   uint64
+	latest     RestoreProgress
+	pending    *ProgressSample
+	lastError  error
+}
+
+func (reporter *restoreProgressReporter) observe(ctx context.Context, progress RestoreProgress) {
+	reporter.latest = progress
+	reporter.flush(ctx)
+}
+
+func (reporter *restoreProgressReporter) flush(ctx context.Context) {
+	if reporter.pending != nil {
+		if !reporter.send(ctx, *reporter.pending) {
+			return
+		}
+
+		reporter.pending = nil
+	}
+
+	sample := ProgressSample{
+		Sequence: reporter.sequence + 1, WireBytesRead: reporter.latest.WireBytesRead,
+		UsefulBytesVerified: reporter.latest.UsefulBytesVerified,
+		ActiveNanoseconds:   reporter.latest.ActiveNanoseconds,
+		RetryCount:          reporter.latest.RetryCount,
+	}
+	if sample.Sequence == 1 && sample.UsefulBytesVerified == 0 {
+		return
+	}
+
+	if !reporter.send(ctx, sample) {
+		reporter.pending = &sample
+	}
+}
+
+func (reporter *restoreProgressReporter) send(ctx context.Context, sample ProgressSample) bool {
+	_, err := reporter.control.ReportRestoreProgress(
+		ctx,
+		reporter.operation,
+		reporter.leaseState.current(),
+		sample,
+	)
+	if err != nil {
+		reporter.lastError = err
+
+		return false
+	}
+
+	reporter.sequence = sample.Sequence
+	reporter.lastError = nil
+
+	return true
+}
+
+func (reporter *restoreProgressReporter) warning() string {
+	if reporter.pending == nil || reporter.lastError == nil {
+		return ""
+	}
+
+	return reporter.lastError.Error()
 }

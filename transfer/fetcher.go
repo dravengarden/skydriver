@@ -39,6 +39,7 @@ type VerifiedExtent struct {
 	ID       Digest
 	Data     []byte
 	Location Location
+	Attempts uint64
 }
 
 // NewFetcher copies its reader registry and applies an explicit memory bound.
@@ -153,7 +154,7 @@ func (fetcher *Fetcher) Fetch(ctx context.Context, extent Extent) (VerifiedExten
 			continue
 		}
 
-		return VerifiedExtent{ID: extent.ID, Data: buffer, Location: location}, nil
+		return VerifiedExtent{ID: extent.ID, Data: buffer, Location: location, Attempts: uint64(index + 1)}, nil
 	}
 
 	return VerifiedExtent{}, fmt.Errorf("%w: %w", ErrAllSourcesFailed, errors.Join(attemptErrors...))
