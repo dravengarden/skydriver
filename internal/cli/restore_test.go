@@ -6,10 +6,15 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/dravengarden/carrack/provider"
+	"github.com/dravengarden/carrack/provider/aliyundrive"
+	"github.com/dravengarden/carrack/provider/publichttp"
 	"github.com/dravengarden/carrack/sdk"
 )
 
@@ -87,5 +92,32 @@ func TestRestoreCredentialStoreInitializesEncryptedRefreshToken(t *testing.T) {
 
 	if credential["refresh_token"] != "refresh-secret" {
 		t.Fatalf("unexpected initialized credential: %v", credential)
+	}
+}
+
+func TestOpenRestoreReadersSupportsPublicHTTPWithoutCredentials(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(server.Close)
+
+	registry, err := provider.NewRegistry(aliyundrive.Factory{}, publichttp.Factory{})
+	if err != nil {
+		t.Fatalf("construct restore registry: %v", err)
+	}
+
+	readers, err := openRestoreReaders(
+		context.Background(),
+		registry,
+		server.Client(),
+		restoreFlags{publicDriverID: "public-replica", publicBaseURL: server.URL},
+		func(string) string { return "" },
+	)
+	if err != nil {
+		t.Fatalf("open public restore reader: %v", err)
+	}
+
+	if len(readers) != 1 || readers["public-replica"] == nil {
+		t.Fatalf("unexpected restore readers: %v", readers)
 	}
 }

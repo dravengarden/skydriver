@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -32,10 +33,23 @@ func TestRestoreCommandEndToEnd(t *testing.T) {
 
 	var progressReports atomic.Uint64
 
+	var publicReads atomic.Uint64
+
 	aliyun := newFakeAliyunRestore(t, ciphertext)
 	aliyunServer := httptest.NewServer(aliyun)
 	aliyun.url = aliyunServer.URL
 	t.Cleanup(aliyunServer.Close)
+
+	corruptPublic := bytes.Clone(ciphertext)
+	corruptPublic[0] ^= 1
+	publicServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		publicReads.Add(1)
+		response.Header().Set("Content-Length", strconv.Itoa(len(corruptPublic)))
+		response.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", len(corruptPublic)-1, len(corruptPublic)))
+		response.WriteHeader(http.StatusPartialContent)
+		_, _ = response.Write(corruptPublic)
+	}))
+	t.Cleanup(publicServer.Close)
 
 	control := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
@@ -75,6 +89,7 @@ func TestRestoreCommandEndToEnd(t *testing.T) {
 				WireBytesRead       uint64 `json:"wire_bytes_read"`
 				UsefulBytesVerified uint64 `json:"useful_bytes_verified"`
 				ActiveNanoseconds   uint64 `json:"active_nanoseconds"`
+				RetryCount          uint64 `json:"retry_count"`
 			}
 			if err := json.NewDecoder(request.Body).Decode(&sample); err != nil {
 				t.Errorf("decode CLI progress: %v", err)
@@ -86,7 +101,8 @@ func TestRestoreCommandEndToEnd(t *testing.T) {
 				ComponentID: operationID + "/restore", Attempt: 1,
 				Sequence: sample.Sequence, WireBytesRead: sample.WireBytesRead,
 				UsefulBytesVerified: sample.UsefulBytesVerified,
-				ActiveNanoseconds:   sample.ActiveNanoseconds, Disposition: "current",
+				ActiveNanoseconds:   sample.ActiveNanoseconds,
+				RetryCount:          sample.RetryCount, Disposition: "current",
 			})
 		case "/api/v1/restores/" + operationID + "/complete":
 			writeCLIJSON(t, response, sdk.CompletedRestore{
@@ -117,6 +133,8 @@ func TestRestoreCommandEndToEnd(t *testing.T) {
 		"--manifest", recovery.ManifestSHA256,
 		"--driver-id", "aliyun-main",
 		"--aliyun-api-base-url", aliyunServer.URL,
+		"--public-http-driver-id", "public-mirror",
+		"--public-http-base-url", publicServer.URL,
 		"--format", "json",
 	}, &stdout, &stderr)
 	if err != nil {
@@ -132,8 +150,13 @@ func TestRestoreCommandEndToEnd(t *testing.T) {
 		t.Fatalf("CLI restored %q, want %q", restored, plaintext)
 	}
 
-	if keyGrants.Load() != 1 || progressReports.Load() == 0 || !strings.Contains(stdout.String(), `"state": "succeeded"`) {
-		t.Fatalf("CLI did not complete full control protocol: grants=%d progress=%d output=%s", keyGrants.Load(), progressReports.Load(), stdout.String())
+	if keyGrants.Load() != 1 || progressReports.Load() == 0 || publicReads.Load() == 0 ||
+		!strings.Contains(stdout.String(), `"state": "succeeded"`) ||
+		!strings.Contains(stdout.String(), `"TelemetryWarning": ""`) {
+		t.Fatalf(
+			"CLI did not complete fallback protocol: grants=%d progress=%d public=%d output=%s",
+			keyGrants.Load(), progressReports.Load(), publicReads.Load(), stdout.String(),
+		)
 	}
 }
 
@@ -247,10 +270,16 @@ func cliRestoreFixture(
 		}},
 	}
 
-	recovery, err := manifest.NewRecoveryManifest(content, []manifest.Location{{
-		ExtentSHA256: digestHex, DriverID: "aliyun-main", StorageKey: "payload.bin",
-		Length: uint64(len(ciphertext)),
-	}})
+	recovery, err := manifest.NewRecoveryManifest(content, []manifest.Location{
+		{
+			ExtentSHA256: digestHex, DriverID: "public-mirror", StorageKey: "payload.bin",
+			Length: uint64(len(ciphertext)),
+		},
+		{
+			ExtentSHA256: digestHex, DriverID: "aliyun-main", StorageKey: "payload.bin",
+			Length: uint64(len(ciphertext)),
+		},
+	})
 	if err != nil {
 		t.Fatalf("construct CLI recovery manifest: %v", err)
 	}

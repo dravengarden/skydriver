@@ -47,6 +47,12 @@ non-secret JSON configuration, and an encrypted credential reference. The
 initial kind is `aliyundrive-open/v1`; unsupported kinds and unknown config
 fields are rejected before any network request.
 
+The read-only native `public-http/v1` driver supports public HTTPS archives and
+loopback test servers. It requires canonical relative keys, same-origin
+redirects, identity encoding, and an exact `206 Content-Range`; whole-object or
+ambiguous range responses are rejected. Restore may open both Aliyun and public
+HTTP drivers and follows each extent's ordered replica locations for fallback.
+
 OpenList cannot be consumed as a normal Go SDK because its public driver
 packages expose contracts from Go `internal` packages. Carrack therefore owns
 a narrow adapter aligned to a recorded OpenList commit; see
@@ -141,6 +147,18 @@ carrack restore ./restored.bin \
   --namespace 202122232425262728292a2b2c2d2e2f \
   --manifest <manifest-sha256> \
   --driver-id aliyun-main
+```
+
+An optional public replica can participate in the same restore:
+
+```bash
+carrack restore ./restored.bin \
+  --control-url https://carrack.example.com \
+  --namespace 202122232425262728292a2b2c2d2e2f \
+  --manifest <manifest-sha256> \
+  --driver-id aliyun-main \
+  --public-http-driver-id public-mirror \
+  --public-http-base-url https://archives.example.com/carrack
 ```
 
 The control token is an unpadded base64url encoding of exactly 32 bytes. Under

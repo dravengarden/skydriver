@@ -19,6 +19,7 @@ import (
 	"github.com/dravengarden/carrack/cryptostream"
 	"github.com/dravengarden/carrack/provider"
 	"github.com/dravengarden/carrack/provider/aliyundrive"
+	"github.com/dravengarden/carrack/provider/publichttp"
 	"github.com/dravengarden/carrack/sdk"
 )
 
@@ -36,6 +37,7 @@ var (
 	errEpochKeyEncoding  = errors.New("invalid Carrack epoch key encoding")
 	errUnknownCredential = errors.New("unknown CLI credential reference")
 	errCredentialMode    = errors.New("invalid Aliyun Drive credential mode")
+	errRestoreDrivers    = errors.New("invalid restore driver configuration")
 )
 
 type restoreFlags struct {
@@ -43,6 +45,8 @@ type restoreFlags struct {
 	namespaceID     string
 	manifestSHA256  string
 	driverID        string
+	publicDriverID  string
+	publicBaseURL   string
 	apiBaseURL      string
 	driveType       string
 	rootFolderID    string
@@ -75,6 +79,8 @@ func newRestoreCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
 	command.Flags().StringVar(&flags.namespaceID, "namespace", "", "namespace ID")
 	command.Flags().StringVar(&flags.manifestSHA256, "manifest", "", "published manifest SHA-256")
 	command.Flags().StringVar(&flags.driverID, "driver-id", "", "provider driver ID used by manifest locations")
+	command.Flags().StringVar(&flags.publicDriverID, "public-http-driver-id", "", "public HTTP driver ID used by manifest locations")
+	command.Flags().StringVar(&flags.publicBaseURL, "public-http-base-url", "", "public HTTP archive base URL")
 	command.Flags().StringVar(&flags.apiBaseURL, "aliyun-api-base-url", "", "Aliyun Drive API base URL")
 	command.Flags().StringVar(&flags.driveType, "aliyun-drive-type", "", "Aliyun Drive type")
 	command.Flags().StringVar(&flags.rootFolderID, "aliyun-root-folder-id", "", "Aliyun Drive root folder ID")
@@ -86,7 +92,7 @@ func newRestoreCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
 	command.Flags().DurationVar(&flags.renewalInterval, "renewal-interval", 30*time.Second, "read lease renewal interval")
 	command.Flags().StringVar(&flags.outputFormat, "format", "table", "output format: table, json, or yaml")
 
-	for _, name := range []string{"control-url", "namespace", "manifest", "driver-id"} {
+	for _, name := range []string{"control-url", "namespace", "manifest"} {
 		if err := command.MarkFlagRequired(name); err != nil {
 			panic(err)
 		}
@@ -123,35 +129,17 @@ func executeRestore(
 		return sdk.ControlledRestoreResult{}, fmt.Errorf("construct control client: %w", err)
 	}
 
-	configuration, err := json.Marshal(aliyundrive.DriverConfig{
-		APIBaseURL: flags.apiBaseURL, DriveType: flags.driveType, RootFolderID: flags.rootFolderID,
-	})
-	if err != nil {
-		return sdk.ControlledRestoreResult{}, fmt.Errorf("encode Aliyun Drive configuration: %w", err)
-	}
-
-	credentials, err := restoreCredentialStore(ctx, flags, getenv)
-	if err != nil {
-		return sdk.ControlledRestoreResult{}, err
-	}
-
-	registry, err := provider.NewRegistry(aliyundrive.Factory{})
+	registry, err := provider.NewRegistry(aliyundrive.Factory{}, publichttp.Factory{})
 	if err != nil {
 		return sdk.ControlledRestoreResult{}, fmt.Errorf("construct provider registry: %w", err)
 	}
 
-	handle, err := registry.Open(ctx, provider.DriverSpec{
-		ID: flags.driverID, Kind: aliyundrive.DriverKind, Config: configuration,
-		CredentialRef: cliCredentialReference,
-	}, provider.Dependencies{
-		HTTPClient:  httpClient,
-		Credentials: credentials,
-	})
+	readers, err := openRestoreReaders(ctx, registry, httpClient, flags, getenv)
 	if err != nil {
-		return sdk.ControlledRestoreResult{}, fmt.Errorf("open restore provider: %w", err)
+		return sdk.ControlledRestoreResult{}, err
 	}
 
-	restorer, err := sdk.NewRestorer(map[string]provider.Reader{flags.driverID: handle.Reader}, flags.maximumExtent)
+	restorer, err := sdk.NewRestorer(readers, flags.maximumExtent)
 	if err != nil {
 		return sdk.ControlledRestoreResult{}, fmt.Errorf("construct local restorer: %w", err)
 	}
@@ -176,6 +164,70 @@ func executeRestore(
 	}
 
 	return result, nil
+}
+
+func openRestoreReaders(
+	ctx context.Context,
+	registry *provider.Registry,
+	httpClient *http.Client,
+	flags restoreFlags,
+	getenv func(string) string,
+) (map[string]provider.Reader, error) {
+	readers := make(map[string]provider.Reader, 2)
+
+	if flags.driverID != "" {
+		configuration, err := json.Marshal(aliyundrive.DriverConfig{
+			APIBaseURL: flags.apiBaseURL, DriveType: flags.driveType, RootFolderID: flags.rootFolderID,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("encode Aliyun Drive configuration: %w", err)
+		}
+
+		credentials, err := restoreCredentialStore(ctx, flags, getenv)
+		if err != nil {
+			return nil, err
+		}
+
+		handle, err := registry.Open(ctx, provider.DriverSpec{
+			ID: flags.driverID, Kind: aliyundrive.DriverKind, Config: configuration,
+			CredentialRef: cliCredentialReference,
+		}, provider.Dependencies{HTTPClient: httpClient, Credentials: credentials})
+		if err != nil {
+			return nil, fmt.Errorf("open Aliyun restore provider: %w", err)
+		}
+
+		readers[handle.ID] = handle.Reader
+	}
+
+	if (flags.publicDriverID == "") != (flags.publicBaseURL == "") {
+		return nil, fmt.Errorf("%w: public HTTP ID and base URL must be supplied together", errRestoreDrivers)
+	}
+
+	if flags.publicDriverID != "" {
+		configuration, err := json.Marshal(publichttp.DriverConfig{BaseURL: flags.publicBaseURL})
+		if err != nil {
+			return nil, fmt.Errorf("encode public HTTP configuration: %w", err)
+		}
+
+		handle, err := registry.Open(ctx, provider.DriverSpec{
+			ID: flags.publicDriverID, Kind: publichttp.DriverKind, Config: configuration,
+		}, provider.Dependencies{HTTPClient: httpClient})
+		if err != nil {
+			return nil, fmt.Errorf("open public HTTP restore provider: %w", err)
+		}
+
+		if _, duplicate := readers[handle.ID]; duplicate {
+			return nil, fmt.Errorf("%w: duplicate driver ID %q", errRestoreDrivers, handle.ID)
+		}
+
+		readers[handle.ID] = handle.Reader
+	}
+
+	if len(readers) == 0 {
+		return nil, fmt.Errorf("%w: at least one provider driver is required", errRestoreDrivers)
+	}
+
+	return readers, nil
 }
 
 func restoreCredentialStore(
