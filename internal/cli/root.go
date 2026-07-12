@@ -17,12 +17,20 @@ import (
 )
 
 const (
-	developmentVersion = "0.1.0-dev"
-	outputFormatJSON   = "json"
-	controlURLFlag     = "control-url"
-	namespaceFlag      = "namespace"
-	manifestFlag       = "manifest"
-	moveCommandName    = "move"
+	developmentVersion           = "0.1.0-dev"
+	outputFormatJSON             = "json"
+	controlURLFlag               = "control-url"
+	namespaceFlag                = "namespace"
+	manifestFlag                 = "manifest"
+	moveCommandName              = "move"
+	copyCommandName              = "copy"
+	sourceLocalDriverIDFlag      = "source-local-driver-id"
+	sourceLocalRootFlag          = "source-local-root"
+	destinationLocalDriverIDFlag = "destination-local-driver-id"
+	destinationLocalRootFlag     = "destination-local-root"
+	destinationPrefixFlag        = "destination-prefix"
+	stagingDirectoryFlag         = "staging-directory"
+	runCommandName               = "run"
 )
 
 var (
@@ -55,6 +63,7 @@ func newRootCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Comman
 		newVersionCommand(stdout),
 		newLayoutCommand(stdout),
 		newRestoreCommand(ctx, stdout),
+		newCopyCommand(ctx, stdout),
 		newMoveCommand(ctx, stdout),
 	)
 
@@ -168,6 +177,21 @@ func writeTable(writer io.Writer, value any) error {
 			typedValue.State,
 		); err != nil {
 			return fmt.Errorf("write move run table: %w", err)
+		}
+	case copyRunResult:
+		if _, err := fmt.Fprintf(
+			table,
+			"OPERATION ID\tSOURCE\tDESTINATION\tOBJECTS\tLOCATIONS\tBYTES\tRECOVERY REVISION\tSTATE\n%s\t%s\t%s\t%d\t%d\t%d\t%d\t%s\n",
+			typedValue.OperationID,
+			typedValue.SourceDriverID,
+			typedValue.DestinationDriverID,
+			typedValue.ObjectsWritten,
+			typedValue.LocationsAdded,
+			typedValue.CiphertextBytes,
+			typedValue.RecoveryRevision,
+			typedValue.State,
+		); err != nil {
+			return fmt.Errorf("write copy run table: %w", err)
 		}
 	case sdk.ControlledRestoreResult:
 		if _, err := fmt.Fprintf(
