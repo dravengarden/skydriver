@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/dravengarden/carrack/manifest"
 )
 
 const operationKindVerify = "verify"
@@ -40,6 +42,12 @@ type createVerifyOperationBody struct {
 	ManifestSHA256 string `json:"manifest_sha256"`
 	DriverID       string `json:"driver_id"`
 	IdempotencyKey string `json:"idempotency_key"`
+}
+
+type verifyManifestBody struct {
+	LeaseID      string `json:"lease_id"`
+	Incarnation  string `json:"incarnation"`
+	FencingToken uint64 `json:"fencing_token"`
 }
 
 // CreateVerifyOperation creates or returns a client-owned verification target.
@@ -89,4 +97,40 @@ func (client *ControlClient) ClaimVerifyOperation(
 	}
 
 	return client.claimOperation(ctx, operation.ID, operation.Incarnation, leaseSeconds, operationKindVerify)
+}
+
+// FetchVerifyManifest downloads the pinned recovery metadata under the live fence.
+func (client *ControlClient) FetchVerifyManifest(
+	ctx context.Context,
+	operation VerifyOperation,
+	lease OperationLease,
+) (manifest.RecoveryManifest, error) {
+	if lease.OperationID != operation.ID || lease.Incarnation != operation.Incarnation ||
+		lease.LeaseID == "" || lease.FencingToken == 0 || operation.RecoveryRevision == 0 {
+		return manifest.RecoveryManifest{}, fmt.Errorf("%w: invalid verify manifest fence", ErrInvalidControlPlane)
+	}
+
+	body, err := json.Marshal(verifyManifestBody{
+		LeaseID: lease.LeaseID, Incarnation: lease.Incarnation, FencingToken: lease.FencingToken,
+	})
+	if err != nil {
+		return manifest.RecoveryManifest{}, fmt.Errorf("marshal verify manifest fence: %w", err)
+	}
+
+	var response manifest.RecoveryManifest
+
+	path := "/api/v1/verifications/" + operation.ID + "/manifest"
+	if err := client.authenticatedPost(ctx, path, body, &response); err != nil {
+		return manifest.RecoveryManifest{}, err
+	}
+
+	if err := response.Validate(); err != nil {
+		return manifest.RecoveryManifest{}, fmt.Errorf("%w: invalid verify manifest: %w", ErrControlPlaneResponse, err)
+	}
+
+	if response.ManifestSHA256 != operation.ManifestSHA256 {
+		return manifest.RecoveryManifest{}, fmt.Errorf("%w: verify manifest identity changed", ErrControlPlaneResponse)
+	}
+
+	return response, nil
 }

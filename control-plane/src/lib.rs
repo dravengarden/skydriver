@@ -195,6 +195,25 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
 
             verification::create(&mut request, &context.env, &client).await
         })
+        .post_async(
+            "/api/v1/verifications/:id/manifest",
+            |mut request, context| async move {
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+                let Some(operation_id) = context.param("id") else {
+                    return Response::error("operation ID is required", 400);
+                };
+
+                verification::fetch_manifest(
+                    &mut request,
+                    &context.env,
+                    &client,
+                    operation_id,
+                )
+                .await
+            },
+        )
         .post_async("/api/v1/copies", |mut request, context| async move {
             if external_maintenance(&context.env) {
                 return Response::error("control-plane mutations are disabled", 409);

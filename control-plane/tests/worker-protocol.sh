@@ -1237,3 +1237,13 @@ jq -e --arg operation_id "$verify_operation_id" '
   .operation_id == $operation_id and .operation_state == "running" and
   .fencing_token == 1
 ' <<<"$verify_lease" >/dev/null
+
+verify_recovery=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn \
+    --arg lease_id "$(jq -r .lease_id <<<"$verify_lease")" \
+    --arg incarnation "$(jq -r .incarnation <<<"$verify_lease")" \
+    --argjson fence "$(jq -r .fencing_token <<<"$verify_lease")" \
+    '{lease_id: $lease_id, incarnation: $incarnation, fencing_token: $fence}')" \
+  "$base_url/api/v1/verifications/$verify_operation_id/manifest")
+[[ "$verify_recovery" == "$move_final_recovery" ]]

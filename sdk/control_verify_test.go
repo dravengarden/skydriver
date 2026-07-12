@@ -14,10 +14,11 @@ func TestControlClientCreatesAndClaimsPinnedVerification(t *testing.T) {
 	const (
 		operationID = "909192939495969798999a9b9c9d9e9f"
 		incarnation = "0123456789abcdef0123456789abcdef"
-		manifest    = "1111111111111111111111111111111111111111111111111111111111111111"
 	)
 
 	token, encodedToken := testClientToken(t)
+	recovery := controlRecoveryManifest(t)
+	manifestSHA256 := recovery.ManifestSHA256
 
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Header.Get("Authorization") != "Bearer "+encodedToken {
@@ -37,7 +38,7 @@ func TestControlClientCreatesAndClaimsPinnedVerification(t *testing.T) {
 				t.Errorf("decode create body: %v", err)
 			}
 
-			if body["driver_id"] != "local-main" || body["manifest_sha256"] != manifest {
+			if body["driver_id"] != "local-main" || body["manifest_sha256"] != manifestSHA256 {
 				t.Errorf("unexpected create body: %#v", body)
 			}
 
@@ -45,7 +46,7 @@ func TestControlClientCreatesAndClaimsPinnedVerification(t *testing.T) {
 				ID: operationID, NamespaceID: "202122232425262728292a2b2c2d2e2f",
 				Kind: "verify", State: "planned", Phase: "planned", RequestedBy: "client-1",
 				Incarnation: incarnation, Revision: 1, UsefulBytesTotal: 18,
-				VersionID: "version-1", ManifestSHA256: manifest, RecoveryRevision: 3,
+				VersionID: "version-1", ManifestSHA256: manifestSHA256, RecoveryRevision: 3,
 				DriverID: "local-main", CreatedAt: 1, UpdatedAt: 1,
 			}); err != nil {
 				t.Errorf("encode operation response: %v", err)
@@ -57,6 +58,10 @@ func TestControlClientCreatesAndClaimsPinnedVerification(t *testing.T) {
 				ExpiresAt: 100, OperationRevision: 2, OperationState: "running",
 			}); err != nil {
 				t.Errorf("encode lease response: %v", err)
+			}
+		case "/api/v1/verifications/" + operationID + "/manifest":
+			if err := json.NewEncoder(response).Encode(recovery); err != nil {
+				t.Errorf("encode recovery response: %v", err)
 			}
 		default:
 			http.NotFound(response, request)
@@ -70,7 +75,7 @@ func TestControlClientCreatesAndClaimsPinnedVerification(t *testing.T) {
 	}
 
 	operation, err := client.CreateVerifyOperation(context.Background(), sdk.CreateVerifyOperationRequest{
-		NamespaceID: "202122232425262728292a2b2c2d2e2f", ManifestSHA256: manifest,
+		NamespaceID: "202122232425262728292a2b2c2d2e2f", ManifestSHA256: manifestSHA256,
 		DriverID: "local-main", IdempotencyKey: "verify-version-1-local-main",
 	})
 	if err != nil {
@@ -82,7 +87,12 @@ func TestControlClientCreatesAndClaimsPinnedVerification(t *testing.T) {
 		t.Fatalf("claim verify operation: %v", err)
 	}
 
-	if lease.FencingToken != 1 || operation.RecoveryRevision != 3 {
+	pinned, err := client.FetchVerifyManifest(context.Background(), operation, lease)
+	if err != nil {
+		t.Fatalf("fetch verify manifest: %v", err)
+	}
+
+	if lease.FencingToken != 1 || operation.RecoveryRevision != 3 || pinned.ManifestSHA256 != manifestSHA256 {
 		t.Fatalf("unexpected pinned verification: operation=%+v lease=%+v", operation, lease)
 	}
 }
