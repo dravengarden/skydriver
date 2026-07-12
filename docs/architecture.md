@@ -260,12 +260,12 @@ and after each provider payload or sidecar write and its independent readback,
 then repeats the exact replication request. It verifies that replay converges
 on the expected content-addressed objects, recovery coverage, and digests
 without leaving local staging files. A companion lost-response matrix wraps
-immutable R2 staging plus both Copy and Move destination-publication endpoints.
-It distinguishes requests stopped before the remote boundary from responses
-lost after the logical commit, requires byte-identical retries, and permits
-only one logical commit. Move source tombstoning and physical deletion remain
-separate saga boundaries and production concurrency remains gated on the full
-fault-injection suite.
+immutable R2 staging, Copy publication, Move destination publication, and the
+Move source-tombstone transition. It distinguishes requests stopped before the
+remote boundary from responses lost after the logical commit, requires
+byte-identical retries, and permits only one logical commit. Move physical
+deletion remains a separate janitor boundary and production concurrency remains
+gated on the full fault-injection suite.
 
 ### Move
 

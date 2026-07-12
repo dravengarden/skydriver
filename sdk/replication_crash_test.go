@@ -34,6 +34,8 @@ const (
 	crashAfterR2Stage      replicationCrashPoint = "after_r2_stage"
 	crashBeforeD1Publish   replicationCrashPoint = "before_d1_publish"
 	crashAfterD1Publish    replicationCrashPoint = "after_d1_publish"
+	crashBeforeD1Tombstone replicationCrashPoint = "before_d1_tombstone"
+	crashAfterD1Tombstone  replicationCrashPoint = "after_d1_tombstone"
 )
 
 type deterministicCrashScript struct {
@@ -257,6 +259,8 @@ func controlCrashPoints(path string) (replicationCrashPoint, replicationCrashPoi
 		return crashBeforeR2Stage, crashAfterR2Stage, true
 	case "/api/v1/copies/publish", "/api/v1/moves/publish-destination":
 		return crashBeforeD1Publish, crashAfterD1Publish, true
+	case "/api/v1/moves/tombstone-source":
+		return crashBeforeD1Tombstone, crashAfterD1Tombstone, true
 	default:
 		return "", "", false
 	}
@@ -267,10 +271,13 @@ type replayControlState struct {
 
 	stageBody          []byte
 	publicationBody    []byte
+	tombstoneBody      []byte
 	stageCalls         int
 	publicationCalls   int
+	tombstoneCalls     int
 	stageCommits       int
 	publicationCommits int
+	tombstoneCommits   int
 }
 
 type replayControlIdentity struct {
@@ -278,7 +285,10 @@ type replayControlIdentity struct {
 	manifestSHA256      string
 	destinationDriverID string
 	locationsAdded      uint64
+	sourceDriverID      string
+	locationsTombstoned uint64
 	recoveryRevision    uint64
+	graceUntil          uint64
 }
 
 func TestCopyControlLostResponseMatrixReplaysExactRequests(t *testing.T) {
@@ -480,6 +490,17 @@ func newReplayControlServer(
 				RecoveryRevision:    identity.recoveryRevision,
 				State:               "destination_published",
 			})
+		case "/api/v1/moves/tombstone-source":
+			state.recordTombstone(t, body)
+			writeJSON(t, response, sdk.TombstonedMoveSource{
+				OperationID: identity.operationID, ManifestSHA256: identity.manifestSHA256,
+				RecoverySHA256:            staged.RecoverySHA256,
+				SourceDriverID:            identity.sourceDriverID,
+				SourceLocationsTombstoned: identity.locationsTombstoned,
+				RecoveryRevision:          identity.recoveryRevision,
+				GraceUntil:                identity.graceUntil,
+				State:                     "source_delete_pending",
+			})
 		default:
 			http.NotFound(response, request)
 		}
@@ -539,6 +560,8 @@ func exerciseControlCrashReplay(
 		crashBeforeSidecarRead,
 		crashAfterSidecarRead:
 		t.Fatalf("provider crash point %s cannot exercise the control client", point)
+	case crashBeforeD1Tombstone, crashAfterD1Tombstone:
+		t.Fatalf("move tombstone crash point %s cannot exercise copy publication", point)
 	default:
 		t.Fatalf("unsupported control crash point %s", point)
 	}
@@ -567,6 +590,14 @@ func crashCopyIdentities(recovery manifest.RecoveryManifest) (sdk.CopyOperation,
 
 func crashMoveIdentities(recovery manifest.RecoveryManifest) (sdk.MoveOperation, sdk.OperationLease) {
 	copyOperation, lease := crashCopyIdentities(recovery)
+	sourceLocationCount := uint64(0)
+
+	for _, location := range recovery.Locations {
+		if location.DriverID == "source" {
+			sourceLocationCount++
+		}
+	}
+
 	operation := sdk.MoveOperation{
 		ID: copyOperation.ID, NamespaceID: copyOperation.NamespaceID,
 		Kind: "move", Incarnation: copyOperation.Incarnation,
@@ -574,7 +605,9 @@ func crashMoveIdentities(recovery manifest.RecoveryManifest) (sdk.MoveOperation,
 		ManifestSHA256:         copyOperation.ManifestSHA256,
 		SourceRecoverySHA256:   copyOperation.SourceRecoverySHA256,
 		SourceRecoveryRevision: copyOperation.SourceRecoveryRevision,
-		SourceDriverID:         "source", DestinationDriverID: copyOperation.DestinationDriverID,
+		SourceDriverID:         "source",
+		DestinationDriverID:    copyOperation.DestinationDriverID,
+		SourceLocationCount:    sourceLocationCount,
 	}
 
 	return operation, lease
@@ -618,6 +651,25 @@ func (state *replayControlState) recordPublication(t *testing.T, body []byte) {
 	}
 }
 
+func (state *replayControlState) recordTombstone(t *testing.T, body []byte) {
+	t.Helper()
+
+	state.mutex.Lock()
+	defer state.mutex.Unlock()
+
+	state.tombstoneCalls++
+	if state.tombstoneBody == nil {
+		state.tombstoneBody = bytes.Clone(body)
+		state.tombstoneCommits++
+
+		return
+	}
+
+	if !bytes.Equal(state.tombstoneBody, body) {
+		t.Error("replayed tombstone request changed")
+	}
+}
+
 func (state *replayControlState) assertSingleCommit(
 	t *testing.T,
 	point replicationCrashPoint,
@@ -641,6 +693,8 @@ func (state *replayControlState) assertSingleCommit(
 	case crashAfterD1Publish:
 		expectedPublicationCalls = 2
 		expectedPublicationCommits = 1
+	case crashBeforeD1Tombstone, crashAfterD1Tombstone:
+		t.Fatalf("move tombstone point %s requires tombstone-phase assertions", point)
 	case crashBeforePayloadPut,
 		crashAfterPayloadPut,
 		crashBeforePayloadRead,
@@ -677,6 +731,79 @@ func (state *replayControlState) assertSingleCommit(
 			state.publicationCommits,
 			point,
 			expectedPublicationCommits,
+		)
+	}
+
+	if state.tombstoneCalls != 0 || state.tombstoneCommits != 0 {
+		t.Fatalf(
+			"destination replay unexpectedly reached tombstone after %s: calls=%d commits=%d",
+			point,
+			state.tombstoneCalls,
+			state.tombstoneCommits,
+		)
+	}
+}
+
+func (state *replayControlState) assertTombstonePhaseSingleCommit(
+	t *testing.T,
+	point replicationCrashPoint,
+) {
+	t.Helper()
+
+	state.mutex.Lock()
+	defer state.mutex.Unlock()
+
+	expectedStageCalls := 1
+	expectedTombstoneCalls := 1
+
+	switch point {
+	case crashBeforeR2Stage:
+	case crashAfterR2Stage:
+		expectedStageCalls = 2
+	case crashBeforeD1Tombstone:
+	case crashAfterD1Tombstone:
+		expectedTombstoneCalls = 2
+	case crashBeforePayloadPut,
+		crashAfterPayloadPut,
+		crashBeforePayloadRead,
+		crashAfterPayloadRead,
+		crashBeforeSidecarPut,
+		crashAfterSidecarPut,
+		crashBeforeSidecarRead,
+		crashAfterSidecarRead,
+		crashBeforeD1Publish,
+		crashAfterD1Publish:
+		t.Fatalf("crash point %s does not belong to the move tombstone phase", point)
+	default:
+		t.Fatalf("unsupported move tombstone crash point %s", point)
+	}
+
+	if state.stageCalls != expectedStageCalls || state.stageCommits != 1 {
+		t.Fatalf(
+			"tombstone staging did not converge after %s: calls=%d/%d commits=%d/1",
+			point,
+			state.stageCalls,
+			expectedStageCalls,
+			state.stageCommits,
+		)
+	}
+
+	if state.publicationCalls != 0 || state.publicationCommits != 0 {
+		t.Fatalf(
+			"tombstone replay unexpectedly published a destination after %s: calls=%d commits=%d",
+			point,
+			state.publicationCalls,
+			state.publicationCommits,
+		)
+	}
+
+	if state.tombstoneCalls != expectedTombstoneCalls || state.tombstoneCommits != 1 {
+		t.Fatalf(
+			"source tombstone did not converge after %s: calls=%d/%d commits=%d/1",
+			point,
+			state.tombstoneCalls,
+			expectedTombstoneCalls,
+			state.tombstoneCommits,
 		)
 	}
 }
