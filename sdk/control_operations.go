@@ -227,6 +227,34 @@ func (client *ControlClient) ClaimImportOperation(
 	return response, nil
 }
 
+func (client *ControlClient) claimOperation(
+	ctx context.Context,
+	operationID string,
+	incarnation string,
+	leaseSeconds uint64,
+	operationKind string,
+) (OperationLease, error) {
+	body, err := json.Marshal(claimOperationBody{LeaseSeconds: leaseSeconds})
+	if err != nil {
+		return OperationLease{}, fmt.Errorf("marshal %s lease: %w", operationKind, err)
+	}
+
+	var response OperationLease
+
+	path := "/api/v1/operations/" + operationID + "/claim"
+	if err := client.authenticatedPost(ctx, path, body, &response); err != nil {
+		return OperationLease{}, err
+	}
+
+	if response.OperationID != operationID || response.Incarnation != incarnation ||
+		response.LeaseID == "" || response.OwnerClientID == "" || response.FencingToken == 0 ||
+		response.OperationRevision == 0 || response.OperationState != operationStateRunning {
+		return OperationLease{}, fmt.Errorf("%w: invalid %s lease identity", ErrControlPlaneResponse, operationKind)
+	}
+
+	return response, nil
+}
+
 // ReportProgress idempotently records one cumulative sample. Reordered samples
 // return the newer current snapshot without moving counters backwards.
 func (client *ControlClient) ReportProgress(

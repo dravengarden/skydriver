@@ -519,3 +519,49 @@ expect_failure \
   "UPDATE recovery_manifests SET revision = revision + 1
    WHERE manifest_sha256 = '3333333333333333333333333333333333333333333333333333333333333333';" \
   "published recovery revision change without a new copy operation"
+
+execute "
+UPDATE locations
+SET state = 'available', revision = revision + 1, updated_at = 6
+WHERE id = 'location-1' AND state = 'verified';
+INSERT INTO operations (
+  id, namespace_id, kind, state, phase, idempotency_key, requested_by,
+  incarnation, useful_bytes_total, created_at, updated_at
+)
+SELECT
+  'verify-operation-1', '202122232425262728292a2b2c2d2e2f', 'verify',
+  'planned', 'planned', 'verify-idempotency-1', 'client-1', incarnation, 24, 6, 6
+FROM control_plane_state WHERE singleton = 1;
+INSERT INTO verify_intents (
+  operation_id, version_id, manifest_sha256, recovery_revision, driver_id, created_at
+) VALUES (
+  'verify-operation-1', 'version-1',
+  '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+  1, 'driver-1', 6
+);
+UPDATE operations
+SET state = 'running', phase = 'verifying', revision = revision + 1, updated_at = 6
+WHERE id = 'verify-operation-1';
+INSERT INTO integrity_observations (
+  operation_id, location_id, condition, evidence_json, observed_at
+) VALUES (
+  'verify-operation-1', 'location-1', 'verified',
+  '{\"extent_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\"}',
+  6
+);
+INSERT INTO protocol_assertions
+SELECT intent.recovery_revision = 1
+       AND observation.condition = 'verified'
+FROM verify_intents AS intent
+JOIN integrity_observations AS observation
+  ON observation.operation_id = intent.operation_id
+WHERE intent.operation_id = 'verify-operation-1';
+PRAGMA foreign_key_check;"
+
+expect_failure \
+  "INSERT INTO integrity_observations (
+     operation_id, location_id, condition, evidence_json, observed_at
+   ) VALUES (
+     'verify-operation-1', 'location-2', 'missing', '{}', 6
+   );" \
+  "verify observation outside the pinned available location set"

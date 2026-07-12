@@ -68,6 +68,7 @@ func newRootCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Comman
 		newRestoreCommand(ctx, stdout),
 		newCopyCommand(ctx, stdout),
 		newMoveCommand(ctx, stdout),
+		newVerifyCommand(ctx, stdout),
 	)
 
 	return command
@@ -146,6 +147,10 @@ func writeTable(writer io.Writer, value any) error {
 	table := tabwriter.NewWriter(writer, 0, 4, 2, ' ', 0)
 
 	switch typedValue := value.(type) {
+	case sdk.VerificationResult:
+		if _, err := fmt.Fprintf(table, "STATE\tVERIFIED\tMISSING\tCORRUPT\tUNAVAILABLE\n%s\t%d\t%d\t%d\t%d\n", typedValue.State, typedValue.Verified, typedValue.Missing, typedValue.Corrupt, typedValue.Unavailable); err != nil {
+			return fmt.Errorf("write verification table: %w", err)
+		}
 	case archive.Layout:
 		if _, err := fmt.Fprintf(table, "PHYSICAL BLOCK BYTES\tCRYPTO FRAME BYTES\tLOGICAL PACK BYTES\n%d\t%d\t%d\n", typedValue.PhysicalBlockBytes, typedValue.CryptoFrameBytes, typedValue.LogicalPackBytes); err != nil {
 			return fmt.Errorf("write layout table: %w", err)

@@ -221,6 +221,11 @@ printf '%s' "$restore_recovery" >"$state_directory/restore-manifest.json"
       '303132333435363738393a3b3c3d3e3f',
       '202122232425262728292a2b2c2d2e2f', 'janitor', unixepoch()
     );
+    INSERT INTO client_namespace_permissions (client_id, namespace_id, role, created_at)
+    VALUES (
+      '303132333435363738393a3b3c3d3e3f',
+      '202122232425262728292a2b2c2d2e2f', 'administrator', unixepoch()
+    );
     INSERT INTO credential_envelopes (
       id, envelope_algorithm, key_version, nonce, ciphertext, created_at, rotated_at
     ) VALUES ('restore-credential', 'test/v1', '1', X'01', X'02', unixepoch(), unixepoch());
@@ -1200,3 +1205,35 @@ jq -e \
   .published_destination_driver_id == "restore-driver" and
   .published_sidecar_storage_key == "import/sidecar.json"
 ' <<<"$completed_import_operation" >/dev/null
+
+verify_request=$(jq -cn --arg manifest_sha "$restore_manifest_sha" '{
+  namespace_id: "202122232425262728292a2b2c2d2e2f",
+  manifest_sha256: $manifest_sha,
+  driver_id: "copy-driver",
+  idempotency_key: "worker-e2e-verify-copy-driver"
+}')
+verify_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$verify_request" \
+  "$base_url/api/v1/verifications")
+verify_operation_id=$(jq -r .id <<<"$verify_operation")
+jq -e --arg manifest_sha "$restore_manifest_sha" '
+  .kind == "verify" and .state == "planned" and .phase == "planned" and
+  .manifest_sha256 == $manifest_sha and .driver_id == "copy-driver" and
+  .recovery_revision >= 2 and .useful_bytes_total == 18
+' <<<"$verify_operation" >/dev/null
+
+replayed_verify=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$verify_request" \
+  "$base_url/api/v1/verifications")
+[[ "$replayed_verify" == "$verify_operation" ]]
+
+verify_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/operations/$verify_operation_id/claim")
+jq -e --arg operation_id "$verify_operation_id" '
+  .operation_id == $operation_id and .operation_state == "running" and
+  .fencing_token == 1
+' <<<"$verify_lease" >/dev/null

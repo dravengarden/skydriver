@@ -130,6 +130,13 @@ func (reader *Reader) Stat(ctx context.Context, key string) (provider.Object, er
 	}
 
 	closeErr := response.Body.Close()
+	if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusGone {
+		return provider.Object{}, errors.Join(
+			fmt.Errorf("%w: HEAD status %d", provider.ErrObjectNotFound, response.StatusCode),
+			closeErr,
+		)
+	}
+
 	if closeErr != nil {
 		return provider.Object{}, fmt.Errorf("close public HTTP metadata response: %w", closeErr)
 	}
@@ -174,6 +181,11 @@ func (reader *Reader) OpenRange(
 	response, err := reader.httpClient.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("read public HTTP range: %w", err)
+	}
+
+	if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusGone {
+		closeErr := response.Body.Close()
+		return nil, errors.Join(fmt.Errorf("%w: range status %d", provider.ErrObjectNotFound, response.StatusCode), closeErr)
 	}
 
 	if response.StatusCode != http.StatusPartialContent ||

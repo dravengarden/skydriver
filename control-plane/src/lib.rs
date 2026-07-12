@@ -16,6 +16,7 @@ pub mod protocol;
 mod publication;
 mod restoration;
 mod telemetry;
+mod verification;
 
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -182,6 +183,17 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
             };
 
             operations::create(&mut request, &context.env, &client).await
+        })
+        .post_async("/api/v1/verifications", |mut request, context| async move {
+            if external_maintenance(&context.env) {
+                return Response::error("control-plane mutations are disabled", 409);
+            }
+
+            let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                return Response::error("client authentication required", 401);
+            };
+
+            verification::create(&mut request, &context.env, &client).await
         })
         .post_async("/api/v1/copies", |mut request, context| async move {
             if external_maintenance(&context.env) {

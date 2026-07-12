@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/dravengarden/carrack/provider"
 	"github.com/dravengarden/carrack/provider/publichttp"
 )
 
@@ -73,6 +74,26 @@ func TestReaderStatsAndReadsExactRange(t *testing.T) {
 
 	if !bytes.Equal(selected, payload[3:9]) {
 		t.Fatalf("public range is %q", selected)
+	}
+}
+
+func TestReaderClassifiesAbsentObjects(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(server.Close)
+
+	reader, err := publichttp.NewReader(server.URL, server.Client())
+	if err != nil {
+		t.Fatalf("construct public reader: %v", err)
+	}
+
+	if _, err := reader.Stat(context.Background(), "absent"); !errors.Is(err, provider.ErrObjectNotFound) {
+		t.Fatalf("HEAD absence was not classified: %v", err)
+	}
+
+	if _, err := reader.OpenRange(context.Background(), "absent", 0, 1); !errors.Is(err, provider.ErrObjectNotFound) {
+		t.Fatalf("range absence was not classified: %v", err)
 	}
 }
 

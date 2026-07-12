@@ -8,9 +8,11 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/dravengarden/carrack/provider"
 )
 
-var errObjectNotFound = errors.New("object not found in Aliyun Drive")
+var errObjectNotFound = provider.ErrObjectNotFound
 
 type fileRecord struct {
 	DriveID      string    `json:"drive_id"`

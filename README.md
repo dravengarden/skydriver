@@ -246,6 +246,24 @@ carrack restore ./restored.bin \
 Driver IDs must match the manifest locations. The local root must already
 exist; Carrack creates only object-key subdirectories beneath it.
 
+An operator can independently scrub every complete ciphertext extent on one
+local driver from a portable recovery sidecar, without a control-plane token or
+decryption key:
+
+```bash
+carrack verify ./recovery.json \
+  --local-driver-id local-mirror \
+  --local-root /srv/carrack/archive \
+  --format json
+```
+
+Verification streams each selected location through SHA-256 with constant
+memory and does not stop after another replica succeeds. Its stable evidence
+distinguishes verified bytes, proven missing objects, corrupt length or digest,
+and unavailable drivers or inconclusive provider failures. A single pass does
+not declare permanent data loss; reconciliation and repair remain separate
+control-plane operations.
+
 The local filesystem Copy path creates and publishes a verified destination
 replica while retaining every source location:
 
