@@ -688,6 +688,34 @@ ranges as `deleted`. Provider failure keeps the tombstone for retry. The final
 task advances the GC operation to `succeeded`; index rows remain as audit
 records.
 
+### Missing-location repair
+
+Repair creation pins one durable recovery revision, target driver, complete set
+of missing location revisions, and the gapless provider objects containing
+those locations. Under a renewable write fence, the SDK reconstructs each
+whole object from independently available extent replicas, uploads it at the
+pinned storage key, then verifies its full digest and exact provider identity
+through readback and `Stat`. It never changes the portable recovery head.
+
+One D1 completion rechecks the pinned targets and provider evidence, reactivates
+the missing locations, resolves eligible findings, succeeds the operation, and
+releases the lease. Exact completion replay requires the original lease,
+incarnation, fencing token, and byte-identical provider evidence. An exact
+idempotent create retry returning `succeeded/completed` becomes an
+`AlreadyCompleted` receipt without repeating provider I/O; a repair invalidated
+by control-plane recovery returns a stable terminal error. A deterministic
+completion crash matrix covers interruption before the D1 request and response
+loss after commit, allowing duplicate content-addressed work only in the former
+case and exactly one logical metadata commit in both.
+
+A companion nonterminal matrix interrupts creation, claim, snapshot fetch,
+source range read, target upload, independent target readback, and final target
+`Stat` immediately before and after each remote boundary. The first attempt
+must leave D1 uncommitted. An ambiguous successful upload may be safely
+overwritten only at the same pinned storage key; after retry the target contains
+one exact provider object, local staging is empty, and one completion makes all
+pinned locations available.
+
 ### Inventory reconciliation
 
 Failed clients can upload a provider object before its staging record reaches

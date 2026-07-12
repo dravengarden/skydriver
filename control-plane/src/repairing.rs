@@ -124,6 +124,9 @@ struct CompletionRow {
     location_count: u64,
     ciphertext_bytes: u64,
     recovery_revision: u64,
+    lease_id: String,
+    incarnation: String,
+    fencing_token: u64,
 }
 
 #[derive(Serialize)]
@@ -563,8 +566,12 @@ pub(crate) async fn complete(
     )
     .await?
     {
-        if existing.report_sha256 != report_sha256 {
-            return Response::error("repair completion replay changed provider evidence", 409);
+        if existing.report_sha256 != report_sha256
+            || existing.lease_id != completed.lease_id
+            || existing.incarnation != completed.incarnation
+            || existing.fencing_token != completed.fencing_token
+        {
+            return Response::error("repair completion replay changed fence or evidence", 409);
         }
 
         return completion_response(operation_id, &completed.manifest_sha256, &existing);
@@ -712,7 +719,8 @@ async fn find_completion(
         .prepare(
             "SELECT completion.report_sha256, completion.object_count, \
                     completion.location_count, completion.ciphertext_bytes, \
-                    intent.recovery_revision \
+                    intent.recovery_revision, completion.lease_id, \
+                    completion.incarnation, completion.fencing_token \
              FROM repair_completions AS completion \
              JOIN repair_intents AS intent ON intent.operation_id = completion.operation_id \
              JOIN operations AS operation ON operation.id = intent.operation_id \

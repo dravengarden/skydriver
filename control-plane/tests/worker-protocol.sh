@@ -1896,6 +1896,19 @@ replayed_repair_completion=$(curl --silent --show-error --fail-with-body \
   "$base_url/api/v1/repairs/$repair_id/complete")
 [[ "$replayed_repair_completion" == "$completed_repair" ]]
 
+stale_repair_completion_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.fencing_token += 1' <<<"$repair_completion")" \
+  "$base_url/api/v1/repairs/$repair_id/complete")
+[[ "$stale_repair_completion_status" == 409 ]]
+
+completed_repair_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$repair_request" \
+  "$base_url/api/v1/repairs")
+jq -e --arg repair_id "$repair_id" '
+  .id == $repair_id and .state == "succeeded" and .phase == "completed"
+' <<<"$completed_repair_operation" >/dev/null
+
 changed_repair_completion_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   -H "$authorization" -H "$json" \
   --data "$(jq '.objects[0].etag = "changed-etag"' <<<"$repair_completion")" \

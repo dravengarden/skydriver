@@ -306,7 +306,7 @@ func validRepairOperation(
 	requested CreateRepairOperationRequest,
 ) bool {
 	return validControlHex(response.ID, 32) && response.NamespaceID == requested.NamespaceID &&
-		response.Kind == operationKindCopy && response.State != "" && response.Phase != "" &&
+		response.Kind == operationKindCopy && validRepairOperationState(response) &&
 		validControlString(response.RequestedBy, 2_048) &&
 		validControlHex(response.Incarnation, 32) && response.Revision > 0 &&
 		response.UsefulBytesTotal > 0 && response.UsefulBytesTotal <= math.MaxInt64 &&
@@ -315,6 +315,21 @@ func validRepairOperation(
 		response.ManifestSHA256 == requested.ManifestSHA256 && response.RecoveryRevision > 0 &&
 		response.TargetDriverID == requested.TargetDriverID && response.ExpectedObjectCount > 0 &&
 		response.ExpectedTargetCount > 0
+}
+
+func validRepairOperationState(operation RepairOperation) bool {
+	switch operation.State {
+	case operationStatePlanned:
+		return operation.Phase == operationStatePlanned
+	case operationStateRunning:
+		return operation.Phase == "repairing"
+	case operationStateSucceeded:
+		return operation.Phase == "completed"
+	case operationStateFailed, "cancelled":
+		return operation.Phase == "control_plane_recovered"
+	default:
+		return false
+	}
 }
 
 func validateRepairSnapshot(response RepairSnapshot, operation RepairOperation) error {

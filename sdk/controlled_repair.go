@@ -8,8 +8,13 @@ import (
 	"time"
 )
 
-// ErrRepairLeaseLost indicates that repair I/O was cancelled after renewal failed.
-var ErrRepairLeaseLost = errors.New("carrack repair write lease was lost")
+var (
+	// ErrRepairLeaseLost indicates that repair I/O was cancelled after renewal failed.
+	ErrRepairLeaseLost = errors.New("carrack repair write lease was lost")
+	// ErrRepairOperationFailed indicates that recovery invalidated an exact
+	// idempotent repair before it could complete.
+	ErrRepairOperationFailed = errors.New("carrack repair operation previously failed")
+)
 
 // ControlledRepairer coordinates one location-preserving missing-object repair.
 type ControlledRepairer struct {
@@ -30,10 +35,11 @@ type ControlledRepairRequest struct {
 
 // ControlledRepairResult contains the pinned plan, verified writes, and commit.
 type ControlledRepairResult struct {
-	Operation  RepairOperation
-	Plan       RepairPlan
-	Repair     RepairResult
-	Completion CompletedRepair
+	Operation        RepairOperation
+	Plan             RepairPlan
+	Repair           RepairResult
+	Completion       CompletedRepair
+	AlreadyCompleted bool
 }
 
 // NewControlledRepairer constructs a repair coordinator with renewable fencing.
@@ -82,6 +88,23 @@ func (coordinator *ControlledRepairer) Repair(
 	})
 	if err != nil {
 		return ControlledRepairResult{}, fmt.Errorf("create controlled repair: %w", err)
+	}
+
+	switch operation.State {
+	case operationStateSucceeded:
+		return completedControlledRepair(operation), nil
+	case operationStateFailed, "cancelled":
+		return ControlledRepairResult{Operation: operation}, fmt.Errorf(
+			"%w: operation %s",
+			ErrRepairOperationFailed,
+			operation.ID,
+		)
+	case operationStatePlanned, operationStateRunning:
+	default:
+		return ControlledRepairResult{}, fmt.Errorf(
+			"%w: unsupported controlled repair state",
+			ErrControlPlaneResponse,
+		)
 	}
 
 	lease, err := coordinator.control.ClaimRepairOperation(ctx, operation, coordinator.leaseSeconds)
@@ -144,6 +167,19 @@ func (coordinator *ControlledRepairer) Repair(
 	return ControlledRepairResult{
 		Operation: operation, Plan: plan, Repair: repaired, Completion: completion,
 	}, nil
+}
+
+func completedControlledRepair(operation RepairOperation) ControlledRepairResult {
+	return ControlledRepairResult{
+		Operation: operation,
+		Completion: CompletedRepair{
+			OperationID: operation.ID, ManifestSHA256: operation.ManifestSHA256,
+			State: operationStateSucceeded, ObjectsRepaired: operation.ExpectedObjectCount,
+			LocationsRepaired: operation.ExpectedTargetCount,
+			CiphertextBytes:   operation.UsefulBytesTotal, RecoveryRevision: operation.RecoveryRevision,
+		},
+		AlreadyCompleted: true,
+	}
 }
 
 func failControlledRepair(
