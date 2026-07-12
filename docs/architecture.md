@@ -255,6 +255,18 @@ lease is released. A client crash can therefore leave only content-addressed
 provider objects, an immutable sidecar, R2 metadata, and unreachable D1 staging
 rows.
 
+A deterministic replication crash matrix interrupts once immediately before
+and after each provider payload or sidecar write and its independent readback,
+then repeats the exact replication request. It verifies that replay converges
+on the expected content-addressed objects, recovery coverage, and digests
+without leaving local staging files. A companion lost-response matrix wraps
+immutable R2 staging plus both Copy and Move destination-publication endpoints.
+It distinguishes requests stopped before the remote boundary from responses
+lost after the logical commit, requires byte-identical retries, and permits
+only one logical commit. Move source tombstoning and physical deletion remain
+separate saga boundaries and production concurrency remains gated on the full
+fault-injection suite.
+
 ### Move
 
 Move is a saga, not a cross-provider transaction:
