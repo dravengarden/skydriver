@@ -1247,3 +1247,94 @@ verify_recovery=$(curl --silent --show-error --fail-with-body \
     '{lease_id: $lease_id, incarnation: $incarnation, fencing_token: $fence}')" \
   "$base_url/api/v1/verifications/$verify_operation_id/manifest")
 [[ "$verify_recovery" == "$move_final_recovery" ]]
+
+verify_completion=$(jq -cn \
+  --arg lease_id "$(jq -r .lease_id <<<"$verify_lease")" \
+  --arg incarnation "$(jq -r .incarnation <<<"$verify_lease")" \
+  --arg manifest_sha "$restore_manifest_sha" \
+  --argjson fence "$(jq -r .fencing_token <<<"$verify_lease")" '{
+    lease_id: $lease_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    manifest_sha256: $manifest_sha,
+    evidence: [{
+      extent_sha256: "2222222222222222222222222222222222222222222222222222222222222222",
+      driver_id: "copy-driver",
+      storage_key: "copy/payload",
+      offset: 0,
+      length: 18,
+      condition: "verified",
+      observed_sha256: "2222222222222222222222222222222222222222222222222222222222222222"
+    }]
+  }')
+completed_verify_response=$(curl --silent --show-error --write-out $'\n%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$verify_completion" \
+  "$base_url/api/v1/verifications/$verify_operation_id/complete")
+completed_verify_status=${completed_verify_response##*$'\n'}
+completed_verify=${completed_verify_response%$'\n'*}
+if [[ "$completed_verify_status" != 200 ]]; then
+  echo "verify completion failed ($completed_verify_status): $completed_verify" >&2
+  exit 1
+fi
+jq -e --arg operation_id "$verify_operation_id" --arg manifest_sha "$restore_manifest_sha" '
+  .operation_id == $operation_id and .manifest_sha256 == $manifest_sha and
+  .state == "succeeded" and .verified == 1 and .missing == 0 and
+  .corrupt == 0 and .unavailable == 0
+' <<<"$completed_verify" >/dev/null
+
+replayed_verify_completion=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$verify_completion" \
+  "$base_url/api/v1/verifications/$verify_operation_id/complete")
+[[ "$replayed_verify_completion" == "$completed_verify" ]]
+
+changed_verify_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.evidence[0].condition = "corrupt"' <<<"$verify_completion")" \
+  "$base_url/api/v1/verifications/$verify_operation_id/complete")
+[[ "$changed_verify_status" == 409 ]]
+
+missing_verify_request=$(jq -cn --arg manifest_sha "$restore_manifest_sha" '{
+  namespace_id: "202122232425262728292a2b2c2d2e2f",
+  manifest_sha256: $manifest_sha,
+  driver_id: "move-driver",
+  idempotency_key: "worker-e2e-verify-missing-move-driver"
+}')
+missing_verify_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$missing_verify_request" \
+  "$base_url/api/v1/verifications")
+missing_verify_id=$(jq -r .id <<<"$missing_verify_operation")
+missing_verify_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/operations/$missing_verify_id/claim")
+missing_verify_completion=$(jq -cn \
+  --arg lease_id "$(jq -r .lease_id <<<"$missing_verify_lease")" \
+  --arg incarnation "$(jq -r .incarnation <<<"$missing_verify_lease")" \
+  --arg manifest_sha "$restore_manifest_sha" \
+  --argjson fence "$(jq -r .fencing_token <<<"$missing_verify_lease")" '{
+    lease_id: $lease_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    manifest_sha256: $manifest_sha,
+    evidence: [{
+      extent_sha256: "2222222222222222222222222222222222222222222222222222222222222222",
+      driver_id: "move-driver",
+      storage_key: "move/payload",
+      offset: 0,
+      length: 18,
+      condition: "missing"
+    }]
+  }')
+completed_missing_verify=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$missing_verify_completion" \
+  "$base_url/api/v1/verifications/$missing_verify_id/complete")
+jq -e '.state == "succeeded" and .verified == 0 and .missing == 1' \
+  <<<"$completed_missing_verify" >/dev/null
+
+missing_location_reverify_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.idempotency_key = "worker-e2e-reverify-missing-move-driver"' \
+    <<<"$missing_verify_request")" \
+  "$base_url/api/v1/verifications")
+[[ "$missing_location_reverify_status" == 409 ]]

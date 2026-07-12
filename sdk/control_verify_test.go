@@ -38,7 +38,7 @@ func TestControlClientCreatesAndClaimsPinnedVerification(t *testing.T) {
 				t.Errorf("decode create body: %v", err)
 			}
 
-			if body["driver_id"] != "local-main" || body["manifest_sha256"] != manifestSHA256 {
+			if body["driver_id"] != "memory" || body["manifest_sha256"] != manifestSHA256 {
 				t.Errorf("unexpected create body: %#v", body)
 			}
 
@@ -47,7 +47,7 @@ func TestControlClientCreatesAndClaimsPinnedVerification(t *testing.T) {
 				Kind: "verify", State: "planned", Phase: "planned", RequestedBy: "client-1",
 				Incarnation: incarnation, Revision: 1, UsefulBytesTotal: 18,
 				VersionID: "version-1", ManifestSHA256: manifestSHA256, RecoveryRevision: 3,
-				DriverID: "local-main", CreatedAt: 1, UpdatedAt: 1,
+				DriverID: "memory", CreatedAt: 1, UpdatedAt: 1,
 			}); err != nil {
 				t.Errorf("encode operation response: %v", err)
 			}
@@ -63,6 +63,12 @@ func TestControlClientCreatesAndClaimsPinnedVerification(t *testing.T) {
 			if err := json.NewEncoder(response).Encode(recovery); err != nil {
 				t.Errorf("encode recovery response: %v", err)
 			}
+		case "/api/v1/verifications/" + operationID + "/complete":
+			if err := json.NewEncoder(response).Encode(sdk.CompletedVerify{
+				OperationID: operationID, ManifestSHA256: manifestSHA256, State: "succeeded", Verified: 1,
+			}); err != nil {
+				t.Errorf("encode completion response: %v", err)
+			}
 		default:
 			http.NotFound(response, request)
 		}
@@ -76,7 +82,7 @@ func TestControlClientCreatesAndClaimsPinnedVerification(t *testing.T) {
 
 	operation, err := client.CreateVerifyOperation(context.Background(), sdk.CreateVerifyOperationRequest{
 		NamespaceID: "202122232425262728292a2b2c2d2e2f", ManifestSHA256: manifestSHA256,
-		DriverID: "local-main", IdempotencyKey: "verify-version-1-local-main",
+		DriverID: "memory", IdempotencyKey: "verify-version-1-memory",
 	})
 	if err != nil {
 		t.Fatalf("create verify operation: %v", err)
@@ -92,7 +98,23 @@ func TestControlClientCreatesAndClaimsPinnedVerification(t *testing.T) {
 		t.Fatalf("fetch verify manifest: %v", err)
 	}
 
-	if lease.FencingToken != 1 || operation.RecoveryRevision != 3 || pinned.ManifestSHA256 != manifestSHA256 {
+	result := sdk.VerificationResult{
+		ManifestSHA256: manifestSHA256, State: sdk.VerificationHealthy, Verified: 1,
+		Evidence: []sdk.VerificationEvidence{{
+			ExtentSHA256: recovery.Locations[0].ExtentSHA256,
+			DriverID:     recovery.Locations[0].DriverID, StorageKey: recovery.Locations[0].StorageKey,
+			Offset: recovery.Locations[0].Offset, Length: recovery.Locations[0].Length,
+			Condition: sdk.VerificationVerified, ObservedSHA256: recovery.Locations[0].ExtentSHA256,
+		}},
+	}
+
+	completed, err := client.CompleteVerify(context.Background(), operation, lease, result)
+	if err != nil {
+		t.Fatalf("complete verify operation: %v", err)
+	}
+
+	if lease.FencingToken != 1 || operation.RecoveryRevision != 3 ||
+		pinned.ManifestSHA256 != manifestSHA256 || completed.Verified != 1 {
 		t.Fatalf("unexpected pinned verification: operation=%+v lease=%+v", operation, lease)
 	}
 }

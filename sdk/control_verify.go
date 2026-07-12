@@ -50,6 +50,25 @@ type verifyManifestBody struct {
 	FencingToken uint64 `json:"fencing_token"`
 }
 
+type completeVerifyBody struct {
+	LeaseID        string                 `json:"lease_id"`
+	Incarnation    string                 `json:"incarnation"`
+	FencingToken   uint64                 `json:"fencing_token"`
+	ManifestSHA256 string                 `json:"manifest_sha256"`
+	Evidence       []VerificationEvidence `json:"evidence"`
+}
+
+// CompletedVerify confirms durable evidence and released operation ownership.
+type CompletedVerify struct {
+	OperationID    string `json:"operation_id"`
+	ManifestSHA256 string `json:"manifest_sha256"`
+	State          string `json:"state"`
+	Verified       uint64 `json:"verified"`
+	Missing        uint64 `json:"missing"`
+	Corrupt        uint64 `json:"corrupt"`
+	Unavailable    uint64 `json:"unavailable"`
+}
+
 // CreateVerifyOperation creates or returns a client-owned verification target.
 func (client *ControlClient) CreateVerifyOperation(
 	ctx context.Context,
@@ -130,6 +149,45 @@ func (client *ControlClient) FetchVerifyManifest(
 
 	if response.ManifestSHA256 != operation.ManifestSHA256 {
 		return manifest.RecoveryManifest{}, fmt.Errorf("%w: verify manifest identity changed", ErrControlPlaneResponse)
+	}
+
+	return response, nil
+}
+
+// CompleteVerify atomically records the complete selected-driver evidence set.
+func (client *ControlClient) CompleteVerify(
+	ctx context.Context,
+	operation VerifyOperation,
+	lease OperationLease,
+	result VerificationResult,
+) (CompletedVerify, error) {
+	if lease.OperationID != operation.ID || lease.Incarnation != operation.Incarnation ||
+		lease.LeaseID == "" || lease.FencingToken == 0 ||
+		result.ManifestSHA256 != operation.ManifestSHA256 || len(result.Evidence) == 0 {
+		return CompletedVerify{}, fmt.Errorf("%w: invalid verify completion", ErrInvalidControlPlane)
+	}
+
+	body, err := json.Marshal(completeVerifyBody{
+		LeaseID: lease.LeaseID, Incarnation: lease.Incarnation,
+		FencingToken: lease.FencingToken, ManifestSHA256: result.ManifestSHA256,
+		Evidence: result.Evidence,
+	})
+	if err != nil {
+		return CompletedVerify{}, fmt.Errorf("marshal verify completion: %w", err)
+	}
+
+	var response CompletedVerify
+
+	path := "/api/v1/verifications/" + operation.ID + "/complete"
+	if err := client.authenticatedPost(ctx, path, body, &response); err != nil {
+		return CompletedVerify{}, err
+	}
+
+	if response.OperationID != operation.ID || response.ManifestSHA256 != operation.ManifestSHA256 ||
+		response.State != operationStateSucceeded || response.Verified != result.Verified ||
+		response.Missing != result.Missing || response.Corrupt != result.Corrupt ||
+		response.Unavailable != result.Unavailable {
+		return CompletedVerify{}, fmt.Errorf("%w: verify completion identity changed", ErrControlPlaneResponse)
 	}
 
 	return response, nil

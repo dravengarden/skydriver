@@ -542,12 +542,22 @@ INSERT INTO verify_intents (
 UPDATE operations
 SET state = 'running', phase = 'verifying', revision = revision + 1, updated_at = 6
 WHERE id = 'verify-operation-1';
+INSERT INTO leases (
+  id, resource_kind, resource_id, lease_kind, owner_client_id, operation_id,
+  fencing_token, incarnation, expires_at, created_at, updated_at
+)
+SELECT
+  'verify-lease-1', 'operation', 'verify-operation-1', 'write', 'client-1',
+  'verify-operation-1', 1, incarnation, unixepoch() + 60, 6, 6
+FROM control_plane_state WHERE singleton = 1;
 INSERT INTO integrity_observations (
-  operation_id, location_id, condition, evidence_json, observed_at
+  operation_id, location_id, condition, evidence_json, observed_at,
+  lease_id, incarnation, fencing_token
 ) VALUES (
   'verify-operation-1', 'location-1', 'verified',
   '{\"extent_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\"}',
-  6
+  6, 'verify-lease-1',
+  (SELECT incarnation FROM control_plane_state WHERE singleton = 1), 1
 );
 INSERT INTO protocol_assertions
 SELECT intent.recovery_revision = 1
