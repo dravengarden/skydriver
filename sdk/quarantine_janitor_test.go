@@ -117,6 +117,7 @@ func TestQuarantineJanitorRecoversAfterLostCompletionResponse(t *testing.T) {
 type quarantineJanitorFixture struct {
 	janitor     *sdk.QuarantineJanitor
 	target      *quarantineTestProvider
+	server      *httptest.Server
 	operationID string
 
 	mutex     sync.Mutex
@@ -145,7 +146,7 @@ func newQuarantineJanitorFixture(
 		attempt:     1,
 	}
 	token, encodedToken := testClientToken(t)
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+	fixture.server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Header.Get("Authorization") != "Bearer "+encodedToken {
 			http.Error(response, "invalid authorization", http.StatusUnauthorized)
 
@@ -237,9 +238,9 @@ func newQuarantineJanitorFixture(
 			http.NotFound(response, request)
 		}
 	}))
-	t.Cleanup(server.Close)
+	t.Cleanup(fixture.server.Close)
 
-	control, err := sdk.NewControlClient(server.URL, token, server.Client())
+	control, err := sdk.NewControlClient(fixture.server.URL, token, fixture.server.Client())
 	if err != nil {
 		t.Fatalf("construct quarantine control client: %v", err)
 	}
@@ -288,6 +289,7 @@ type quarantineTestProvider struct {
 	deleteErr      error
 	removeOnDelete bool
 	deleted        []string
+	crashScript    *janitorCrashScript
 }
 
 func (target *quarantineTestProvider) Stat(context.Context, string) (provider.Object, error) {
@@ -303,8 +305,16 @@ func (*quarantineTestProvider) OpenRange(context.Context, string, uint64, uint64
 
 func (target *quarantineTestProvider) Delete(_ context.Context, key string) error {
 	target.mutex.Lock()
-	defer target.mutex.Unlock()
+	script := target.crashScript
+	target.mutex.Unlock()
 
+	if script != nil {
+		if err := script.hit(crashBeforeProviderDelete); err != nil {
+			return err
+		}
+	}
+
+	target.mutex.Lock()
 	target.deleted = append(target.deleted, key)
 	deleteErr := target.deleteErr
 	target.deleteErr = nil
@@ -314,8 +324,13 @@ func (target *quarantineTestProvider) Delete(_ context.Context, key string) erro
 		target.statErr = provider.ErrObjectNotFound
 		target.removeOnDelete = false
 	}
+	target.mutex.Unlock()
 
-	return deleteErr
+	if script == nil {
+		return deleteErr
+	}
+
+	return errors.Join(deleteErr, script.hit(crashAfterProviderDelete))
 }
 
 func (target *quarantineTestProvider) failDeleteOnce(err error, remove bool) {
@@ -324,6 +339,14 @@ func (target *quarantineTestProvider) failDeleteOnce(err error, remove bool) {
 
 	target.deleteErr = err
 	target.removeOnDelete = remove
+}
+
+func (target *quarantineTestProvider) enableCrashDelete(script *janitorCrashScript) {
+	target.mutex.Lock()
+	defer target.mutex.Unlock()
+
+	target.crashScript = script
+	target.removeOnDelete = true
 }
 
 func (target *quarantineTestProvider) deleteCount() int {

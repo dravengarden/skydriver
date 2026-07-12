@@ -45,6 +45,7 @@ func TestGCJanitorReportsProviderFailure(t *testing.T) {
 type gcJanitorFixture struct {
 	janitor     *sdk.GCJanitor
 	deleter     *recordingDeleter
+	server      *httptest.Server
 	operationID string
 
 	mutex     sync.Mutex
@@ -61,7 +62,7 @@ func newGCJanitorFixture(t *testing.T, deleteErr error) *gcJanitorFixture {
 		deleter: &recordingDeleter{err: deleteErr}, operationID: operationID,
 	}
 	token, encodedToken := testClientToken(t)
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+	fixture.server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Header.Get("Authorization") != "Bearer "+encodedToken {
 			http.Error(response, "invalid authorization", http.StatusUnauthorized)
 
@@ -109,9 +110,9 @@ func newGCJanitorFixture(t *testing.T, deleteErr error) *gcJanitorFixture {
 			http.NotFound(response, request)
 		}
 	}))
-	t.Cleanup(server.Close)
+	t.Cleanup(fixture.server.Close)
 
-	control, err := sdk.NewControlClient(server.URL, token, server.Client())
+	control, err := sdk.NewControlClient(fixture.server.URL, token, fixture.server.Client())
 	if err != nil {
 		t.Fatalf("construct GC janitor control client: %v", err)
 	}

@@ -267,6 +267,15 @@ byte-identical retries, and permits only one logical commit. Move physical
 deletion remains a separate janitor boundary and production concurrency remains
 gated on the full fault-injection suite.
 
+A deterministic destructive-janitor matrix interrupts Move, GC, and quarantine
+cleanup immediately before and after task claim, final revalidation, provider
+delete, and D1 completion. Move and GC may repeat one idempotent provider delete
+when its result is ambiguous or completion was never submitted. Quarantine
+rechecks exact provider identity on retry, converts an already applied delete to
+`already_absent`, and never repeats the physical delete. Every scenario must
+converge to the terminal workflow state; this focused matrix does not by itself
+enable automatic scheduling.
+
 ### Move
 
 Move is a saga, not a cross-provider transaction:

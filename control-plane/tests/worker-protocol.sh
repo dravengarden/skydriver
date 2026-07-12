@@ -1956,7 +1956,7 @@ too_early_acknowledge_status=$(curl --silent --output /dev/null --write-out '%{h
   --persist-to "$state_directory" \
   --command "
     UPDATE quarantined_provider_objects
-    SET quarantine_until = unixepoch() - 1
+    SET quarantine_until = first_observed_at
     WHERE driver_id = 'copy-driver' AND storage_key = 'copy/orphan-upload';
   " >/dev/null
 
@@ -2299,7 +2299,7 @@ prepare_claimed_quarantine_delete() {
     --persist-to "$state_directory" \
     --command "
       UPDATE quarantined_provider_objects
-      SET quarantine_until = unixepoch() - 1
+      SET quarantine_until = first_observed_at
       WHERE driver_id = 'copy-driver' AND storage_key = '$storage_key';
     " >/dev/null
 
@@ -2591,7 +2591,7 @@ jq -e '
   --persist-to "$state_directory" \
   --command "
     UPDATE quarantined_provider_objects
-    SET quarantine_until = unixepoch() - 1
+    SET quarantine_until = first_observed_at
     WHERE driver_id = 'copy-driver' AND storage_key = 'copy/orphan-rotated';
   " >/dev/null
 

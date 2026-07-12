@@ -187,18 +187,40 @@ func (fixture *moveJanitorFixture) failureReported() bool {
 }
 
 type recordingDeleter struct {
-	mutex sync.Mutex
-	keys  []string
-	err   error
+	mutex       sync.Mutex
+	keys        []string
+	err         error
+	crashScript *janitorCrashScript
 }
 
 func (deleter *recordingDeleter) Delete(_ context.Context, key string) error {
 	deleter.mutex.Lock()
+	script := deleter.crashScript
+	deleter.mutex.Unlock()
+
+	if script != nil {
+		if err := script.hit(crashBeforeProviderDelete); err != nil {
+			return err
+		}
+	}
+
+	deleter.mutex.Lock()
+	deleter.keys = append(deleter.keys, key)
+	deleteErr := deleter.err
+	deleter.mutex.Unlock()
+
+	if script == nil {
+		return deleteErr
+	}
+
+	return errors.Join(deleteErr, script.hit(crashAfterProviderDelete))
+}
+
+func (deleter *recordingDeleter) setCrashScript(script *janitorCrashScript) {
+	deleter.mutex.Lock()
 	defer deleter.mutex.Unlock()
 
-	deleter.keys = append(deleter.keys, key)
-
-	return deleter.err
+	deleter.crashScript = script
 }
 
 func (deleter *recordingDeleter) callCount() int {
