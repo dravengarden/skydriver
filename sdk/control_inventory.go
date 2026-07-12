@@ -36,6 +36,12 @@ type InventoryOperation struct {
 	DriverRevision         uint64 `json:"driver_revision"`
 	Prefix                 string `json:"prefix"`
 	QuarantineGraceSeconds uint64 `json:"quarantine_grace_seconds"`
+	CompletedReportSHA256  string `json:"completed_report_sha256"`
+	CompletedPages         uint64 `json:"completed_pages"`
+	CompletedObjects       uint64 `json:"completed_objects"`
+	CompletedKnown         uint64 `json:"completed_known"`
+	CompletedQuarantined   uint64 `json:"completed_quarantined"`
+	CompletedMissing       uint64 `json:"completed_missing"`
 	CreatedAt              uint64 `json:"created_at"`
 	UpdatedAt              uint64 `json:"updated_at"`
 }
@@ -115,15 +121,66 @@ func (client *ControlClient) CreateInventoryOperation(
 		return InventoryOperation{}, err
 	}
 
-	if response.NamespaceID != requested.NamespaceID || response.DriverID != requested.DriverID ||
-		response.Prefix != requested.Prefix || response.Kind != operationKindReconcile ||
-		!validControlHex(response.ID, 32) || !validControlHex(response.Incarnation, 32) ||
-		response.Revision == 0 || response.DriverRevision == 0 ||
-		response.QuarantineGraceSeconds < 60 || response.QuarantineGraceSeconds > 365*24*60*60 {
+	if !validInventoryOperation(response, requested) {
 		return InventoryOperation{}, fmt.Errorf("%w: invalid inventory operation identity", ErrControlPlaneResponse)
 	}
 
 	return response, nil
+}
+
+func validInventoryOperation(
+	operation InventoryOperation,
+	requested CreateInventoryOperationRequest,
+) bool {
+	return operation.NamespaceID == requested.NamespaceID &&
+		operation.DriverID == requested.DriverID && operation.Prefix == requested.Prefix &&
+		operation.Kind == operationKindReconcile && validInventoryOperationState(operation) &&
+		validInventoryCompletion(operation) && validControlHex(operation.ID, 32) &&
+		validControlHex(operation.Incarnation, 32) &&
+		validControlString(operation.RequestedBy, 2_048) && operation.Revision > 0 &&
+		operation.DriverRevision > 0 && operation.QuarantineGraceSeconds >= 60 &&
+		operation.QuarantineGraceSeconds <= 365*24*60*60 && operation.CreatedAt > 0 &&
+		operation.UpdatedAt >= operation.CreatedAt
+}
+
+func validInventoryOperationState(operation InventoryOperation) bool {
+	switch operation.State {
+	case operationStatePlanned:
+		return operation.Phase == operationStatePlanned
+	case operationStateRunning:
+		return operation.Phase == "inventorying"
+	case operationStateSucceeded:
+		return operation.Phase == operationPhaseCompleted
+	case operationStateFailed, operationStateCancelled:
+		return operation.Phase == operationPhaseRecovered
+	default:
+		return false
+	}
+}
+
+func validInventoryCompletion(operation InventoryOperation) bool {
+	counts := []uint64{
+		operation.CompletedPages,
+		operation.CompletedObjects,
+		operation.CompletedKnown,
+		operation.CompletedQuarantined,
+		operation.CompletedMissing,
+	}
+	for _, count := range counts {
+		if count > math.MaxInt64 {
+			return false
+		}
+	}
+
+	if operation.State == operationStateSucceeded {
+		return validControlHex(operation.CompletedReportSHA256, 64) &&
+			operation.CompletedPages > 0 && operation.CompletedKnown <= operation.CompletedObjects &&
+			operation.CompletedQuarantined == operation.CompletedObjects-operation.CompletedKnown
+	}
+
+	return operation.CompletedReportSHA256 == "" && operation.CompletedPages == 0 &&
+		operation.CompletedObjects == 0 && operation.CompletedKnown == 0 &&
+		operation.CompletedQuarantined == 0 && operation.CompletedMissing == 0
 }
 
 // ClaimInventoryOperation acquires or renews the inventory report fence.

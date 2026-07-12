@@ -2043,11 +2043,29 @@ replayed_inventory_completion=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" --data "$inventory_completion_request" \
   "$base_url/api/v1/inventory-reconciliations/$inventory_id/complete")
 [[ "$replayed_inventory_completion" == "$inventory_completion" ]]
+stale_inventory_completion_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.fencing_token += 1' <<<"$inventory_completion_request")" \
+  "$base_url/api/v1/inventory-reconciliations/$inventory_id/complete")
+[[ "$stale_inventory_completion_status" == 409 ]]
 changed_inventory_completion_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   -H "$authorization" -H "$json" \
   --data "$(jq '.report_sha256 = ("0" * 64)' <<<"$inventory_completion_request")" \
   "$base_url/api/v1/inventory-reconciliations/$inventory_id/complete")
 [[ "$changed_inventory_completion_status" == 409 ]]
+completed_inventory_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$inventory_request" \
+  "$base_url/api/v1/inventory-reconciliations")
+replayed_completed_inventory_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$inventory_request" \
+  "$base_url/api/v1/inventory-reconciliations")
+[[ "$replayed_completed_inventory_operation" == "$completed_inventory_operation" ]]
+jq -e --arg operation_id "$inventory_id" --arg report_sha "$inventory_report_sha" '
+  .id == $operation_id and .state == "succeeded" and .phase == "completed" and
+  .completed_report_sha256 == $report_sha and .completed_pages == 1 and
+  .completed_objects == 4 and .completed_known == 0 and
+  .completed_quarantined == 4 and .completed_missing == 1
+' <<<"$completed_inventory_operation" >/dev/null
 inventory_findings=$(curl --silent --show-error --fail-with-body \
   -H "$session" "$base_url/api/integrity/findings")
 jq -e '

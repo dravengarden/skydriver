@@ -10,8 +10,13 @@ import (
 	"github.com/dravengarden/carrack/provider"
 )
 
-// ErrInventoryLeaseLost indicates that enumeration stopped after renewal failed.
-var ErrInventoryLeaseLost = errors.New("carrack inventory write lease was lost")
+var (
+	// ErrInventoryLeaseLost indicates that enumeration stopped after renewal failed.
+	ErrInventoryLeaseLost = errors.New("carrack inventory write lease was lost")
+	// ErrInventoryOperationFailed indicates that control-plane recovery invalidated
+	// an exact idempotent inventory before it could complete.
+	ErrInventoryOperationFailed = errors.New("carrack inventory operation previously failed")
+)
 
 // ControlledInventoryReconciler coordinates one complete provider inventory report.
 type ControlledInventoryReconciler struct {
@@ -31,8 +36,9 @@ type ControlledInventoryRequest struct {
 
 // ControlledInventoryResult contains the pinned scope and durable classifications.
 type ControlledInventoryResult struct {
-	Operation  InventoryOperation
-	Completion CompletedInventory
+	Operation        InventoryOperation
+	Completion       CompletedInventory
+	AlreadyCompleted bool
 }
 
 // NewControlledInventoryReconciler constructs an inventory coordinator.
@@ -77,6 +83,10 @@ func (coordinator *ControlledInventoryReconciler) Reconcile(
 	)
 	if err != nil {
 		return ControlledInventoryResult{}, fmt.Errorf("create controlled inventory: %w", err)
+	}
+
+	if terminal, isTerminal, terminalErr := terminalControlledInventory(operation); isTerminal {
+		return terminal, terminalErr
 	}
 
 	lease, err := coordinator.control.ClaimInventoryOperation(ctx, operation, coordinator.leaseSeconds)
@@ -163,6 +173,41 @@ func (coordinator *ControlledInventoryReconciler) Reconcile(
 	}
 
 	return ControlledInventoryResult{Operation: operation, Completion: completion}, nil
+}
+
+func completedControlledInventory(operation InventoryOperation) ControlledInventoryResult {
+	return ControlledInventoryResult{
+		Operation: operation,
+		Completion: CompletedInventory{
+			OperationID: operation.ID, State: operationStateSucceeded,
+			ReportSHA256: operation.CompletedReportSHA256, Pages: operation.CompletedPages,
+			Objects: operation.CompletedObjects, Known: operation.CompletedKnown,
+			Quarantined: operation.CompletedQuarantined, Missing: operation.CompletedMissing,
+		},
+		AlreadyCompleted: true,
+	}
+}
+
+func terminalControlledInventory(
+	operation InventoryOperation,
+) (ControlledInventoryResult, bool, error) {
+	switch operation.State {
+	case operationStateSucceeded:
+		return completedControlledInventory(operation), true, nil
+	case operationStateFailed, operationStateCancelled:
+		return ControlledInventoryResult{Operation: operation}, true, fmt.Errorf(
+			"%w: operation %s",
+			ErrInventoryOperationFailed,
+			operation.ID,
+		)
+	case operationStatePlanned, operationStateRunning:
+		return ControlledInventoryResult{}, false, nil
+	default:
+		return ControlledInventoryResult{}, true, fmt.Errorf(
+			"%w: unsupported controlled inventory state",
+			ErrControlPlaneResponse,
+		)
+	}
 }
 
 func failControlledInventory(

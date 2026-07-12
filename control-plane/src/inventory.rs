@@ -52,6 +52,18 @@ struct InventoryOperation {
     driver_revision: u64,
     prefix: String,
     quarantine_grace_seconds: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completed_report_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completed_pages: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completed_objects: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completed_known: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completed_quarantined: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completed_missing: Option<u64>,
     created_at: u64,
     updated_at: u64,
 }
@@ -137,6 +149,9 @@ struct CountRow {
 
 #[derive(Deserialize)]
 struct CompletionRow {
+    lease_id: String,
+    incarnation: String,
+    fencing_token: u64,
     report_sha256: String,
     page_count: u64,
     object_count: u64,
@@ -176,6 +191,17 @@ pub(crate) async fn create(
     }
 
     let database = env.d1("CARRACK_INDEX")?;
+    if let Some(existing) = find_operation(
+        &database,
+        &requested.namespace_id,
+        &requested.idempotency_key,
+        &client.id,
+    )
+    .await?
+    {
+        return operation_response(&existing, &requested);
+    }
+
     let scope = database
         .prepare(
             "SELECT namespace.retention_policy_json, driver.revision AS driver_revision \
@@ -282,11 +308,7 @@ pub(crate) async fn create(
     let Some(operation) = operation else {
         return Response::error("inventory reconciliation identity conflicts", 409);
     };
-    if operation.driver_id != requested.driver_id || operation.prefix != requested.prefix {
-        return Response::error("idempotency key pins another inventory scope", 409);
-    }
-
-    Response::from_json(&operation)
+    operation_response(&operation, &requested)
 }
 
 #[allow(
@@ -533,9 +555,17 @@ async fn find_operation(
                     operation.phase, operation.requested_by, operation.incarnation, \
                     operation.revision, intent.driver_id, intent.driver_revision, \
                     intent.prefix, intent.quarantine_grace_seconds, \
+                    completion.report_sha256 AS completed_report_sha256, \
+                    completion.page_count AS completed_pages, \
+                    completion.object_count AS completed_objects, \
+                    completion.known_count AS completed_known, \
+                    completion.quarantined_count AS completed_quarantined, \
+                    completion.missing_count AS completed_missing, \
                     operation.created_at, operation.updated_at \
              FROM operations AS operation \
              JOIN inventory_intents AS intent ON intent.operation_id = operation.id \
+             LEFT JOIN inventory_completions AS completion \
+               ON completion.operation_id = operation.id AND completion.state = 'committed' \
              WHERE operation.namespace_id = ?1 AND operation.idempotency_key = ?2 \
                AND operation.requested_by = ?3 AND operation.kind = 'reconcile'",
         )
@@ -546,6 +576,17 @@ async fn find_operation(
         ])?
         .first::<InventoryOperation>(None)
         .await
+}
+
+fn operation_response(
+    operation: &InventoryOperation,
+    requested: &CreateRequest,
+) -> Result<Response> {
+    if operation.driver_id != requested.driver_id || operation.prefix != requested.prefix {
+        return Response::error("idempotency key pins another inventory scope", 409);
+    }
+
+    Response::from_json(operation)
 }
 
 async fn load_live_inventory(
@@ -1292,6 +1333,15 @@ async fn replay_completion(
     let Some(completion) = completion else {
         return Ok(None);
     };
+    if completion.lease_id != requested.lease_id
+        || completion.incarnation != requested.incarnation
+        || completion.fencing_token != requested.fencing_token
+    {
+        return Ok(Some(Response::error(
+            "inventory completion replay changed its fence",
+            409,
+        )?));
+    }
     if completion.report_sha256 != requested.report_sha256
         || completion.page_count != requested.last_sequence
     {
@@ -1311,11 +1361,14 @@ async fn load_committed_completion(
 ) -> Result<Option<CompletionRow>> {
     database
         .prepare(
-            "SELECT completion.report_sha256, completion.page_count, \
+            "SELECT lease.id AS lease_id, lease.incarnation, completion.fencing_token, \
+                    completion.report_sha256, completion.page_count, \
                     completion.object_count, completion.known_count, \
                     completion.quarantined_count, completion.missing_count \
              FROM inventory_completions AS completion \
              JOIN operations AS operation ON operation.id = completion.operation_id \
+             JOIN leases AS lease ON lease.operation_id = operation.id \
+               AND lease.fencing_token = completion.fencing_token \
              WHERE operation.id = ?1 AND operation.kind = 'reconcile' \
                AND operation.state = 'succeeded' AND operation.requested_by = ?2 \
                AND completion.state = 'committed'",

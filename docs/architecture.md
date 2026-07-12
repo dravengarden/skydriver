@@ -789,6 +789,23 @@ scan; that observation creates evidence, never deletion authority. Adoption and
 repair scheduling are separate future fenced operations; the inventory path
 itself performs no provider writes or deletes.
 
+An exact idempotent inventory create returning `succeeded/completed` carries
+the committed report digest and all page, object, classification, and missing
+counts. The SDK converts it to an `AlreadyCompleted` receipt without listing
+the provider again; a recovered `failed` or `cancelled` operation returns a
+stable terminal error. Direct completion replay additionally requires the
+original lease, incarnation, and fencing token. Each report page remains
+isolated by attempt fence and accepts only the byte-identical sequence, cursor,
+object set, and digest.
+
+A 14-point deterministic matrix uses two provider pages and interrupts
+immediately before and after operation creation, claim, each provider `List`,
+each D1 page append, and final completion. Retrying from the first cursor may
+replay already committed pages but cannot duplicate their logical rows or
+change the keyset chain. Every case converges on two exact pages and one
+classification commit; final completion response loss is recovered from the
+committed operation receipt without another provider listing.
+
 Quarantine review is an explicit two-operation state machine:
 
 ```text
