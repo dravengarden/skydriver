@@ -109,6 +109,19 @@ different namespace rejects completion instead of guessing ownership. Cron
 scheduling, adoption, and quarantine cleanup remain disabled pending their own
 fenced protocols and production fault-injection gates.
 
+After the integrity console's `quarantine_until`, use `carrack quarantine
+acknowledge` with the displayed quarantine revision and a durable review reason.
+Then use `carrack quarantine tombstone` with the newly acknowledged revision to
+start a second `inventory_quarantine_seconds` grace. Both commands require an
+`administrator` client token and reject stale object, driver, provider-version,
+ETag, size, revision, incarnation, or lease identities. Their audit records and
+integrity findings remain in D1.
+
+These commands do not delete provider bytes. `delete_after` is only future
+eligibility metadata; there is intentionally no quarantine sweep command until
+the provider-stat and final fenced revalidation protocol is implemented and
+passes the production fault-injection gate.
+
 ## Integrity findings
 
 The authenticated dashboard polls open integrity findings every 15 seconds. It

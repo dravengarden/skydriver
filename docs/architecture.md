@@ -664,6 +664,32 @@ state because provider listing may be stale. Adoption, repair scheduling, and
 quarantine deletion are separate future fenced operations; the inventory path
 performs no provider writes or deletes.
 
+Quarantine review is an explicit two-operation state machine:
+
+```text
+quarantined --acknowledge exact revision after initial grace--> acknowledged
+acknowledged --tombstone exact revision-----------------------> tombstoned
+```
+
+Each transition uses a short `gc` operation with its own component, attempt,
+write lease, incarnation, and fencing token. Creation pins driver revision,
+storage key, optional provider version and ETag, size, quarantine revision,
+operator reason, and the current `inventory_quarantine_seconds`. Completion
+rechecks that the object still has no non-deleted location or non-missing
+recovery sidecar, changes the object and integrity-finding states in one D1
+batch, records an audit event, succeeds the operation, and releases the lease.
+Exact completion is replayable; any changed or stale revision is rejected.
+
+Acknowledgement is allowed only after the discovery quarantine expires.
+Tombstoning starts a second full `inventory_quarantine_seconds` grace and
+records `delete_after`. Repeated inventory preserves acknowledged or tombstoned
+state only while provider identity is unchanged. A changed identity restarts
+quarantine and resolves the superseded finding; a newly indexed location or
+recovery sidecar resolves cleanup intent. No endpoint currently turns
+`tombstoned` into `deleted`: physical cleanup requires a later janitor to stat
+the exact object and repeat identity, reachability, incarnation, fence, and
+grace checks immediately before provider I/O.
+
 Cloudflare Cron Triggers are the planned scheduler for mark, expired-lease
 cleanup, and reconciliation planning; production scheduling is not enabled in
 the current explicit-operator implementation. D1 Time Travel is a control-plane

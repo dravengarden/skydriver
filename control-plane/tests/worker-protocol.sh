@@ -1911,7 +1911,8 @@ jq -e '
     .subject_kind == "provider_object" and .condition == "quarantined" and
     .state == "open" and .evidence.driver_id == "copy-driver" and
     .evidence.storage_key == "copy/orphan-upload" and
-    .required_action == "Review evidence before adoption, relocation, or cleanup."
+    .quarantine_revision == 1 and (.quarantine_until | type) == "number" and
+    .required_action == "After quarantine expires, acknowledge the exact object revision before cleanup."
   )) and
   (.findings | any(
     .subject_kind == "location" and .condition == "missing" and
@@ -1920,6 +1921,182 @@ jq -e '
     .evidence.source == "provider_inventory"
   ))
 ' <<<"$inventory_findings" >/dev/null
+
+too_early_acknowledge_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn '{
+    namespace_id: "202122232425262728292a2b2c2d2e2f",
+    action: "acknowledge",
+    driver_id: "copy-driver",
+    storage_key: "copy/orphan-upload",
+    expected_revision: 1,
+    reason: "review attempted before quarantine expiry",
+    idempotency_key: "worker-e2e-too-early-acknowledgement"
+  }')" \
+  "$base_url/api/v1/quarantine-actions")
+[[ "$too_early_acknowledge_status" == 409 ]]
+
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local \
+  --persist-to "$state_directory" \
+  --command "
+    UPDATE quarantined_provider_objects
+    SET quarantine_until = unixepoch() - 1
+    WHERE driver_id = 'copy-driver' AND storage_key = 'copy/orphan-upload';
+  " >/dev/null
+
+acknowledge_request=$(jq -cn '{
+  namespace_id: "202122232425262728292a2b2c2d2e2f",
+  action: "acknowledge",
+  driver_id: "copy-driver",
+  storage_key: "copy/orphan-upload",
+  expected_revision: 1,
+  reason: "checked recovery catalog and provider ownership records",
+  idempotency_key: "worker-e2e-acknowledge-orphan-v1"
+}')
+acknowledge_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$acknowledge_request" \
+  "$base_url/api/v1/quarantine-actions")
+acknowledge_id=$(jq -r .id <<<"$acknowledge_operation")
+jq -e '
+  .kind == "gc" and .state == "planned" and .action == "acknowledge" and
+  .driver_id == "copy-driver" and .storage_key == "copy/orphan-upload" and
+  .expected_revision == 1 and .provider_version == "orphan-v1" and
+  .etag == "orphan-etag" and .size_bytes == 19 and .grace_seconds == 90
+' <<<"$acknowledge_operation" >/dev/null
+changed_acknowledge_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.reason = "different review"' <<<"$acknowledge_request")" \
+  "$base_url/api/v1/quarantine-actions")
+[[ "$changed_acknowledge_status" == 409 ]]
+acknowledge_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/operations/$acknowledge_id/claim")
+acknowledge_completion_request=$(jq -cn \
+  --arg lease_id "$(jq -r .lease_id <<<"$acknowledge_lease")" \
+  --arg incarnation "$(jq -r .incarnation <<<"$acknowledge_lease")" \
+  --argjson fence "$(jq -r .fencing_token <<<"$acknowledge_lease")" '{
+    lease_id: $lease_id,
+    incarnation: $incarnation,
+    fencing_token: $fence
+  }')
+stale_acknowledge_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.fencing_token += 1' <<<"$acknowledge_completion_request")" \
+  "$base_url/api/v1/quarantine-actions/$acknowledge_id/complete")
+[[ "$stale_acknowledge_status" == 409 ]]
+acknowledged=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$acknowledge_completion_request" \
+  "$base_url/api/v1/quarantine-actions/$acknowledge_id/complete")
+jq -e --arg operation_id "$acknowledge_id" '
+  .operation_id == $operation_id and .action == "acknowledge" and
+  .state == "succeeded" and .quarantine_state == "acknowledged" and
+  .quarantine_revision == 2 and .delete_after == null
+' <<<"$acknowledged" >/dev/null
+replayed_acknowledged=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$acknowledge_completion_request" \
+  "$base_url/api/v1/quarantine-actions/$acknowledge_id/complete")
+[[ "$replayed_acknowledged" == "$acknowledged" ]]
+acknowledged_finding=$(curl --silent --show-error --fail-with-body --get \
+  -H "$session" --data-urlencode "state=acknowledged" \
+  --data-urlencode "condition=quarantined" "$base_url/api/integrity/findings")
+jq -e '
+  (.findings | length) == 1 and .findings[0].quarantine_revision == 2 and
+  .findings[0].location_state == "acknowledged" and
+  .findings[0].acknowledgement_reason == "checked recovery catalog and provider ownership records" and
+  (.findings[0].acknowledged_at | type) == "number" and
+  .findings[0].required_action == "Tombstone the exact acknowledged revision to begin a new deletion grace period."
+' <<<"$acknowledged_finding" >/dev/null
+
+tombstone_request=$(jq -cn '{
+  namespace_id: "202122232425262728292a2b2c2d2e2f",
+  action: "tombstone",
+  driver_id: "copy-driver",
+  storage_key: "copy/orphan-upload",
+  expected_revision: 2,
+  reason: "approved cleanup only after a second grace and final provider recheck",
+  idempotency_key: "worker-e2e-tombstone-orphan-v2"
+}')
+tombstone_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$tombstone_request" \
+  "$base_url/api/v1/quarantine-actions")
+tombstone_id=$(jq -r .id <<<"$tombstone_operation")
+jq -e '
+  .state == "planned" and .action == "tombstone" and .expected_revision == 2 and
+  .driver_id == "copy-driver" and .storage_key == "copy/orphan-upload"
+' <<<"$tombstone_operation" >/dev/null
+tombstone_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/operations/$tombstone_id/claim")
+tombstone_completion_request=$(jq -cn \
+  --arg lease_id "$(jq -r .lease_id <<<"$tombstone_lease")" \
+  --arg incarnation "$(jq -r .incarnation <<<"$tombstone_lease")" \
+  --argjson fence "$(jq -r .fencing_token <<<"$tombstone_lease")" '{
+    lease_id: $lease_id,
+    incarnation: $incarnation,
+    fencing_token: $fence
+  }')
+tombstoned=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$tombstone_completion_request" \
+  "$base_url/api/v1/quarantine-actions/$tombstone_id/complete")
+jq -e --arg operation_id "$tombstone_id" '
+  .operation_id == $operation_id and .action == "tombstone" and
+  .state == "succeeded" and .quarantine_state == "tombstoned" and
+  .quarantine_revision == 3 and (.delete_after | type) == "number"
+' <<<"$tombstoned" >/dev/null
+tombstone_delete_after=$(jq -r .delete_after <<<"$tombstoned")
+tombstoned_finding=$(curl --silent --show-error --fail-with-body --get \
+  -H "$session" --data-urlencode "state=tombstoned" \
+  --data-urlencode "condition=quarantined" "$base_url/api/integrity/findings")
+jq -e --argjson delete_after "$tombstone_delete_after" '
+  (.findings | length) == 1 and .findings[0].quarantine_revision == 3 and
+  .findings[0].location_state == "tombstoned" and
+  .findings[0].tombstone_reason == "approved cleanup only after a second grace and final provider recheck" and
+  .findings[0].delete_after == $delete_after and
+  .findings[0].required_action == "Retain until delete-after; cleanup still requires a fenced provider recheck."
+' <<<"$tombstoned_finding" >/dev/null
+
+repeat_inventory_request=$(jq '.idempotency_key = "worker-e2e-repeat-inventory-copy-prefix"' \
+  <<<"$inventory_request")
+repeat_inventory_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$repeat_inventory_request" \
+  "$base_url/api/v1/inventory-reconciliations")
+repeat_inventory_id=$(jq -r .id <<<"$repeat_inventory_operation")
+repeat_inventory_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/operations/$repeat_inventory_id/claim")
+repeat_inventory_page_request=$(jq \
+  --arg lease_id "$(jq -r .lease_id <<<"$repeat_inventory_lease")" \
+  --arg incarnation "$(jq -r .incarnation <<<"$repeat_inventory_lease")" \
+  --argjson fence "$(jq -r .fencing_token <<<"$repeat_inventory_lease")" '
+    .lease_id = $lease_id | .incarnation = $incarnation | .fencing_token = $fence
+  ' <<<"$inventory_page_request")
+repeat_inventory_page=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$repeat_inventory_page_request" \
+  "$base_url/api/v1/inventory-reconciliations/$repeat_inventory_id/pages")
+repeat_inventory_report_sha=$(printf '%s' \
+  "$(jq -r .report_sha256 <<<"$repeat_inventory_page")" | sha256sum | cut -d' ' -f1)
+repeat_inventory_completion_request=$(jq -cn \
+  --arg lease_id "$(jq -r .lease_id <<<"$repeat_inventory_lease")" \
+  --arg incarnation "$(jq -r .incarnation <<<"$repeat_inventory_lease")" \
+  --arg report_sha "$repeat_inventory_report_sha" \
+  --argjson fence "$(jq -r .fencing_token <<<"$repeat_inventory_lease")" '{
+    lease_id: $lease_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    last_sequence: 1,
+    report_sha256: $report_sha
+  }')
+curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$repeat_inventory_completion_request" \
+  "$base_url/api/v1/inventory-reconciliations/$repeat_inventory_id/complete" >/dev/null
+preserved_tombstone=$(curl --silent --show-error --fail-with-body --get \
+  -H "$session" --data-urlencode "state=tombstoned" \
+  --data-urlencode "condition=quarantined" "$base_url/api/integrity/findings")
+jq -e --argjson delete_after "$tombstone_delete_after" '
+  (.findings | length) == 1 and .findings[0].quarantine_revision == 4 and
+  .findings[0].delete_after == $delete_after and .findings[0].location_state == "tombstoned"
+' <<<"$preserved_tombstone" >/dev/null
 
 single_pack_compact_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   -H "$authorization" -H "$json" \

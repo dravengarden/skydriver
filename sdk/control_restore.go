@@ -344,7 +344,8 @@ func validRestoreOperation(
 	requested CreateRestoreOperationRequest,
 ) bool {
 	return validControlHex(operation.ID, 32) && operation.NamespaceID == requested.NamespaceID &&
-		operation.Kind == "restore" && operation.State == "planned" && operation.Phase == "planned" &&
+		operation.Kind == "restore" && operation.State == operationStatePlanned &&
+		operation.Phase == operationStatePlanned &&
 		validControlHex(operation.Incarnation, 32) && operation.Revision > 0 &&
 		operation.UsefulBytesTotal <= math.MaxInt64 && operation.VersionID != "" &&
 		operation.ObjectID != "" && operation.Generation > 0 &&

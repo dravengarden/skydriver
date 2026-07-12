@@ -335,6 +335,43 @@ open `quarantined` findings. Indexed objects absent from the report open
 change location state. Inventory never adopts an object, edits a manifest, or
 deletes provider bytes.
 
+After the initial `inventory_quarantine_seconds` expires, an administrator may
+record a completed ownership and recovery review for one exact quarantine
+revision. The integrity console shows the required revision:
+
+```bash
+carrack quarantine acknowledge \
+  --control-url https://carrack.example.com \
+  --namespace 202122232425262728292a2b2c2d2e2f \
+  --driver-id local-archive \
+  --storage-key archive/objects/<orphan-key> \
+  --expected-revision <quarantine-revision> \
+  --reason "checked recovery catalog and provider ownership records" \
+  --idempotency-key acknowledge-orphan-2026-07-12
+```
+
+Acknowledgement does not authorize provider I/O. A separate exact-revision
+tombstone starts a second policy-derived grace period:
+
+```bash
+carrack quarantine tombstone \
+  --control-url https://carrack.example.com \
+  --namespace 202122232425262728292a2b2c2d2e2f \
+  --driver-id local-archive \
+  --storage-key archive/objects/<orphan-key> \
+  --expected-revision <acknowledged-revision> \
+  --reason "approved cleanup after another grace and final provider recheck" \
+  --idempotency-key tombstone-orphan-2026-07-12
+```
+
+Both transitions are administrator-only `gc` operations protected by a write
+lease, fencing token, provider identity, and quarantine revision CAS. A later
+inventory preserves acknowledgement or tombstone state when identity is
+unchanged, resets review if identity changes, and resolves cleanup intent if a
+D1 location or recovery sidecar appears. Tombstoning only reports
+`delete_after`; physical cleanup remains unavailable until a janitor protocol
+can stat the exact provider object and repeat every reference and fence check.
+
 A relay can repair provider objects that verification has proven missing while
 another exact replica remains available. This local-filesystem path preserves
 the original storage keys and recovery revision:

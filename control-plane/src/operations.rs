@@ -322,6 +322,9 @@ fn lease_statements(
                                  WHERE operation_id = operations.id) THEN 'repairing' \
                      WHEN EXISTS(SELECT 1 FROM inventory_intents \
                                  WHERE operation_id = operations.id) THEN 'inventorying' \
+                     WHEN EXISTS(SELECT 1 FROM quarantine_action_intents \
+                                 WHERE operation_id = operations.id) \
+                     THEN 'reviewing_quarantine' \
                      WHEN kind = 'compact' THEN 'compacting' \
                      WHEN kind = 'verify' THEN 'verifying' \
                      WHEN kind = 'reconcile' THEN 'reconciling' \

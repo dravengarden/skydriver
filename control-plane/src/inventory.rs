@@ -824,18 +824,85 @@ fn classification_statements(
                                 AND recovery.state != 'missing') \
              ON CONFLICT(driver_id, storage_key) DO UPDATE SET \
                  provider_version = excluded.provider_version, etag = excluded.etag, \
-                 size_bytes = excluded.size_bytes, state = 'quarantined', \
+                 size_bytes = excluded.size_bytes, \
+                 state = CASE \
+                     WHEN quarantined_provider_objects.state IN ('resolved', 'deleted') \
+                       OR quarantined_provider_objects.provider_version IS NOT excluded.provider_version \
+                       OR quarantined_provider_objects.etag IS NOT excluded.etag \
+                       OR quarantined_provider_objects.size_bytes != excluded.size_bytes \
+                     THEN 'quarantined' ELSE quarantined_provider_objects.state END, \
                  quarantine_until = CASE \
-                     WHEN quarantined_provider_objects.state != 'quarantined' \
+                     WHEN quarantined_provider_objects.state IN ('resolved', 'deleted') \
                        OR quarantined_provider_objects.provider_version IS NOT excluded.provider_version \
                        OR quarantined_provider_objects.etag IS NOT excluded.etag \
                        OR quarantined_provider_objects.size_bytes != excluded.size_bytes \
                      THEN excluded.quarantine_until \
                      ELSE quarantined_provider_objects.quarantine_until END, \
+                 acknowledgement_reason = CASE \
+                     WHEN quarantined_provider_objects.state IN ('resolved', 'deleted') \
+                       OR quarantined_provider_objects.provider_version IS NOT excluded.provider_version \
+                       OR quarantined_provider_objects.etag IS NOT excluded.etag \
+                       OR quarantined_provider_objects.size_bytes != excluded.size_bytes \
+                     THEN NULL ELSE quarantined_provider_objects.acknowledgement_reason END, \
+                 acknowledged_at = CASE \
+                     WHEN quarantined_provider_objects.state IN ('resolved', 'deleted') \
+                       OR quarantined_provider_objects.provider_version IS NOT excluded.provider_version \
+                       OR quarantined_provider_objects.etag IS NOT excluded.etag \
+                       OR quarantined_provider_objects.size_bytes != excluded.size_bytes \
+                     THEN NULL ELSE quarantined_provider_objects.acknowledged_at END, \
+                 tombstone_reason = CASE \
+                     WHEN quarantined_provider_objects.state IN ('resolved', 'deleted') \
+                       OR quarantined_provider_objects.provider_version IS NOT excluded.provider_version \
+                       OR quarantined_provider_objects.etag IS NOT excluded.etag \
+                       OR quarantined_provider_objects.size_bytes != excluded.size_bytes \
+                     THEN NULL ELSE quarantined_provider_objects.tombstone_reason END, \
+                 tombstoned_at = CASE \
+                     WHEN quarantined_provider_objects.state IN ('resolved', 'deleted') \
+                       OR quarantined_provider_objects.provider_version IS NOT excluded.provider_version \
+                       OR quarantined_provider_objects.etag IS NOT excluded.etag \
+                       OR quarantined_provider_objects.size_bytes != excluded.size_bytes \
+                     THEN NULL ELSE quarantined_provider_objects.tombstoned_at END, \
+                 delete_after = CASE \
+                     WHEN quarantined_provider_objects.state IN ('resolved', 'deleted') \
+                       OR quarantined_provider_objects.provider_version IS NOT excluded.provider_version \
+                       OR quarantined_provider_objects.etag IS NOT excluded.etag \
+                       OR quarantined_provider_objects.size_bytes != excluded.size_bytes \
+                     THEN NULL ELSE quarantined_provider_objects.delete_after END, \
+                 deleted_at = CASE \
+                     WHEN quarantined_provider_objects.state IN ('resolved', 'deleted') \
+                       OR quarantined_provider_objects.provider_version IS NOT excluded.provider_version \
+                       OR quarantined_provider_objects.etag IS NOT excluded.etag \
+                       OR quarantined_provider_objects.size_bytes != excluded.size_bytes \
+                     THEN NULL ELSE quarantined_provider_objects.deleted_at END, \
                  last_observed_at = excluded.last_observed_at, \
                  last_operation_id = excluded.last_operation_id, \
                  revision = quarantined_provider_objects.revision + 1 \
              WHERE quarantined_provider_objects.namespace_id = excluded.namespace_id",
+        )
+        .bind(&common()?)?;
+    let resolve_superseded_findings = database
+        .prepare(
+            "UPDATE integrity_findings AS finding \
+             SET state = 'resolved', resolved_at = ?3, last_observed_at = ?3, \
+                 revision = revision + 1 \
+             WHERE finding.subject_kind = 'provider_object' \
+               AND finding.condition = 'quarantined' \
+               AND finding.state IN ('acknowledged', 'tombstoned') \
+               AND EXISTS(\
+                   SELECT 1 \
+                   FROM inventory_report_objects AS report \
+                   JOIN inventory_intents AS intent ON intent.operation_id = report.operation_id \
+                   JOIN operations AS operation ON operation.id = intent.operation_id \
+                   JOIN quarantined_provider_objects AS quarantine \
+                     ON quarantine.driver_id = intent.driver_id \
+                    AND quarantine.storage_key = report.storage_key \
+                   WHERE report.operation_id = ?1 AND report.fencing_token = ?2 \
+                     AND finding.namespace_id = operation.namespace_id \
+                     AND finding.subject_id = json_array(intent.driver_id, report.storage_key) \
+                     AND quarantine.namespace_id = operation.namespace_id \
+                     AND quarantine.state = 'quarantined' \
+                     AND quarantine.last_operation_id = operation.id\
+               )",
         )
         .bind(&common()?)?;
     let quarantine_findings = database
@@ -878,6 +945,53 @@ fn classification_statements(
                  revision = integrity_findings.revision + 1",
         )
         .bind(&common()?)?;
+    let refresh_managed_findings = database
+        .prepare(
+            "UPDATE integrity_findings AS finding \
+             SET evidence_json = (\
+                     SELECT json_object(\
+                         'source', 'provider_inventory', 'operation_id', operation.id, \
+                         'driver_id', intent.driver_id, 'storage_key', report.storage_key, \
+                         'provider_version', report.provider_version, 'etag', report.etag, \
+                         'size_bytes', report.size_bytes, \
+                         'quarantine_until', quarantine.quarantine_until, \
+                         'acknowledgement_reason', quarantine.acknowledgement_reason, \
+                         'acknowledged_at', quarantine.acknowledged_at, \
+                         'tombstone_reason', quarantine.tombstone_reason, \
+                         'tombstoned_at', quarantine.tombstoned_at, \
+                         'delete_after', quarantine.delete_after\
+                     ) \
+                     FROM inventory_report_objects AS report \
+                     JOIN inventory_intents AS intent ON intent.operation_id = report.operation_id \
+                     JOIN operations AS operation ON operation.id = intent.operation_id \
+                     JOIN quarantined_provider_objects AS quarantine \
+                       ON quarantine.driver_id = intent.driver_id \
+                      AND quarantine.storage_key = report.storage_key \
+                     WHERE report.operation_id = ?1 AND report.fencing_token = ?2 \
+                       AND finding.namespace_id = operation.namespace_id \
+                       AND finding.subject_id = json_array(intent.driver_id, report.storage_key) \
+                       AND quarantine.state = finding.state \
+                     LIMIT 1\
+                 ), \
+                 last_observed_at = ?3, revision = revision + 1 \
+             WHERE finding.subject_kind = 'provider_object' \
+               AND finding.condition = 'quarantined' \
+               AND finding.state IN ('acknowledged', 'tombstoned') \
+               AND EXISTS(\
+                   SELECT 1 \
+                   FROM inventory_report_objects AS report \
+                   JOIN inventory_intents AS intent ON intent.operation_id = report.operation_id \
+                   JOIN operations AS operation ON operation.id = intent.operation_id \
+                   JOIN quarantined_provider_objects AS quarantine \
+                     ON quarantine.driver_id = intent.driver_id \
+                    AND quarantine.storage_key = report.storage_key \
+                   WHERE report.operation_id = ?1 AND report.fencing_token = ?2 \
+                     AND finding.namespace_id = operation.namespace_id \
+                     AND finding.subject_id = json_array(intent.driver_id, report.storage_key) \
+                     AND quarantine.state = finding.state\
+               )",
+        )
+        .bind(&common()?)?;
     let resolve_quarantine = database
         .prepare(
             "UPDATE quarantined_provider_objects AS quarantine \
@@ -913,7 +1027,8 @@ fn classification_statements(
                  revision = revision + 1 \
              WHERE finding.namespace_id = (SELECT namespace_id FROM operations WHERE id = ?1) \
                AND finding.subject_kind = 'provider_object' \
-               AND finding.condition = 'quarantined' AND finding.state = 'open' \
+               AND finding.condition = 'quarantined' \
+               AND finding.state IN ('open', 'acknowledged', 'tombstoned') \
                AND EXISTS(\
                    SELECT 1 \
                    FROM inventory_report_objects AS report \
@@ -1001,7 +1116,9 @@ fn classification_statements(
 
     Ok(vec![
         quarantine,
+        resolve_superseded_findings,
         quarantine_findings,
+        refresh_managed_findings,
         resolve_quarantine,
         resolve_findings,
         missing_locations,

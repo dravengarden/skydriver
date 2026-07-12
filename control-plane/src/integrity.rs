@@ -41,6 +41,13 @@ struct FindingRow {
     storage_key: Option<String>,
     location_state: Option<String>,
     last_verified_at: Option<u64>,
+    quarantine_revision: Option<u64>,
+    quarantine_until: Option<u64>,
+    acknowledgement_reason: Option<String>,
+    acknowledged_at: Option<u64>,
+    tombstone_reason: Option<String>,
+    tombstoned_at: Option<u64>,
+    delete_after: Option<u64>,
     available_repair_sources: u64,
 }
 
@@ -65,6 +72,13 @@ struct IntegrityFinding {
     storage_key: Option<String>,
     location_state: Option<String>,
     last_verified_at: Option<u64>,
+    quarantine_revision: Option<u64>,
+    quarantine_until: Option<u64>,
+    acknowledgement_reason: Option<String>,
+    acknowledged_at: Option<u64>,
+    tombstone_reason: Option<String>,
+    tombstoned_at: Option<u64>,
+    delete_after: Option<u64>,
     available_repair_sources: u64,
     repairable: bool,
     required_action: &'static str,
@@ -156,6 +170,11 @@ pub(crate) async fn list(request: &Request, env: &Env) -> Result<Response> {
                         AS storage_key, \
                     COALESCE(subject_location.state, subject_provider.state) AS location_state, \
                     subject_location.verified_at AS last_verified_at, \
+                    subject_provider.revision AS quarantine_revision, \
+                    subject_provider.quarantine_until, \
+                    subject_provider.acknowledgement_reason, subject_provider.acknowledged_at, \
+                    subject_provider.tombstone_reason, subject_provider.tombstoned_at, \
+                    subject_provider.delete_after, \
                     CASE \
                       WHEN finding.subject_kind = 'location' THEN (\
                         SELECT COUNT(*) FROM locations AS source \
@@ -234,7 +253,7 @@ impl TryFrom<FindingRow> for IntegrityFinding {
         let repairable = row.condition == "missing"
             && row.location_state.as_deref() == Some("missing")
             && row.available_repair_sources > 0;
-        let required_action = required_action(&row.condition);
+        let required_action = required_action(&row.condition, &row.state);
         let evidence = serde_json::from_str(&row.evidence_json)?;
 
         Ok(Self {
@@ -257,6 +276,13 @@ impl TryFrom<FindingRow> for IntegrityFinding {
             storage_key: row.storage_key,
             location_state: row.location_state,
             last_verified_at: row.last_verified_at,
+            quarantine_revision: row.quarantine_revision,
+            quarantine_until: row.quarantine_until,
+            acknowledgement_reason: row.acknowledgement_reason,
+            acknowledged_at: row.acknowledged_at,
+            tombstone_reason: row.tombstone_reason,
+            tombstoned_at: row.tombstoned_at,
+            delete_after: row.delete_after,
             available_repair_sources: row.available_repair_sources,
             repairable,
             required_action,
@@ -264,7 +290,23 @@ impl TryFrom<FindingRow> for IntegrityFinding {
     }
 }
 
-fn required_action(condition: &str) -> &'static str {
+fn required_action(condition: &str, state: &str) -> &'static str {
+    if condition == "quarantined" {
+        return match state {
+            "open" => {
+                "After quarantine expires, acknowledge the exact object revision before cleanup."
+            }
+            "acknowledged" => {
+                "Tombstone the exact acknowledged revision to begin a new deletion grace period."
+            }
+            "tombstoned" => {
+                "Retain until delete-after; cleanup still requires a fenced provider recheck."
+            }
+            "resolved" => "No cleanup action; the object is referenced or superseded.",
+            _ => "Review the quarantine lifecycle before taking action.",
+        };
+    }
+
     match condition {
         "driver_unavailable" => "Restore provider access, then repeat verification.",
         "unindexed" => "Validate recovery ownership, then reconcile or adopt the location.",
@@ -274,7 +316,6 @@ fn required_action(condition: &str) -> &'static str {
         "key_unavailable" => "Restore root key material; do not delete provider data.",
         "unsupported_suite" => "Use a compatible client; do not delete provider data.",
         "orphan" => "Inventory and quarantine until ownership is established.",
-        "quarantined" => "Review evidence before adoption, relocation, or cleanup.",
         "unrecoverable" => "Require explicit loss acknowledgement before cleanup.",
         _ => "Review the integrity evidence before taking action.",
     }
@@ -337,8 +378,9 @@ mod tests {
 
     #[test]
     fn preserves_conservative_manual_actions() {
-        assert!(required_action("missing").contains("Repair"));
-        assert!(required_action("corrupt").contains("relocate"));
-        assert!(required_action("unrecoverable").contains("acknowledgement"));
+        assert!(required_action("missing", "open").contains("Repair"));
+        assert!(required_action("corrupt", "open").contains("relocate"));
+        assert!(required_action("unrecoverable", "open").contains("acknowledgement"));
+        assert!(required_action("quarantined", "tombstoned").contains("fenced"));
     }
 }

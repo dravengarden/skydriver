@@ -193,7 +193,7 @@ func validateIndexedLocation(location IndexedLocation) error {
 func validIndexedLocationState(state string) bool {
 	switch state {
 	case "staging", "verified", indexedStateAvailable, indexedStateMissing, indexedStateCorrupt,
-		"quarantined", "tombstoned", operationStateDeleted:
+		"quarantined", operationStateTombstoned, operationStateDeleted:
 		return true
 	default:
 		return false

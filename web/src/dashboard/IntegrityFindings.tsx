@@ -31,7 +31,7 @@ function conditionColor(condition: string): "error" | "warning" | "info" {
 }
 
 function FindingCard({ finding }: { readonly finding: IntegrityFinding }) {
-    const context = [
+    const context: Array<readonly [string, string]> = [
         ["Namespace", finding.namespace_name ?? finding.namespace_id ?? "unassigned"],
         ["Subject", `${finding.subject_kind} · ${shortIdentity(finding.subject_id)}`],
         [
@@ -43,7 +43,17 @@ function FindingCard({ finding }: { readonly finding: IntegrityFinding }) {
         ["Location state", finding.location_state ?? "not location-scoped"],
         ["Repair sources", finding.available_repair_sources.toLocaleString()],
         ["Last verified", formatTimestamp(finding.last_verified_at)],
-    ] as const;
+    ];
+
+    if (finding.quarantine_revision !== null) {
+        context.push(
+            ["Quarantine revision", finding.quarantine_revision.toLocaleString()],
+            ["Quarantine until", formatTimestamp(finding.quarantine_until)],
+            ["Acknowledged", formatTimestamp(finding.acknowledged_at)],
+            ["Tombstoned", formatTimestamp(finding.tombstoned_at)],
+            ["Delete after", formatTimestamp(finding.delete_after)],
+        );
+    }
 
     return (
         <Paper

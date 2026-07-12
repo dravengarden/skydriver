@@ -14,8 +14,11 @@ const (
 	operationKindCopy            = "copy"
 	operationKindMove            = "move"
 	operationKindCompact         = "compact"
+	operationStatePlanned        = "planned"
 	operationStateRunning        = "running"
 	operationStateSucceeded      = "succeeded"
+	operationStateAcknowledged   = "acknowledged"
+	operationStateTombstoned     = "tombstoned"
 	publicationStatePublished    = "published"
 )
 

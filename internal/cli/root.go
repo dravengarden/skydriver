@@ -38,6 +38,7 @@ const (
 	repairCommandName            = "repair"
 	compactCommandName           = "compact"
 	gcCommandName                = "gc"
+	quarantineCommandName        = "quarantine"
 	idempotencyKeyFlag           = "idempotency-key"
 	localDriverIDFlag            = "local-driver-id"
 	localRootFlag                = "local-root"
@@ -81,6 +82,7 @@ func newRootCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Comman
 		newRepairCommand(ctx, stdout),
 		newCompactCommand(ctx, stdout),
 		newGCCommand(ctx, stdout),
+		newQuarantineCommand(ctx, stdout),
 	)
 
 	return command
