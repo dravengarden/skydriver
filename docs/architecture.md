@@ -384,6 +384,16 @@ re-reading known-bad ciphertext. The Worker's exact complete and fail requests
 remain replayable with their original released fence, covering clients that
 retry the terminal HTTP call directly.
 
+A deterministic nonterminal Restore matrix interrupts operation creation,
+read-lease claim, recovery-manifest fetch, key grant, provider range read, and
+progress reporting immediately before the request and after the remote handler
+completes. Every correctness-critical interruption must leave the destination
+unpublished and converge through the same immutable manifest and fence on the
+next coordinator call. Progress response loss remains advisory and can finish
+in the original call. Provider read interruption may retain resumable local
+staging, but only one authenticated plaintext result is atomically published
+and the D1 completion commits once.
+
 The portable recovery manifest is metadata and may be returned by the control
 plane, but only under that same live read fence. The Worker resolves the
 operation's pinned intent to its durable R2 object, revalidates the complete

@@ -3,6 +3,7 @@ package sdk_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,11 +24,23 @@ import (
 	"github.com/dravengarden/carrack/sdk"
 )
 
-var errInjectedRestoreTerminalCrash = errors.New("injected Carrack restore terminal crash")
+var errInjectedRestoreCrash = errors.New("injected Carrack restore crash")
 
 type restoreTerminalCrashPoint string
 
 const (
+	crashBeforeRestoreCreate   restoreTerminalCrashPoint = "before_restore_create"
+	crashAfterRestoreCreate    restoreTerminalCrashPoint = "after_restore_create"
+	crashBeforeRestoreClaim    restoreTerminalCrashPoint = "before_restore_claim"
+	crashAfterRestoreClaim     restoreTerminalCrashPoint = "after_restore_claim"
+	crashBeforeRestoreManifest restoreTerminalCrashPoint = "before_restore_manifest"
+	crashAfterRestoreManifest  restoreTerminalCrashPoint = "after_restore_manifest"
+	crashBeforeRestoreKey      restoreTerminalCrashPoint = "before_restore_key"
+	crashAfterRestoreKey       restoreTerminalCrashPoint = "after_restore_key"
+	crashBeforeRestoreRead     restoreTerminalCrashPoint = "before_restore_provider_read"
+	crashAfterRestoreRead      restoreTerminalCrashPoint = "after_restore_provider_read"
+	crashBeforeRestoreProgress restoreTerminalCrashPoint = "before_restore_progress"
+	crashAfterRestoreProgress  restoreTerminalCrashPoint = "after_restore_progress"
 	crashBeforeRestoreComplete restoreTerminalCrashPoint = "before_restore_complete"
 	crashAfterRestoreComplete  restoreTerminalCrashPoint = "after_restore_complete"
 	crashBeforeRestoreFail     restoreTerminalCrashPoint = "before_restore_fail"
@@ -58,7 +71,7 @@ func (script *restoreTerminalCrashScript) hit(point restoreTerminalCrashPoint) e
 
 	script.fired = true
 
-	return fmt.Errorf("%w: %s", errInjectedRestoreTerminalCrash, point)
+	return fmt.Errorf("%w: %s", errInjectedRestoreCrash, point)
 }
 
 func (script *restoreTerminalCrashScript) didFire() bool {
@@ -101,6 +114,16 @@ func restoreTerminalHTTPPoints(
 	path string,
 ) (restoreTerminalCrashPoint, restoreTerminalCrashPoint, bool) {
 	switch {
+	case path == "/api/v1/restores":
+		return crashBeforeRestoreCreate, crashAfterRestoreCreate, true
+	case strings.HasSuffix(path, "/claim"):
+		return crashBeforeRestoreClaim, crashAfterRestoreClaim, true
+	case strings.HasSuffix(path, "/manifest"):
+		return crashBeforeRestoreManifest, crashAfterRestoreManifest, true
+	case strings.HasSuffix(path, "/key"):
+		return crashBeforeRestoreKey, crashAfterRestoreKey, true
+	case strings.HasSuffix(path, "/progress"):
+		return crashBeforeRestoreProgress, crashAfterRestoreProgress, true
 	case strings.HasSuffix(path, "/complete"):
 		return crashBeforeRestoreComplete, crashAfterRestoreComplete, true
 	case strings.HasSuffix(path, "/fail"):
@@ -112,6 +135,7 @@ func restoreTerminalHTTPPoints(
 
 type countingRestoreReader struct {
 	reader provider.Reader
+	script *restoreTerminalCrashScript
 	opens  atomic.Int64
 }
 
@@ -128,15 +152,35 @@ func (reader *countingRestoreReader) OpenRange(
 	offset,
 	length uint64,
 ) (io.ReadCloser, error) {
+	if err := reader.script.hit(crashBeforeRestoreRead); err != nil {
+		return nil, err
+	}
+
 	reader.opens.Add(1)
 
-	return reader.reader.OpenRange(ctx, key, offset, length)
+	stream, err := reader.reader.OpenRange(ctx, key, offset, length)
+	if err != nil {
+		return nil, err
+	}
+
+	return &restoreCrashReadCloser{ReadCloser: stream, script: reader.script}, nil
+}
+
+type restoreCrashReadCloser struct {
+	io.ReadCloser
+
+	script *restoreTerminalCrashScript
+}
+
+func (stream *restoreCrashReadCloser) Close() error {
+	return errors.Join(stream.ReadCloser.Close(), stream.script.hit(crashAfterRestoreRead))
 }
 
 type restoreTerminalReplayState struct {
 	mutex sync.Mutex
 
 	recovery manifest.RecoveryManifest
+	epochKey string
 	bodies   map[string][]byte
 	calls    map[string]int
 	state    string
@@ -193,6 +237,78 @@ func TestControlledRestorerConvergesAfterFailureResponseLoss(t *testing.T) {
 	}
 }
 
+func TestControlledRestorerNonterminalCrashMatrixConverges(t *testing.T) {
+	t.Parallel()
+
+	for _, point := range []restoreTerminalCrashPoint{
+		crashBeforeRestoreCreate,
+		crashAfterRestoreCreate,
+		crashBeforeRestoreClaim,
+		crashAfterRestoreClaim,
+		crashBeforeRestoreManifest,
+		crashAfterRestoreManifest,
+		crashBeforeRestoreKey,
+		crashAfterRestoreKey,
+		crashBeforeRestoreRead,
+		crashAfterRestoreRead,
+		crashBeforeRestoreProgress,
+		crashAfterRestoreProgress,
+	} {
+		t.Run(string(point), func(t *testing.T) {
+			t.Parallel()
+
+			testRestoreNonterminalCrashPoint(t, point)
+		})
+	}
+}
+
+func testRestoreNonterminalCrashPoint(t *testing.T, point restoreTerminalCrashPoint) {
+	t.Helper()
+
+	script := &restoreTerminalCrashScript{target: point}
+	fixture := newRestoreTerminalCrashFixture(t, script, false)
+	clear(fixture.request.EpochKey[:])
+
+	first, firstErr := fixture.coordinator.Restore(context.Background(), fixture.request)
+	result := first
+
+	if restoreProgressCrashPoint(point) {
+		if firstErr != nil {
+			t.Fatalf("restore progress response loss blocked completion at %s: %v", point, firstErr)
+		}
+	} else {
+		if !errors.Is(firstErr, errInjectedRestoreCrash) {
+			t.Fatalf("first restore did not stop at %s: %v", point, firstErr)
+		}
+
+		if _, err := os.Stat(fixture.destination); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("interrupted restore published plaintext at %s: %v", point, err)
+		}
+
+		var retryErr error
+
+		result, retryErr = fixture.coordinator.Restore(context.Background(), fixture.request)
+		if retryErr != nil {
+			t.Fatalf("restore did not converge after %s: %v", point, retryErr)
+		}
+	}
+
+	if result.Completion.State != "succeeded" || result.AlreadyCompleted {
+		t.Fatalf("nonterminal restore returned an invalid result after %s: %+v", point, result)
+	}
+
+	assertRestoredPlaintext(t, fixture.destination, fixture.plaintext)
+	fixture.state.assertTerminal(t, "succeeded", point)
+
+	if !script.didFire() {
+		t.Fatalf("restore nonterminal crash point %s was never reached", point)
+	}
+}
+
+func restoreProgressCrashPoint(point restoreTerminalCrashPoint) bool {
+	return point == crashBeforeRestoreProgress || point == crashAfterRestoreProgress
+}
+
 func testRestoreCompletionResponseLoss(t *testing.T, point restoreTerminalCrashPoint) {
 	t.Helper()
 
@@ -200,7 +316,7 @@ func testRestoreCompletionResponseLoss(t *testing.T, point restoreTerminalCrashP
 	fixture := newRestoreTerminalCrashFixture(t, script, false)
 
 	_, firstErr := fixture.coordinator.Restore(context.Background(), fixture.request)
-	if !errors.Is(firstErr, errInjectedRestoreTerminalCrash) {
+	if !errors.Is(firstErr, errInjectedRestoreCrash) {
 		t.Fatalf("first restore did not stop at %s: %v", point, firstErr)
 	}
 
@@ -238,7 +354,7 @@ func testRestoreFailureResponseLoss(t *testing.T, point restoreTerminalCrashPoin
 	fixture := newRestoreTerminalCrashFixture(t, script, true)
 
 	_, firstErr := fixture.coordinator.Restore(context.Background(), fixture.request)
-	if !errors.Is(firstErr, errInjectedRestoreTerminalCrash) ||
+	if !errors.Is(firstErr, errInjectedRestoreCrash) ||
 		!errors.Is(firstErr, cryptostream.ErrFrameAuthentication) {
 		t.Fatalf("first failed restore did not stop at %s: %v", point, firstErr)
 	}
@@ -306,10 +422,12 @@ func newRestoreTerminalCrashFixture(
 
 	plaintext := []byte("restore terminal responses remain idempotent")
 	archiveStore, imported, epochKey := importRestoreFixture(t, plaintext)
-	reader := &countingRestoreReader{reader: archiveStore}
+	reader := &countingRestoreReader{reader: archiveStore, script: script}
 	state := &restoreTerminalReplayState{
-		recovery: imported.Recovery, bodies: make(map[string][]byte),
-		calls: make(map[string]int), state: "planned",
+		recovery: imported.Recovery,
+		epochKey: base64.RawURLEncoding.EncodeToString(epochKey[:]),
+		bodies:   make(map[string][]byte),
+		calls:    make(map[string]int), state: "planned",
 	}
 	token, encodedToken := testClientToken(t)
 	server := newRestoreTerminalServer(t, encodedToken, state)
@@ -381,6 +499,8 @@ func newRestoreTerminalServer(
 			state.serveClaim(t, response, body)
 		case "/api/v1/restores/" + restoreTerminalOperationID + "/manifest":
 			state.serveManifest(t, response, body)
+		case "/api/v1/restores/" + restoreTerminalOperationID + "/key":
+			state.serveKey(t, response, body)
 		case "/api/v1/operations/" + restoreTerminalOperationID + "/progress":
 			state.serveProgress(t, response, body)
 		case "/api/v1/restores/" + restoreTerminalOperationID + "/complete":
@@ -469,6 +589,23 @@ func (state *restoreTerminalReplayState) serveManifest(
 	t.Helper()
 	state.recordExact(t, "manifest", body)
 	writeJSON(t, response, state.recovery)
+}
+
+func (state *restoreTerminalReplayState) serveKey(
+	t *testing.T,
+	response http.ResponseWriter,
+	body []byte,
+) {
+	t.Helper()
+	state.recordExact(t, "key", body)
+
+	writeJSON(t, response, map[string]any{
+		"operation_id":    restoreTerminalOperationID,
+		"manifest_sha256": state.recovery.ManifestSHA256,
+		"root_version":    state.recovery.Manifest.Crypto.RootVersion,
+		"key_epoch":       state.recovery.Manifest.Crypto.KeyEpoch,
+		"epoch_key":       state.epochKey,
+	})
 }
 
 func (state *restoreTerminalReplayState) serveProgress(
@@ -601,7 +738,17 @@ func (state *restoreTerminalReplayState) assertTerminal(
 	}
 
 	expectedClaims := 2
-	if point == crashAfterRestoreComplete || point == crashAfterRestoreFail {
+
+	oneClaimPoints := map[restoreTerminalCrashPoint]struct{}{
+		crashBeforeRestoreCreate:   {},
+		crashAfterRestoreCreate:    {},
+		crashBeforeRestoreClaim:    {},
+		crashBeforeRestoreProgress: {},
+		crashAfterRestoreProgress:  {},
+		crashAfterRestoreComplete:  {},
+		crashAfterRestoreFail:      {},
+	}
+	if _, oneClaim := oneClaimPoints[point]; oneClaim {
 		expectedClaims = 1
 	}
 
