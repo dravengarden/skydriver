@@ -358,7 +358,7 @@ func validRestoreOperationState(operation RestoreOperation) bool {
 	case operationStateRunning:
 		return operation.Phase == "restoring"
 	case operationStateSucceeded:
-		return operation.Phase == "completed"
+		return operation.Phase == operationPhaseCompleted
 	case operationStateFailed:
 		return operation.Phase == operationStateFailed
 	default:

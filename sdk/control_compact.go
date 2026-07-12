@@ -303,7 +303,7 @@ func validCompactOperationState(operation CompactOperation) bool {
 	case operationStateSucceeded:
 		return operation.Phase == operationStateSucceeded
 	case operationStateFailed, operationStateCancelled:
-		return operation.Phase == "control_plane_recovered"
+		return operation.Phase == operationPhaseRecovered
 	default:
 		return false
 	}

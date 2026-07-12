@@ -324,9 +324,9 @@ func validRepairOperationState(operation RepairOperation) bool {
 	case operationStateRunning:
 		return operation.Phase == "repairing"
 	case operationStateSucceeded:
-		return operation.Phase == "completed"
+		return operation.Phase == operationPhaseCompleted
 	case operationStateFailed, operationStateCancelled:
-		return operation.Phase == "control_plane_recovered"
+		return operation.Phase == operationPhaseRecovered
 	default:
 		return false
 	}

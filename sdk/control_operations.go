@@ -20,6 +20,8 @@ const (
 	operationStateCancelled      = "cancelled"
 	operationStateAcknowledged   = "acknowledged"
 	operationStateTombstoned     = "tombstoned"
+	operationPhaseCompleted      = "completed"
+	operationPhaseRecovered      = "control_plane_recovered"
 	publicationStatePublished    = "published"
 )
 

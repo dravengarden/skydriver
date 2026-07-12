@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 
 	"github.com/dravengarden/carrack/manifest"
 )
@@ -20,21 +21,25 @@ type CreateVerifyOperationRequest struct {
 
 // VerifyOperation pins one published recovery revision and provider driver.
 type VerifyOperation struct {
-	ID               string `json:"id"`
-	NamespaceID      string `json:"namespace_id"`
-	Kind             string `json:"kind"`
-	State            string `json:"state"`
-	Phase            string `json:"phase"`
-	RequestedBy      string `json:"requested_by"`
-	Incarnation      string `json:"incarnation"`
-	Revision         uint64 `json:"revision"`
-	UsefulBytesTotal uint64 `json:"useful_bytes_total"`
-	VersionID        string `json:"version_id"`
-	ManifestSHA256   string `json:"manifest_sha256"`
-	RecoveryRevision uint64 `json:"recovery_revision"`
-	DriverID         string `json:"driver_id"`
-	CreatedAt        uint64 `json:"created_at"`
-	UpdatedAt        uint64 `json:"updated_at"`
+	ID                   string `json:"id"`
+	NamespaceID          string `json:"namespace_id"`
+	Kind                 string `json:"kind"`
+	State                string `json:"state"`
+	Phase                string `json:"phase"`
+	RequestedBy          string `json:"requested_by"`
+	Incarnation          string `json:"incarnation"`
+	Revision             uint64 `json:"revision"`
+	UsefulBytesTotal     uint64 `json:"useful_bytes_total"`
+	VersionID            string `json:"version_id"`
+	ManifestSHA256       string `json:"manifest_sha256"`
+	RecoveryRevision     uint64 `json:"recovery_revision"`
+	DriverID             string `json:"driver_id"`
+	CompletedVerified    uint64 `json:"completed_verified"`
+	CompletedMissing     uint64 `json:"completed_missing"`
+	CompletedCorrupt     uint64 `json:"completed_corrupt"`
+	CompletedUnavailable uint64 `json:"completed_unavailable"`
+	CreatedAt            uint64 `json:"created_at"`
+	UpdatedAt            uint64 `json:"updated_at"`
 }
 
 type createVerifyOperationBody struct {
@@ -91,16 +96,66 @@ func (client *ControlClient) CreateVerifyOperation(
 		return VerifyOperation{}, err
 	}
 
-	if response.NamespaceID != requested.NamespaceID ||
-		response.ManifestSHA256 != requested.ManifestSHA256 ||
-		response.DriverID != requested.DriverID || response.Kind != operationKindVerify ||
-		!validControlHex(response.ID, 32) || !validControlHex(response.Incarnation, 32) ||
-		!validControlString(response.VersionID, 2_048) || response.Revision == 0 ||
-		response.RecoveryRevision == 0 || response.UsefulBytesTotal == 0 {
+	if !validVerifyOperation(response, requested) {
 		return VerifyOperation{}, fmt.Errorf("%w: invalid verify operation identity", ErrControlPlaneResponse)
 	}
 
 	return response, nil
+}
+
+func validVerifyOperation(
+	operation VerifyOperation,
+	requested CreateVerifyOperationRequest,
+) bool {
+	return operation.NamespaceID == requested.NamespaceID &&
+		operation.ManifestSHA256 == requested.ManifestSHA256 &&
+		operation.DriverID == requested.DriverID && operation.Kind == operationKindVerify &&
+		validVerifyOperationState(operation) && validVerifyCompletionCounts(operation) &&
+		validControlHex(operation.ID, 32) && validControlHex(operation.Incarnation, 32) &&
+		validControlString(operation.RequestedBy, 2_048) &&
+		validControlString(operation.VersionID, 2_048) && operation.Revision > 0 &&
+		operation.RecoveryRevision > 0 && operation.UsefulBytesTotal > 0 &&
+		operation.UsefulBytesTotal <= math.MaxInt64 && operation.CreatedAt > 0 &&
+		operation.UpdatedAt >= operation.CreatedAt
+}
+
+func validVerifyOperationState(operation VerifyOperation) bool {
+	switch operation.State {
+	case operationStatePlanned:
+		return operation.Phase == operationStatePlanned
+	case operationStateRunning:
+		return operation.Phase == "verifying"
+	case operationStateSucceeded:
+		return operation.Phase == operationPhaseCompleted
+	case operationStateFailed, operationStateCancelled:
+		return operation.Phase == operationPhaseRecovered
+	default:
+		return false
+	}
+}
+
+func validVerifyCompletionCounts(operation VerifyOperation) bool {
+	maximum := uint64(math.MaxInt64)
+	total := uint64(0)
+
+	for _, count := range []uint64{
+		operation.CompletedVerified,
+		operation.CompletedMissing,
+		operation.CompletedCorrupt,
+		operation.CompletedUnavailable,
+	} {
+		if count > maximum-total {
+			return false
+		}
+
+		total += count
+	}
+
+	if operation.State == operationStateSucceeded {
+		return total > 0
+	}
+
+	return total == 0
 }
 
 // ClaimVerifyOperation acquires or renews the verification write fence.

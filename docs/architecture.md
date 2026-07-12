@@ -298,6 +298,23 @@ removes the plaintext bridge. Progress response loss remains advisory; final
 publication response loss is recovered from the committed operation evidence
 without repeating provider I/O.
 
+Controlled Verify pins one durable recovery revision and one provider driver,
+then hashes every selected location before committing the complete evidence set
+and any resulting integrity findings in one fenced D1 batch. Exact completion
+replay requires the original lease, incarnation, fencing token, manifest, and
+byte-identical evidence. An idempotent create retry returning
+`succeeded/completed` includes all four completion counts and becomes an
+`AlreadyCompleted` receipt without repeating provider reads; a recovered
+`failed` or `cancelled` operation returns a stable terminal error.
+
+A 10-point deterministic matrix interrupts immediately before and after Verify
+creation, claim, pinned-manifest fetch, provider range read, and D1 completion.
+A forced process interruption during provider I/O cancels the attempt before
+evidence can commit. Retry performs only the reads still needed to reach one
+complete report and one logical D1 commit, while a lost final completion
+response converges from the committed operation counts without another
+provider request.
+
 A deterministic destructive-janitor matrix interrupts Move, GC, and quarantine
 cleanup immediately before and after task claim, final revalidation, provider
 delete, and D1 completion. Move and GC may repeat one idempotent provider delete

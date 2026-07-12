@@ -68,6 +68,9 @@ struct VerificationLocationRow {
 #[derive(Deserialize)]
 struct CompletionRow {
     report_sha256: String,
+    lease_id: String,
+    incarnation: String,
+    fencing_token: u64,
 }
 
 #[derive(Serialize)]
@@ -96,6 +99,14 @@ pub(crate) struct VerifyOperation {
     manifest_sha256: String,
     recovery_revision: u64,
     driver_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completed_verified: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completed_missing: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completed_corrupt: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completed_unavailable: Option<u64>,
     created_at: u64,
     updated_at: u64,
 }
@@ -350,10 +361,13 @@ pub(crate) async fn complete(
 
     if let Some(existing) = database
         .prepare(
-            "SELECT completion.report_sha256 \
+            "SELECT completion.report_sha256, observation.lease_id, \
+                    observation.incarnation, observation.fencing_token \
              FROM verify_completions AS completion \
              JOIN operations AS operation ON operation.id = completion.operation_id \
              JOIN verify_intents AS intent ON intent.operation_id = operation.id \
+             JOIN integrity_observations AS observation \
+               ON observation.operation_id = completion.operation_id \
              WHERE operation.id = ?1 AND operation.kind = 'verify' \
                AND operation.state = 'succeeded' AND operation.requested_by = ?2 \
                AND completion.state = 'committed' \
@@ -367,6 +381,12 @@ pub(crate) async fn complete(
         .first::<CompletionRow>(None)
         .await?
     {
+        if existing.lease_id != completed.lease_id
+            || existing.incarnation != completed.incarnation
+            || existing.fencing_token != completed.fencing_token
+        {
+            return Response::error("verify completion replay changed its fence", 409);
+        }
         if existing.report_sha256 != report_sha256 {
             return Response::error("verify completion replay changed evidence", 409);
         }
@@ -850,9 +870,15 @@ async fn find_operation(
                     operation.phase, operation.requested_by, operation.incarnation, \
                     operation.revision, operation.useful_bytes_total, intent.version_id, \
                     intent.manifest_sha256, intent.recovery_revision, intent.driver_id, \
+                    completion.verified_count AS completed_verified, \
+                    completion.missing_count AS completed_missing, \
+                    completion.corrupt_count AS completed_corrupt, \
+                    completion.unavailable_count AS completed_unavailable, \
                     operation.created_at, operation.updated_at \
              FROM operations AS operation \
              JOIN verify_intents AS intent ON intent.operation_id = operation.id \
+             LEFT JOIN verify_completions AS completion \
+               ON completion.operation_id = operation.id AND completion.state = 'committed' \
              WHERE operation.namespace_id = ?1 AND operation.idempotency_key = ?2 \
                AND operation.requested_by = ?3 AND operation.kind = 'verify'",
         )

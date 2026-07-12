@@ -8,8 +8,13 @@ import (
 	"time"
 )
 
-// ErrVerifyLeaseLost indicates that provider reads were cancelled after renewal failed.
-var ErrVerifyLeaseLost = errors.New("carrack verify write lease was lost")
+var (
+	// ErrVerifyLeaseLost indicates that provider reads were cancelled after renewal failed.
+	ErrVerifyLeaseLost = errors.New("carrack verify write lease was lost")
+	// ErrVerifyOperationFailed indicates that control-plane recovery invalidated
+	// an exact idempotent verification before it could complete.
+	ErrVerifyOperationFailed = errors.New("carrack verify operation previously failed")
+)
 
 // ControlledVerifier coordinates one complete fenced driver audit.
 type ControlledVerifier struct {
@@ -29,9 +34,10 @@ type ControlledVerifyRequest struct {
 
 // ControlledVerifyResult contains local evidence and its durable completion.
 type ControlledVerifyResult struct {
-	Operation    VerifyOperation
-	Verification VerificationResult
-	Completion   CompletedVerify
+	Operation        VerifyOperation
+	Verification     VerificationResult
+	Completion       CompletedVerify
+	AlreadyCompleted bool
 }
 
 // NewControlledVerifier constructs a verifier with an explicit renewal cadence.
@@ -73,6 +79,23 @@ func (coordinator *ControlledVerifier) Verify(
 	operation, err := coordinator.control.CreateVerifyOperation(ctx, CreateVerifyOperationRequest(requested))
 	if err != nil {
 		return ControlledVerifyResult{}, fmt.Errorf("create controlled verify: %w", err)
+	}
+
+	switch operation.State {
+	case operationStateSucceeded:
+		return completedControlledVerify(operation), nil
+	case operationStateFailed, operationStateCancelled:
+		return ControlledVerifyResult{Operation: operation}, fmt.Errorf(
+			"%w: operation %s",
+			ErrVerifyOperationFailed,
+			operation.ID,
+		)
+	case operationStatePlanned, operationStateRunning:
+	default:
+		return ControlledVerifyResult{}, fmt.Errorf(
+			"%w: unsupported controlled verify state",
+			ErrControlPlaneResponse,
+		)
 	}
 
 	lease, err := coordinator.control.ClaimVerifyOperation(ctx, operation, coordinator.leaseSeconds)
@@ -126,6 +149,19 @@ func (coordinator *ControlledVerifier) Verify(
 	return ControlledVerifyResult{
 		Operation: operation, Verification: verification, Completion: completion,
 	}, nil
+}
+
+func completedControlledVerify(operation VerifyOperation) ControlledVerifyResult {
+	return ControlledVerifyResult{
+		Operation: operation,
+		Completion: CompletedVerify{
+			OperationID: operation.ID, ManifestSHA256: operation.ManifestSHA256,
+			State: operationStateSucceeded, Verified: operation.CompletedVerified,
+			Missing: operation.CompletedMissing, Corrupt: operation.CompletedCorrupt,
+			Unavailable: operation.CompletedUnavailable,
+		},
+		AlreadyCompleted: true,
+	}
 }
 
 type renewedVerifyLease struct {

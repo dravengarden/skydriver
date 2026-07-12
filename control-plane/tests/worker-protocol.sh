@@ -1627,11 +1627,33 @@ replayed_verify_completion=$(curl --silent --show-error --fail-with-body \
   "$base_url/api/v1/verifications/$verify_operation_id/complete")
 [[ "$replayed_verify_completion" == "$completed_verify" ]]
 
+changed_verify_fence_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.fencing_token += 1' <<<"$verify_completion")" \
+  "$base_url/api/v1/verifications/$verify_operation_id/complete")
+[[ "$changed_verify_fence_status" == 409 ]]
+
 changed_verify_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   -H "$authorization" -H "$json" \
   --data "$(jq '.evidence[0].condition = "corrupt"' <<<"$verify_completion")" \
   "$base_url/api/v1/verifications/$verify_operation_id/complete")
 [[ "$changed_verify_status" == 409 ]]
+
+completed_verify_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$verify_request" \
+  "$base_url/api/v1/verifications")
+replayed_completed_verify_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$verify_request" \
+  "$base_url/api/v1/verifications")
+[[ "$replayed_completed_verify_operation" == "$completed_verify_operation" ]]
+jq -e --arg operation_id "$verify_operation_id" --arg manifest_sha "$restore_manifest_sha" '
+  .id == $operation_id and .manifest_sha256 == $manifest_sha and
+  .state == "succeeded" and .phase == "completed" and
+  .completed_verified == 1 and .completed_missing == 0 and
+  .completed_corrupt == 0 and .completed_unavailable == 0
+' <<<"$completed_verify_operation" >/dev/null
 
 missing_verify_request=$(jq -cn --arg manifest_sha "$restore_manifest_sha" '{
   namespace_id: "202122232425262728292a2b2c2d2e2f",
