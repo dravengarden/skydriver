@@ -34,6 +34,18 @@ pub(crate) struct OperationRow {
     pub(crate) incarnation: String,
     pub(crate) revision: u64,
     pub(crate) useful_bytes_total: Option<u64>,
+    pub(crate) root_version: u32,
+    pub(crate) key_epoch: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) published_object_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) published_generation: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) published_manifest_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) published_destination_driver_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) published_sidecar_storage_key: Option<String>,
     pub(crate) created_at: u64,
     pub(crate) updated_at: u64,
 }
@@ -69,7 +81,7 @@ pub(crate) async fn create(
     let now = current_unix_seconds().to_string();
     let total = requested.useful_bytes_total.map(|value| value.to_string());
     let database = env.d1("CARRACK_INDEX")?;
-    database
+    let create_operation = database
         .prepare(
             "INSERT INTO operations (\
                  id, namespace_id, kind, state, phase, idempotency_key, requested_by, \
@@ -93,16 +105,48 @@ pub(crate) async fn create(
                 .as_deref()
                 .map_or_else(JsValue::null, JsValue::from_str),
             JsValue::from_str(&now),
-        ])?
-        .run()
+        ])?;
+
+    let pin_crypto_context = database
+        .prepare(
+            "INSERT OR IGNORE INTO import_intents (\
+                 operation_id, root_key_version, key_epoch, created_at\
+             ) \
+             SELECT operation.id, namespace.root_key_version, namespace.active_key_epoch, \
+                    operation.created_at \
+             FROM operations AS operation \
+             JOIN namespaces AS namespace ON namespace.id = operation.namespace_id \
+             WHERE operation.namespace_id = ?1 AND operation.idempotency_key = ?2 \
+               AND operation.requested_by = ?3 AND operation.kind = 'import'",
+        )
+        .bind(&[
+            JsValue::from_str(&requested.namespace_id),
+            JsValue::from_str(&requested.idempotency_key),
+            JsValue::from_str(&client.id),
+        ])?;
+
+    database
+        .batch(vec![create_operation, pin_crypto_context])
         .await?;
 
     let operation = database
         .prepare(
-            "SELECT id, namespace_id, kind, state, phase, requested_by, incarnation, \
-                    revision, useful_bytes_total, created_at, updated_at \
-             FROM operations \
-             WHERE namespace_id = ?1 AND idempotency_key = ?2 AND requested_by = ?3",
+            "SELECT operation.id, operation.namespace_id, operation.kind, operation.state, \
+                    operation.phase, operation.requested_by, operation.incarnation, \
+                    operation.revision, operation.useful_bytes_total, \
+                    intent.root_key_version AS root_version, intent.key_epoch, \
+                    publication.object_id AS published_object_id, \
+                    publication.generation AS published_generation, \
+                    publication.manifest_sha256 AS published_manifest_sha256, \
+                    publication.sidecar_driver_id AS published_destination_driver_id, \
+                    publication.sidecar_storage_key AS published_sidecar_storage_key, \
+                    operation.created_at, operation.updated_at \
+             FROM operations AS operation \
+             JOIN import_intents AS intent ON intent.operation_id = operation.id \
+             LEFT JOIN publication_intents AS publication \
+               ON publication.operation_id = operation.id AND publication.state = 'committed' \
+             WHERE operation.namespace_id = ?1 AND operation.idempotency_key = ?2 \
+               AND operation.requested_by = ?3",
         )
         .bind(&[
             JsValue::from_str(&requested.namespace_id),
@@ -118,6 +162,9 @@ pub(crate) async fn create(
             409,
         );
     };
+    if operation.useful_bytes_total != requested.useful_bytes_total {
+        return Response::error("import idempotency key owns a different source size", 409);
+    }
 
     ensure_transfer_component(&database, &operation).await?;
 

@@ -291,7 +291,7 @@ func (client *ControlClient) PublishCopy(
 		response.RecoverySHA256 != requested.StagedRecovery.RecoverySHA256 ||
 		response.DestinationDriverID != requested.Operation.DestinationDriverID ||
 		response.LocationsAdded != uint64(len(requested.Result.Locations)) ||
-		response.RecoveryRevision != expectedRevision || response.State != "published" {
+		response.RecoveryRevision != expectedRevision || response.State != publicationStatePublished {
 		return PublishedCopy{}, fmt.Errorf("%w: published copy identity changed", ErrControlPlaneResponse)
 	}
 

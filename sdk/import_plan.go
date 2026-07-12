@@ -326,6 +326,36 @@ func ParseImportPlan(encoded []byte) (ImportPlan, error) {
 	return plan, nil
 }
 
+// ReadImportPlan loads and validates one bounded non-secret persisted plan.
+func ReadImportPlan(filePath string) (ImportPlan, error) {
+	directoryRoot, err := os.OpenRoot(filepath.Dir(filePath))
+	if err != nil {
+		return ImportPlan{}, fmt.Errorf("open Carrack import-plan root: %w", err)
+	}
+
+	file, err := directoryRoot.Open(filepath.Base(filePath))
+	if err != nil {
+		return ImportPlan{}, errors.Join(
+			fmt.Errorf("open Carrack import plan: %w", err),
+			directoryRoot.Close(),
+		)
+	}
+
+	encoded, readErr := io.ReadAll(io.LimitReader(file, maximumPlanBytes+1))
+
+	closeErr := file.Close()
+
+	closeRootErr := directoryRoot.Close()
+	if readErr != nil || closeErr != nil || closeRootErr != nil {
+		return ImportPlan{}, fmt.Errorf(
+			"read Carrack import plan: %w",
+			errors.Join(readErr, closeErr, closeRootErr),
+		)
+	}
+
+	return ParseImportPlan(encoded)
+}
+
 // WriteImportPlan atomically persists a non-secret plan before transfer.
 func WriteImportPlan(filePath string, plan ImportPlan) error {
 	encoded, err := plan.MarshalCanonical()

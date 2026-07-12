@@ -154,12 +154,16 @@ async fn create_intent(
              FROM operations AS operation \
              JOIN control_plane_state AS state ON state.singleton = 1 \
              JOIN leases AS lease ON lease.id = ?12 AND lease.operation_id = operation.id \
+             JOIN import_intents AS import ON import.operation_id = operation.id \
              WHERE operation.id = ?13 AND operation.kind = 'import' \
                AND operation.state = 'running' AND operation.incarnation = state.incarnation \
                AND operation.namespace_id = ?14 AND state.mode = 'active' \
                AND state.incarnation = ?15 AND lease.owner_client_id = ?1 \
                AND lease.incarnation = state.incarnation AND lease.fencing_token = ?16 \
                AND lease.released_at IS NULL AND lease.expires_at > unixepoch() \
+               AND import.root_key_version = ?17 AND import.key_epoch = ?18 \
+               AND (operation.useful_bytes_total IS NULL \
+                    OR operation.useful_bytes_total = ?19) \
                AND EXISTS(SELECT 1 FROM client_namespace_permissions \
                           WHERE client_id = ?1 AND namespace_id = operation.namespace_id \
                             AND role IN ('importer', 'administrator')) \
@@ -205,6 +209,11 @@ async fn create_intent(
             JsValue::from_str(&validated.namespace_id),
             JsValue::from_str(&requested.incarnation),
             integer(requested.fencing_token)?,
+            JsValue::from_str(
+                &validated.recovery.manifest.crypto.root_version.to_string(),
+            ),
+            integer(validated.recovery.manifest.crypto.key_epoch)?,
+            integer(validated.recovery.manifest.plaintext_size)?,
         ])?
         .run()
         .await?;

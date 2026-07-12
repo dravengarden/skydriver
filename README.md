@@ -173,6 +173,39 @@ just verify
 Cloudflare operator authentication, D1 migrations, runtime secrets, and deploy
 commands are documented in `docs/cloudflare.md`.
 
+The local filesystem Import path encrypts one plaintext source into a distinct
+archive root and publishes it under an `importer` or `administrator` token:
+
+```bash
+export CARRACK_CONTROL_TOKEN="$(read-importer-token)"
+
+carrack import run \
+  --control-url https://carrack.example.com \
+  --namespace 202122232425262728292a2b2c2d2e2f \
+  --object-id object-1 \
+  --source-local-driver-id local-source \
+  --source-local-root /srv/carrack/plaintext \
+  --source-key dataset.bin \
+  --destination-local-driver-id local-archive \
+  --destination-local-root /srv/carrack/archive \
+  --destination-prefix imported \
+  --staging-directory /var/tmp/carrack \
+  --plan-file /var/lib/carrack/plans/object-1.json
+```
+
+Source and destination driver IDs and canonical roots must differ. Operation
+creation pins the namespace's active root version and key epoch, and the
+fenced key grant supplies only that context. The command hashes the current
+source identity into its idempotency key, atomically persists every random pack
+ID before payload I/O, renews the write lease throughout encryption and
+readback, and publishes only after the payload, destination sidecar, and R2
+recovery copy verify. The plan contains no key material and must be reused for
+a retry. `--expected-object-revision` defaults to `1` for a new object and must
+be set to the current revision for a later generation.
+If publication committed but its response was lost, an exact retry returns the
+committed manifest with `already_published: true` without another key grant,
+encryption pass, or destination write.
+
 The restore CLI opens any configured compiled driver and accepts secrets only
 through process environment variables:
 

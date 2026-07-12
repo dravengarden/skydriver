@@ -275,6 +275,9 @@ SELECT
 FROM control_plane_state
 WHERE singleton = 1;
 
+INSERT INTO import_intents (operation_id, root_key_version, key_epoch, created_at)
+VALUES ('operation-1', 1, 1, 1);
+
 INSERT INTO leases (
   id, resource_kind, resource_id, lease_kind, owner_client_id,
   operation_id, fencing_token, incarnation, expires_at, created_at, updated_at
@@ -315,6 +318,10 @@ expect_failure \
      1
    );" \
   "operation from a stale incarnation"
+
+expect_failure \
+  "UPDATE import_intents SET key_epoch = 2 WHERE operation_id = 'operation-1';" \
+  "mutation of a pinned import crypto context"
 
 execute "
 UPDATE operations

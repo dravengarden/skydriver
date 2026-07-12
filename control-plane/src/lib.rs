@@ -464,6 +464,23 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
             },
         )
         .post_async(
+            "/api/v1/imports/:id/key",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+                let Some(operation_id) = context.param("id") else {
+                    return Response::error("operation ID is required", 400);
+                };
+
+                key_grants::grant_import(&mut request, &context.env, &client, operation_id).await
+            },
+        )
+        .post_async(
             "/api/v1/imports/publish",
             |mut request, context| async move {
                 if external_maintenance(&context.env) {

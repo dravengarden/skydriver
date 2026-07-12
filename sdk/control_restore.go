@@ -2,7 +2,6 @@ package sdk
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -240,21 +239,7 @@ func (client *ControlClient) GrantRestoreEpochKey(
 		return cryptostream.EpochKey{}, fmt.Errorf("%w: restore key identity changed", ErrControlPlaneResponse)
 	}
 
-	decoded, err := base64.RawURLEncoding.DecodeString(response.EpochKey)
-	if err != nil || len(decoded) != len(cryptostream.EpochKey{}) {
-		return cryptostream.EpochKey{}, fmt.Errorf("%w: invalid restore epoch key", ErrControlPlaneResponse)
-	}
-
-	var combined byte
-	for _, value := range decoded {
-		combined |= value
-	}
-
-	if combined == 0 {
-		return cryptostream.EpochKey{}, fmt.Errorf("%w: zero restore epoch key", ErrControlPlaneResponse)
-	}
-
-	return cryptostream.EpochKey(decoded), nil
+	return decodeGrantedEpochKey(response.EpochKey, "restore")
 }
 
 // ReportRestoreProgress idempotently records cumulative restore counters.

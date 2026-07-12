@@ -172,8 +172,9 @@ a destination driver, and commits a new immutable manifest:
 
 ```text
 begin operation
+  -> pin root version + key epoch
+  -> resolve source version + persist random pack IDs
   -> acquire write lease + fencing token
-  -> resolve source version
   -> receive key grant
   -> stream, chunk, encrypt, hash, upload
   -> commit each verified staging location idempotently
@@ -181,6 +182,17 @@ begin operation
   -> compare-and-swap object current generation
   -> release lease
 ```
+
+Import creation snapshots the namespace's active root version and key epoch in
+an immutable operation intent. Before provider I/O, the controlled SDK either
+loads the exact persisted import plan or creates it and atomically records every
+random pack ID. A live write fence can obtain only the operation's pinned epoch
+key; a later namespace rotation cannot change an idempotent import. The SDK
+renews that fence through encryption, destination readback, R2 staging, and
+publication. Losing renewal cancels provider I/O and prevents publication.
+Operation creation also returns a committed publication identity on an exact
+retry, so a client that lost the final response can converge without acquiring
+another key grant or repeating provider I/O.
 
 Manifest publication is last. A crash before publication leaves only staging
 locations, never a partially readable object version.

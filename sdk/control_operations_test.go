@@ -1,7 +1,9 @@
 package sdk_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -49,7 +51,8 @@ func TestControlClientPublishesImportUnderExactFence(t *testing.T) {
 				`","namespace_id":"` + recovery.Manifest.NamespaceID +
 				`","kind":"import","state":"planned","phase":"planned",` +
 				`"requested_by":"` + clientID + `","incarnation":"` + incarnation +
-				`","revision":1,"useful_bytes_total":2,"created_at":1,"updated_at":1}`))
+				`","revision":1,"useful_bytes_total":2,"root_version":1,"key_epoch":7,` +
+				`"created_at":1,"updated_at":1}`))
 		case "/api/v1/operations/" + operationID + "/claim":
 			assertJSONBody(t, request, map[string]any{"lease_seconds": float64(60)})
 
@@ -58,6 +61,16 @@ func TestControlClientPublishesImportUnderExactFence(t *testing.T) {
 				`","incarnation":"` + incarnation +
 				`","fencing_token":7,"expires_at":100,"operation_revision":2,` +
 				`"operation_state":"running"}`))
+		case "/api/v1/imports/" + operationID + "/key":
+			assertJSONBody(t, request, map[string]any{
+				"lease_id": leaseID, "incarnation": incarnation,
+				"fencing_token": float64(7), "root_version": float64(1),
+				"key_epoch": float64(7),
+			})
+
+			_, _ = response.Write([]byte(`{"operation_id":"` + operationID +
+				`","root_version":1,"key_epoch":7,"epoch_key":"` +
+				base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32)) + `"}`))
 		case "/api/v1/operations/" + operationID + "/progress":
 			assertJSONBody(t, request, map[string]any{
 				"lease_id":              leaseID,
@@ -122,6 +135,15 @@ func TestControlClientPublishesImportUnderExactFence(t *testing.T) {
 	lease, err := client.ClaimImportOperation(context.Background(), operation, 60)
 	if err != nil {
 		t.Fatalf("claim import operation: %v", err)
+	}
+
+	epochKey, err := client.GrantImportEpochKey(context.Background(), operation, lease)
+	if err != nil {
+		t.Fatalf("grant import epoch key: %v", err)
+	}
+
+	if !bytes.Equal(epochKey[:], bytes.Repeat([]byte{9}, 32)) {
+		t.Fatalf("unexpected import epoch key: %x", epochKey)
 	}
 
 	progress, err := client.ReportProgress(context.Background(), operation, lease, sdk.ProgressSample{

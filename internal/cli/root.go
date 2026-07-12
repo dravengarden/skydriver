@@ -18,10 +18,12 @@ import (
 
 const (
 	developmentVersion           = "0.1.0-dev"
+	versionCommandName           = "version"
 	outputFormatJSON             = "json"
 	controlURLFlag               = "control-url"
 	namespaceFlag                = "namespace"
 	manifestFlag                 = "manifest"
+	importCommandName            = "import"
 	moveCommandName              = "move"
 	copyCommandName              = "copy"
 	sourceLocalDriverIDFlag      = "source-local-driver-id"
@@ -62,6 +64,7 @@ func newRootCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Comman
 	command.AddCommand(
 		newVersionCommand(stdout),
 		newLayoutCommand(stdout),
+		newImportCommand(ctx, stdout),
 		newRestoreCommand(ctx, stdout),
 		newCopyCommand(ctx, stdout),
 		newMoveCommand(ctx, stdout),
@@ -74,11 +77,11 @@ func newVersionCommand(stdout io.Writer) *cobra.Command {
 	var outputFormat string
 
 	command := &cobra.Command{
-		Use:   "version",
+		Use:   versionCommandName,
 		Short: "Show the Carrack version",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			return writeValue(stdout, outputFormat, map[string]string{"version": developmentVersion})
+			return writeValue(stdout, outputFormat, map[string]string{versionCommandName: developmentVersion})
 		},
 	}
 	command.Flags().StringVar(&outputFormat, "format", "table", "output format: table, json, or yaml")
@@ -148,7 +151,7 @@ func writeTable(writer io.Writer, value any) error {
 			return fmt.Errorf("write layout table: %w", err)
 		}
 	case map[string]string:
-		if _, err := fmt.Fprintf(table, "VERSION\n%s\n", typedValue["version"]); err != nil {
+		if _, err := fmt.Fprintf(table, "VERSION\n%s\n", typedValue[versionCommandName]); err != nil {
 			return fmt.Errorf("write version table: %w", err)
 		}
 	case sdk.MoveSweepResult:
@@ -192,6 +195,26 @@ func writeTable(writer io.Writer, value any) error {
 			typedValue.State,
 		); err != nil {
 			return fmt.Errorf("write copy run table: %w", err)
+		}
+	case importRunResult:
+		if _, err := fmt.Fprintf(
+			table,
+			"OPERATION ID\tOBJECT ID\tGENERATION\tMANIFEST SHA-256\tDESTINATION\tOBJECTS\tLOCATIONS\tPLAINTEXT BYTES\tCIPHERTEXT BYTES\tPLAN FILE\tALREADY PUBLISHED\tSTATE\tTELEMETRY WARNING\n%s\t%s\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%s\t%t\t%s\t%s\n",
+			typedValue.OperationID,
+			typedValue.ObjectID,
+			typedValue.Generation,
+			typedValue.ManifestSHA256,
+			typedValue.DestinationDriverID,
+			typedValue.ObjectsWritten,
+			typedValue.LocationsWritten,
+			typedValue.PlaintextBytes,
+			typedValue.CiphertextBytes,
+			typedValue.PlanFile,
+			typedValue.AlreadyPublished,
+			typedValue.State,
+			typedValue.TelemetryWarning,
+		); err != nil {
+			return fmt.Errorf("write import run table: %w", err)
 		}
 	case sdk.ControlledRestoreResult:
 		if _, err := fmt.Fprintf(

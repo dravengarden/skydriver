@@ -87,6 +87,64 @@ restore_recovery=$(jq -cn \
   }')
 restore_recovery_bytes=${#restore_recovery}
 restore_recovery_sha=$(printf '%s' "$restore_recovery" | sha256sum | cut -d' ' -f1)
+import_content=$(jq -cn '{
+  schema_version: "carrack.manifest.v1",
+  namespace_id: "202122232425262728292a2b2c2d2e2f",
+  object_id: "import-object",
+  generation: 1,
+  plaintext_size: 1024,
+  plaintext_sha256: "7777777777777777777777777777777777777777777777777777777777777777",
+  layout: {
+    physical_block_bytes: 1024,
+    crypto_frame_bytes: 1024,
+    logical_pack_bytes: 1024
+  },
+  crypto: {
+    suite: "carrack-aes128gcm-hkdfsha256-v1",
+    root_version: 1,
+    key_epoch: 1
+  },
+  packs: [{
+    ordinal: 0,
+    pack_id: "505152535455565758595a5b5c5d5e5f",
+    plaintext_offset: 0,
+    plaintext_size: 1024,
+    ciphertext_size: 1040,
+    ciphertext_sha256: "5555555555555555555555555555555555555555555555555555555555555555",
+    extents: [{
+      ordinal: 0,
+      first_frame: 0,
+      frame_count: 1,
+      ciphertext_offset: 0,
+      ciphertext_size: 1040,
+      ciphertext_sha256: "6666666666666666666666666666666666666666666666666666666666666666"
+    }]
+  }]
+}')
+import_manifest_sha=$(printf '%s' "$import_content" | sha256sum | cut -d' ' -f1)
+import_recovery=$(jq -cn \
+  --arg manifest_sha "$import_manifest_sha" \
+  --argjson manifest "$import_content" '
+  {
+    schema_version: "carrack.recovery.v1",
+    manifest_sha256: $manifest_sha,
+    manifest: $manifest,
+    locations: [{
+      extent_sha256: "6666666666666666666666666666666666666666666666666666666666666666",
+      driver_id: "restore-driver",
+      storage_key: "import/payload",
+      provider_version: "import-v1",
+      offset: 0,
+      length: 1040
+    }]
+  }')
+wrong_import_content=$(jq -cn --argjson manifest "$import_content" '$manifest | .crypto.key_epoch = 2')
+wrong_import_manifest_sha=$(printf '%s' "$wrong_import_content" | sha256sum | cut -d' ' -f1)
+wrong_import_recovery=$(jq -cn \
+  --arg manifest_sha "$wrong_import_manifest_sha" \
+  --argjson recovery "$import_recovery" \
+  --argjson manifest "$wrong_import_content" '
+  $recovery | .manifest_sha256 = $manifest_sha | .manifest = $manifest')
 copy_recovery=$(jq -cn \
   --argjson recovery "$restore_recovery" \
   '$recovery | .locations += [{
@@ -932,16 +990,18 @@ final_move_recovery=$(curl --silent --show-error --fail-with-body \
   "$base_url/api/v1/restores/$final_move_restore_id/manifest")
 [[ "$final_move_recovery" == "$move_final_recovery" ]]
 
+operation_request='{
+  "namespace_id":"202122232425262728292a2b2c2d2e2f",
+  "idempotency_key":"worker-e2e-source-v1",
+  "useful_bytes_total":1024
+}'
 operation=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" \
-  --data '{
-    "namespace_id":"202122232425262728292a2b2c2d2e2f",
-    "idempotency_key":"worker-e2e-source-v1",
-    "useful_bytes_total":1024
-  }' \
+  --data "$operation_request" \
   "$base_url/api/v1/operations")
 operation_id=$(jq -r .id <<<"$operation")
 incarnation=$(jq -r .incarnation <<<"$operation")
+jq -e '.root_version == 1 and .key_epoch == 1' <<<"$operation" >/dev/null
 
 lease=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" \
@@ -949,6 +1009,32 @@ lease=$(curl --silent --show-error --fail-with-body \
   "$base_url/api/v1/operations/$operation_id/claim")
 lease_id=$(jq -r .lease_id <<<"$lease")
 fence=$(jq -r .fencing_token <<<"$lease")
+
+import_key_grant_body=$(jq -cn \
+  --arg lease_id "$lease_id" \
+  --arg incarnation "$incarnation" \
+  --argjson fence "$fence" '
+  {
+    lease_id: $lease_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    root_version: 1,
+    key_epoch: 1
+  }')
+import_key_grant=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$import_key_grant_body" \
+  "$base_url/api/v1/imports/$operation_id/key")
+jq -e --arg operation_id "$operation_id" '
+  .operation_id == $operation_id and .root_version == 1 and .key_epoch == 1 and
+  (.epoch_key | type == "string" and length == 43)
+' <<<"$import_key_grant" >/dev/null
+
+wrong_import_key_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.key_epoch = 2' <<<"$import_key_grant_body")" \
+  "$base_url/api/v1/imports/$operation_id/key")
+[[ "$wrong_import_key_status" == 409 ]]
 
 progress_body() {
   local sequence=$1
@@ -1025,3 +1111,92 @@ stale_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
 
 [[ "$regression_status" == 409 ]]
 [[ "$stale_status" == 409 ]]
+
+staged_wrong_import=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data-binary "$wrong_import_recovery" \
+  "$base_url/api/v1/recovery-manifests/stage")
+wrong_import_publication=$(jq -cn \
+  --arg operation_id "$operation_id" \
+  --arg lease_id "$lease_id" \
+  --arg incarnation "$incarnation" \
+  --arg manifest_sha "$wrong_import_manifest_sha" \
+  --arg recovery_sha "$(jq -r .recovery_sha256 <<<"$staged_wrong_import")" \
+  --arg r2_key "$(jq -r .r2_key <<<"$staged_wrong_import")" \
+  --arg r2_version "$(jq -r .r2_version <<<"$staged_wrong_import")" \
+  --argjson fence "$fence" '
+  {
+    operation_id: $operation_id,
+    lease_id: $lease_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    manifest_sha256: $manifest_sha,
+    recovery_sha256: $recovery_sha,
+    r2_key: $r2_key,
+    r2_version: $r2_version,
+    sidecar_driver_id: "restore-driver",
+    sidecar_storage_key: "import/wrong-sidecar.json",
+    expected_object_revision: 1
+  }')
+wrong_import_publication_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$wrong_import_publication" \
+  "$base_url/api/v1/imports/publish")
+[[ "$wrong_import_publication_status" == 409 ]]
+
+staged_import=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data-binary "$import_recovery" \
+  "$base_url/api/v1/recovery-manifests/stage")
+import_publication=$(jq -cn \
+  --arg operation_id "$operation_id" \
+  --arg lease_id "$lease_id" \
+  --arg incarnation "$incarnation" \
+  --arg manifest_sha "$import_manifest_sha" \
+  --arg recovery_sha "$(jq -r .recovery_sha256 <<<"$staged_import")" \
+  --arg r2_key "$(jq -r .r2_key <<<"$staged_import")" \
+  --arg r2_version "$(jq -r .r2_version <<<"$staged_import")" \
+  --argjson fence "$fence" '
+  {
+    operation_id: $operation_id,
+    lease_id: $lease_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    manifest_sha256: $manifest_sha,
+    recovery_sha256: $recovery_sha,
+    r2_key: $r2_key,
+    r2_version: $r2_version,
+    sidecar_driver_id: "restore-driver",
+    sidecar_storage_key: "import/sidecar.json",
+    expected_object_revision: 1
+  }')
+published_import=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$import_publication" \
+  "$base_url/api/v1/imports/publish")
+jq -e \
+  --arg operation_id "$operation_id" \
+  --arg manifest_sha "$import_manifest_sha" '
+  .operation_id == $operation_id and .object_id == "import-object" and
+  .generation == 1 and .manifest_sha256 == $manifest_sha and .state == "published"
+' <<<"$published_import" >/dev/null
+
+replayed_import=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$import_publication" \
+  "$base_url/api/v1/imports/publish")
+[[ "$replayed_import" == "$published_import" ]]
+
+completed_import_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$operation_request" \
+  "$base_url/api/v1/operations")
+jq -e \
+  --arg operation_id "$operation_id" \
+  --arg manifest_sha "$import_manifest_sha" '
+  .id == $operation_id and .state == "succeeded" and
+  .published_object_id == "import-object" and .published_generation == 1 and
+  .published_manifest_sha256 == $manifest_sha and
+  .published_destination_driver_id == "restore-driver" and
+  .published_sidecar_storage_key == "import/sidecar.json"
+' <<<"$completed_import_operation" >/dev/null

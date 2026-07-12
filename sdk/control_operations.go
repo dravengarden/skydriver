@@ -15,6 +15,7 @@ const (
 	operationKindMove            = "move"
 	operationStateRunning        = "running"
 	operationStateSucceeded      = "succeeded"
+	publicationStatePublished    = "published"
 )
 
 // CreateImportOperationRequest identifies one idempotent import attempt.
@@ -26,17 +27,24 @@ type CreateImportOperationRequest struct {
 
 // ImportOperation is the durable control-plane identity for an import.
 type ImportOperation struct {
-	ID               string  `json:"id"`
-	NamespaceID      string  `json:"namespace_id"`
-	Kind             string  `json:"kind"`
-	State            string  `json:"state"`
-	Phase            string  `json:"phase"`
-	RequestedBy      string  `json:"requested_by"`
-	Incarnation      string  `json:"incarnation"`
-	Revision         uint64  `json:"revision"`
-	UsefulBytesTotal *uint64 `json:"useful_bytes_total"`
-	CreatedAt        uint64  `json:"created_at"`
-	UpdatedAt        uint64  `json:"updated_at"`
+	ID                           string  `json:"id"`
+	NamespaceID                  string  `json:"namespace_id"`
+	Kind                         string  `json:"kind"`
+	State                        string  `json:"state"`
+	Phase                        string  `json:"phase"`
+	RequestedBy                  string  `json:"requested_by"`
+	Incarnation                  string  `json:"incarnation"`
+	Revision                     uint64  `json:"revision"`
+	UsefulBytesTotal             *uint64 `json:"useful_bytes_total"`
+	RootVersion                  uint32  `json:"root_version"`
+	KeyEpoch                     uint64  `json:"key_epoch"`
+	PublishedObjectID            string  `json:"published_object_id"`
+	PublishedGeneration          uint64  `json:"published_generation"`
+	PublishedManifestSHA256      string  `json:"published_manifest_sha256"`
+	PublishedDestinationDriverID string  `json:"published_destination_driver_id"`
+	PublishedSidecarStorageKey   string  `json:"published_sidecar_storage_key"`
+	CreatedAt                    uint64  `json:"created_at"`
+	UpdatedAt                    uint64  `json:"updated_at"`
 }
 
 // OperationLease is a renewable, incarnation-scoped write fence.
@@ -156,11 +164,35 @@ func (client *ControlClient) CreateImportOperation(
 
 	if response.NamespaceID != requested.NamespaceID || response.Kind != "import" ||
 		!validControlHex(response.ID, 32) || !validControlHex(response.Incarnation, 32) ||
-		response.Revision == 0 {
+		response.Revision == 0 || response.RootVersion == 0 || response.KeyEpoch == 0 ||
+		!sameOptionalUint64(response.UsefulBytesTotal, requested.UsefulBytesTotal) ||
+		!validImportOperationPublication(response) {
 		return ImportOperation{}, fmt.Errorf("%w: invalid import operation identity", ErrControlPlaneResponse)
 	}
 
 	return response, nil
+}
+
+func validImportOperationPublication(operation ImportOperation) bool {
+	if operation.State == operationStateSucceeded {
+		return validControlString(operation.PublishedObjectID, 2_048) &&
+			operation.PublishedGeneration > 0 &&
+			validControlHex(operation.PublishedManifestSHA256, 64) &&
+			validControlString(operation.PublishedDestinationDriverID, 256) &&
+			validControlString(operation.PublishedSidecarStorageKey, 4_096)
+	}
+
+	return operation.PublishedObjectID == "" && operation.PublishedGeneration == 0 &&
+		operation.PublishedManifestSHA256 == "" && operation.PublishedDestinationDriverID == "" &&
+		operation.PublishedSidecarStorageKey == ""
+}
+
+func sameOptionalUint64(left, right *uint64) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+
+	return *left == *right
 }
 
 // ClaimImportOperation acquires or renews the current import write fence.
@@ -297,7 +329,7 @@ func (client *ControlClient) PublishImport(
 		response.ObjectID != requested.Result.Manifest.ObjectID ||
 		response.Generation != requested.Result.Manifest.Generation ||
 		response.ManifestSHA256 != requested.StagedRecovery.ManifestSHA256 ||
-		response.State != "published" {
+		response.State != publicationStatePublished {
 		return PublishedImport{}, fmt.Errorf("%w: published import identity changed", ErrControlPlaneResponse)
 	}
 
@@ -326,15 +358,24 @@ func validatePublication(requested PublishImportRequest) error {
 		return fmt.Errorf("%w: invalid content manifest: %w", ErrInvalidControlPlane, err)
 	}
 
-	if requested.Result.Recovery.ManifestSHA256 != staged.ManifestSHA256 ||
-		manifestDigest != staged.ManifestSHA256 ||
-		manifest.NamespaceID != requested.Operation.NamespaceID ||
-		manifest.NamespaceID != staged.NamespaceID || manifest.ObjectID != staged.ObjectID ||
-		manifest.Generation != staged.Generation {
+	if !validImportPublicationIdentities(requested, manifestDigest) {
 		return fmt.Errorf("%w: import publication identities differ", ErrInvalidControlPlane)
 	}
 
 	return nil
+}
+
+func validImportPublicationIdentities(requested PublishImportRequest, manifestDigest string) bool {
+	manifest := requested.Result.Manifest
+	staged := requested.StagedRecovery
+
+	return requested.Result.Recovery.ManifestSHA256 == staged.ManifestSHA256 &&
+		manifestDigest == staged.ManifestSHA256 &&
+		manifest.NamespaceID == requested.Operation.NamespaceID &&
+		manifest.Crypto.RootVersion == requested.Operation.RootVersion &&
+		manifest.Crypto.KeyEpoch == requested.Operation.KeyEpoch &&
+		manifest.NamespaceID == staged.NamespaceID && manifest.ObjectID == staged.ObjectID &&
+		manifest.Generation == staged.Generation
 }
 
 func validateProgressRequest(
