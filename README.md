@@ -368,9 +368,32 @@ Both transitions are administrator-only `gc` operations protected by a write
 lease, fencing token, provider identity, and quarantine revision CAS. A later
 inventory preserves acknowledgement or tombstone state when identity is
 unchanged, resets review if identity changes, and resolves cleanup intent if a
-D1 location or recovery sidecar appears. Tombstoning only reports
-`delete_after`; physical cleanup remains unavailable until a janitor protocol
-can stat the exact provider object and repeat every reference and fence check.
+D1 location or recovery sidecar appears. Driver revision is part of that
+identity: changing the registered provider configuration restarts review.
+
+Tombstoning atomically creates one provider-neutral delete task, but the task is
+not claimable until `delete_after`. After that deadline, a `janitor` or
+`administrator` token can run the local-filesystem adapter with the tombstone
+operation ID printed by the preceding command:
+
+```bash
+export CARRACK_CONTROL_TOKEN="$(read-janitor-token)"
+
+carrack quarantine sweep <tombstone-operation-id> \
+  --control-url https://carrack.example.com \
+  --local-driver-id local-archive \
+  --local-root /srv/carrack/archive
+```
+
+The SDK first calls provider `Stat` and requires the exact storage key, driver
+revision, optional provider version and ETag, and size pinned by inventory. It
+then rotates the task fence while D1 repeats grace, reachability, sidecar,
+driver, client-role, and incarnation checks immediately before provider I/O.
+Identity mismatch fails without deleting. A proven absent object completes as
+`already_absent`, so a lost provider response converges without repeating an
+assumed side effect. Successful completion changes the ledger to `deleted`,
+resolves the active finding, and records an audit event. Scheduling remains
+disabled; every sweep is explicit.
 
 A relay can repair provider objects that verification has proven missing while
 another exact replica remains available. This local-filesystem path preserves

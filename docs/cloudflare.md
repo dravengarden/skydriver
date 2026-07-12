@@ -106,8 +106,8 @@ Inventory is deliberately read-only. It does not adopt provider objects,
 change manifest or location state, or invoke provider deletion. Do not overlap
 owned prefixes across namespaces: an unknown object already quarantined for a
 different namespace rejects completion instead of guessing ownership. Cron
-scheduling, adoption, and quarantine cleanup remain disabled pending their own
-fenced protocols and production fault-injection gates.
+scheduling and adoption remain disabled pending their own fenced protocols and
+production fault-injection gates.
 
 After the integrity console's `quarantine_until`, use `carrack quarantine
 acknowledge` with the displayed quarantine revision and a durable review reason.
@@ -117,10 +117,26 @@ start a second `inventory_quarantine_seconds` grace. Both commands require an
 ETag, size, revision, incarnation, or lease identities. Their audit records and
 integrity findings remain in D1.
 
-These commands do not delete provider bytes. `delete_after` is only future
-eligibility metadata; there is intentionally no quarantine sweep command until
-the provider-stat and final fenced revalidation protocol is implemented and
-passes the production fault-injection gate.
+These review commands do not delete provider bytes. Tombstoning creates a task
+that remains ineligible until `delete_after`. Run the explicit local-filesystem
+janitor only after that deadline:
+
+```bash
+export CARRACK_CONTROL_TOKEN="$(read-janitor-token)"
+
+carrack quarantine sweep <tombstone-operation-id> \
+  --control-url https://carrack.example.com \
+  --local-driver-id local-archive \
+  --local-root /srv/carrack/archive
+```
+
+The token needs the `janitor` or `administrator` role. The SDK requires exact
+provider `Stat` identity before asking D1 to rotate the fence and repeat grace,
+driver-revision, reference, recovery-sidecar, incarnation, and role checks. It
+then invokes the idempotent driver delete and records either `deleted` or
+`already_absent`. A changed provider identity fails the task without deletion.
+Do not schedule this command automatically yet; the explicit protocol is
+implemented, but the production fault-injection gate remains outstanding.
 
 ## Integrity findings
 

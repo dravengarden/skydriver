@@ -28,13 +28,15 @@ type gcMarkFlags struct {
 	outputFormat   string
 }
 
-type gcSweepFlags struct {
+type localJanitorFlags struct {
 	controlURL    string
 	localDriverID string
 	localRoot     string
 	leaseSeconds  uint64
 	outputFormat  string
 }
+
+type gcSweepFlags = localJanitorFlags
 
 func newGCCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
 	command := &cobra.Command{Use: gcCommandName, Short: "Collect unreachable immutable payloads"}
@@ -98,8 +100,23 @@ func newGCSweepCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
 			return writeValue(stdout, flags.outputFormat, result)
 		},
 	}
+	configureLocalJanitorFlags(command, &flags, "GC")
+
+	return command
+}
+
+func configureLocalJanitorFlags(
+	command *cobra.Command,
+	flags *localJanitorFlags,
+	purpose string,
+) {
 	command.Flags().StringVar(&flags.controlURL, controlURLFlag, "", "Carrack control-plane URL")
-	command.Flags().StringVar(&flags.localDriverID, localDriverIDFlag, "", "local filesystem GC driver ID")
+	command.Flags().StringVar(
+		&flags.localDriverID,
+		localDriverIDFlag,
+		"",
+		"local filesystem "+purpose+" driver ID",
+	)
 	command.Flags().StringVar(&flags.localRoot, localRootFlag, "", "local filesystem archive root")
 	command.Flags().Uint64Var(&flags.leaseSeconds, "lease-seconds", 60, "delete task lease duration")
 	command.Flags().StringVar(&flags.outputFormat, "format", "table", "output format: table, json, or yaml")
@@ -109,8 +126,6 @@ func newGCSweepCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
 			panic(err)
 		}
 	}
-
-	return command
 }
 
 func executeGCMark(
@@ -151,26 +166,9 @@ func executeGCSweep(
 	}
 	defer clearToken()
 
-	absoluteRoot, err := filepath.Abs(flags.localRoot)
+	handle, err := openLocalJanitorProvider(ctx, flags.localDriverID, flags.localRoot, "GC")
 	if err != nil {
-		return sdk.GCSweepResult{}, fmt.Errorf("resolve local filesystem root: %w", err)
-	}
-
-	configuration, err := json.Marshal(localfs.DriverConfig{Root: absoluteRoot})
-	if err != nil {
-		return sdk.GCSweepResult{}, fmt.Errorf("encode local filesystem configuration: %w", err)
-	}
-
-	registry, err := provider.NewRegistry(localfs.Factory{})
-	if err != nil {
-		return sdk.GCSweepResult{}, fmt.Errorf("construct provider registry: %w", err)
-	}
-
-	handle, err := registry.Open(ctx, provider.DriverSpec{
-		ID: flags.localDriverID, Kind: localfs.DriverKind, Config: configuration,
-	}, provider.Dependencies{})
-	if err != nil {
-		return sdk.GCSweepResult{}, fmt.Errorf("open local filesystem GC provider: %w", err)
+		return sdk.GCSweepResult{}, err
 	}
 
 	if handle.Deleter == nil || !handle.Capabilities.Delete {
@@ -192,6 +190,37 @@ func executeGCSweep(
 	}
 
 	return result, nil
+}
+
+func openLocalJanitorProvider(
+	ctx context.Context,
+	driverID,
+	root,
+	purpose string,
+) (provider.Handle, error) {
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		return provider.Handle{}, fmt.Errorf("resolve local filesystem root: %w", err)
+	}
+
+	configuration, err := json.Marshal(localfs.DriverConfig{Root: absoluteRoot})
+	if err != nil {
+		return provider.Handle{}, fmt.Errorf("encode local filesystem configuration: %w", err)
+	}
+
+	registry, err := provider.NewRegistry(localfs.Factory{})
+	if err != nil {
+		return provider.Handle{}, fmt.Errorf("construct provider registry: %w", err)
+	}
+
+	handle, err := registry.Open(ctx, provider.DriverSpec{
+		ID: driverID, Kind: localfs.DriverKind, Config: configuration,
+	}, provider.Dependencies{})
+	if err != nil {
+		return provider.Handle{}, fmt.Errorf("open local filesystem %s provider: %w", purpose, err)
+	}
+
+	return handle, nil
 }
 
 func newGCControlClient(

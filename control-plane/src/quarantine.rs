@@ -329,13 +329,13 @@ async fn load_target(
         .prepare(
             "SELECT quarantine.provider_version, quarantine.etag, quarantine.size_bytes, \
                     quarantine.state, quarantine.quarantine_until, quarantine.revision, \
-                    driver.revision AS driver_revision, namespace.retention_policy_json \
+                    quarantine.driver_revision, namespace.retention_policy_json \
              FROM quarantined_provider_objects AS quarantine \
              JOIN namespaces AS namespace ON namespace.id = quarantine.namespace_id \
              JOIN driver_instances AS driver ON driver.id = quarantine.driver_id \
              WHERE quarantine.namespace_id = ?1 AND quarantine.driver_id = ?2 \
                AND quarantine.storage_key = ?3 AND quarantine.revision = ?4 \
-               AND driver.enabled = 1 \
+               AND driver.enabled = 1 AND driver.revision = quarantine.driver_revision \
                AND EXISTS(SELECT 1 FROM client_namespace_permissions \
                           WHERE client_id = ?5 AND namespace_id = quarantine.namespace_id \
                             AND role = 'administrator') \
@@ -388,6 +388,7 @@ async fn load_live_action(
                AND control.mode = 'active' \
                AND quarantine.namespace_id = operation.namespace_id \
                AND quarantine.revision = intent.expected_revision \
+               AND quarantine.driver_revision = intent.driver_revision \
                AND quarantine.provider_version IS intent.provider_version \
                AND quarantine.etag IS intent.etag \
                AND quarantine.size_bytes = intent.size_bytes \
@@ -524,6 +525,37 @@ fn action_statements(
             JsValue::from_str(&live.storage_key),
             copying::integer(result_revision)?,
         ])?;
+    let create_delete_task = database
+        .prepare(
+            "INSERT OR IGNORE INTO quarantine_delete_tasks (\
+                 id, operation_id, driver_id, driver_revision, storage_key, expected_revision, \
+                 provider_version, etag, size_bytes, delete_after, state, created_at, updated_at\
+             ) \
+             SELECT operation.id || '/quarantine-delete', operation.id, intent.driver_id, \
+                    intent.driver_revision, intent.storage_key, completion.result_revision, \
+                    intent.provider_version, intent.etag, intent.size_bytes, \
+                    completion.delete_after, 'pending', completion.completed_at, \
+                    completion.completed_at \
+             FROM operations AS operation \
+             JOIN quarantine_action_intents AS intent ON intent.operation_id = operation.id \
+             JOIN quarantine_action_completions AS completion \
+               ON completion.operation_id = operation.id \
+             JOIN quarantined_provider_objects AS quarantine \
+               ON quarantine.driver_id = intent.driver_id \
+              AND quarantine.storage_key = intent.storage_key \
+             WHERE operation.id = ?1 AND operation.kind = 'gc' \
+               AND operation.state = 'running' AND operation.phase = 'reviewing_quarantine' \
+               AND intent.action = 'tombstone' AND completion.state = 'staging' \
+               AND completion.result_state = 'tombstoned' \
+               AND quarantine.state = 'tombstoned' \
+               AND quarantine.driver_revision = intent.driver_revision \
+               AND quarantine.revision = completion.result_revision \
+               AND quarantine.provider_version IS intent.provider_version \
+               AND quarantine.etag IS intent.etag \
+               AND quarantine.size_bytes = intent.size_bytes \
+               AND quarantine.delete_after = completion.delete_after",
+        )
+        .bind(&[JsValue::from_str(operation_id)])?;
     let audit = database
         .prepare(
             "INSERT INTO audit_events (\
@@ -558,7 +590,13 @@ fn action_statements(
             JsValue::from_str(operation_id),
         ])?;
 
-    Ok(vec![completion, update_object, update_finding, audit])
+    Ok(vec![
+        completion,
+        update_object,
+        create_delete_task,
+        update_finding,
+        audit,
+    ])
 }
 
 #[allow(

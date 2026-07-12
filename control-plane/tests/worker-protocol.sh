@@ -2053,7 +2053,7 @@ jq -e --argjson delete_after "$tombstone_delete_after" '
   .findings[0].location_state == "tombstoned" and
   .findings[0].tombstone_reason == "approved cleanup only after a second grace and final provider recheck" and
   .findings[0].delete_after == $delete_after and
-  .findings[0].required_action == "Retain until delete-after; cleanup still requires a fenced provider recheck."
+  .findings[0].required_action == "After delete-after, run the fenced quarantine janitor with final provider Stat."
 ' <<<"$tombstoned_finding" >/dev/null
 
 repeat_inventory_request=$(jq '.idempotency_key = "worker-e2e-repeat-inventory-copy-prefix"' \
@@ -2097,6 +2097,120 @@ jq -e --argjson delete_after "$tombstone_delete_after" '
   (.findings | length) == 1 and .findings[0].quarantine_revision == 4 and
   .findings[0].delete_after == $delete_after and .findings[0].location_state == "tombstoned"
 ' <<<"$preserved_tombstone" >/dev/null
+
+early_quarantine_delete_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/quarantine-actions/$tombstone_id/deletes/claim")
+[[ "$early_quarantine_delete_status" == 409 ]]
+
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local \
+  --persist-to "$state_directory" \
+  --command "
+    DROP TRIGGER quarantine_delete_task_identity_is_immutable;
+    UPDATE quarantine_delete_tasks
+    SET delete_after = (
+      SELECT tombstoned_at FROM quarantined_provider_objects
+      WHERE driver_id = 'copy-driver' AND storage_key = 'copy/orphan-upload'
+    )
+    WHERE operation_id = '$tombstone_id';
+    UPDATE quarantined_provider_objects
+    SET delete_after = tombstoned_at
+    WHERE driver_id = 'copy-driver' AND storage_key = 'copy/orphan-upload';
+    CREATE TRIGGER quarantine_delete_task_identity_is_immutable
+    BEFORE UPDATE OF operation_id, driver_id, driver_revision, storage_key,
+                     expected_revision, provider_version, etag, size_bytes, delete_after
+    ON quarantine_delete_tasks
+    BEGIN
+      SELECT RAISE(ABORT, 'quarantine delete task identity is immutable');
+    END;
+  " >/dev/null
+
+quarantine_delete_claim=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/quarantine-actions/$tombstone_id/deletes/claim")
+quarantine_delete_task_id=$(jq -r .task.task_id <<<"$quarantine_delete_claim")
+quarantine_delete_incarnation=$(jq -r .task.incarnation <<<"$quarantine_delete_claim")
+quarantine_delete_fence=$(jq -r .task.fencing_token <<<"$quarantine_delete_claim")
+jq -e --arg operation_id "$tombstone_id" '
+  .state == "claimed" and .outcome == null and
+  .task.operation_id == $operation_id and .task.driver_id == "copy-driver" and
+  .task.driver_revision == 1 and .task.storage_key == "copy/orphan-upload" and
+  .task.expected_revision == 3 and .task.provider_version == "orphan-v1" and
+  .task.etag == "orphan-etag" and .task.size_bytes == 19 and
+  .task.state == "claimed" and .task.attempt_count == 1
+' <<<"$quarantine_delete_claim" >/dev/null
+
+quarantine_revalidate_request=$(jq -cn \
+  --arg task_id "$quarantine_delete_task_id" \
+  --arg incarnation "$quarantine_delete_incarnation" \
+  --argjson fence "$quarantine_delete_fence" '{
+    task_id: $task_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    lease_seconds: 60
+  }')
+stale_quarantine_revalidate_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.fencing_token += 1' <<<"$quarantine_revalidate_request")" \
+  "$base_url/api/v1/quarantine-deletes/revalidate")
+[[ "$stale_quarantine_revalidate_status" == 409 ]]
+revalidated_quarantine_delete=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$quarantine_revalidate_request" \
+  "$base_url/api/v1/quarantine-deletes/revalidate")
+quarantine_revalidated_fence=$(jq -r .fencing_token <<<"$revalidated_quarantine_delete")
+jq -e --arg task_id "$quarantine_delete_task_id" \
+  --argjson previous_fence "$quarantine_delete_fence" '
+  .task_id == $task_id and .state == "claimed" and
+  .fencing_token == ($previous_fence + 1) and .expected_revision == 3
+' <<<"$revalidated_quarantine_delete" >/dev/null
+
+quarantine_delete_completion_request=$(jq -cn \
+  --arg task_id "$quarantine_delete_task_id" \
+  --arg incarnation "$quarantine_delete_incarnation" \
+  --argjson fence "$quarantine_revalidated_fence" '{
+    task_id: $task_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    outcome: "deleted"
+  }')
+stale_quarantine_delete_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq --argjson fence "$quarantine_delete_fence" '.fencing_token = $fence' \
+    <<<"$quarantine_delete_completion_request")" \
+  "$base_url/api/v1/quarantine-deletes/complete")
+[[ "$stale_quarantine_delete_status" == 409 ]]
+completed_quarantine_delete=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$quarantine_delete_completion_request" \
+  "$base_url/api/v1/quarantine-deletes/complete")
+jq -e --arg task_id "$quarantine_delete_task_id" --arg operation_id "$tombstone_id" '
+  .task_id == $task_id and .operation_id == $operation_id and
+  .task_state == "deleted" and .quarantine_state == "deleted" and
+  .quarantine_revision == 5 and .outcome == "deleted"
+' <<<"$completed_quarantine_delete" >/dev/null
+replayed_quarantine_delete=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$quarantine_delete_completion_request" \
+  "$base_url/api/v1/quarantine-deletes/complete")
+[[ "$replayed_quarantine_delete" == "$completed_quarantine_delete" ]]
+changed_quarantine_outcome_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.outcome = "already_absent"' <<<"$quarantine_delete_completion_request")" \
+  "$base_url/api/v1/quarantine-deletes/complete")
+[[ "$changed_quarantine_outcome_status" == 409 ]]
+
+terminal_quarantine_claim=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/quarantine-actions/$tombstone_id/deletes/claim")
+jq -e '.state == "deleted" and .task == null and .outcome == "deleted"' \
+  <<<"$terminal_quarantine_claim" >/dev/null
+resolved_quarantine_finding=$(curl --silent --show-error --fail-with-body --get \
+  -H "$session" --data-urlencode "state=resolved" \
+  --data-urlencode "condition=quarantined" "$base_url/api/integrity/findings")
+jq -e '
+  (.findings | length) == 1 and .findings[0].location_state == "deleted" and
+  .findings[0].evidence.delete_outcome == "deleted" and
+  .findings[0].required_action == "No cleanup action; the object is deleted, referenced, or superseded."
+' <<<"$resolved_quarantine_finding" >/dev/null
 
 single_pack_compact_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   -H "$authorization" -H "$json" \

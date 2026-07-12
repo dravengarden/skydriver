@@ -804,11 +804,12 @@ fn classification_statements(
         .prepare(
             "INSERT INTO quarantined_provider_objects (\
                  driver_id, storage_key, namespace_id, provider_version, etag, size_bytes, \
-                 state, quarantine_until, first_observed_at, last_observed_at, \
+                 driver_revision, state, quarantine_until, first_observed_at, last_observed_at, \
                  last_operation_id\
              ) \
              SELECT intent.driver_id, report.storage_key, operation.namespace_id, \
-                    report.provider_version, report.etag, report.size_bytes, 'quarantined', \
+                    report.provider_version, report.etag, report.size_bytes, \
+                    intent.driver_revision, 'quarantined', \
                     CAST(?3 AS INTEGER) + intent.quarantine_grace_seconds, ?3, ?3, operation.id \
              FROM inventory_report_objects AS report \
              JOIN inventory_intents AS intent ON intent.operation_id = report.operation_id \
@@ -824,15 +825,17 @@ fn classification_statements(
                                 AND recovery.state != 'missing') \
              ON CONFLICT(driver_id, storage_key) DO UPDATE SET \
                  provider_version = excluded.provider_version, etag = excluded.etag, \
-                 size_bytes = excluded.size_bytes, \
+                 size_bytes = excluded.size_bytes, driver_revision = excluded.driver_revision, \
                  state = CASE \
                      WHEN quarantined_provider_objects.state IN ('resolved', 'deleted') \
+                       OR quarantined_provider_objects.driver_revision != excluded.driver_revision \
                        OR quarantined_provider_objects.provider_version IS NOT excluded.provider_version \
                        OR quarantined_provider_objects.etag IS NOT excluded.etag \
                        OR quarantined_provider_objects.size_bytes != excluded.size_bytes \
                      THEN 'quarantined' ELSE quarantined_provider_objects.state END, \
                  quarantine_until = CASE \
                      WHEN quarantined_provider_objects.state IN ('resolved', 'deleted') \
+                       OR quarantined_provider_objects.driver_revision != excluded.driver_revision \
                        OR quarantined_provider_objects.provider_version IS NOT excluded.provider_version \
                        OR quarantined_provider_objects.etag IS NOT excluded.etag \
                        OR quarantined_provider_objects.size_bytes != excluded.size_bytes \
@@ -840,36 +843,42 @@ fn classification_statements(
                      ELSE quarantined_provider_objects.quarantine_until END, \
                  acknowledgement_reason = CASE \
                      WHEN quarantined_provider_objects.state IN ('resolved', 'deleted') \
+                       OR quarantined_provider_objects.driver_revision != excluded.driver_revision \
                        OR quarantined_provider_objects.provider_version IS NOT excluded.provider_version \
                        OR quarantined_provider_objects.etag IS NOT excluded.etag \
                        OR quarantined_provider_objects.size_bytes != excluded.size_bytes \
                      THEN NULL ELSE quarantined_provider_objects.acknowledgement_reason END, \
                  acknowledged_at = CASE \
                      WHEN quarantined_provider_objects.state IN ('resolved', 'deleted') \
+                       OR quarantined_provider_objects.driver_revision != excluded.driver_revision \
                        OR quarantined_provider_objects.provider_version IS NOT excluded.provider_version \
                        OR quarantined_provider_objects.etag IS NOT excluded.etag \
                        OR quarantined_provider_objects.size_bytes != excluded.size_bytes \
                      THEN NULL ELSE quarantined_provider_objects.acknowledged_at END, \
                  tombstone_reason = CASE \
                      WHEN quarantined_provider_objects.state IN ('resolved', 'deleted') \
+                       OR quarantined_provider_objects.driver_revision != excluded.driver_revision \
                        OR quarantined_provider_objects.provider_version IS NOT excluded.provider_version \
                        OR quarantined_provider_objects.etag IS NOT excluded.etag \
                        OR quarantined_provider_objects.size_bytes != excluded.size_bytes \
                      THEN NULL ELSE quarantined_provider_objects.tombstone_reason END, \
                  tombstoned_at = CASE \
                      WHEN quarantined_provider_objects.state IN ('resolved', 'deleted') \
+                       OR quarantined_provider_objects.driver_revision != excluded.driver_revision \
                        OR quarantined_provider_objects.provider_version IS NOT excluded.provider_version \
                        OR quarantined_provider_objects.etag IS NOT excluded.etag \
                        OR quarantined_provider_objects.size_bytes != excluded.size_bytes \
                      THEN NULL ELSE quarantined_provider_objects.tombstoned_at END, \
                  delete_after = CASE \
                      WHEN quarantined_provider_objects.state IN ('resolved', 'deleted') \
+                       OR quarantined_provider_objects.driver_revision != excluded.driver_revision \
                        OR quarantined_provider_objects.provider_version IS NOT excluded.provider_version \
                        OR quarantined_provider_objects.etag IS NOT excluded.etag \
                        OR quarantined_provider_objects.size_bytes != excluded.size_bytes \
                      THEN NULL ELSE quarantined_provider_objects.delete_after END, \
                  deleted_at = CASE \
                      WHEN quarantined_provider_objects.state IN ('resolved', 'deleted') \
+                       OR quarantined_provider_objects.driver_revision != excluded.driver_revision \
                        OR quarantined_provider_objects.provider_version IS NOT excluded.provider_version \
                        OR quarantined_provider_objects.etag IS NOT excluded.etag \
                        OR quarantined_provider_objects.size_bytes != excluded.size_bytes \
@@ -917,7 +926,8 @@ fn classification_statements(
                     'quarantined', 'open', \
                     json_object(\
                         'source', 'provider_inventory', 'operation_id', operation.id, \
-                        'driver_id', intent.driver_id, 'storage_key', report.storage_key, \
+                        'driver_id', intent.driver_id, 'driver_revision', intent.driver_revision, \
+                        'storage_key', report.storage_key, \
                         'provider_version', report.provider_version, 'etag', report.etag, \
                         'size_bytes', report.size_bytes, \
                         'quarantine_until', quarantine.quarantine_until\
@@ -951,7 +961,8 @@ fn classification_statements(
              SET evidence_json = (\
                      SELECT json_object(\
                          'source', 'provider_inventory', 'operation_id', operation.id, \
-                         'driver_id', intent.driver_id, 'storage_key', report.storage_key, \
+                         'driver_id', intent.driver_id, 'driver_revision', intent.driver_revision, \
+                         'storage_key', report.storage_key, \
                          'provider_version', report.provider_version, 'etag', report.etag, \
                          'size_bytes', report.size_bytes, \
                          'quarantine_until', quarantine.quarantine_until, \

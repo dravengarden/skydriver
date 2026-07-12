@@ -654,21 +654,23 @@ is committed.
 
 An object is known when the same `(driver, storage key)` is held by a non-deleted
 location or a non-missing durable recovery sidecar. Every other observed object
-is retained in `quarantined_provider_objects`, with immutable provider identity,
-first and last observation, policy-derived grace, operation identity, and a
-visible `provider_object/quarantined` integrity finding. A changed provider
-identity or reappearance after resolution restarts quarantine grace. An
+is retained in `quarantined_provider_objects`, with pinned driver revision and
+immutable provider identity, first and last observation, policy-derived grace,
+operation identity, and a visible `provider_object/quarantined` integrity
+finding. A changed driver revision or provider identity, or reappearance after
+resolution, restarts quarantine grace. An
 indexed location or durable sidecar absent from the complete report opens a
 `missing` finding, but inventory alone does not change location or manifest
-state because provider listing may be stale. Adoption, repair scheduling, and
-quarantine deletion are separate future fenced operations; the inventory path
-performs no provider writes or deletes.
+state because provider listing may be stale. Adoption and repair scheduling are
+separate future fenced operations; the inventory path itself performs no
+provider writes or deletes.
 
 Quarantine review is an explicit two-operation state machine:
 
 ```text
 quarantined --acknowledge exact revision after initial grace--> acknowledged
 acknowledged --tombstone exact revision-----------------------> tombstoned
+tombstoned --janitor after second grace and final revalidation-> deleted
 ```
 
 Each transition uses a short `gc` operation with its own component, attempt,
@@ -682,13 +684,24 @@ Exact completion is replayable; any changed or stale revision is rejected.
 
 Acknowledgement is allowed only after the discovery quarantine expires.
 Tombstoning starts a second full `inventory_quarantine_seconds` grace and
-records `delete_after`. Repeated inventory preserves acknowledged or tombstoned
-state only while provider identity is unchanged. A changed identity restarts
-quarantine and resolves the superseded finding; a newly indexed location or
-recovery sidecar resolves cleanup intent. No endpoint currently turns
-`tombstoned` into `deleted`: physical cleanup requires a later janitor to stat
-the exact object and repeat identity, reachability, incarnation, fence, and
-grace checks immediately before provider I/O.
+records `delete_after` and one immutable delete task in the same atomic batch.
+Repeated inventory preserves acknowledged or tombstoned state only while driver
+revision and provider identity are unchanged. A changed identity restarts
+quarantine and supersedes the task; a newly indexed location or recovery sidecar
+resolves cleanup intent.
+
+After the second grace, a `janitor` or `administrator` client claims the task
+under the current control-plane incarnation. The SDK performs provider `Stat`
+and compares storage key, optional provider version and ETag, and size. Only
+then does the Worker rotate the task fence and repeat grace, enabled-driver,
+driver-revision, reachability, sidecar, and role checks. The client performs the
+idempotent provider delete and commits `deleted` in D1. If `Stat` proves the
+object is already absent, the same final revalidation completes with an
+`already_absent` outcome; this is the recovery path for a lost delete response.
+Exact completion is replayable, while a changed outcome, stale fence, changed
+identity, restored D1 incarnation, or newly referenced object cannot commit.
+The finding is resolved and an audit event retains the exact task identity and
+outcome. Automatic scheduling remains disabled.
 
 Cloudflare Cron Triggers are the planned scheduler for mark, expired-lease
 cleanup, and reconciliation planning; production scheduling is not enabled in

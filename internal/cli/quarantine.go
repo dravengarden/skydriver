@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,8 +10,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/dravengarden/carrack/provider"
 	"github.com/dravengarden/carrack/sdk"
 )
+
+var errQuarantineDeleteCapability = errors.New("local filesystem driver lacks quarantine Stat or delete capability")
 
 type quarantineActionFlags struct {
 	controlURL       string
@@ -24,15 +28,43 @@ type quarantineActionFlags struct {
 	outputFormat     string
 }
 
+type quarantineSweepFlags = localJanitorFlags
+
 func newQuarantineCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
 	command := &cobra.Command{
 		Use:   quarantineCommandName,
-		Short: "Review quarantined provider objects without deleting payload",
+		Short: "Review and explicitly clean quarantined provider objects",
 	}
 	command.AddCommand(
 		newQuarantineActionCommand(ctx, stdout, sdk.QuarantineActionAcknowledge),
 		newQuarantineActionCommand(ctx, stdout, sdk.QuarantineActionTombstone),
+		newQuarantineSweepCommand(ctx, stdout),
 	)
+
+	return command
+}
+
+func newQuarantineSweepCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
+	var flags quarantineSweepFlags
+
+	command := &cobra.Command{
+		Use:   "sweep TOMBSTONE_OPERATION_ID",
+		Short: "Stat and delete one object after its quarantine grace expires",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, arguments []string) error {
+			result, err := executeQuarantineSweep(ctx, flags, arguments[0], os.Getenv)
+			if err != nil {
+				return err
+			}
+
+			if flags.outputFormat == outputFormatTable {
+				return writeQuarantineSweepTable(stdout, result)
+			}
+
+			return writeValue(stdout, flags.outputFormat, result)
+		},
+	}
+	configureLocalJanitorFlags(command, &flags, "quarantine")
 
 	return command
 }
@@ -122,6 +154,55 @@ func executeQuarantineAction(
 	return result, nil
 }
 
+func executeQuarantineSweep(
+	ctx context.Context,
+	flags quarantineSweepFlags,
+	operationID string,
+	getenv func(string) string,
+) (sdk.QuarantineSweepResult, error) {
+	control, clearToken, err := newGCControlClient(flags.controlURL, getenv)
+	if err != nil {
+		return sdk.QuarantineSweepResult{}, err
+	}
+	defer clearToken()
+
+	handle, err := openLocalJanitorProvider(
+		ctx,
+		flags.localDriverID,
+		flags.localRoot,
+		"quarantine",
+	)
+	if err != nil {
+		return sdk.QuarantineSweepResult{}, err
+	}
+
+	if handle.Reader == nil || handle.Deleter == nil || !handle.Capabilities.RangeRead ||
+		!handle.Capabilities.Delete {
+		return sdk.QuarantineSweepResult{}, errQuarantineDeleteCapability
+	}
+
+	target := struct {
+		provider.Reader
+		provider.Deleter
+	}{Reader: handle.Reader, Deleter: handle.Deleter}
+
+	janitor, err := sdk.NewQuarantineJanitor(
+		control,
+		map[string]sdk.QuarantineDeleteProvider{handle.ID: target},
+		flags.leaseSeconds,
+	)
+	if err != nil {
+		return sdk.QuarantineSweepResult{}, fmt.Errorf("construct quarantine janitor: %w", err)
+	}
+
+	result, err := janitor.Sweep(ctx, operationID)
+	if err != nil {
+		return sdk.QuarantineSweepResult{}, fmt.Errorf("sweep quarantine deletion: %w", err)
+	}
+
+	return result, nil
+}
+
 func writeQuarantineActionTable(
 	writer io.Writer,
 	result sdk.ControlledQuarantineResult,
@@ -147,6 +228,26 @@ func writeQuarantineActionTable(
 
 	if err := table.Flush(); err != nil {
 		return fmt.Errorf("flush quarantine action table: %w", err)
+	}
+
+	return nil
+}
+
+func writeQuarantineSweepTable(writer io.Writer, result sdk.QuarantineSweepResult) error {
+	table := tabwriter.NewWriter(writer, 0, 4, 2, ' ', 0)
+	if _, err := fmt.Fprintf(
+		table,
+		"OPERATION ID\tOBJECTS DELETED\tALREADY ABSENT\tSTATE\n%s\t%d\t%d\t%s\n",
+		result.OperationID,
+		result.ObjectsDeleted,
+		result.AlreadyAbsent,
+		result.State,
+	); err != nil {
+		return fmt.Errorf("write quarantine sweep table: %w", err)
+	}
+
+	if err := table.Flush(); err != nil {
+		return fmt.Errorf("flush quarantine sweep table: %w", err)
 	}
 
 	return nil

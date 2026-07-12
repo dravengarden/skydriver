@@ -222,6 +222,14 @@ repair sources, and required manual action.
   and provider-to-D1 inventory discovery.
 - Newly discovered owned objects MUST enter quarantine before adoption or
   deletion.
+- Quarantine deletion MUST require explicit acknowledgement, an exact-revision
+  tombstone, a second policy-derived grace period, and a janitor task bound to
+  the inventoried driver revision and provider identity.
+- Immediately before deleting a quarantined object, the janitor MUST compare
+  provider `Stat` identity and the control plane MUST recheck references,
+  recovery sidecars, grace, driver revision, incarnation, role, and fencing.
+- A changed or newly referenced quarantined object MUST supersede the prior
+  delete authorization without provider I/O.
 - Missing or corrupt replicas MUST trigger repair from a separately verified
   replica when policy permits.
 - Important archives SHOULD have at least two replicas in independent failure

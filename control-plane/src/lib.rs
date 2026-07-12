@@ -19,6 +19,7 @@ mod operations;
 pub mod protocol;
 mod publication;
 mod quarantine;
+mod quarantine_deletion;
 mod reconciliation;
 mod repairing;
 mod restoration;
@@ -237,6 +238,71 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
                     operation_id,
                 )
                 .await
+            },
+        )
+        .post_async(
+            "/api/v1/quarantine-actions/:id/deletes/claim",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+                let Some(operation_id) = context.param("id") else {
+                    return Response::error("operation ID is required", 400);
+                };
+
+                quarantine_deletion::claim(
+                    &mut request,
+                    &context.env,
+                    &client,
+                    operation_id,
+                )
+                .await
+            },
+        )
+        .post_async(
+            "/api/v1/quarantine-deletes/revalidate",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+
+                quarantine_deletion::revalidate(&mut request, &context.env, &client).await
+            },
+        )
+        .post_async(
+            "/api/v1/quarantine-deletes/complete",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+
+                quarantine_deletion::complete(&mut request, &context.env, &client).await
+            },
+        )
+        .post_async(
+            "/api/v1/quarantine-deletes/fail",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+
+                quarantine_deletion::fail(&mut request, &context.env, &client).await
             },
         )
         .post_async(

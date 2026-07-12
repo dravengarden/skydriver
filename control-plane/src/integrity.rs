@@ -300,9 +300,9 @@ fn required_action(condition: &str, state: &str) -> &'static str {
                 "Tombstone the exact acknowledged revision to begin a new deletion grace period."
             }
             "tombstoned" => {
-                "Retain until delete-after; cleanup still requires a fenced provider recheck."
+                "After delete-after, run the fenced quarantine janitor with final provider Stat."
             }
-            "resolved" => "No cleanup action; the object is referenced or superseded.",
+            "resolved" => "No cleanup action; the object is deleted, referenced, or superseded.",
             _ => "Review the quarantine lifecycle before taking action.",
         };
     }
