@@ -332,7 +332,7 @@ func (client *ControlClient) FailRestoreOperation(
 	}
 
 	if response.OperationID != operation.ID || response.ManifestSHA256 != operation.ManifestSHA256 ||
-		response.State != "failed" {
+		response.State != operationStateFailed {
 		return CompletedRestore{}, fmt.Errorf("%w: invalid restore failure identity", ErrControlPlaneResponse)
 	}
 

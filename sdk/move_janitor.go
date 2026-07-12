@@ -1,3 +1,4 @@
+//nolint:dupl // Move and GC keep distinct public facades over the shared delete runner.
 package sdk
 
 import (
@@ -17,9 +18,7 @@ var (
 
 // MoveJanitor performs only control-plane-authorized provider deletions.
 type MoveJanitor struct {
-	control      *ControlClient
-	deleters     map[string]provider.Deleter
-	leaseSeconds uint64
+	janitor *providerObjectJanitor
 }
 
 // MoveSweepResult summarizes object deletions completed during one move sweep.
@@ -36,21 +35,19 @@ func NewMoveJanitor(
 	deleters map[string]provider.Deleter,
 	leaseSeconds uint64,
 ) (*MoveJanitor, error) {
-	if control == nil || len(deleters) == 0 ||
-		leaseSeconds < minimumOperationLeaseSeconds || leaseSeconds > maximumOperationLeaseSeconds {
-		return nil, fmt.Errorf("%w: invalid configuration", ErrInvalidMoveJanitor)
+	janitor, err := newProviderObjectJanitor(
+		control,
+		deleters,
+		leaseSeconds,
+		moveDeleteProtocol,
+		ErrInvalidMoveJanitor,
+		ErrMoveProviderDelete,
+	)
+	if err != nil {
+		return nil, err
 	}
 
-	copied := make(map[string]provider.Deleter, len(deleters))
-	for driverID, deleter := range deleters {
-		if !validControlString(driverID, 256) || deleter == nil {
-			return nil, fmt.Errorf("%w: invalid driver deleter", ErrInvalidMoveJanitor)
-		}
-
-		copied[driverID] = deleter
-	}
-
-	return &MoveJanitor{control: control, deleters: copied, leaseSeconds: leaseSeconds}, nil
+	return &MoveJanitor{janitor: janitor}, nil
 }
 
 // SweepMove drains every currently authorized object task for one move. The
@@ -59,56 +56,14 @@ func (janitor *MoveJanitor) SweepMove(
 	ctx context.Context,
 	operationID string,
 ) (MoveSweepResult, error) {
-	if janitor == nil || janitor.control == nil || !validControlHex(operationID, 32) {
+	if janitor == nil || janitor.janitor == nil {
 		return MoveSweepResult{}, fmt.Errorf("%w: invalid sweep", ErrInvalidMoveJanitor)
 	}
 
-	result := MoveSweepResult{OperationID: operationID, State: "deleting"}
-	for {
-		claim, err := janitor.control.ClaimMoveDelete(ctx, operationID, janitor.leaseSeconds)
-		if err != nil {
-			return result, fmt.Errorf("claim move delete: %w", err)
-		}
+	result, err := janitor.janitor.sweep(ctx, operationID)
 
-		if claim.State == operationStateSucceeded {
-			result.State = operationStateSucceeded
-
-			return result, nil
-		}
-
-		task := *claim.Task
-
-		deleter, exists := janitor.deleters[task.DriverID]
-		if !exists {
-			failErr := janitor.control.FailMoveDelete(ctx, task, "delete_capability_unavailable")
-
-			return result, errors.Join(
-				fmt.Errorf("%w: driver %q", ErrInvalidMoveJanitor, task.DriverID),
-				failErr,
-			)
-		}
-
-		revalidated, err := janitor.control.RevalidateMoveDelete(ctx, task, janitor.leaseSeconds)
-		if err != nil {
-			return result, fmt.Errorf("revalidate move delete: %w", err)
-		}
-
-		if deleteErr := deleter.Delete(ctx, revalidated.StorageKey); deleteErr != nil {
-			failErr := janitor.control.FailMoveDelete(ctx, revalidated, "provider_delete_failed")
-
-			return result, errors.Join(
-				fmt.Errorf("%w: %w", ErrMoveProviderDelete, deleteErr),
-				failErr,
-			)
-		}
-
-		completed, err := janitor.control.CompleteMoveDelete(ctx, revalidated)
-		if err != nil {
-			return result, fmt.Errorf("complete move delete: %w", err)
-		}
-
-		result.ObjectsDeleted++
-		result.LocationsDeleted += completed.LocationsDeleted
-		result.State = completed.MoveState
-	}
+	return MoveSweepResult{
+		OperationID: result.operationID, ObjectsDeleted: result.objectsDeleted,
+		LocationsDeleted: result.locationsDeleted, State: result.state,
+	}, err
 }

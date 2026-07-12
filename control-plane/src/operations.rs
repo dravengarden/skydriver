@@ -277,7 +277,9 @@ fn lease_statements(
              FROM operations AS operation \
              JOIN control_plane_state AS state ON state.singleton = 1 \
              WHERE operation.id = ?5 \
-               AND operation.kind IN ('import', 'copy', 'move', 'compact', 'verify', 'reconcile') \
+               AND operation.kind IN (\
+                   'import', 'copy', 'move', 'compact', 'verify', 'reconcile', 'gc'\
+               ) \
                AND operation.state IN ('planned', 'running') AND state.mode = 'active' \
                AND operation.incarnation = state.incarnation \
                AND EXISTS(SELECT 1 FROM client_namespace_permissions \
@@ -321,6 +323,7 @@ fn lease_statements(
                      WHEN kind = 'compact' THEN 'compacting' \
                      WHEN kind = 'verify' THEN 'verifying' \
                      WHEN kind = 'reconcile' THEN 'reconciling' \
+                     WHEN kind = 'gc' THEN 'marking' \
                      ELSE 'transferring' END, \
                  revision = revision + CASE WHEN state = 'planned' THEN 1 ELSE 0 END, \
                  started_at = COALESCE(started_at, ?1), updated_at = ?1 \

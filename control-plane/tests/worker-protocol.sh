@@ -313,7 +313,8 @@ printf '%s' "$compact_source_recovery" >"$state_directory/compact-source-manifes
     ) VALUES (
       '202122232425262728292a2b2c2d2e2f', 'worker-e2e',
       'carrack-aes128gcm-hkdfsha256-v1', 1, 1,
-      '{\"minimum_available_replicas\":2}', '{\"move_grace_seconds\":120}',
+      '{\"minimum_available_replicas\":2}',
+      '{\"move_grace_seconds\":120,\"gc_minimum_age_seconds\":60,\"gc_grace_seconds\":60}',
       unixepoch(), unixepoch()
     );
     INSERT INTO admin_users (username, password_hash, created_at, updated_at)
@@ -1870,6 +1871,7 @@ losing_compact_id=$(jq -r .id <<<"$losing_compact_operation")
 losing_compact_lease=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
   "$base_url/api/v1/operations/$losing_compact_id/claim")
+losing_compact_lease_id=$(jq -r .lease_id <<<"$losing_compact_lease")
 
 compact_lease=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
@@ -2048,3 +2050,204 @@ jq -e --arg manifest_sha "$compact_target_manifest_sha" '
   .object_id == "compact-object" and .generation == 2 and
   .manifest_sha256 == $manifest_sha and .state == "planned"
 ' <<<"$compact_target_restore" >/dev/null
+
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local \
+  --persist-to "$state_directory" \
+  --command "
+    UPDATE leases SET released_at = unixepoch(), updated_at = unixepoch()
+    WHERE id = '$losing_compact_lease_id';
+    UPDATE locations SET created_at = unixepoch() - 120
+    WHERE id IN ('compact-location-0', 'compact-location-1');
+  " \
+  >/dev/null
+
+gc_request='{
+  "namespace_id":"202122232425262728292a2b2c2d2e2f",
+  "idempotency_key":"worker-e2e-retired-generation-gc"
+}'
+gc_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$gc_request" \
+  "$base_url/api/v1/gc/epochs")
+gc_id=$(jq -r .id <<<"$gc_operation")
+gc_incarnation=$(jq -r .incarnation <<<"$gc_operation")
+jq -e '
+  .kind == "gc" and .state == "planned" and .phase == "planned" and
+  .gc_state == "marking" and .candidate_count == 0 and .object_count == 0 and
+  .grace_seconds == 60 and .cutoff_at > 0
+' <<<"$gc_operation" >/dev/null
+
+replayed_gc_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$gc_request" \
+  "$base_url/api/v1/gc/epochs")
+[[ "$replayed_gc_operation" == "$gc_operation" ]]
+
+gc_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/operations/$gc_id/claim")
+gc_lease_id=$(jq -r .lease_id <<<"$gc_lease")
+gc_fence=$(jq -r .fencing_token <<<"$gc_lease")
+jq -e '.operation_state == "running"' <<<"$gc_lease" >/dev/null
+
+gc_mark_request=$(jq -cn \
+  --arg lease_id "$gc_lease_id" \
+  --arg incarnation "$gc_incarnation" \
+  --argjson fence "$gc_fence" '
+  {lease_id: $lease_id, incarnation: $incarnation, fencing_token: $fence}
+')
+stale_gc_mark_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.fencing_token += 1' <<<"$gc_mark_request")" \
+  "$base_url/api/v1/gc/$gc_id/mark")
+[[ "$stale_gc_mark_status" == 409 ]]
+
+marked_gc=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$gc_mark_request" \
+  "$base_url/api/v1/gc/$gc_id/mark")
+jq -e --arg operation_id "$gc_id" '
+  .operation_id == $operation_id and .candidates_marked == 2 and
+  .objects_marked == 2 and .grace_until > 0 and .state == "grace"
+' <<<"$marked_gc" >/dev/null
+
+replayed_gc_mark=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$gc_mark_request" \
+  "$base_url/api/v1/gc/$gc_id/mark")
+[[ "$replayed_gc_mark" == "$marked_gc" ]]
+
+early_gc_claim_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/gc/$gc_id/deletes/claim")
+[[ "$early_gc_claim_status" == 409 ]]
+
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local \
+  --persist-to "$state_directory" \
+  --command "
+    UPDATE gc_epochs SET grace_until = unixepoch() - 1 WHERE id = '$gc_id';
+    INSERT INTO operations (
+      id, namespace_id, kind, state, phase, idempotency_key, requested_by,
+      incarnation, created_at, updated_at
+    ) SELECT
+      'gc-active-read', '202122232425262728292a2b2c2d2e2f', 'restore',
+      'running', 'restoring', 'worker-e2e-gc-active-read',
+      '303132333435363738393a3b3c3d3e3f', incarnation, unixepoch(), unixepoch()
+    FROM control_plane_state WHERE singleton = 1;
+    INSERT INTO restore_intents (operation_id, version_id, manifest_sha256, created_at)
+    VALUES ('gc-active-read', 'compact-version-1', '$compact_source_manifest_sha', unixepoch());
+    INSERT INTO leases (
+      id, resource_kind, resource_id, lease_kind, owner_client_id, operation_id,
+      fencing_token, incarnation, expires_at, created_at, updated_at
+    ) SELECT
+      'gc-active-read-lease', 'operation', 'gc-active-read', 'read',
+      '303132333435363738393a3b3c3d3e3f', 'gc-active-read', 1, incarnation,
+      unixepoch() + 60, unixepoch(), unixepoch()
+    FROM control_plane_state WHERE singleton = 1;
+  " >/dev/null
+
+active_read_gc_claim_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/gc/$gc_id/deletes/claim")
+[[ "$active_read_gc_claim_status" == 409 ]]
+
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local \
+  --persist-to "$state_directory" \
+  --command "UPDATE leases SET released_at = unixepoch(), updated_at = unixepoch()
+             WHERE id = 'gc-active-read-lease'" \
+  >/dev/null
+
+gc_claim=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/gc/$gc_id/deletes/claim")
+gc_task_id=$(jq -r .task.task_id <<<"$gc_claim")
+gc_task_incarnation=$(jq -r .task.incarnation <<<"$gc_claim")
+gc_task_fence=$(jq -r .task.fencing_token <<<"$gc_claim")
+jq -e --arg operation_id "$gc_id" '
+  .state == "claimed" and .task.operation_id == $operation_id and
+  .task.driver_id == "restore-driver" and .task.expected_location_count == 1 and
+  (.task.storage_key == "compact/source-0" or .task.storage_key == "compact/source-1")
+' <<<"$gc_claim" >/dev/null
+
+failed_gc_delete=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn \
+    --arg task_id "$gc_task_id" \
+    --arg incarnation "$gc_task_incarnation" \
+    --argjson fence "$gc_task_fence" '
+    {
+      task_id: $task_id,
+      incarnation: $incarnation,
+      fencing_token: $fence,
+      error_code: "provider_delete_failed"
+    }')" \
+  "$base_url/api/v1/gc/deletes/fail")
+jq -e '.state == "failed"' <<<"$failed_gc_delete" >/dev/null
+
+gc_claim=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/gc/$gc_id/deletes/claim")
+gc_task_id=$(jq -r .task.task_id <<<"$gc_claim")
+gc_task_incarnation=$(jq -r .task.incarnation <<<"$gc_claim")
+gc_task_fence=$(jq -r .task.fencing_token <<<"$gc_claim")
+jq -e '.task.attempt_count == 2' <<<"$gc_claim" >/dev/null
+
+gc_revalidation=$(jq -cn \
+  --arg task_id "$gc_task_id" \
+  --arg incarnation "$gc_task_incarnation" \
+  --argjson fence "$gc_task_fence" '
+  {task_id: $task_id, incarnation: $incarnation, fencing_token: $fence, lease_seconds: 60}
+')
+revalidated_gc_delete=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$gc_revalidation" \
+  "$base_url/api/v1/gc/deletes/revalidate")
+gc_task_fence=$(jq -r .fencing_token <<<"$revalidated_gc_delete")
+
+complete_gc_task() {
+  local task_id=$1
+  local task_incarnation=$2
+  local task_fence=$3
+  curl --silent --show-error --fail-with-body \
+    -H "$authorization" -H "$json" \
+    --data "$(jq -cn \
+      --arg task_id "$task_id" \
+      --arg incarnation "$task_incarnation" \
+      --argjson fence "$task_fence" \
+      '{task_id: $task_id, incarnation: $incarnation, fencing_token: $fence}')" \
+    "$base_url/api/v1/gc/deletes/complete"
+}
+
+first_completed_gc=$(complete_gc_task "$gc_task_id" "$gc_task_incarnation" "$gc_task_fence")
+jq -e --arg operation_id "$gc_id" '
+  .operation_id == $operation_id and .locations_deleted == 1 and
+  .task_state == "deleted" and .gc_state == "sweeping"
+' <<<"$first_completed_gc" >/dev/null
+
+gc_claim=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/gc/$gc_id/deletes/claim")
+gc_task_id=$(jq -r .task.task_id <<<"$gc_claim")
+gc_task_incarnation=$(jq -r .task.incarnation <<<"$gc_claim")
+gc_task_fence=$(jq -r .task.fencing_token <<<"$gc_claim")
+gc_revalidation=$(jq -cn \
+  --arg task_id "$gc_task_id" \
+  --arg incarnation "$gc_task_incarnation" \
+  --argjson fence "$gc_task_fence" '
+  {task_id: $task_id, incarnation: $incarnation, fencing_token: $fence, lease_seconds: 60}
+')
+revalidated_gc_delete=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$gc_revalidation" \
+  "$base_url/api/v1/gc/deletes/revalidate")
+gc_task_fence=$(jq -r .fencing_token <<<"$revalidated_gc_delete")
+completed_gc=$(complete_gc_task "$gc_task_id" "$gc_task_incarnation" "$gc_task_fence")
+jq -e --arg operation_id "$gc_id" '
+  .operation_id == $operation_id and .locations_deleted == 1 and
+  .task_state == "deleted" and .gc_state == "succeeded"
+' <<<"$completed_gc" >/dev/null
+
+replayed_completed_gc=$(complete_gc_task "$gc_task_id" "$gc_task_incarnation" "$gc_task_fence")
+[[ "$replayed_completed_gc" == "$completed_gc" ]]
+
+finished_gc_claim=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/gc/$gc_id/deletes/claim")
+jq -e '.state == "succeeded" and .task == null' <<<"$finished_gc_claim" >/dev/null

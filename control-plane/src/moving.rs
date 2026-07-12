@@ -46,7 +46,12 @@ struct ReplicaPolicy {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct RetentionPolicy {
-    move_grace_seconds: Option<u64>,
+    #[serde(rename = "move_grace_seconds")]
+    move_grace: Option<u64>,
+    #[serde(default, rename = "gc_minimum_age_seconds")]
+    _gc_minimum_age: Option<u64>,
+    #[serde(default, rename = "gc_grace_seconds")]
+    _gc_grace: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -1278,9 +1283,7 @@ fn parse_replica_policy(encoded: &str) -> Result<u64> {
 fn parse_retention_policy(encoded: &str) -> Result<u64> {
     let policy = serde_json::from_str::<RetentionPolicy>(encoded)
         .map_err(|error| worker::Error::RustError(format!("decode retention policy: {error}")))?;
-    let grace = policy
-        .move_grace_seconds
-        .unwrap_or(DEFAULT_MOVE_GRACE_SECONDS);
+    let grace = policy.move_grace.unwrap_or(DEFAULT_MOVE_GRACE_SECONDS);
     if !(60..=31_536_000).contains(&grace) {
         return Err(worker::Error::RustError(
             "move grace is out of range".to_owned(),

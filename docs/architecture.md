@@ -275,13 +275,18 @@ meaning of an already-created operation. The V1 policy JSON fields are:
 ```json
 {
   "replica_policy_json": {"minimum_available_replicas": 1},
-  "retention_policy_json": {"move_grace_seconds": 86400}
+  "retention_policy_json": {
+    "move_grace_seconds": 86400,
+    "gc_minimum_age_seconds": 604800,
+    "gc_grace_seconds": 86400
+  }
 }
 ```
 
 An omitted `minimum_available_replicas` defaults to `1`; an omitted
-`move_grace_seconds` defaults to 24 hours. The accepted bounds are 1 through 64
-replicas and 60 seconds through 365 days of grace.
+`move_grace_seconds` or `gc_grace_seconds` defaults to 24 hours, and an omitted
+`gc_minimum_age_seconds` defaults to seven days. The accepted bounds are 1
+through 64 replicas and 60 seconds through 365 days for each retention value.
 
 Destination publication reuses the copy protocol's immutable sidecar, R2
 staging, verified-location set, and recovery-head revision CAS. Unlike copy,
@@ -595,28 +600,36 @@ for offline index reconstruction; D1 is not a cryptographic recovery dependency.
 
 ## Garbage collection and reconciliation
 
-GC is mandatory but intentionally conservative. A scheduled Worker runs the
-mark phase; clients with appropriate driver grants perform payload deletion.
+GC is mandatory but intentionally conservative. The current V1 path requires
+an explicit administrator to start the mark phase; clients with appropriate
+driver grants perform payload deletion. A later Cron Trigger can create the
+same idempotent operation without changing the protocol.
 
 ### Mark
 
 A location is a candidate only when it is unreachable from every published
-manifest, not protected by an active lease or operation, not the last verified
-replica required by policy, and older than the staging/retention threshold.
-Marking writes `tombstoned_at`, `gc_epoch`, and a new revision. It does not
-delete provider data.
+manifest, not protected by an active lease or operation, and older than the
+namespace retention threshold. Eligibility is grouped by `(driver, storage
+key)`: every indexed range in one provider object must be eligible in the same
+epoch. Durable recovery sidecars and locations owned by an unfinished Move are
+always excluded. Marking writes a `gc_candidate`, `tombstoned_at`, and a new
+location revision under one operation fence. It does not delete provider data.
 
 ### Grace period
 
-Candidates remain readable during a configurable grace period. A late reader,
-repair, or operator can cancel a tombstone by a conditional revision update.
+Candidates remain physically present during a policy-derived grace period. A
+late active read or write lease makes the object ineligible for sweep even when
+it appeared after marking.
 
 ### Sweep
 
-After grace, the control plane emits idempotent delete tasks. An SDK rechecks
-the candidate and fencing token, deletes through the driver, then records
-`deleted`. Provider failure keeps the tombstone for retry. The index row is
-retained as an audit record until metadata-retention expiry.
+After grace, the control plane emits one idempotent delete task per provider
+object. Claiming repeats reachability, shared-range, incarnation, client-role,
+and active-lease checks. Immediately before provider I/O the SDK repeats those
+checks and rotates the task fence, deletes through the driver, then records all
+ranges as `deleted`. Provider failure keeps the tombstone for retry. The final
+task advances the GC operation to `succeeded`; index rows remain as audit
+records.
 
 ### Inventory reconciliation
 
@@ -626,9 +639,10 @@ with indexed locations. Unknown objects enter a separate quarantine grace
 period before deletion. Missing indexed objects become `missing` or `corrupt`
 and trigger repair; reconciliation never silently edits manifests.
 
-Cloudflare Cron Triggers schedule mark, expired-lease cleanup, and reconciliation
-planning. D1 Time Travel is a control-plane recovery mechanism, not a substitute
-for payload replicas.
+Cloudflare Cron Triggers are the planned scheduler for mark, expired-lease
+cleanup, and reconciliation planning; production scheduling is not enabled in
+the current explicit-operator implementation. D1 Time Travel is a control-plane
+recovery mechanism, not a substitute for payload replicas.
 
 ## Disaster recovery and stale clients
 

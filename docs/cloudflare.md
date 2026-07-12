@@ -67,6 +67,31 @@ pnpm exec wrangler deploy --config control-plane/wrangler.jsonc
 After deployment, verify `/api/health`, sign in with the preset account, and
 confirm `/api/summary` can read the migrated D1 database.
 
+## Garbage collection
+
+Namespace `retention_policy_json` accepts `move_grace_seconds`,
+`gc_minimum_age_seconds`, and `gc_grace_seconds`. GC age defaults to seven days;
+both grace periods default to one day. Every value must be between 60 seconds
+and 365 days. An existing operation pins its cutoff and grace, so changing the
+namespace cannot change an in-flight epoch.
+
+Run `carrack gc mark` with an `administrator` token. The Worker atomically
+selects only complete unreachable provider objects, tombstones their indexed
+ranges, records object-grouped delete tasks, and releases the short mark lease.
+It does not contact a provider. If no object is eligible, the operation succeeds
+with zero candidates.
+
+After grace, run `carrack gc sweep <operation-id>` with a `janitor` or
+`administrator` token and the exact local driver configuration. Each task is
+claimed and then revalidated immediately before provider deletion. A new active
+lease, a newly published reference, a stale incarnation, a changed location
+revision, or any non-candidate range sharing the provider object blocks the
+task. Provider failure is retained for retry.
+
+Do not schedule these commands automatically yet. The explicit GC protocol is
+implemented and tested, but production Cron activation remains subject to the
+fault-injection and disaster-recovery gate in `docs/requirements.md`.
+
 ## Integrity findings
 
 The authenticated dashboard polls open integrity findings every 15 seconds. It

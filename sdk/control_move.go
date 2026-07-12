@@ -172,7 +172,7 @@ func (client *ControlClient) FetchMoveManifest(
 			operationID: operation.ID, incarnation: operation.Incarnation,
 			namespaceID: operation.NamespaceID, objectID: operation.ObjectID,
 			generation: operation.Generation, manifestSHA256: operation.ManifestSHA256,
-			recoverySHA256: operation.SourceRecoverySHA256, kind: "move",
+			recoverySHA256: operation.SourceRecoverySHA256, kind: operationKindMove,
 		},
 	)
 }

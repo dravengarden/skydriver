@@ -6,6 +6,7 @@
 mod clients;
 mod compaction;
 mod copying;
+mod garbage_collection;
 mod integrity;
 mod key_grants;
 pub mod keys;
@@ -188,6 +189,105 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
 
             operations::create(&mut request, &context.env, &client).await
         })
+        .post_async("/api/v1/gc/epochs", |mut request, context| async move {
+            if external_maintenance(&context.env) {
+                return Response::error("control-plane mutations are disabled", 409);
+            }
+
+            let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                return Response::error("client authentication required", 401);
+            };
+
+            garbage_collection::create(&mut request, &context.env, &client).await
+        })
+        .post_async(
+            "/api/v1/gc/:id/mark",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+                let Some(operation_id) = context.param("id") else {
+                    return Response::error("operation ID is required", 400);
+                };
+
+                garbage_collection::mark(
+                    &mut request,
+                    &context.env,
+                    &client,
+                    operation_id,
+                )
+                .await
+            },
+        )
+        .post_async(
+            "/api/v1/gc/:id/deletes/claim",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+                let Some(operation_id) = context.param("id") else {
+                    return Response::error("operation ID is required", 400);
+                };
+
+                garbage_collection::claim(
+                    &mut request,
+                    &context.env,
+                    &client,
+                    operation_id,
+                )
+                .await
+            },
+        )
+        .post_async(
+            "/api/v1/gc/deletes/revalidate",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+
+                garbage_collection::revalidate(&mut request, &context.env, &client).await
+            },
+        )
+        .post_async(
+            "/api/v1/gc/deletes/complete",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+
+                garbage_collection::complete(&mut request, &context.env, &client).await
+            },
+        )
+        .post_async(
+            "/api/v1/gc/deletes/fail",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+
+                garbage_collection::fail(&mut request, &context.env, &client).await
+            },
+        )
         .post_async("/api/v1/compactions", |mut request, context| async move {
             if external_maintenance(&context.env) {
                 return Response::error("control-plane mutations are disabled", 409);

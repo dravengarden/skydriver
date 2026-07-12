@@ -366,6 +366,51 @@ exact retry can converge. A successful publication removes that plaintext file
 and retains only the non-secret plan. Treat the staging directory as sensitive
 until the command succeeds or the operator explicitly cleans up a failed run.
 
+An administrator can explicitly mark provider payload that is no longer
+reachable from any published generation. Retention and grace are namespace
+policy, not command-line overrides:
+
+```json
+{
+  "move_grace_seconds": 86400,
+  "gc_minimum_age_seconds": 604800,
+  "gc_grace_seconds": 86400
+}
+```
+
+```bash
+export CARRACK_CONTROL_TOKEN="$(read-administrator-token)"
+
+carrack gc mark \
+  --control-url https://carrack.example.com \
+  --namespace 202122232425262728292a2b2c2d2e2f \
+  --idempotency-key weekly-gc-2026-07-12
+```
+
+The mark transaction considers only complete provider objects whose indexed
+ranges are all old enough and unreachable. Published versions, durable
+recovery sidecars, Move sources, and versions protected by a current read or
+write lease are excluded. Marking writes D1 tombstones and a future grace
+deadline; it never performs provider I/O. Exact retries return the same epoch.
+
+After the reported grace deadline, a `janitor` or `administrator` token can
+sweep one local filesystem driver:
+
+```bash
+export CARRACK_CONTROL_TOKEN="$(read-janitor-token)"
+
+carrack gc sweep <gc-operation-id> \
+  --control-url https://carrack.example.com \
+  --local-driver-id local-archive \
+  --local-root /srv/carrack/archive
+```
+
+Every object task repeats reachability and active-lease checks when claimed and
+again immediately before the driver's idempotent delete. A failed delete stays
+retryable; a lost completion response converges from the durable task. The
+current CLI is an explicit operator workflow. Automatic Cron scheduling remains
+disabled behind the production verification gate.
+
 The local filesystem Copy path creates and publishes a verified destination
 replica while retaining every source location:
 
