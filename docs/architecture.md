@@ -281,12 +281,29 @@ recovery head again, changes those source locations from `available` to
 releases the client lease. Exact destination and tombstone requests remain
 replayable after a lost response.
 
-This first safe Move boundary ends at `source_delete_pending`. It makes the
-source unreachable to new restores but does not delete provider bytes. A later
-janitor must wait for grace, recheck current read leases and replica policy,
-perform idempotent provider deletion, and only then advance through `deleting`
-to `succeeded`. Until that janitor is implemented and passes the production
-verification gate, physical move deletion remains disabled.
+The transfer client boundary ends at `source_delete_pending`. It makes the
+source unreachable to new restores but does not delete provider bytes. An
+explicitly authorized janitor creates one task per distinct provider object,
+not per location range. A task is eligible only when every D1 location sharing
+that `(driver, storage key)` belongs to the same Move and is tombstoned past
+grace. Claiming checks the current recovery head, active restore leases, all
+shared ranges, replica policy for every affected extent, client role,
+incarnation, and a short task fence.
+
+Immediately before provider I/O the janitor revalidates the task, repeating
+all checks and rotating its fencing token. It then calls the driver's
+idempotent `Delete` and commits the exact fenced task. Completion marks every
+range in the object deleted; the last task advances the operation through the
+generic `verifying` and `committing` states to `succeeded`. A failed delete
+returns the task to an explicit retry state. A lost completion response is
+safe: the retained task either reports the completed Move or can be resumed
+and its idempotent provider delete repeated.
+
+The local filesystem driver implements the delete capability. Drivers without
+an advertised `Deleter` remain in `source_delete_pending`/retry state rather
+than being treated as deleted. Automatic production scheduling remains behind
+the verification gate even though the explicit janitor protocol and SDK path
+are available.
 
 ### Restore
 

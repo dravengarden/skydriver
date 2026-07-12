@@ -311,7 +311,7 @@ func (client *ControlClient) CompleteRestoreOperation(
 	}
 
 	if response.OperationID != operation.ID || response.ManifestSHA256 != operation.ManifestSHA256 ||
-		response.State != "succeeded" {
+		response.State != operationStateSucceeded {
 		return CompletedRestore{}, fmt.Errorf("%w: invalid restore completion identity", ErrControlPlaneResponse)
 	}
 

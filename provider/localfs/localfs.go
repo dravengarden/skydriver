@@ -74,11 +74,11 @@ func (Factory) Open(
 	return provider.Handle{
 		ID: specification.ID, Kind: DriverKind,
 		Capabilities: provider.Capabilities{
-			RangeRead: true, StreamingWrite: true,
+			RangeRead: true, StreamingWrite: true, Delete: true,
 			MaximumObjectBytes: maximumObjectBytes, PreferredObjectBytes: 1 << 30,
 			SafeConcurrency: safeConcurrency,
 		},
-		Reader: client, Writer: client,
+		Reader: client, Writer: client, Deleter: client,
 	}, nil
 }
 
@@ -211,6 +211,68 @@ func (client *Client) OpenRange(
 		cancellation: ctx.Err, file: file,
 		reader: io.NewSectionReader(file, checkedInt64(offset), checkedInt64(length)),
 	}, nil
+}
+
+// Delete idempotently removes one regular object beneath the configured root.
+func (client *Client) Delete(ctx context.Context, key string) error {
+	if err := validateKey(key); err != nil {
+		return err
+	}
+
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("delete local filesystem object: %w", err)
+	}
+
+	root, err := client.openRoot()
+	if err != nil {
+		return err
+	}
+
+	information, inspectErr := root.Lstat(key)
+	if errors.Is(inspectErr, fs.ErrNotExist) {
+		if closeErr := root.Close(); closeErr != nil {
+			return fmt.Errorf("close local filesystem root after delete: %w", closeErr)
+		}
+
+		return nil
+	}
+
+	if inspectErr != nil {
+		closeErr := root.Close()
+
+		return fmt.Errorf("%w: inspect delete target %q: %w", ErrInvalidObject, key, errors.Join(inspectErr, closeErr))
+	}
+
+	if !information.Mode().IsRegular() {
+		closeErr := root.Close()
+
+		return errors.Join(
+			fmt.Errorf("%w: delete target %q is not a regular file", ErrInvalidObject, key),
+			closeErr,
+		)
+	}
+
+	removeErr := root.Remove(key)
+	if errors.Is(removeErr, fs.ErrNotExist) {
+		removeErr = nil
+	}
+
+	syncErr := error(nil)
+	if removeErr == nil {
+		syncErr = syncDirectoryChain(root, path.Dir(key))
+	}
+
+	closeErr := root.Close()
+	if removeErr != nil || syncErr != nil || closeErr != nil {
+		return fmt.Errorf(
+			"%w: delete %q: %w",
+			ErrInvalidObject,
+			key,
+			errors.Join(removeErr, syncErr, closeErr),
+		)
+	}
+
+	return nil
 }
 
 // Put validates and atomically publishes one immutable regular file.

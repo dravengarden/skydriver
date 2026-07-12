@@ -14,6 +14,7 @@ const (
 	operationKindCopy            = "copy"
 	operationKindMove            = "move"
 	operationStateRunning        = "running"
+	operationStateSucceeded      = "succeeded"
 )
 
 // CreateImportOperationRequest identifies one idempotent import attempt.

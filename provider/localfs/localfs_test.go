@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,9 +40,39 @@ func TestFactoryOpensRootedReadWriter(t *testing.T) {
 		t.Fatalf("open local filesystem driver: %v", err)
 	}
 
-	if handle.Reader == nil || handle.Writer == nil ||
-		!handle.Capabilities.RangeRead || !handle.Capabilities.StreamingWrite {
+	if handle.Reader == nil || handle.Writer == nil || handle.Deleter == nil ||
+		!handle.Capabilities.RangeRead || !handle.Capabilities.StreamingWrite ||
+		!handle.Capabilities.Delete {
 		t.Fatalf("unexpected local filesystem capabilities: %+v", handle.Capabilities)
+	}
+}
+
+func TestClientDeleteIsIdempotentAndRejectsDirectories(t *testing.T) {
+	t.Parallel()
+
+	rootPath := t.TempDir()
+	client := newClient(t, rootPath)
+	key := "packs/delete/object.bin"
+	payload := []byte("delete this immutable object")
+
+	if _, err := client.Put(context.Background(), key, bytes.NewReader(payload), putOptions(payload)); err != nil {
+		t.Fatalf("put delete fixture: %v", err)
+	}
+
+	if err := client.Delete(context.Background(), key); err != nil {
+		t.Fatalf("delete local filesystem object: %v", err)
+	}
+
+	if err := client.Delete(context.Background(), key); err != nil {
+		t.Fatalf("replay local filesystem delete: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(rootPath, filepath.FromSlash(key))); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("deleted object remains visible: %v", err)
+	}
+
+	if err := client.Delete(context.Background(), "packs/delete"); !errors.Is(err, localfs.ErrInvalidObject) {
+		t.Fatalf("directory delete was not rejected: %v", err)
 	}
 }
 

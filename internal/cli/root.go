@@ -16,7 +16,10 @@ import (
 	"github.com/dravengarden/carrack/sdk"
 )
 
-const developmentVersion = "0.1.0-dev"
+const (
+	developmentVersion = "0.1.0-dev"
+	outputFormatJSON   = "json"
+)
 
 var (
 	errUnsupportedFormat = errors.New("unsupported output format")
@@ -44,7 +47,12 @@ func newRootCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Comman
 	}
 	command.SetOut(stdout)
 	command.SetErr(stderr)
-	command.AddCommand(newVersionCommand(stdout), newLayoutCommand(stdout), newRestoreCommand(ctx, stdout))
+	command.AddCommand(
+		newVersionCommand(stdout),
+		newLayoutCommand(stdout),
+		newRestoreCommand(ctx, stdout),
+		newMoveCommand(ctx, stdout),
+	)
 
 	return command
 }
@@ -90,7 +98,7 @@ func newLayoutShowCommand(stdout io.Writer) *cobra.Command {
 
 func writeValue(writer io.Writer, outputFormat string, value any) error {
 	switch outputFormat {
-	case "json":
+	case outputFormatJSON:
 		encoder := json.NewEncoder(writer)
 		encoder.SetIndent("", "  ")
 
@@ -129,6 +137,17 @@ func writeTable(writer io.Writer, value any) error {
 	case map[string]string:
 		if _, err := fmt.Fprintf(table, "VERSION\n%s\n", typedValue["version"]); err != nil {
 			return fmt.Errorf("write version table: %w", err)
+		}
+	case sdk.MoveSweepResult:
+		if _, err := fmt.Fprintf(
+			table,
+			"OPERATION ID\tOBJECTS DELETED\tLOCATIONS DELETED\tSTATE\n%s\t%d\t%d\t%s\n",
+			typedValue.OperationID,
+			typedValue.ObjectsDeleted,
+			typedValue.LocationsDeleted,
+			typedValue.State,
+		); err != nil {
+			return fmt.Errorf("write move sweep table: %w", err)
 		}
 	case sdk.ControlledRestoreResult:
 		if _, err := fmt.Fprintf(

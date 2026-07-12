@@ -158,6 +158,11 @@ printf '%s' "$restore_recovery" >"$state_directory/restore-manifest.json"
       '303132333435363738393a3b3c3d3e3f',
       '202122232425262728292a2b2c2d2e2f', 'relay', unixepoch()
     );
+    INSERT INTO client_namespace_permissions (client_id, namespace_id, role, created_at)
+    VALUES (
+      '303132333435363738393a3b3c3d3e3f',
+      '202122232425262728292a2b2c2d2e2f', 'janitor', unixepoch()
+    );
     INSERT INTO credential_envelopes (
       id, envelope_algorithm, key_version, nonce, ciphertext, created_at, rotated_at
     ) VALUES ('restore-credential', 'test/v1', '1', X'01', X'02', unixepoch(), unixepoch());
@@ -763,6 +768,146 @@ replayed_move_tombstone=$(curl --silent --show-error --fail-with-body \
   --data "$move_tombstone" \
   "$base_url/api/v1/moves/tombstone-source")
 [[ "$replayed_move_tombstone" == "$tombstoned_move" ]]
+
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local \
+  --persist-to "$state_directory" \
+  --command "UPDATE move_sources SET grace_until = unixepoch() - 1 WHERE operation_id = '$move_id'" \
+  >/dev/null
+
+active_read_delete_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/moves/$move_id/deletes/claim")
+[[ "$active_read_delete_status" == 409 ]]
+
+for active_restore in copied published_move; do
+  if [[ "$active_restore" == copied ]]; then
+    active_restore_id=$copied_restore_id
+    active_restore_lease=$copied_restore_lease
+  else
+    active_restore_id=$published_move_restore_id
+    active_restore_lease=$published_move_restore_lease
+  fi
+
+  curl --silent --show-error --fail-with-body \
+    -H "$authorization" -H "$json" \
+    --data "$(jq -cn \
+      --arg lease_id "$(jq -r .lease_id <<<"$active_restore_lease")" \
+      --arg incarnation "$(jq -r .incarnation <<<"$active_restore_lease")" \
+      --arg manifest_sha "$restore_manifest_sha" \
+      --argjson fence "$(jq -r .fencing_token <<<"$active_restore_lease")" '
+      {
+        lease_id: $lease_id,
+        incarnation: $incarnation,
+        fencing_token: $fence,
+        manifest_sha256: $manifest_sha,
+        plaintext_sha256: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        plaintext_bytes: 2
+      }')" \
+    "$base_url/api/v1/restores/$active_restore_id/complete" >/dev/null
+done
+
+delete_claim=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/moves/$move_id/deletes/claim")
+delete_task_id=$(jq -r .task.task_id <<<"$delete_claim")
+delete_incarnation=$(jq -r .task.incarnation <<<"$delete_claim")
+delete_fence=$(jq -r .task.fencing_token <<<"$delete_claim")
+jq -e --arg move_id "$move_id" '
+  .state == "claimed" and .task.operation_id == $move_id and
+  .task.driver_id == "restore-driver" and .task.storage_key == "restore/payload" and
+  .task.expected_location_count == 1 and .task.fencing_token > 0
+' <<<"$delete_claim" >/dev/null
+
+failed_delete=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn \
+    --arg task_id "$delete_task_id" \
+    --arg incarnation "$delete_incarnation" \
+    --argjson fence "$delete_fence" '
+    {
+      task_id: $task_id,
+      incarnation: $incarnation,
+      fencing_token: $fence,
+      error_code: "provider_delete_failed"
+    }')" \
+  "$base_url/api/v1/moves/deletes/fail")
+jq -e '.state == "failed"' <<<"$failed_delete" >/dev/null
+
+delete_claim=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/moves/$move_id/deletes/claim")
+delete_task_id=$(jq -r .task.task_id <<<"$delete_claim")
+delete_incarnation=$(jq -r .task.incarnation <<<"$delete_claim")
+delete_fence=$(jq -r .task.fencing_token <<<"$delete_claim")
+jq -e '.task.attempt_count == 2 and .task.state == "claimed"' <<<"$delete_claim" >/dev/null
+
+stale_delete_revalidation=$(jq -cn \
+  --arg task_id "$delete_task_id" \
+  --arg incarnation "$delete_incarnation" \
+  --argjson fence "$((delete_fence + 1))" '
+  {task_id: $task_id, incarnation: $incarnation, fencing_token: $fence, lease_seconds: 60}
+')
+stale_delete_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$stale_delete_revalidation" \
+  "$base_url/api/v1/moves/deletes/revalidate")
+[[ "$stale_delete_status" == 409 ]]
+
+delete_revalidation=$(jq -cn \
+  --arg task_id "$delete_task_id" \
+  --arg incarnation "$delete_incarnation" \
+  --argjson fence "$delete_fence" '
+  {task_id: $task_id, incarnation: $incarnation, fencing_token: $fence, lease_seconds: 60}
+')
+revalidated_delete=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$delete_revalidation" \
+  "$base_url/api/v1/moves/deletes/revalidate")
+revalidated_fence=$(jq -r .fencing_token <<<"$revalidated_delete")
+[[ "$revalidated_fence" == "$((delete_fence + 1))" ]]
+
+stale_delete_completion_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$delete_revalidation" \
+  "$base_url/api/v1/moves/deletes/complete")
+[[ "$stale_delete_completion_status" == 409 ]]
+
+delete_completion=$(jq -cn \
+  --arg task_id "$delete_task_id" \
+  --arg incarnation "$delete_incarnation" \
+  --argjson fence "$revalidated_fence" '
+  {task_id: $task_id, incarnation: $incarnation, fencing_token: $fence}
+')
+completed_delete_response=$(curl --silent --show-error --write-out $'\n%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$delete_completion" \
+  "$base_url/api/v1/moves/deletes/complete")
+completed_delete_status=$(tail -n 1 <<<"$completed_delete_response")
+completed_delete=$(sed '$d' <<<"$completed_delete_response")
+if [[ "$completed_delete_status" != 200 ]]; then
+  echo "$completed_delete" >&2
+  exit 1
+fi
+jq -e --arg move_id "$move_id" '
+  .operation_id == $move_id and .locations_deleted == 1 and
+  .task_state == "deleted" and .move_state == "succeeded"
+' <<<"$completed_delete" >/dev/null
+
+replayed_delete=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$delete_completion" \
+  "$base_url/api/v1/moves/deletes/complete")
+[[ "$replayed_delete" == "$completed_delete" ]]
+
+finished_delete_claim=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/moves/$move_id/deletes/claim")
+jq -e '.state == "succeeded" and .task == null' <<<"$finished_delete_claim" >/dev/null
 
 final_move_restore=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" \

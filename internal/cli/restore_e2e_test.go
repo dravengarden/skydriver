@@ -149,7 +149,7 @@ func TestRestoreCommandEndToEnd(t *testing.T) {
 		"--public-http-base-url", publicServer.URL,
 		"--local-driver-id", "local-mirror",
 		"--local-root", localRoot,
-		"--format", "json",
+		"--format", outputFormatJSON,
 	}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("execute restore command: %v; stderr=%s", err, stderr.String())

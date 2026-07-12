@@ -146,7 +146,13 @@ those pinned sources. The same live write fence protects both revisions. D1
 changes the removed locations to `tombstoned` and records a policy-derived
 grace deadline, while the operation remains `source_delete_pending` for an
 explicit janitor. Provider deletion is intentionally not performed by the
-move client.
+move client. An authorized `MoveJanitor` later claims object-grouped delete
+tasks, repeats active-read, reachability, replica-policy, incarnation, and
+fence checks immediately before I/O, calls an idempotent driver deleter, and
+only then advances D1 through `deleting` to `succeeded`. Lost completion
+responses converge from the retained task record. The local filesystem driver
+implements this delete capability; other drivers remain unavailable to the
+janitor until they advertise and implement the same contract.
 
 Carrack prefers native drivers where Go already has a mature protocol or SDK:
 S3-compatible storage, R2, public HTTP, and local filesystems do not pass
@@ -206,6 +212,23 @@ carrack restore ./restored.bin \
 
 Driver IDs must match the manifest locations. The local root must already
 exist; Carrack creates only object-key subdirectories beneath it.
+
+After a Move reaches `source_delete_pending` and its grace deadline passes, an
+explicit janitor token can sweep a local filesystem source:
+
+```bash
+export CARRACK_CONTROL_TOKEN="$(read-janitor-token)"
+
+carrack move sweep <move-operation-id> \
+  --control-url https://carrack.example.com \
+  --local-driver-id local-source \
+  --local-root /srv/carrack/archive
+```
+
+The token must have the namespace `janitor` or `administrator` role. The
+command cannot choose arbitrary keys: it deletes only object tasks returned
+and revalidated by the control plane. Driver IDs and the root must match the
+source configuration used by the operation.
 
 The control token is an unpadded base64url encoding of exactly 32 bytes. Under
 the active read fence, the Worker derives the manifest's epoch key from its
