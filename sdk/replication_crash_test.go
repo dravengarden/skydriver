@@ -22,6 +22,12 @@ var errInjectedReplicationCrash = errors.New("injected Carrack replication crash
 type replicationCrashPoint string
 
 const (
+	crashBeforeD1Create    replicationCrashPoint = "before_d1_operation_create"
+	crashAfterD1Create     replicationCrashPoint = "after_d1_operation_create"
+	crashBeforeD1Claim     replicationCrashPoint = "before_d1_operation_claim"
+	crashAfterD1Claim      replicationCrashPoint = "after_d1_operation_claim"
+	crashBeforeKeyGrant    replicationCrashPoint = "before_import_key_grant"
+	crashAfterKeyGrant     replicationCrashPoint = "after_import_key_grant"
 	crashBeforePayloadPut  replicationCrashPoint = "before_payload_put"
 	crashAfterPayloadPut   replicationCrashPoint = "after_payload_put"
 	crashBeforePayloadRead replicationCrashPoint = "before_payload_readback"
@@ -32,6 +38,8 @@ const (
 	crashAfterSidecarRead  replicationCrashPoint = "after_sidecar_readback"
 	crashBeforeR2Stage     replicationCrashPoint = "before_r2_stage"
 	crashAfterR2Stage      replicationCrashPoint = "after_r2_stage"
+	crashBeforeD1Progress  replicationCrashPoint = "before_d1_progress"
+	crashAfterD1Progress   replicationCrashPoint = "after_d1_progress"
 	crashBeforeD1Publish   replicationCrashPoint = "before_d1_publish"
 	crashAfterD1Publish    replicationCrashPoint = "after_d1_publish"
 	crashBeforeD1Tombstone replicationCrashPoint = "before_d1_tombstone"
@@ -64,6 +72,21 @@ func (script *deterministicCrashScript) didFire() bool {
 	defer script.mutex.Unlock()
 
 	return script.fired
+}
+
+func (script *deterministicCrashScript) eventCount(point replicationCrashPoint) int {
+	script.mutex.Lock()
+	defer script.mutex.Unlock()
+
+	count := 0
+
+	for _, event := range script.events {
+		if event == point {
+			count++
+		}
+	}
+
+	return count
 }
 
 type crashInjectedArchive struct {
@@ -254,12 +277,21 @@ func (transport *crashRoundTripper) RoundTrip(request *http.Request) (*http.Resp
 }
 
 func controlCrashPoints(path string) (replicationCrashPoint, replicationCrashPoint, bool) {
-	switch path {
-	case "/api/v1/recovery-manifests/stage":
+	switch {
+	case path == "/api/v1/operations":
+		return crashBeforeD1Create, crashAfterD1Create, true
+	case strings.HasSuffix(path, "/claim"):
+		return crashBeforeD1Claim, crashAfterD1Claim, true
+	case strings.HasPrefix(path, "/api/v1/imports/") && strings.HasSuffix(path, "/key"):
+		return crashBeforeKeyGrant, crashAfterKeyGrant, true
+	case path == "/api/v1/recovery-manifests/stage":
 		return crashBeforeR2Stage, crashAfterR2Stage, true
-	case "/api/v1/copies/publish", "/api/v1/moves/publish-destination":
+	case strings.HasSuffix(path, "/progress"):
+		return crashBeforeD1Progress, crashAfterD1Progress, true
+	case path == "/api/v1/imports/publish" || path == "/api/v1/copies/publish" ||
+		path == "/api/v1/moves/publish-destination":
 		return crashBeforeD1Publish, crashAfterD1Publish, true
-	case "/api/v1/moves/tombstone-source":
+	case path == "/api/v1/moves/tombstone-source":
 		return crashBeforeD1Tombstone, crashAfterD1Tombstone, true
 	default:
 		return "", "", false
@@ -562,6 +594,15 @@ func exerciseControlCrashReplay(
 		t.Fatalf("provider crash point %s cannot exercise the control client", point)
 	case crashBeforeD1Tombstone, crashAfterD1Tombstone:
 		t.Fatalf("move tombstone crash point %s cannot exercise copy publication", point)
+	case crashBeforeD1Create,
+		crashAfterD1Create,
+		crashBeforeD1Claim,
+		crashAfterD1Claim,
+		crashBeforeKeyGrant,
+		crashAfterKeyGrant,
+		crashBeforeD1Progress,
+		crashAfterD1Progress:
+		t.Fatalf("import-only crash point %s cannot exercise copy publication", point)
 	default:
 		t.Fatalf("unsupported control crash point %s", point)
 	}
@@ -695,6 +736,15 @@ func (state *replayControlState) assertSingleCommit(
 		expectedPublicationCommits = 1
 	case crashBeforeD1Tombstone, crashAfterD1Tombstone:
 		t.Fatalf("move tombstone point %s requires tombstone-phase assertions", point)
+	case crashBeforeD1Create,
+		crashAfterD1Create,
+		crashBeforeD1Claim,
+		crashAfterD1Claim,
+		crashBeforeKeyGrant,
+		crashAfterKeyGrant,
+		crashBeforeD1Progress,
+		crashAfterD1Progress:
+		t.Fatalf("import-only crash point %s has no copy commit counts", point)
 	case crashBeforePayloadPut,
 		crashAfterPayloadPut,
 		crashBeforePayloadRead,
@@ -774,6 +824,15 @@ func (state *replayControlState) assertTombstonePhaseSingleCommit(
 		crashBeforeD1Publish,
 		crashAfterD1Publish:
 		t.Fatalf("crash point %s does not belong to the move tombstone phase", point)
+	case crashBeforeD1Create,
+		crashAfterD1Create,
+		crashBeforeD1Claim,
+		crashAfterD1Claim,
+		crashBeforeKeyGrant,
+		crashAfterKeyGrant,
+		crashBeforeD1Progress,
+		crashAfterD1Progress:
+		t.Fatalf("import-only crash point %s does not belong to the move tombstone phase", point)
 	default:
 		t.Fatalf("unsupported move tombstone crash point %s", point)
 	}

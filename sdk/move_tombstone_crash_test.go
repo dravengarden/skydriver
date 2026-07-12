@@ -207,6 +207,15 @@ func exerciseMoveTombstoneCrashReplay(
 		crashBeforeD1Publish,
 		crashAfterD1Publish:
 		t.Fatalf("crash point %s does not belong to the move tombstone phase", point)
+	case crashBeforeD1Create,
+		crashAfterD1Create,
+		crashBeforeD1Claim,
+		crashAfterD1Claim,
+		crashBeforeKeyGrant,
+		crashAfterKeyGrant,
+		crashBeforeD1Progress,
+		crashAfterD1Progress:
+		t.Fatalf("import-only crash point %s does not belong to the move tombstone phase", point)
 	default:
 		t.Fatalf("unsupported move tombstone crash point %s", point)
 	}

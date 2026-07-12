@@ -267,6 +267,17 @@ byte-identical retries, and permits only one logical commit. Move physical
 deletion remains a separate janitor boundary and production concurrency remains
 gated on the full fault-injection suite.
 
+Controlled Import has an end-to-end deterministic matrix across operation
+creation, lease claim, the pinned key grant, provider payload and recovery
+sidecar writes and readbacks, immutable R2 staging, progress reporting, and the
+final D1 publication. Every boundary is interrupted immediately before and
+after the request. A retry must retain the exact atomically persisted random
+plan, converge on one content-addressed provider archive, cross the R2 recovery
+barrier once, and publish one immutable version. A lost progress response is
+advisory: it records a telemetry warning but cannot block publication. A lost
+final publication response converges through the committed operation identity
+without repeating provider I/O.
+
 A deterministic destructive-janitor matrix interrupts Move, GC, and quarantine
 cleanup immediately before and after task claim, final revalidation, provider
 delete, and D1 completion. Move and GC may repeat one idempotent provider delete
