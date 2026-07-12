@@ -37,6 +37,14 @@ struct ReconcileOperation {
     manifest_sha256: String,
     recovery_revision: u64,
     minimum_available_replicas: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completed_report_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completed_unindexed: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completed_orphan: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completed_degraded: Option<u64>,
     created_at: u64,
     updated_at: u64,
 }
@@ -104,7 +112,14 @@ struct CompleteRequest {
 
 #[derive(Deserialize)]
 struct CompletionRow {
+    manifest_sha256: String,
     report_sha256: String,
+    unindexed_count: u64,
+    orphan_count: u64,
+    degraded_count: u64,
+    lease_id: String,
+    incarnation: String,
+    fencing_token: u64,
 }
 
 #[derive(Serialize)]
@@ -112,6 +127,7 @@ struct CompletedReconcile {
     operation_id: String,
     manifest_sha256: String,
     state: String,
+    report_sha256: String,
     unindexed: u64,
     orphan: u64,
     degraded: u64,
@@ -139,9 +155,20 @@ pub(crate) async fn create(
         return Response::error("invalid reconcile operation", 400);
     }
 
+    let database = env.d1("CARRACK_INDEX")?;
+    if let Some(operation) = find_operation(
+        &database,
+        &requested.namespace_id,
+        &requested.idempotency_key,
+        &client.id,
+    )
+    .await?
+    {
+        return operation_response(&operation, &requested);
+    }
+
     let operation_id = random_hex()?;
     let now = current_unix_seconds().to_string();
-    let database = env.d1("CARRACK_INDEX")?;
     let insert_operation = database
         .prepare(
             "INSERT INTO operations (\
@@ -236,11 +263,7 @@ pub(crate) async fn create(
     let Some(operation) = operation else {
         return Response::error("reconcile rejected or idempotency identity conflicts", 409);
     };
-    if operation.manifest_sha256 != requested.manifest_sha256 {
-        return Response::error("idempotency key pins another reconcile target", 409);
-    }
-
-    Response::from_json(&operation)
+    operation_response(&operation, &requested)
 }
 
 pub(crate) async fn fetch_snapshot(
@@ -416,32 +439,20 @@ pub(crate) async fn complete(
     )?;
     database.batch(statements).await?;
 
-    let committed = database
-        .prepare(
-            "SELECT completion.report_sha256 FROM reconcile_completions AS completion \
-             JOIN operations AS operation ON operation.id = completion.operation_id \
-             JOIN leases AS lease ON lease.operation_id = operation.id \
-             WHERE operation.id = ?1 AND operation.state = 'succeeded' \
-               AND operation.requested_by = ?2 AND completion.state = 'committed' \
-               AND completion.report_sha256 = ?3 AND lease.id = ?4 \
-               AND lease.incarnation = ?5 AND lease.fencing_token = ?6 \
-               AND lease.released_at IS NOT NULL",
-        )
-        .bind(&[
-            JsValue::from_str(operation_id),
-            JsValue::from_str(&client.id),
-            JsValue::from_str(&report_sha256),
-            JsValue::from_str(&completed.lease_id),
-            JsValue::from_str(&completed.incarnation),
-            JsValue::from_str(&completed.fencing_token.to_string()),
-        ])?
-        .first::<CompletionRow>(None)
-        .await?;
-    if committed.is_none() {
+    let committed = load_committed_completion(&database, operation_id, &client.id).await?;
+    let Some(committed) = committed else {
         return Response::error("reconcile completion fence is stale or incomplete", 409);
+    };
+    if committed.report_sha256 != report_sha256
+        || committed.manifest_sha256 != completed.manifest_sha256
+        || committed.lease_id != completed.lease_id
+        || committed.incarnation != completed.incarnation
+        || committed.fencing_token != completed.fencing_token
+    {
+        return Response::error("reconcile completion identity changed", 409);
     }
 
-    completion_response(operation_id, &completed.manifest_sha256, counts)
+    completion_response(operation_id, committed)
 }
 
 async fn replay_completion(
@@ -450,25 +461,25 @@ async fn replay_completion(
     client: &AuthenticatedClient,
     completed: &CompleteRequest,
 ) -> Result<Option<Response>> {
-    let existing = database
-        .prepare(
-            "SELECT completion.report_sha256 FROM reconcile_completions AS completion \
-             JOIN operations AS operation ON operation.id = completion.operation_id \
-             JOIN reconcile_intents AS intent ON intent.operation_id = operation.id \
-             WHERE operation.id = ?1 AND operation.kind = 'reconcile' \
-               AND operation.state = 'succeeded' AND operation.requested_by = ?2 \
-               AND intent.manifest_sha256 = ?3 AND completion.state = 'committed'",
-        )
-        .bind(&[
-            JsValue::from_str(operation_id),
-            JsValue::from_str(&client.id),
-            JsValue::from_str(&completed.manifest_sha256),
-        ])?
-        .first::<CompletionRow>(None)
-        .await?;
+    let existing = load_committed_completion(database, operation_id, &client.id).await?;
     let Some(existing) = existing else {
         return Ok(None);
     };
+    if existing.lease_id != completed.lease_id
+        || existing.incarnation != completed.incarnation
+        || existing.fencing_token != completed.fencing_token
+    {
+        return Ok(Some(Response::error(
+            "reconcile completion replay changed its fence",
+            409,
+        )?));
+    }
+    if existing.manifest_sha256 != completed.manifest_sha256 {
+        return Ok(Some(Response::error(
+            "reconcile completion replay changed its target",
+            409,
+        )?));
+    }
     let requested_hash = report_sha256(&completed.manifest_sha256, &completed.evidence)?;
     if requested_hash != existing.report_sha256 {
         return Ok(Some(Response::error(
@@ -477,11 +488,34 @@ async fn replay_completion(
         )?));
     }
 
-    Ok(Some(completion_response(
-        operation_id,
-        &completed.manifest_sha256,
-        evidence_counts(&completed.evidence),
-    )?))
+    Ok(Some(completion_response(operation_id, existing)?))
+}
+
+async fn load_committed_completion(
+    database: &worker::D1Database,
+    operation_id: &str,
+    client_id: &str,
+) -> Result<Option<CompletionRow>> {
+    database
+        .prepare(
+            "SELECT intent.manifest_sha256, completion.report_sha256, \
+                    completion.unindexed_count, \
+                    completion.orphan_count, completion.degraded_count, \
+                    lease.id AS lease_id, lease.incarnation, lease.fencing_token \
+             FROM reconcile_completions AS completion \
+             JOIN operations AS operation ON operation.id = completion.operation_id \
+             JOIN reconcile_intents AS intent ON intent.operation_id = operation.id \
+             JOIN leases AS lease ON lease.operation_id = operation.id \
+             WHERE operation.id = ?1 AND operation.kind = 'reconcile' \
+               AND operation.state = 'succeeded' AND operation.requested_by = ?2 \
+               AND completion.state = 'committed' AND lease.released_at IS NOT NULL",
+        )
+        .bind(&[
+            JsValue::from_str(operation_id),
+            JsValue::from_str(client_id),
+        ])?
+        .first::<CompletionRow>(None)
+        .await
 }
 
 #[allow(
@@ -865,18 +899,15 @@ fn append_completion_statements(
     Ok(())
 }
 
-fn completion_response(
-    operation_id: &str,
-    manifest_sha256: &str,
-    counts: (u64, u64, u64),
-) -> Result<Response> {
+fn completion_response(operation_id: &str, completion: CompletionRow) -> Result<Response> {
     Response::from_json(&CompletedReconcile {
         operation_id: operation_id.to_owned(),
-        manifest_sha256: manifest_sha256.to_owned(),
+        manifest_sha256: completion.manifest_sha256,
         state: "succeeded".to_owned(),
-        unindexed: counts.0,
-        orphan: counts.1,
-        degraded: counts.2,
+        report_sha256: completion.report_sha256,
+        unindexed: completion.unindexed_count,
+        orphan: completion.orphan_count,
+        degraded: completion.degraded_count,
     })
 }
 
@@ -969,9 +1000,16 @@ async fn find_operation(
                     operation.phase, operation.requested_by, operation.incarnation, \
                     operation.revision, operation.useful_bytes_total, intent.version_id, \
                     intent.manifest_sha256, intent.recovery_revision, \
-                    intent.minimum_available_replicas, operation.created_at, operation.updated_at \
+                    intent.minimum_available_replicas, \
+                    completion.report_sha256 AS completed_report_sha256, \
+                    completion.unindexed_count AS completed_unindexed, \
+                    completion.orphan_count AS completed_orphan, \
+                    completion.degraded_count AS completed_degraded, \
+                    operation.created_at, operation.updated_at \
              FROM operations AS operation \
              JOIN reconcile_intents AS intent ON intent.operation_id = operation.id \
+             LEFT JOIN reconcile_completions AS completion \
+               ON completion.operation_id = operation.id AND completion.state = 'committed' \
              WHERE operation.namespace_id = ?1 AND operation.idempotency_key = ?2 \
                AND operation.requested_by = ?3 AND operation.kind = 'reconcile'",
         )
@@ -982,6 +1020,17 @@ async fn find_operation(
         ])?
         .first::<ReconcileOperation>(None)
         .await
+}
+
+fn operation_response(
+    operation: &ReconcileOperation,
+    requested: &CreateRequest,
+) -> Result<Response> {
+    if operation.manifest_sha256 != requested.manifest_sha256 {
+        return Response::error("idempotency key pins another reconcile target", 409);
+    }
+
+    Response::from_json(operation)
 }
 
 fn random_hex() -> Result<String> {

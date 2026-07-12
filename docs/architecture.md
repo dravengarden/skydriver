@@ -753,6 +753,29 @@ overwritten only at the same pinned storage key; after retry the target contains
 one exact provider object, local staging is empty, and one completion makes all
 pinned locations available.
 
+### Metadata reconciliation
+
+Metadata reconciliation pins one published manifest, durable recovery revision,
+complete D1 location snapshot, and minimum replica policy under a renewable
+write fence. The client computes a deterministic `unindexed`, `orphan`, and
+`degraded` report without provider I/O. Completion reloads the recovery archive
+and indexed locations, recomputes the report, records or resolves exact findings,
+and releases the lease in one D1 batch.
+
+An exact idempotent create returning `succeeded/completed` includes the committed
+report digest and discrepancy counts. The SDK converts it to an
+`AlreadyCompleted` receipt without fetching the recovery snapshot again;
+`failed` and `cancelled` operations return a stable recovery error. Direct
+completion replay requires the original lease ID, incarnation, fencing token,
+manifest, and byte-identical evidence. A changed fence or report is rejected
+even after commit.
+
+An eight-point deterministic matrix interrupts immediately before and after
+operation creation, claim, snapshot fetch, and final completion. Every case
+converges on one logical create, claim transition, and completion. Snapshot
+response loss may repeat the read-only snapshot, but final completion response
+loss is recovered entirely from the terminal operation receipt.
+
 ### Inventory reconciliation
 
 Failed clients can upload a provider object before its staging record reaches

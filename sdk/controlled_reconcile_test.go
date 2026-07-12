@@ -70,7 +70,9 @@ func TestControlledReconcilerCommitsPinnedMetadataReport(t *testing.T) {
 
 			value = sdk.CompletedReconcile{
 				OperationID: operationID, ManifestSHA256: recovery.ManifestSHA256,
-				State: "succeeded", Degraded: 1,
+				State:        "succeeded",
+				ReportSHA256: "0101010101010101010101010101010101010101010101010101010101010101",
+				Degraded:     1,
 			}
 		default:
 			http.NotFound(response, request)

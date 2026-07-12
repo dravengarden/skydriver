@@ -1750,17 +1750,37 @@ reconcile_completion=$(jq -cn \
 completed_reconcile=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" --data "$reconcile_completion" \
   "$base_url/api/v1/reconciliations/$reconcile_id/complete")
-jq -e '.state == "succeeded" and .unindexed == 0 and .orphan == 0 and .degraded == 1' \
+jq -e '
+  .state == "succeeded" and .unindexed == 0 and .orphan == 0 and .degraded == 1 and
+  (.report_sha256 | test("^[0-9a-f]{64}$"))
+' \
   <<<"$completed_reconcile" >/dev/null
 replayed_reconcile=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" --data "$reconcile_completion" \
   "$base_url/api/v1/reconciliations/$reconcile_id/complete")
 [[ "$replayed_reconcile" == "$completed_reconcile" ]]
+stale_reconcile_fence_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.fencing_token += 1' <<<"$reconcile_completion")" \
+  "$base_url/api/v1/reconciliations/$reconcile_id/complete")
+[[ "$stale_reconcile_fence_status" == 409 ]]
 changed_reconcile_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   -H "$authorization" -H "$json" \
   --data "$(jq '.evidence[0].available = 0' <<<"$reconcile_completion")" \
   "$base_url/api/v1/reconciliations/$reconcile_id/complete")
 [[ "$changed_reconcile_status" == 409 ]]
+terminal_reconcile=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$reconcile_request" \
+  "$base_url/api/v1/reconciliations")
+replayed_terminal_reconcile=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$reconcile_request" \
+  "$base_url/api/v1/reconciliations")
+[[ "$replayed_terminal_reconcile" == "$terminal_reconcile" ]]
+jq -e --arg report_sha "$(jq -r .report_sha256 <<<"$completed_reconcile")" '
+  .state == "succeeded" and .phase == "completed" and
+  .completed_report_sha256 == $report_sha and .completed_unindexed == 0 and
+  .completed_orphan == 0 and .completed_degraded == 1
+' <<<"$terminal_reconcile" >/dev/null
 
 invalid_findings_cursor_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   -H "$session" "$base_url/api/integrity/findings?cursor=not-base64!")

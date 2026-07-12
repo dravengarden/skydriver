@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 
 	"github.com/dravengarden/carrack/manifest"
 )
@@ -32,6 +33,10 @@ type ReconcileOperation struct {
 	ManifestSHA256           string `json:"manifest_sha256"`
 	RecoveryRevision         uint64 `json:"recovery_revision"`
 	MinimumAvailableReplicas uint64 `json:"minimum_available_replicas"`
+	CompletedReportSHA256    string `json:"completed_report_sha256"`
+	CompletedUnindexed       uint64 `json:"completed_unindexed"`
+	CompletedOrphan          uint64 `json:"completed_orphan"`
+	CompletedDegraded        uint64 `json:"completed_degraded"`
 	CreatedAt                uint64 `json:"created_at"`
 	UpdatedAt                uint64 `json:"updated_at"`
 }
@@ -69,6 +74,7 @@ type CompletedReconcile struct {
 	OperationID    string `json:"operation_id"`
 	ManifestSHA256 string `json:"manifest_sha256"`
 	State          string `json:"state"`
+	ReportSHA256   string `json:"report_sha256"`
 	Unindexed      uint64 `json:"unindexed"`
 	Orphan         uint64 `json:"orphan"`
 	Degraded       uint64 `json:"degraded"`
@@ -95,17 +101,62 @@ func (client *ControlClient) CreateReconcileOperation(
 		return ReconcileOperation{}, err
 	}
 
-	if response.NamespaceID != requested.NamespaceID ||
-		response.ManifestSHA256 != requested.ManifestSHA256 ||
-		response.Kind != operationKindReconcile || !validControlHex(response.ID, 32) ||
-		!validControlHex(response.Incarnation, 32) ||
-		!validControlString(response.VersionID, 2_048) || response.Revision == 0 ||
-		response.RecoveryRevision == 0 || response.MinimumAvailableReplicas == 0 ||
-		response.MinimumAvailableReplicas > 64 {
+	if !validReconcileOperation(response, requested) {
 		return ReconcileOperation{}, fmt.Errorf("%w: invalid reconcile operation identity", ErrControlPlaneResponse)
 	}
 
 	return response, nil
+}
+
+func validReconcileOperation(
+	operation ReconcileOperation,
+	requested CreateReconcileOperationRequest,
+) bool {
+	return operation.NamespaceID == requested.NamespaceID &&
+		operation.ManifestSHA256 == requested.ManifestSHA256 &&
+		operation.Kind == operationKindReconcile && validReconcileOperationState(operation) &&
+		validReconcileCompletion(operation) && validControlHex(operation.ID, 32) &&
+		validControlHex(operation.Incarnation, 32) &&
+		validControlString(operation.RequestedBy, 2_048) &&
+		validControlString(operation.VersionID, 2_048) && operation.Revision > 0 &&
+		operation.UsefulBytesTotal > 0 && operation.UsefulBytesTotal <= math.MaxInt64 &&
+		operation.RecoveryRevision > 0 && operation.MinimumAvailableReplicas > 0 &&
+		operation.MinimumAvailableReplicas <= 64 && operation.CreatedAt > 0 &&
+		operation.UpdatedAt >= operation.CreatedAt
+}
+
+func validReconcileOperationState(operation ReconcileOperation) bool {
+	switch operation.State {
+	case operationStatePlanned:
+		return operation.Phase == operationStatePlanned
+	case operationStateRunning:
+		return operation.Phase == "reconciling"
+	case operationStateSucceeded:
+		return operation.Phase == operationPhaseCompleted
+	case operationStateFailed, operationStateCancelled:
+		return operation.Phase == operationPhaseRecovered
+	default:
+		return false
+	}
+}
+
+func validReconcileCompletion(operation ReconcileOperation) bool {
+	for _, count := range []uint64{
+		operation.CompletedUnindexed,
+		operation.CompletedOrphan,
+		operation.CompletedDegraded,
+	} {
+		if count > math.MaxInt64 {
+			return false
+		}
+	}
+
+	if operation.State == operationStateSucceeded {
+		return validControlHex(operation.CompletedReportSHA256, 64)
+	}
+
+	return operation.CompletedReportSHA256 == "" && operation.CompletedUnindexed == 0 &&
+		operation.CompletedOrphan == 0 && operation.CompletedDegraded == 0
 }
 
 // ClaimReconcileOperation acquires or renews the metadata audit fence.
@@ -204,7 +255,8 @@ func (client *ControlClient) CompleteReconcile(
 	}
 
 	if response.OperationID != operation.ID || response.ManifestSHA256 != operation.ManifestSHA256 ||
-		response.State != operationStateSucceeded || response.Unindexed != result.RecoveryOnly ||
+		response.State != operationStateSucceeded || !validControlHex(response.ReportSHA256, 64) ||
+		response.Unindexed != result.RecoveryOnly ||
 		response.Orphan != result.IndexOnly || response.Degraded != result.Degraded {
 		return CompletedReconcile{}, fmt.Errorf("%w: reconcile completion identity changed", ErrControlPlaneResponse)
 	}

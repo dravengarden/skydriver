@@ -8,8 +8,13 @@ import (
 	"time"
 )
 
-// ErrReconcileLeaseLost indicates that reconciliation stopped after renewal failed.
-var ErrReconcileLeaseLost = errors.New("carrack reconcile write lease was lost")
+var (
+	// ErrReconcileLeaseLost indicates that reconciliation stopped after renewal failed.
+	ErrReconcileLeaseLost = errors.New("carrack reconcile write lease was lost")
+	// ErrReconcileOperationFailed indicates that control-plane recovery invalidated
+	// an exact idempotent reconciliation before it could complete.
+	ErrReconcileOperationFailed = errors.New("carrack reconcile operation previously failed")
+)
 
 // ControlledReconciler coordinates one fenced metadata audit.
 type ControlledReconciler struct {
@@ -27,9 +32,10 @@ type ControlledReconcileRequest struct {
 
 // ControlledReconcileResult contains the pinned comparison and durable completion.
 type ControlledReconcileResult struct {
-	Operation      ReconcileOperation
-	Reconciliation ReconciliationResult
-	Completion     CompletedReconcile
+	Operation        ReconcileOperation
+	Reconciliation   ReconciliationResult
+	Completion       CompletedReconcile
+	AlreadyCompleted bool
 }
 
 // NewControlledReconciler constructs a coordinator with an explicit renewal cadence.
@@ -68,6 +74,23 @@ func (coordinator *ControlledReconciler) Reconcile(
 	operation, err := coordinator.control.CreateReconcileOperation(ctx, CreateReconcileOperationRequest(requested))
 	if err != nil {
 		return ControlledReconcileResult{}, fmt.Errorf("create controlled reconcile: %w", err)
+	}
+
+	switch operation.State {
+	case operationStateSucceeded:
+		return completedControlledReconcile(operation), nil
+	case operationStateFailed, operationStateCancelled:
+		return ControlledReconcileResult{Operation: operation}, fmt.Errorf(
+			"%w: operation %s",
+			ErrReconcileOperationFailed,
+			operation.ID,
+		)
+	case operationStatePlanned, operationStateRunning:
+	default:
+		return ControlledReconcileResult{}, fmt.Errorf(
+			"%w: unsupported controlled reconcile state",
+			ErrControlPlaneResponse,
+		)
 	}
 
 	lease, err := coordinator.control.ClaimReconcileOperation(ctx, operation, coordinator.leaseSeconds)
@@ -127,6 +150,19 @@ func (coordinator *ControlledReconciler) Reconcile(
 	return ControlledReconcileResult{
 		Operation: operation, Reconciliation: reconciliation, Completion: completion,
 	}, nil
+}
+
+func completedControlledReconcile(operation ReconcileOperation) ControlledReconcileResult {
+	return ControlledReconcileResult{
+		Operation: operation,
+		Completion: CompletedReconcile{
+			OperationID: operation.ID, ManifestSHA256: operation.ManifestSHA256,
+			State: operationStateSucceeded, ReportSHA256: operation.CompletedReportSHA256,
+			Unindexed: operation.CompletedUnindexed, Orphan: operation.CompletedOrphan,
+			Degraded: operation.CompletedDegraded,
+		},
+		AlreadyCompleted: true,
+	}
 }
 
 func failControlledReconcile(

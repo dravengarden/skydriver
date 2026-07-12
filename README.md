@@ -311,8 +311,11 @@ carrack reconcile run \
 ```
 
 The Worker recomputes the submitted report before committing it. Exact retries
-are idempotent, changed reports are rejected, and resolved discrepancies close
-only findings with the same condition and subject identity.
+must retain the original lease, incarnation, fence, manifest, and evidence;
+changed identities or reports are rejected. A retry after completion returns
+the committed report digest and counts from the operation receipt without
+fetching the snapshot again. Resolved discrepancies close only findings with
+the same condition and subject identity.
 
 Provider inventory is the provider-to-D1 half of reconciliation. The initial
 operator path inventories one Carrack-owned local filesystem prefix in bounded
