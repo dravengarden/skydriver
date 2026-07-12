@@ -649,11 +649,13 @@ the existing `reconcile` operation state machine. Creation pins namespace,
 enabled driver revision, normalized owned prefix, and
 `inventory_quarantine_seconds`. The driver returns deterministic pages of at
 most 64 objects. Each page carries the current operation lease and fencing
-token, a strictly chained opaque cursor, and a server-computed digest. A lease
-takeover starts a new attempt and page chain; exact pages can be replayed, while
-a changed page under the same attempt is rejected. Final completion hashes the
-ordered page digests and requires a complete terminal page before any finding
-is committed.
+token, a normalized keyset cursor equal to the last emitted storage key, and a
+server-computed digest. Keys are strictly increasing across the complete report;
+duplicate objects, regressed pages, and mismatched continuation cursors are
+rejected by both the SDK and Worker. A lease takeover starts a new attempt and
+page chain; exact pages can be replayed, while a changed page under the same
+attempt is rejected. Final completion hashes the ordered page digests and
+requires a complete terminal page before any finding is committed.
 
 An object is known when the same `(driver, storage key)` is held by a non-deleted
 location or a non-missing durable recovery sidecar. Every other observed object
@@ -664,9 +666,11 @@ finding. A changed driver revision or provider identity, or reappearance after
 resolution, restarts quarantine grace. An
 indexed location or durable sidecar absent from the complete report opens a
 `missing` finding, but inventory alone does not change location or manifest
-state because provider listing may be stale. Adoption and repair scheduling are
-separate future fenced operations; the inventory path itself performs no
-provider writes or deletes.
+state because provider listing may be stale. An object inserted before the
+active keyset cursor can be absent from one report and appear on the next full
+scan; that observation creates evidence, never deletion authority. Adoption and
+repair scheduling are separate future fenced operations; the inventory path
+itself performs no provider writes or deletes.
 
 Quarantine review is an explicit two-operation state machine:
 

@@ -101,6 +101,9 @@ SDK lists only regular files under that prefix in bounded pages and maintains a
 renewable operation fence through final report commit. Unknown objects are
 retained in quarantine for the pinned `inventory_quarantine_seconds`; absent
 indexed objects produce findings for a later Verify or Repair decision.
+Provider adapters normalize pagination to strictly increasing storage keys;
+duplicate or regressed pages are rejected, while a stale omission remains only
+conservative evidence and can converge on the next full scan.
 
 Inventory is deliberately read-only. It does not adopt provider objects,
 change manifest or location state, or invoke provider deletion. Do not overlap

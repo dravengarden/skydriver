@@ -61,7 +61,11 @@ type Deleter interface {
 	Delete(ctx context.Context, key string) error
 }
 
-// InventoryPage is one bounded page of objects under a Carrack-owned prefix.
+// InventoryPage is one bounded, strictly key-ordered page of objects under a
+// Carrack-owned prefix. NextCursor is empty for the terminal page; otherwise it
+// is the final object key. Every returned key must be greater than the cursor
+// supplied to List so adapters normalize provider pagination to one keyset
+// contract.
 type InventoryPage struct {
 	Objects    []Object
 	NextCursor string

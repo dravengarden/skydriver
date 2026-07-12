@@ -117,6 +117,96 @@ func TestClientListsBoundedStableInventoryPages(t *testing.T) {
 	}
 }
 
+func TestClientInventoryConvergesAfterMidScanMutation(t *testing.T) {
+	t.Parallel()
+
+	rootPath := t.TempDir()
+	client := newClient(t, rootPath)
+
+	const initialObjectCount = 65
+
+	for index := range initialObjectCount {
+		key := fmt.Sprintf("owned/objects/%03d.bin", index)
+		payload := fmt.Appendf(nil, "inventory object %03d", index)
+
+		if _, err := client.Put(context.Background(), key, bytes.NewReader(payload), putOptions(payload)); err != nil {
+			t.Fatalf("put inventory fixture %q: %v", key, err)
+		}
+	}
+
+	first, err := client.List(context.Background(), "owned", "")
+	if err != nil {
+		t.Fatalf("list first inventory page: %v", err)
+	}
+
+	if len(first.Objects) != 64 || first.NextCursor != "owned/objects/063.bin" {
+		t.Fatalf("unexpected first inventory page: count=%d cursor=%q", len(first.Objects), first.NextCursor)
+	}
+
+	insertedKey := "owned/objects/000a.bin"
+	insertedPayload := []byte("inserted before the active cursor")
+
+	if _, putErr := client.Put(
+		context.Background(),
+		insertedKey,
+		bytes.NewReader(insertedPayload),
+		putOptions(insertedPayload),
+	); putErr != nil {
+		t.Fatalf("insert object before inventory cursor: %v", putErr)
+	}
+
+	removedKey := "owned/objects/064.bin"
+
+	if deleteErr := client.Delete(context.Background(), removedKey); deleteErr != nil {
+		t.Fatalf("remove object after inventory cursor: %v", deleteErr)
+	}
+
+	second, err := client.List(context.Background(), "owned", first.NextCursor)
+	if err != nil {
+		t.Fatalf("list inventory page after provider mutation: %v", err)
+	}
+
+	if len(second.Objects) != 0 || second.NextCursor != "" {
+		t.Fatalf("mutated terminal inventory page changed: %+v", second)
+	}
+
+	staleKeys := inventoryObjectKeys(slices.Concat(first.Objects, second.Objects))
+	if slices.Contains(staleKeys, insertedKey) {
+		t.Fatalf("mid-scan insertion before cursor appeared in stale report: %v", staleKeys)
+	}
+
+	freshKeys := make([]string, 0, initialObjectCount)
+	cursor := ""
+
+	for {
+		page, listErr := client.List(context.Background(), "owned", cursor)
+		if listErr != nil {
+			t.Fatalf("repeat inventory after provider mutation: %v", listErr)
+		}
+
+		freshKeys = append(freshKeys, inventoryObjectKeys(page.Objects)...)
+		if page.NextCursor == "" {
+			break
+		}
+
+		cursor = page.NextCursor
+	}
+
+	if len(freshKeys) != initialObjectCount || !slices.IsSorted(freshKeys) ||
+		!slices.Contains(freshKeys, insertedKey) || slices.Contains(freshKeys, removedKey) {
+		t.Fatalf("fresh inventory did not converge after mutation: %v", freshKeys)
+	}
+}
+
+func inventoryObjectKeys(objects []provider.Object) []string {
+	keys := make([]string, len(objects))
+	for index, object := range objects {
+		keys[index] = object.Key
+	}
+
+	return keys
+}
+
 func TestClientDeleteIsIdempotentAndRejectsDirectories(t *testing.T) {
 	t.Parallel()
 

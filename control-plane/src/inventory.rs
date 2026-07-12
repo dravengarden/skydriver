@@ -314,6 +314,11 @@ pub(crate) async fn report_page(
         || requested.objects.len() > MAXIMUM_PAGE_OBJECTS
         || (!requested.next_cursor.is_empty() && requested.objects.is_empty())
         || !valid_inventory_objects(&requested.objects)
+        || !valid_inventory_page_order(
+            &requested.cursor,
+            &requested.next_cursor,
+            &requested.objects,
+        )
     {
         return Response::error("invalid inventory report page", 400);
     }
@@ -1391,6 +1396,25 @@ fn valid_inventory_objects(objects: &[InventoryObject]) -> bool {
     true
 }
 
+fn valid_inventory_page_order(
+    cursor: &str,
+    next_cursor: &str,
+    objects: &[InventoryObject],
+) -> bool {
+    if objects.is_empty() {
+        return next_cursor.is_empty();
+    }
+
+    if !cursor.is_empty() && objects[0].storage_key.as_str() <= cursor {
+        return false;
+    }
+
+    next_cursor.is_empty()
+        || objects
+            .last()
+            .is_some_and(|object| object.storage_key == next_cursor)
+}
+
 fn valid_prefix(prefix: &str) -> bool {
     valid_path(prefix, 2_048)
 }
@@ -1443,7 +1467,10 @@ fn current_unix_seconds() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{InventoryObject, valid_inventory_objects, valid_prefix, within_prefix};
+    use super::{
+        InventoryObject, valid_inventory_objects, valid_inventory_page_order, valid_prefix,
+        within_prefix,
+    };
 
     #[test]
     fn validates_inventory_scope_and_ordering() {
@@ -1468,6 +1495,21 @@ mod tests {
             },
         ];
         assert!(valid_inventory_objects(&ordered));
+
+        assert!(valid_inventory_page_order(
+            "archive/0",
+            "archive/b",
+            &ordered
+        ));
+        assert!(valid_inventory_page_order("archive/0", "", &ordered));
+        assert!(!valid_inventory_page_order("archive/a", "", &ordered));
+        assert!(!valid_inventory_page_order(
+            "archive/0",
+            "archive/c",
+            &ordered
+        ));
+        assert!(valid_inventory_page_order("", "", &[]));
+        assert!(!valid_inventory_page_order("", "archive/a", &[]));
 
         let mut reversed = ordered;
         reversed.reverse();

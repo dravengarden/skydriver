@@ -290,7 +290,23 @@ func prepareInventoryPage(
 		previous = object.Key
 	}
 
+	if !validInventoryPageOrder(cursor, page) {
+		return nil, fmt.Errorf("%w: invalid inventory page order", ErrInvalidControlPlane)
+	}
+
 	return objects, nil
+}
+
+func validInventoryPageOrder(cursor string, page provider.InventoryPage) bool {
+	if len(page.Objects) == 0 {
+		return page.NextCursor == ""
+	}
+
+	if cursor != "" && page.Objects[0].Key <= cursor {
+		return false
+	}
+
+	return page.NextCursor == "" || page.NextCursor == page.Objects[len(page.Objects)-1].Key
 }
 
 func validInventoryPageFence(

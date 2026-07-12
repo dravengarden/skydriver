@@ -330,13 +330,15 @@ carrack reconcile inventory \
 
 The registered driver ID and local root must describe the same provider scope.
 Each page contains at most 64 objects, exact page retries are harmless, and the
-Worker commits classifications only after validating the complete cursor chain
-and report digest. Objects already referenced by a location or durable recovery
-sidecar are known. Other discovered objects enter the quarantine ledger and
-open `quarantined` findings. Indexed objects absent from the report open
-`missing` findings for later verification; one inventory response does not
-change location state. Inventory never adopts an object, edits a manifest, or
-deletes provider bytes.
+normalized cursor is the page's final strictly increasing storage key. The SDK
+and Worker reject duplicate or regressed pages before the Worker commits
+classifications from the complete cursor chain and report digest. Objects
+already referenced by a location or durable recovery sidecar are known. Other
+discovered objects enter the quarantine ledger and open `quarantined` findings.
+Indexed objects absent from the report open `missing` findings for later
+verification; a stale scan or one inventory response does not change location
+state. A later full scan converges. Inventory never adopts an object, edits a
+manifest, or deletes provider bytes.
 
 After the initial `inventory_quarantine_seconds` expires, an administrator may
 record a completed ownership and recovery review for one exact quarantine

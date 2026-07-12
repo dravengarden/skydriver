@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -193,5 +194,87 @@ func TestControlledInventoryReportsEveryPageBeforeCompletion(t *testing.T) {
 	if result.Completion.Known != 1 || result.Completion.Quarantined != 1 ||
 		result.Completion.Missing != 2 || pageCalls != 2 {
 		t.Fatalf("unexpected controlled inventory result: %+v", result)
+	}
+}
+
+func TestControlInventoryRejectsDuplicateAndRegressedPagesBeforeReporting(t *testing.T) {
+	token, _ := testClientToken(t)
+
+	var requestCount atomic.Uint64
+
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		requestCount.Add(1)
+		http.Error(response, "unexpected inventory report", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	control, err := sdk.NewControlClient(server.URL, token, server.Client())
+	if err != nil {
+		t.Fatalf("construct control client: %v", err)
+	}
+
+	const (
+		operationID = "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf"
+		incarnation = "0123456789abcdef0123456789abcdef"
+	)
+
+	operation := sdk.InventoryOperation{
+		ID: operationID, Incarnation: incarnation, Prefix: "archive",
+	}
+	lease := sdk.OperationLease{
+		OperationID:  operationID,
+		LeaseID:      "operation/" + operationID + "/write",
+		Incarnation:  incarnation,
+		FencingToken: 1,
+	}
+
+	tests := []struct {
+		name     string
+		sequence uint64
+		cursor   string
+		page     provider.InventoryPage
+	}{
+		{
+			name: "duplicate prior page object", sequence: 2, cursor: "archive/a",
+			page: provider.InventoryPage{Objects: []provider.Object{{Key: "archive/a", SizeBytes: 1}}},
+		},
+		{
+			name: "regressed page object", sequence: 2, cursor: "archive/b",
+			page: provider.InventoryPage{Objects: []provider.Object{{Key: "archive/a", SizeBytes: 1}}},
+		},
+		{
+			name: "continuation cursor is not final key", sequence: 1,
+			page: provider.InventoryPage{
+				Objects:    []provider.Object{{Key: "archive/a", SizeBytes: 1}},
+				NextCursor: "archive/b",
+			},
+		},
+		{
+			name: "duplicate object within page", sequence: 1,
+			page: provider.InventoryPage{Objects: []provider.Object{
+				{Key: "archive/a", SizeBytes: 1},
+				{Key: "archive/a", SizeBytes: 1},
+			}},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, reportErr := control.ReportInventoryPage(
+				context.Background(),
+				operation,
+				lease,
+				test.sequence,
+				test.cursor,
+				test.page,
+			)
+			if !errors.Is(reportErr, sdk.ErrInvalidControlPlane) {
+				t.Fatalf("invalid provider page was not rejected: %v", reportErr)
+			}
+		})
+	}
+
+	if calls := requestCount.Load(); calls != 0 {
+		t.Fatalf("invalid provider pages reached D1 reporting: calls=%d", calls)
 	}
 }
