@@ -93,7 +93,7 @@ func (coordinator *ControlledRepairer) Repair(
 	switch operation.State {
 	case operationStateSucceeded:
 		return completedControlledRepair(operation), nil
-	case operationStateFailed, "cancelled":
+	case operationStateFailed, operationStateCancelled:
 		return ControlledRepairResult{Operation: operation}, fmt.Errorf(
 			"%w: operation %s",
 			ErrRepairOperationFailed,

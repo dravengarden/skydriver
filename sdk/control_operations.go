@@ -17,6 +17,7 @@ const (
 	operationStatePlanned        = "planned"
 	operationStateRunning        = "running"
 	operationStateSucceeded      = "succeeded"
+	operationStateCancelled      = "cancelled"
 	operationStateAcknowledged   = "acknowledged"
 	operationStateTombstoned     = "tombstoned"
 	publicationStatePublished    = "published"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 
 	"github.com/dravengarden/carrack/cryptostream"
 	"github.com/dravengarden/carrack/manifest"
@@ -276,17 +277,36 @@ func validCompactOperation(
 	return operation.NamespaceID == requested.NamespaceID && operation.Kind == operationKindCompact &&
 		operation.SourceManifestSHA256 == requested.ManifestSHA256 &&
 		operation.DestinationDriverID == requested.DestinationDriverID &&
+		validCompactOperationState(operation) &&
 		validControlHex(operation.ID, 32) && validControlHex(operation.Incarnation, 32) &&
+		validControlString(operation.RequestedBy, 2_048) &&
 		validControlHex(operation.SourceManifestSHA256, 64) &&
 		validControlHex(operation.SourceRecoverySHA256, 64) &&
 		validControlHex(operation.SourcePlaintextSHA256, 64) && operation.Revision > 0 &&
-		operation.UsefulBytesTotal > 0 && operation.SourceGeneration > 0 &&
+		operation.UsefulBytesTotal > 0 && operation.UsefulBytesTotal <= math.MaxInt64 &&
+		operation.SourceGeneration > 0 && operation.SourceGeneration < math.MaxUint64 &&
 		operation.TargetGeneration == operation.SourceGeneration+1 && operation.SourcePackCount > 1 &&
 		operation.SourceRootVersion > 0 && operation.SourceKeyEpoch > 0 &&
 		operation.TargetRootVersion > 0 && operation.TargetKeyEpoch > 0 &&
 		operation.SourceRecoveryRevision > 0 && operation.ExpectedObjectRevision > 0 &&
 		validControlString(operation.ObjectID, 2_048) && validControlString(operation.VersionID, 2_048) &&
-		validControlString(operation.DestinationDriverID, 256) && validPublication
+		validControlString(operation.DestinationDriverID, 256) && operation.CreatedAt > 0 &&
+		operation.UpdatedAt >= operation.CreatedAt && validPublication
+}
+
+func validCompactOperationState(operation CompactOperation) bool {
+	switch operation.State {
+	case operationStatePlanned:
+		return operation.Phase == operationStatePlanned
+	case operationStateRunning:
+		return operation.Phase == "compacting"
+	case operationStateSucceeded:
+		return operation.Phase == operationStateSucceeded
+	case operationStateFailed, operationStateCancelled:
+		return operation.Phase == "control_plane_recovered"
+	default:
+		return false
+	}
 }
 
 //nolint:cyclop,gocyclo // Every compact wire identity is intentionally checked locally.

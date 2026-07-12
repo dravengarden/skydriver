@@ -278,6 +278,26 @@ advisory: it records a telemetry warning but cannot block publication. A lost
 final publication response converges through the committed operation identity
 without repeating provider I/O.
 
+Controlled Compaction applies the same recovery contract to a pinned
+multi-pack source generation. Its operation fixes the source recovery digest,
+object revision, target generation, destination, and both source and target key
+contexts. The SDK restores the source through independently verified ranges,
+keeps the plaintext bridge inside the canonical workspace, persists every new
+random pack identity before target I/O, and deletes the plaintext bridge only
+after the replacement generation is published. A recovered `failed` or
+`cancelled` operation returns a stable terminal error without claiming a lease
+or touching either provider.
+
+A 26-point deterministic matrix interrupts immediately before and after
+compaction creation, claim, source-manifest fetch, both key grants, source
+range reads, target payload and sidecar writes and readbacks, immutable R2
+staging, progress, and the final generation CAS. Every retry retains the exact
+plan and request identities, leaves the immutable source archive unchanged,
+converges on one smaller target archive and one logical D1 publication, and
+removes the plaintext bridge. Progress response loss remains advisory; final
+publication response loss is recovered from the committed operation evidence
+without repeating provider I/O.
+
 A deterministic destructive-janitor matrix interrupts Move, GC, and quarantine
 cleanup immediately before and after task claim, final revalidation, provider
 delete, and D1 completion. Move and GC may repeat one idempotent provider delete

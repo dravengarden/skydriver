@@ -10,8 +10,13 @@ import (
 	"time"
 )
 
-// ErrCompactLeaseLost indicates that compaction I/O was cancelled after renewal failed.
-var ErrCompactLeaseLost = errors.New("carrack compact write lease was lost")
+var (
+	// ErrCompactLeaseLost indicates that compaction I/O was cancelled after renewal failed.
+	ErrCompactLeaseLost = errors.New("carrack compact write lease was lost")
+	// ErrCompactOperationFailed indicates that control-plane recovery invalidated
+	// an exact idempotent compaction before it could publish.
+	ErrCompactOperationFailed = errors.New("carrack compact operation previously failed")
+)
 
 // ControlledCompactor coordinates a plaintext bridge with one fenced generation CAS.
 type ControlledCompactor struct {
@@ -84,8 +89,21 @@ func (coordinator *ControlledCompactor) Compact(
 		return ControlledCompactResult{}, fmt.Errorf("create controlled compact: %w", err)
 	}
 
-	if operation.State == operationStateSucceeded {
+	switch operation.State {
+	case operationStateSucceeded:
 		return completedControlledCompact(operation, requested.PlaintextPath)
+	case operationStateFailed, operationStateCancelled:
+		return ControlledCompactResult{Operation: operation}, fmt.Errorf(
+			"%w: operation %s",
+			ErrCompactOperationFailed,
+			operation.ID,
+		)
+	case operationStatePlanned, operationStateRunning:
+	default:
+		return ControlledCompactResult{}, fmt.Errorf(
+			"%w: unsupported controlled compact state",
+			ErrControlPlaneResponse,
+		)
 	}
 
 	lease, err := coordinator.control.ClaimCompactOperation(ctx, operation, coordinator.leaseSeconds)

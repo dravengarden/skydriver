@@ -3023,6 +3023,11 @@ replayed_compact_publication=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" --data "$compact_publication" \
   "$base_url/api/v1/compactions/publish")
 [[ "$replayed_compact_publication" == "$published_compact" ]]
+changed_compact_fence_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.fencing_token += 1' <<<"$compact_publication")" \
+  "$base_url/api/v1/compactions/publish")
+[[ "$changed_compact_fence_status" == 409 ]]
 changed_compact_publication_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   -H "$authorization" -H "$json" \
   --data "$(jq '.expected_object_revision += 1' <<<"$compact_publication")" \
@@ -3032,8 +3037,14 @@ changed_compact_publication_status=$(curl --silent --output /dev/null --write-ou
 completed_compact=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" --data "$compact_request" \
   "$base_url/api/v1/compactions")
-jq -e --arg operation_id "$compact_id" '
+replayed_completed_compact=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$compact_request" \
+  "$base_url/api/v1/compactions")
+[[ "$replayed_completed_compact" == "$completed_compact" ]]
+jq -e --arg operation_id "$compact_id" --arg manifest_sha "$compact_target_manifest_sha" '
   .id == $operation_id and .state == "succeeded" and .phase == "succeeded"
+  and .published_manifest_sha256 == $manifest_sha
+  and .published_sidecar_storage_key == "compact/target-sidecar.json"
 ' <<<"$completed_compact" >/dev/null
 
 retired_source_restore_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
