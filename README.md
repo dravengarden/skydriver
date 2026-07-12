@@ -370,6 +370,9 @@ inventory preserves acknowledgement or tombstone state when identity is
 unchanged, resets review if identity changes, and resolves cleanup intent if a
 D1 location or recovery sidecar appears. Driver revision is part of that
 identity: changing the registered provider configuration restarts review.
+Reference writes are synchronous safety barriers: making a location non-deleted
+or a recovery sidecar non-missing resolves the finding, supersedes even an
+already claimed delete task, and invalidates its fence before provider I/O.
 
 Tombstoning atomically creates one provider-neutral delete task, but the task is
 not claimable until `delete_after`. After that deadline, a `janitor` or

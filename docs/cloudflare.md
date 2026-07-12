@@ -117,6 +117,12 @@ start a second `inventory_quarantine_seconds` grace. Both commands require an
 ETag, size, revision, incarnation, or lease identities. Their audit records and
 integrity findings remain in D1.
 
+A D1 write that makes a matching location non-deleted or recovery sidecar
+non-missing immediately resolves the quarantine finding, supersedes any pending,
+claimed, or failed delete task, and records the reference in the audit log. An
+older janitor fence then fails revalidation without provider I/O; this safeguard
+does not depend on waiting for another inventory pass.
+
 These review commands do not delete provider bytes. Tombstoning creates a task
 that remains ineligible until `delete_after`. Run the explicit local-filesystem
 janitor only after that deadline:

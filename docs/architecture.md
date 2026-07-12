@@ -687,8 +687,13 @@ Tombstoning starts a second full `inventory_quarantine_seconds` grace and
 records `delete_after` and one immutable delete task in the same atomic batch.
 Repeated inventory preserves acknowledged or tombstoned state only while driver
 revision and provider identity are unchanged. A changed identity restarts
-quarantine and supersedes the task; a newly indexed location or recovery sidecar
-resolves cleanup intent.
+quarantine and supersedes the task. A D1 insert or update that makes a location
+non-deleted or a recovery sidecar non-missing immediately resolves the matching
+quarantine ledger row and finding, supersedes any pending, claimed, or failed
+delete task, and records an audit event in the same transaction. A janitor fence
+claimed before that reference appeared can no longer revalidate, so this safety
+transition does not wait for the next provider inventory and performs no
+provider I/O.
 
 After the second grace, a `janitor` or `administrator` client claims the task
 under the current control-plane incarnation. The SDK performs provider `Stat`

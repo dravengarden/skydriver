@@ -1847,6 +1847,21 @@ inventory_page_request=$(jq -cn \
     cursor: "",
     next_cursor: "",
     objects: [{
+      storage_key: "copy/orphan-location-reference",
+      provider_version: "location-reference-v1",
+      etag: "location-reference-etag",
+      size_bytes: 18
+    }, {
+      storage_key: "copy/orphan-recovery-reference",
+      provider_version: "recovery-reference-v1",
+      etag: "recovery-reference-etag",
+      size_bytes: 29
+    }, {
+      storage_key: "copy/orphan-rotated",
+      provider_version: "rotated-v1",
+      etag: "rotated-etag",
+      size_bytes: 23
+    }, {
       storage_key: "copy/orphan-upload",
       provider_version: "orphan-v1",
       etag: "orphan-etag",
@@ -1862,7 +1877,7 @@ inventory_page=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" --data "$inventory_page_request" \
   "$base_url/api/v1/inventory-reconciliations/$inventory_id/pages")
 jq -e --arg operation_id "$inventory_id" '
-  .operation_id == $operation_id and .sequence == 1 and .object_count == 1 and
+  .operation_id == $operation_id and .sequence == 1 and .object_count == 4 and
   .next_cursor == "" and (.report_sha256 | length) == 64
 ' <<<"$inventory_page" >/dev/null
 replayed_inventory_page=$(curl --silent --show-error --fail-with-body \
@@ -1891,8 +1906,8 @@ inventory_completion=$(curl --silent --show-error --fail-with-body \
   "$base_url/api/v1/inventory-reconciliations/$inventory_id/complete")
 jq -e --arg operation_id "$inventory_id" --arg report_sha "$inventory_report_sha" '
   .operation_id == $operation_id and .state == "succeeded" and
-  .report_sha256 == $report_sha and .pages == 1 and .objects == 1 and
-  .known == 0 and .quarantined == 1 and .missing == 1
+  .report_sha256 == $report_sha and .pages == 1 and .objects == 4 and
+  .known == 0 and .quarantined == 4 and .missing == 1
 ' <<<"$inventory_completion" >/dev/null
 replayed_inventory_completion=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" --data "$inventory_completion_request" \
@@ -1906,7 +1921,7 @@ changed_inventory_completion_status=$(curl --silent --output /dev/null --write-o
 inventory_findings=$(curl --silent --show-error --fail-with-body \
   -H "$session" "$base_url/api/integrity/findings")
 jq -e '
-  .next_cursor == null and (.findings | length) == 2 and
+  .next_cursor == null and (.findings | length) == 5 and
   (.findings | any(
     .subject_kind == "provider_object" and .condition == "quarantined" and
     .state == "open" and .evidence.driver_id == "copy-driver" and
@@ -2141,10 +2156,71 @@ jq -e --arg operation_id "$tombstone_id" '
   .task.state == "claimed" and .task.attempt_count == 1
 ' <<<"$quarantine_delete_claim" >/dev/null
 
-quarantine_revalidate_request=$(jq -cn \
+stale_incarnation_revalidate_request=$(jq -cn \
   --arg task_id "$quarantine_delete_task_id" \
   --arg incarnation "$quarantine_delete_incarnation" \
   --argjson fence "$quarantine_delete_fence" '{
+    task_id: $task_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    lease_seconds: 60
+  }')
+recovered_incarnation=f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local \
+  --persist-to "$state_directory" \
+  --command "
+    UPDATE control_plane_state
+    SET incarnation = '$recovered_incarnation', mode = 'recovering', revision = revision + 1,
+        recovered_at = unixepoch(), updated_at = unixepoch()
+    WHERE singleton = 1;
+    UPDATE operation_components
+    SET state = 'failed', revision = revision + 1,
+        finished_at = unixepoch(), updated_at = unixepoch()
+    WHERE state IN ('pending', 'running', 'stalled', 'verifying');
+    UPDATE operation_attempts
+    SET state = 'superseded', finished_at = unixepoch()
+    WHERE state = 'running' AND incarnation != '$recovered_incarnation';
+    UPDATE leases
+    SET released_at = unixepoch(), updated_at = unixepoch()
+    WHERE released_at IS NULL AND incarnation != '$recovered_incarnation';
+    UPDATE gc_epochs
+    SET state = 'failed', updated_at = unixepoch()
+    WHERE state IN ('marking', 'grace', 'sweeping')
+      AND incarnation != '$recovered_incarnation';
+    UPDATE operations
+    SET state = CASE WHEN state = 'planned' THEN 'cancelled' ELSE 'failed' END,
+        phase = 'control_plane_recovered', error_code = 'control_plane_recovered',
+        error_message = 'operation invalidated by control-plane recovery',
+        revision = revision + 1, finished_at = unixepoch(), updated_at = unixepoch()
+    WHERE state IN ('planned', 'running', 'verifying', 'committing')
+      AND incarnation != '$recovered_incarnation';
+    UPDATE control_plane_state
+    SET mode = 'active', revision = revision + 1, updated_at = unixepoch()
+    WHERE singleton = 1 AND incarnation = '$recovered_incarnation';
+  " >/dev/null
+stale_incarnation_revalidate_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" --data "$stale_incarnation_revalidate_request" \
+  "$base_url/api/v1/quarantine-deletes/revalidate")
+[[ "$stale_incarnation_revalidate_status" == 409 ]]
+
+recovered_quarantine_delete_claim=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/quarantine-actions/$tombstone_id/deletes/claim")
+recovered_quarantine_delete_incarnation=$(jq -r .task.incarnation \
+  <<<"$recovered_quarantine_delete_claim")
+recovered_quarantine_delete_fence=$(jq -r .task.fencing_token \
+  <<<"$recovered_quarantine_delete_claim")
+jq -e --arg incarnation "$recovered_incarnation" \
+  --argjson previous_fence "$quarantine_delete_fence" '
+  .state == "claimed" and .task.incarnation == $incarnation and
+  .task.fencing_token == ($previous_fence + 1) and .task.attempt_count == 2
+' <<<"$recovered_quarantine_delete_claim" >/dev/null
+
+quarantine_revalidate_request=$(jq -cn \
+  --arg task_id "$quarantine_delete_task_id" \
+  --arg incarnation "$recovered_quarantine_delete_incarnation" \
+  --argjson fence "$recovered_quarantine_delete_fence" '{
     task_id: $task_id,
     incarnation: $incarnation,
     fencing_token: $fence,
@@ -2160,14 +2236,14 @@ revalidated_quarantine_delete=$(curl --silent --show-error --fail-with-body \
   "$base_url/api/v1/quarantine-deletes/revalidate")
 quarantine_revalidated_fence=$(jq -r .fencing_token <<<"$revalidated_quarantine_delete")
 jq -e --arg task_id "$quarantine_delete_task_id" \
-  --argjson previous_fence "$quarantine_delete_fence" '
+  --argjson previous_fence "$recovered_quarantine_delete_fence" '
   .task_id == $task_id and .state == "claimed" and
   .fencing_token == ($previous_fence + 1) and .expected_revision == 3
 ' <<<"$revalidated_quarantine_delete" >/dev/null
 
 quarantine_delete_completion_request=$(jq -cn \
   --arg task_id "$quarantine_delete_task_id" \
-  --arg incarnation "$quarantine_delete_incarnation" \
+  --arg incarnation "$recovered_quarantine_delete_incarnation" \
   --argjson fence "$quarantine_revalidated_fence" '{
     task_id: $task_id,
     incarnation: $incarnation,
@@ -2211,6 +2287,437 @@ jq -e '
   .findings[0].evidence.delete_outcome == "deleted" and
   .findings[0].required_action == "No cleanup action; the object is deleted, referenced, or superseded."
 ' <<<"$resolved_quarantine_finding" >/dev/null
+
+prepare_claimed_quarantine_delete() {
+  local storage_key=$1
+  local idempotency_suffix=$2
+  local acknowledge_operation acknowledge_id acknowledge_lease acknowledged_result
+  local tombstone_operation tombstone_lease tombstoned_result
+
+  "${wrangler[@]}" d1 execute CARRACK_INDEX \
+    --local \
+    --persist-to "$state_directory" \
+    --command "
+      UPDATE quarantined_provider_objects
+      SET quarantine_until = unixepoch() - 1
+      WHERE driver_id = 'copy-driver' AND storage_key = '$storage_key';
+    " >/dev/null
+
+  acknowledge_operation=$(curl --silent --show-error --fail-with-body \
+    -H "$authorization" -H "$json" \
+    --data "$(jq -cn --arg storage_key "$storage_key" \
+      --arg idempotency_suffix "$idempotency_suffix" '{
+        namespace_id: "202122232425262728292a2b2c2d2e2f",
+        action: "acknowledge",
+        driver_id: "copy-driver",
+        storage_key: $storage_key,
+        expected_revision: 2,
+        reason: "reviewed before testing reference-triggered revocation",
+        idempotency_key: ("worker-e2e-acknowledge-" + $idempotency_suffix)
+      }')" \
+    "$base_url/api/v1/quarantine-actions")
+  acknowledge_id=$(jq -r .id <<<"$acknowledge_operation")
+  acknowledge_lease=$(curl --silent --show-error --fail-with-body \
+    -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+    "$base_url/api/v1/operations/$acknowledge_id/claim")
+  acknowledged_result=$(curl --silent --show-error --fail-with-body \
+    -H "$authorization" -H "$json" \
+    --data "$(jq -cn \
+      --arg lease_id "$(jq -r .lease_id <<<"$acknowledge_lease")" \
+      --arg incarnation "$(jq -r .incarnation <<<"$acknowledge_lease")" \
+      --argjson fence "$(jq -r .fencing_token <<<"$acknowledge_lease")" '{
+        lease_id: $lease_id,
+        incarnation: $incarnation,
+        fencing_token: $fence
+      }')" \
+    "$base_url/api/v1/quarantine-actions/$acknowledge_id/complete")
+  jq -e '
+    .quarantine_state == "acknowledged" and .quarantine_revision == 3
+  ' <<<"$acknowledged_result" >/dev/null
+
+  tombstone_operation=$(curl --silent --show-error --fail-with-body \
+    -H "$authorization" -H "$json" \
+    --data "$(jq -cn --arg storage_key "$storage_key" \
+      --arg idempotency_suffix "$idempotency_suffix" '{
+        namespace_id: "202122232425262728292a2b2c2d2e2f",
+        action: "tombstone",
+        driver_id: "copy-driver",
+        storage_key: $storage_key,
+        expected_revision: 3,
+        reason: "tombstoned before testing reference-triggered revocation",
+        idempotency_key: ("worker-e2e-tombstone-" + $idempotency_suffix)
+      }')" \
+    "$base_url/api/v1/quarantine-actions")
+  prepared_quarantine_tombstone_id=$(jq -r .id <<<"$tombstone_operation")
+  tombstone_lease=$(curl --silent --show-error --fail-with-body \
+    -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+    "$base_url/api/v1/operations/$prepared_quarantine_tombstone_id/claim")
+  tombstoned_result=$(curl --silent --show-error --fail-with-body \
+    -H "$authorization" -H "$json" \
+    --data "$(jq -cn \
+      --arg lease_id "$(jq -r .lease_id <<<"$tombstone_lease")" \
+      --arg incarnation "$(jq -r .incarnation <<<"$tombstone_lease")" \
+      --argjson fence "$(jq -r .fencing_token <<<"$tombstone_lease")" '{
+        lease_id: $lease_id,
+        incarnation: $incarnation,
+        fencing_token: $fence
+      }')" \
+    "$base_url/api/v1/quarantine-actions/$prepared_quarantine_tombstone_id/complete")
+  jq -e '
+    .quarantine_state == "tombstoned" and .quarantine_revision == 4
+  ' <<<"$tombstoned_result" >/dev/null
+
+  "${wrangler[@]}" d1 execute CARRACK_INDEX \
+    --local \
+    --persist-to "$state_directory" \
+    --command "
+      DROP TRIGGER quarantine_delete_task_identity_is_immutable;
+      UPDATE quarantine_delete_tasks
+      SET delete_after = (
+        SELECT tombstoned_at FROM quarantined_provider_objects
+        WHERE driver_id = 'copy-driver' AND storage_key = '$storage_key'
+      )
+      WHERE operation_id = '$prepared_quarantine_tombstone_id';
+      UPDATE quarantined_provider_objects
+      SET delete_after = tombstoned_at
+      WHERE driver_id = 'copy-driver' AND storage_key = '$storage_key';
+      CREATE TRIGGER quarantine_delete_task_identity_is_immutable
+      BEFORE UPDATE OF operation_id, driver_id, driver_revision, storage_key,
+                       expected_revision, provider_version, etag, size_bytes, delete_after
+      ON quarantine_delete_tasks
+      BEGIN
+        SELECT RAISE(ABORT, 'quarantine delete task identity is immutable');
+      END;
+    " >/dev/null
+
+  prepared_quarantine_delete_claim=$(curl --silent --show-error --fail-with-body \
+    -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+    "$base_url/api/v1/quarantine-actions/$prepared_quarantine_tombstone_id/deletes/claim")
+  prepared_quarantine_delete_task_id=$(jq -r .task.task_id \
+    <<<"$prepared_quarantine_delete_claim")
+  prepared_quarantine_delete_incarnation=$(jq -r .task.incarnation \
+    <<<"$prepared_quarantine_delete_claim")
+  prepared_quarantine_delete_fence=$(jq -r .task.fencing_token \
+    <<<"$prepared_quarantine_delete_claim")
+  jq -e --arg storage_key "$storage_key" '
+    .state == "claimed" and .outcome == null and
+    .task.driver_id == "copy-driver" and .task.storage_key == $storage_key and
+    .task.expected_revision == 4 and .task.state == "claimed" and
+    .task.attempt_count == 1
+  ' <<<"$prepared_quarantine_delete_claim" >/dev/null
+}
+
+prepare_claimed_quarantine_delete \
+  copy/orphan-location-reference location-reference-v2
+location_reference_tombstone_id=$prepared_quarantine_tombstone_id
+location_reference_task_id=$prepared_quarantine_delete_task_id
+location_reference_incarnation=$prepared_quarantine_delete_incarnation
+location_reference_fence=$prepared_quarantine_delete_fence
+
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local \
+  --persist-to "$state_directory" \
+  --command "
+    INSERT INTO locations (
+      id, extent_id, driver_id, storage_key, storage_offset, storage_length,
+      ciphertext_sha256, ciphertext_bytes, state, created_at, updated_at
+    ) VALUES (
+      'quarantine-reference-location', 'restore-extent', 'copy-driver',
+      'copy/orphan-location-reference', 0, 18,
+      '2222222222222222222222222222222222222222222222222222222222222222',
+      18, 'staging', unixepoch(), unixepoch()
+    );
+    CREATE TABLE location_reference_assertion (
+      accepted INTEGER NOT NULL CHECK (accepted = 1)
+    );
+    INSERT INTO location_reference_assertion
+    SELECT EXISTS (
+      SELECT 1
+      FROM quarantined_provider_objects AS quarantine
+      JOIN quarantine_delete_tasks AS task
+        ON task.driver_id = quarantine.driver_id
+       AND task.storage_key = quarantine.storage_key
+      WHERE quarantine.driver_id = 'copy-driver'
+        AND quarantine.storage_key = 'copy/orphan-location-reference'
+        AND quarantine.state = 'resolved'
+        AND quarantine.revision = 5
+        AND task.id = '$location_reference_task_id'
+        AND task.state = 'superseded'
+        AND task.last_error_code = 'quarantine_became_referenced'
+        AND EXISTS (
+          SELECT 1 FROM audit_events AS audit
+          WHERE audit.event_kind = 'quarantine_reference_resolved'
+            AND audit.subject_id = json_array(
+              quarantine.driver_id, quarantine.storage_key
+            )
+            AND json_extract(audit.details_json, '$.reference_kind') = 'location'
+            AND json_extract(audit.details_json, '$.reference_id') =
+                'quarantine-reference-location'
+        )
+    );
+    DROP TABLE location_reference_assertion;
+  " >/dev/null
+
+location_reference_revalidate_request=$(jq -cn \
+  --arg task_id "$location_reference_task_id" \
+  --arg incarnation "$location_reference_incarnation" \
+  --argjson fence "$location_reference_fence" '{
+    task_id: $task_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    lease_seconds: 60
+  }')
+location_reference_revalidate_status=$(curl --silent --output /dev/null \
+  --write-out '%{http_code}' -H "$authorization" -H "$json" \
+  --data "$location_reference_revalidate_request" \
+  "$base_url/api/v1/quarantine-deletes/revalidate")
+[[ "$location_reference_revalidate_status" == 409 ]]
+location_reference_terminal_claim=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/quarantine-actions/$location_reference_tombstone_id/deletes/claim")
+jq -e '.state == "superseded" and .task == null and .outcome == null' \
+  <<<"$location_reference_terminal_claim" >/dev/null
+
+resolved_location_reference=$(curl --silent --show-error --fail-with-body --get \
+  -H "$session" --data-urlencode "state=resolved" \
+  --data-urlencode "condition=quarantined" "$base_url/api/integrity/findings")
+jq -e '
+  .findings | any(
+    .storage_key == "copy/orphan-location-reference" and
+    .location_state == "resolved" and
+    .evidence.resolution == "provider_object_became_referenced"
+  )
+' <<<"$resolved_location_reference" >/dev/null
+
+prepare_claimed_quarantine_delete \
+  copy/orphan-recovery-reference recovery-reference-v2
+recovery_reference_tombstone_id=$prepared_quarantine_tombstone_id
+recovery_reference_task_id=$prepared_quarantine_delete_task_id
+recovery_reference_incarnation=$prepared_quarantine_delete_incarnation
+recovery_reference_fence=$prepared_quarantine_delete_fence
+
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local \
+  --persist-to "$state_directory" \
+  --command "
+    INSERT INTO objects (id, namespace_id, logical_name, created_at, updated_at)
+    VALUES (
+      'quarantine-reference-object', '202122232425262728292a2b2c2d2e2f',
+      'quarantine/reference-object', unixepoch(), unixepoch()
+    );
+    INSERT INTO object_versions (
+      id, object_id, generation, manifest_sha256, plaintext_bytes,
+      chunk_count, pack_count, state, created_at
+    ) VALUES (
+      'quarantine-reference-version', 'quarantine-reference-object', 1,
+      '9999999999999999999999999999999999999999999999999999999999999999',
+      0, 0, 0, 'staging', unixepoch()
+    );
+    INSERT INTO recovery_manifests (
+      manifest_sha256, version_id, schema_version, r2_storage_key,
+      sidecar_driver_id, sidecar_storage_key, state, ciphertext_bytes,
+      created_at, updated_at
+    ) VALUES (
+      '9999999999999999999999999999999999999999999999999999999999999999',
+      'quarantine-reference-version', 'carrack.recovery.v1',
+      'quarantine/reference-manifest.json', 'copy-driver',
+      'copy/orphan-recovery-reference', 'staging', 29, unixepoch(), unixepoch()
+    );
+    CREATE TABLE recovery_reference_assertion (
+      accepted INTEGER NOT NULL CHECK (accepted = 1)
+    );
+    INSERT INTO recovery_reference_assertion
+    SELECT EXISTS (
+      SELECT 1
+      FROM quarantined_provider_objects AS quarantine
+      JOIN quarantine_delete_tasks AS task
+        ON task.driver_id = quarantine.driver_id
+       AND task.storage_key = quarantine.storage_key
+      WHERE quarantine.driver_id = 'copy-driver'
+        AND quarantine.storage_key = 'copy/orphan-recovery-reference'
+        AND quarantine.state = 'resolved'
+        AND quarantine.revision = 5
+        AND task.id = '$recovery_reference_task_id'
+        AND task.state = 'superseded'
+        AND task.last_error_code = 'quarantine_became_referenced'
+        AND EXISTS (
+          SELECT 1 FROM audit_events AS audit
+          WHERE audit.event_kind = 'quarantine_reference_resolved'
+            AND audit.subject_id = json_array(
+              quarantine.driver_id, quarantine.storage_key
+            )
+            AND json_extract(audit.details_json, '$.reference_kind') =
+                'recovery_manifest'
+            AND json_extract(audit.details_json, '$.reference_id') =
+                '9999999999999999999999999999999999999999999999999999999999999999'
+        )
+    );
+    DROP TABLE recovery_reference_assertion;
+  " >/dev/null
+
+recovery_reference_revalidate_request=$(jq -cn \
+  --arg task_id "$recovery_reference_task_id" \
+  --arg incarnation "$recovery_reference_incarnation" \
+  --argjson fence "$recovery_reference_fence" '{
+    task_id: $task_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    lease_seconds: 60
+  }')
+recovery_reference_revalidate_status=$(curl --silent --output /dev/null \
+  --write-out '%{http_code}' -H "$authorization" -H "$json" \
+  --data "$recovery_reference_revalidate_request" \
+  "$base_url/api/v1/quarantine-deletes/revalidate")
+[[ "$recovery_reference_revalidate_status" == 409 ]]
+recovery_reference_terminal_claim=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/quarantine-actions/$recovery_reference_tombstone_id/deletes/claim")
+jq -e '.state == "superseded" and .task == null and .outcome == null' \
+  <<<"$recovery_reference_terminal_claim" >/dev/null
+
+resolved_recovery_reference=$(curl --silent --show-error --fail-with-body --get \
+  -H "$session" --data-urlencode "state=resolved" \
+  --data-urlencode "condition=quarantined" "$base_url/api/integrity/findings")
+jq -e '
+  .findings | any(
+    .storage_key == "copy/orphan-recovery-reference" and
+    .location_state == "resolved" and
+    .evidence.resolution == "provider_object_became_referenced"
+  )
+' <<<"$resolved_recovery_reference" >/dev/null
+
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local \
+  --persist-to "$state_directory" \
+  --command "
+    UPDATE quarantined_provider_objects
+    SET quarantine_until = unixepoch() - 1
+    WHERE driver_id = 'copy-driver' AND storage_key = 'copy/orphan-rotated';
+  " >/dev/null
+
+rotated_acknowledge_request=$(jq -cn '{
+  namespace_id: "202122232425262728292a2b2c2d2e2f",
+  action: "acknowledge",
+  driver_id: "copy-driver",
+  storage_key: "copy/orphan-rotated",
+  expected_revision: 2,
+  reason: "reviewed before testing driver revision rotation",
+  idempotency_key: "worker-e2e-acknowledge-rotated-v2"
+}')
+rotated_acknowledge_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$rotated_acknowledge_request" \
+  "$base_url/api/v1/quarantine-actions")
+rotated_acknowledge_id=$(jq -r .id <<<"$rotated_acknowledge_operation")
+rotated_acknowledge_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/operations/$rotated_acknowledge_id/claim")
+rotated_acknowledged=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn \
+    --arg lease_id "$(jq -r .lease_id <<<"$rotated_acknowledge_lease")" \
+    --arg incarnation "$(jq -r .incarnation <<<"$rotated_acknowledge_lease")" \
+    --argjson fence "$(jq -r .fencing_token <<<"$rotated_acknowledge_lease")" '{
+      lease_id: $lease_id,
+      incarnation: $incarnation,
+      fencing_token: $fence
+    }')" \
+  "$base_url/api/v1/quarantine-actions/$rotated_acknowledge_id/complete")
+jq -e '.quarantine_state == "acknowledged" and .quarantine_revision == 3' \
+  <<<"$rotated_acknowledged" >/dev/null
+
+rotated_tombstone_request=$(jq -cn '{
+  namespace_id: "202122232425262728292a2b2c2d2e2f",
+  action: "tombstone",
+  driver_id: "copy-driver",
+  storage_key: "copy/orphan-rotated",
+  expected_revision: 3,
+  reason: "tombstoned before testing driver revision rotation",
+  idempotency_key: "worker-e2e-tombstone-rotated-v3"
+}')
+rotated_tombstone_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$rotated_tombstone_request" \
+  "$base_url/api/v1/quarantine-actions")
+rotated_tombstone_id=$(jq -r .id <<<"$rotated_tombstone_operation")
+rotated_tombstone_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/operations/$rotated_tombstone_id/claim")
+rotated_tombstoned=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn \
+    --arg lease_id "$(jq -r .lease_id <<<"$rotated_tombstone_lease")" \
+    --arg incarnation "$(jq -r .incarnation <<<"$rotated_tombstone_lease")" \
+    --argjson fence "$(jq -r .fencing_token <<<"$rotated_tombstone_lease")" '{
+      lease_id: $lease_id,
+      incarnation: $incarnation,
+      fencing_token: $fence
+    }')" \
+  "$base_url/api/v1/quarantine-actions/$rotated_tombstone_id/complete")
+jq -e '.quarantine_state == "tombstoned" and .quarantine_revision == 4' \
+  <<<"$rotated_tombstoned" >/dev/null
+
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local \
+  --persist-to "$state_directory" \
+  --command "
+    UPDATE driver_instances
+    SET revision = revision + 1, updated_at = unixepoch()
+    WHERE id = 'copy-driver';
+  " >/dev/null
+
+rotated_inventory_request=$(jq \
+  '.idempotency_key = "worker-e2e-inventory-after-driver-rotation"' \
+  <<<"$inventory_request")
+rotated_inventory_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$rotated_inventory_request" \
+  "$base_url/api/v1/inventory-reconciliations")
+rotated_inventory_id=$(jq -r .id <<<"$rotated_inventory_operation")
+jq -e '.driver_revision == 2' <<<"$rotated_inventory_operation" >/dev/null
+rotated_inventory_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/operations/$rotated_inventory_id/claim")
+rotated_inventory_page_request=$(jq \
+  --arg lease_id "$(jq -r .lease_id <<<"$rotated_inventory_lease")" \
+  --arg incarnation "$(jq -r .incarnation <<<"$rotated_inventory_lease")" \
+  --argjson fence "$(jq -r .fencing_token <<<"$rotated_inventory_lease")" '
+    .lease_id = $lease_id |
+    .incarnation = $incarnation |
+    .fencing_token = $fence |
+    .objects = [.objects[2]]
+  ' <<<"$inventory_page_request")
+rotated_inventory_page=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$rotated_inventory_page_request" \
+  "$base_url/api/v1/inventory-reconciliations/$rotated_inventory_id/pages")
+rotated_inventory_report_sha=$(printf '%s' \
+  "$(jq -r .report_sha256 <<<"$rotated_inventory_page")" | sha256sum | cut -d' ' -f1)
+rotated_inventory_completion_request=$(jq -cn \
+  --arg lease_id "$(jq -r .lease_id <<<"$rotated_inventory_lease")" \
+  --arg incarnation "$(jq -r .incarnation <<<"$rotated_inventory_lease")" \
+  --arg report_sha "$rotated_inventory_report_sha" \
+  --argjson fence "$(jq -r .fencing_token <<<"$rotated_inventory_lease")" '{
+    lease_id: $lease_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    last_sequence: 1,
+    report_sha256: $report_sha
+  }')
+curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$rotated_inventory_completion_request" \
+  "$base_url/api/v1/inventory-reconciliations/$rotated_inventory_id/complete" >/dev/null
+
+superseded_quarantine_claim=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/quarantine-actions/$rotated_tombstone_id/deletes/claim")
+jq -e '.state == "superseded" and .task == null and .outcome == null' \
+  <<<"$superseded_quarantine_claim" >/dev/null
+rotated_quarantine_finding=$(curl --silent --show-error --fail-with-body --get \
+  -H "$session" --data-urlencode "state=open" \
+  --data-urlencode "condition=quarantined" "$base_url/api/integrity/findings")
+jq -e '
+  (.findings | length) == 1 and .findings[0].location_state == "quarantined" and
+  .findings[0].quarantine_revision == 5 and
+  .findings[0].evidence.driver_revision == 2 and
+  .findings[0].acknowledgement_reason == null and .findings[0].delete_after == null
+' <<<"$rotated_quarantine_finding" >/dev/null
 
 single_pack_compact_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   -H "$authorization" -H "$json" \
