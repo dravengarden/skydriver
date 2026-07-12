@@ -2,7 +2,7 @@ use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use worker::{Env, Request, Response, Result, wasm_bindgen::JsValue};
+use worker::{Bucket, Conditional, Env, Request, Response, Result, wasm_bindgen::JsValue};
 
 use crate::{clients::AuthenticatedClient, manifests};
 
@@ -23,6 +23,11 @@ struct StageResponse {
     bytes: u64,
 }
 
+struct StoredRecovery {
+    version: String,
+    bytes: u64,
+}
+
 pub(crate) async fn stage(
     request: &mut Request,
     env: &Env,
@@ -35,7 +40,7 @@ pub(crate) async fn stage(
     };
 
     if !authorized(env, &client.id, &validated.namespace_id).await? {
-        return Response::error("namespace import permission required", 403);
+        return Response::error("namespace transfer permission required", 403);
     }
 
     let recovery_digest = Sha256::digest(&encoded);
@@ -48,20 +53,7 @@ pub(crate) async fn stage(
         recovery_sha256,
     );
     let bucket = env.bucket("CARRACK_MANIFESTS")?;
-    let stored = bucket
-        .put(&r2_key, encoded.clone())
-        .sha256(recovery_digest.to_vec())
-        .execute()
-        .await?;
-    let Some(stored) = stored else {
-        return Response::error("R2 rejected recovery manifest precondition", 409);
-    };
-
-    let expected_bytes = u64::try_from(encoded.len())
-        .map_err(|error| worker::Error::RustError(error.to_string()))?;
-    if stored.size() != expected_bytes {
-        return Response::error("R2 recovery manifest size mismatch", 502);
-    }
+    let stored = store_immutable(&bucket, &r2_key, &encoded, &recovery_digest).await?;
 
     Response::from_json(&StageResponse {
         manifest_sha256: validated.manifest_sha256,
@@ -70,8 +62,66 @@ pub(crate) async fn stage(
         object_id: validated.object_id,
         generation: validated.generation,
         r2_key,
-        r2_version: stored.version(),
-        bytes: expected_bytes,
+        r2_version: stored.version,
+        bytes: stored.bytes,
+    })
+}
+
+async fn store_immutable(
+    bucket: &Bucket,
+    key: &str,
+    encoded: &[u8],
+    digest: &[u8],
+) -> Result<StoredRecovery> {
+    let expected_bytes = u64::try_from(encoded.len())
+        .map_err(|error| worker::Error::RustError(error.to_string()))?;
+    let created = bucket
+        .put(key, encoded.to_vec())
+        .only_if(Conditional {
+            etag_does_not_match: Some("*".to_owned()),
+            ..Conditional::default()
+        })
+        .sha256(digest.to_vec())
+        .execute()
+        .await?;
+    if let Some(object) = created {
+        if object.size() != expected_bytes {
+            return Err(worker::Error::RustError(
+                "R2 recovery manifest size mismatch".to_owned(),
+            ));
+        }
+
+        return Ok(StoredRecovery {
+            version: object.version().clone(),
+            bytes: object.size(),
+        });
+    }
+
+    let Some(existing) = bucket.get(key).execute().await? else {
+        return Err(worker::Error::RustError(
+            "R2 recovery manifest disappeared after a conditional write".to_owned(),
+        ));
+    };
+    let existing_bytes = existing.size();
+    let existing_version = existing.version().clone();
+    let Some(body) = existing.body() else {
+        return Err(worker::Error::RustError(
+            "existing R2 recovery manifest body is missing".to_owned(),
+        ));
+    };
+    let existing_body = body.bytes().await?;
+    if existing_bytes != expected_bytes
+        || existing_body != encoded
+        || Sha256::digest(&existing_body).as_slice() != digest
+    {
+        return Err(worker::Error::RustError(
+            "content-addressed R2 recovery manifest collision".to_owned(),
+        ));
+    }
+
+    Ok(StoredRecovery {
+        version: existing_version,
+        bytes: existing_bytes,
     })
 }
 
@@ -84,7 +134,7 @@ async fn authorized(env: &Env, client_id: &str, namespace_id: &str) -> Result<bo
                         WHERE singleton = 1 AND mode = 'active') \
                  AND EXISTS(SELECT 1 FROM client_namespace_permissions \
                             WHERE client_id = ?1 AND namespace_id = ?2 \
-                              AND role IN ('importer', 'administrator')) AS allowed",
+                              AND role IN ('importer', 'relay', 'administrator')) AS allowed",
         )
         .bind(&[
             JsValue::from_str(client_id),

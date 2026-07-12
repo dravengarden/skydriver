@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -178,10 +179,10 @@ func TestControlClientStagesExactRecoveryManifest(t *testing.T) {
 
 		response.Header().Set("Content-Type", "application/json")
 		_, _ = response.Write([]byte(`{"manifest_sha256":"` + parsed.ManifestSHA256 +
-			`","recovery_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",` +
+			`","recovery_sha256":"` + testDigest(body) + `",` +
 			`"namespace_id":"` + parsed.Manifest.NamespaceID + `","object_id":"` +
 			parsed.Manifest.ObjectID + `","generation":1,"r2_key":"manifests/test.json",` +
-			`"r2_version":"v1","bytes":1024}`))
+			`"r2_version":"v1","bytes":` + strconv.Itoa(len(body)) + `}`))
 	}))
 	defer server.Close()
 

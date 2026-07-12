@@ -159,7 +159,7 @@ func (client *ControlClient) ClaimRestoreOperation(
 	if response.OperationID != operation.ID || response.Incarnation != operation.Incarnation ||
 		response.VersionID != operation.VersionID || response.ManifestSHA256 != operation.ManifestSHA256 ||
 		response.LeaseID == "" || response.OwnerClientID == "" || response.FencingToken == 0 ||
-		response.OperationRevision == 0 || response.OperationState != "running" {
+		response.OperationRevision == 0 || response.OperationState != operationStateRunning {
 		return RestoreReadLease{}, fmt.Errorf("%w: invalid restore lease identity", ErrControlPlaneResponse)
 	}
 
@@ -270,51 +270,13 @@ func (client *ControlClient) ReportRestoreProgress(
 		return ProgressSnapshot{}, fmt.Errorf("%w: invalid restore progress", ErrInvalidControlPlane)
 	}
 
-	body, err := json.Marshal(progressBody{
-		LeaseID: lease.LeaseID, Incarnation: lease.Incarnation,
-		FencingToken: lease.FencingToken, Attempt: lease.FencingToken,
-		Sequence: sample.Sequence, WireBytesRead: sample.WireBytesRead,
-		WireBytesWritten:    sample.WireBytesWritten,
-		UsefulBytesVerified: sample.UsefulBytesVerified,
-		ActiveNanoseconds:   sample.ActiveNanoseconds, RetryCount: sample.RetryCount,
-		ThrottleCount: sample.ThrottleCount,
-	})
-	if err != nil {
-		return ProgressSnapshot{}, fmt.Errorf("marshal restore progress: %w", err)
-	}
-
-	var response ProgressSnapshot
-
-	path := "/api/v1/operations/" + operation.ID + "/progress"
-	if err := client.authenticatedPost(ctx, path, body, &response); err != nil {
-		return ProgressSnapshot{}, err
-	}
-
-	if response.ComponentID != operation.ID+"/restore" ||
-		!validRestoreProgressResponse(response, lease, sample) {
-		return ProgressSnapshot{}, fmt.Errorf("%w: invalid restore progress identity", ErrControlPlaneResponse)
-	}
-
-	return response, nil
-}
-
-func validRestoreProgressResponse(
-	response ProgressSnapshot,
-	lease RestoreReadLease,
-	sample ProgressSample,
-) bool {
-	if response.Attempt != lease.FencingToken {
-		return false
-	}
-
-	switch response.Disposition {
-	case "current":
-		return response.Sequence == sample.Sequence && progressMatches(response, sample)
-	case "superseded":
-		return response.Sequence > sample.Sequence
-	default:
-		return false
-	}
+	return client.reportOperationProgress(ctx, progressIdentity{
+		operationID: operation.ID,
+		componentID: operation.ID + "/restore",
+		leaseID:     lease.LeaseID,
+		incarnation: lease.Incarnation,
+		fence:       lease.FencingToken,
+	}, sample)
 }
 
 // CompleteRestoreOperation records verified plaintext and releases the read lease.

@@ -3,7 +3,9 @@ package sdk
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -165,10 +167,16 @@ func (client *ControlClient) StageRecovery(
 		return StagedRecovery{}, err
 	}
 
+	recoveryDigest := sha256.Sum256(encoded)
+
 	if response.ManifestSHA256 != recovery.ManifestSHA256 ||
 		response.NamespaceID != recovery.Manifest.NamespaceID ||
 		response.ObjectID != recovery.Manifest.ObjectID ||
-		response.Generation != recovery.Manifest.Generation {
+		response.Generation != recovery.Manifest.Generation ||
+		response.RecoverySHA256 != hex.EncodeToString(recoveryDigest[:]) ||
+		!validControlString(response.R2Key, 4_096) ||
+		!validControlString(response.R2Version, 1_024) ||
+		response.Bytes != uint64(len(encoded)) {
 		return StagedRecovery{}, fmt.Errorf(
 			"%w: staged recovery identity changed",
 			ErrControlPlaneResponse,

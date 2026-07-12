@@ -229,12 +229,14 @@ fn lease_statements(
                     state.incarnation, ?3, ?4, ?4 \
              FROM operations AS operation \
              JOIN control_plane_state AS state ON state.singleton = 1 \
-             WHERE operation.id = ?5 AND operation.kind = 'import' \
+             WHERE operation.id = ?5 AND operation.kind IN ('import', 'copy', 'move') \
                AND operation.state IN ('planned', 'running') AND state.mode = 'active' \
                AND operation.incarnation = state.incarnation \
                AND EXISTS(SELECT 1 FROM client_namespace_permissions \
                           WHERE client_id = ?2 AND namespace_id = operation.namespace_id \
-                            AND role IN ('importer', 'administrator')) \
+                            AND (role = 'administrator' \
+                                 OR (operation.kind = 'import' AND role = 'importer') \
+                                 OR (operation.kind IN ('copy', 'move') AND role = 'relay'))) \
              ON CONFLICT(resource_kind, resource_id, lease_kind) DO UPDATE SET \
                  id = excluded.id, owner_client_id = excluded.owner_client_id, \
                  operation_id = excluded.operation_id, \

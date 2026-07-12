@@ -451,7 +451,7 @@ fn location_statements(
     location: &manifests::Location,
     now: &str,
 ) -> Result<Vec<D1PreparedStatement>> {
-    let location_id = location_id(location);
+    let location_id = manifests::location_id(location);
     let insert = database
         .prepare(format!(
             "INSERT OR IGNORE INTO locations (\
@@ -555,18 +555,20 @@ async fn finalize(
         database
             .prepare(format!(
                 "INSERT OR IGNORE INTO recovery_manifests (\
-                     manifest_sha256, version_id, schema_version, r2_storage_key, \
-                     sidecar_driver_id, sidecar_storage_key, state, ciphertext_bytes, \
-                     verified_at, created_at, updated_at\
-                 ) SELECT ?4, ?4, 'carrack.recovery.v1', ?5, ?6, ?7, 'durable', \
-                          ?8, ?3, ?3, ?3 WHERE {guard}"
+                     manifest_sha256, version_id, schema_version, recovery_sha256, \
+                     r2_storage_key, r2_version, sidecar_driver_id, sidecar_storage_key, \
+                     state, ciphertext_bytes, verified_at, created_at, updated_at\
+                 ) SELECT ?4, ?4, 'carrack.recovery.v1', ?5, ?6, ?7, ?8, ?9, \
+                          'durable', ?10, ?3, ?3, ?3 WHERE {guard}"
             ))
             .bind(&[
                 JsValue::from_str(&requested.operation_id),
                 JsValue::from_str(&client.id),
                 JsValue::from_str(&now),
                 JsValue::from_str(&requested.manifest_sha256),
+                JsValue::from_str(&requested.recovery_sha256),
                 JsValue::from_str(&requested.r2_key),
+                JsValue::from_str(&requested.r2_version),
                 JsValue::from_str(&requested.sidecar_driver_id),
                 JsValue::from_str(&requested.sidecar_storage_key),
                 integer(recovery_bytes)?,
@@ -686,19 +688,6 @@ fn valid_string(value: &str, maximum_bytes: usize) -> bool {
     !value.is_empty() && value.trim() == value && value.len() <= maximum_bytes
 }
 
-fn location_id(location: &manifests::Location) -> String {
-    let identity = format!(
-        "carrack/location/v1\0{}\0{}\0{}\0{}\0{}",
-        location.extent_sha256,
-        location.driver_id,
-        location.storage_key,
-        location.offset,
-        location.length,
-    );
-
-    lowercase_hex(&Sha256::digest(identity.as_bytes()))
-}
-
 fn lowercase_hex(bytes: &[u8]) -> String {
     let mut encoded = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -731,7 +720,7 @@ fn current_unix_seconds() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{location_id, valid_hex};
+    use super::valid_hex;
     use crate::manifests::Location;
 
     #[test]
@@ -744,11 +733,11 @@ mod tests {
             offset: 0,
             length: 64,
         };
-        let first = location_id(&location);
+        let first = crate::manifests::location_id(&location);
         let mut moved = location;
         moved.offset = 1;
 
         assert!(valid_hex(&first, 64));
-        assert_ne!(first, location_id(&moved));
+        assert_ne!(first, crate::manifests::location_id(&moved));
     }
 }

@@ -397,3 +397,118 @@ JOIN publication_intents AS intent ON intent.operation_id = operation.id
 JOIN objects AS object ON object.id = intent.object_id
 WHERE operation.id = 'operation-1';
 PRAGMA foreign_key_check;"
+
+execute "
+UPDATE recovery_manifests
+SET recovery_sha256 = '8888888888888888888888888888888888888888888888888888888888888888',
+    r2_version = 'base-r2-version', updated_at = 4
+WHERE manifest_sha256 = '3333333333333333333333333333333333333333333333333333333333333333';"
+
+expect_failure \
+  "UPDATE recovery_manifests
+   SET recovery_sha256 = '9999999999999999999999999999999999999999999999999999999999999999',
+       r2_storage_key = 'manifests/99/recovery.json', r2_version = 'copy-r2-version',
+       sidecar_storage_key = 'manifests/99/sidecar.json', revision = revision + 1
+   WHERE manifest_sha256 = '3333333333333333333333333333333333333333333333333333333333333333';" \
+  "recovery head replacement without a copy fence"
+
+execute "
+INSERT INTO operations (
+  id, namespace_id, kind, state, phase, idempotency_key, requested_by,
+  incarnation, useful_bytes_total, created_at, updated_at
+)
+SELECT
+  'copy-operation-1', '202122232425262728292a2b2c2d2e2f', 'copy', 'planned', 'planned',
+  'copy-idempotency-1', 'client-1', incarnation, 24, 4, 4
+FROM control_plane_state WHERE singleton = 1;
+INSERT INTO copy_intents (
+  operation_id, version_id, manifest_sha256, source_recovery_sha256,
+  source_recovery_revision, source_r2_storage_key, source_r2_version,
+  source_recovery_bytes, destination_driver_id, created_at
+) VALUES (
+  'copy-operation-1', 'version-2',
+  '3333333333333333333333333333333333333333333333333333333333333333',
+  '8888888888888888888888888888888888888888888888888888888888888888',
+  1, 'manifests/33/recovery.json', 'base-r2-version', 512, 'driver-1', 4
+);
+INSERT INTO leases (
+  id, resource_kind, resource_id, lease_kind, owner_client_id,
+  operation_id, fencing_token, incarnation, expires_at, created_at, updated_at
+)
+SELECT
+  'copy-lease-1', 'operation', 'copy-operation-1', 'write', 'client-1',
+  'copy-operation-1', 1, incarnation, unixepoch() + 60, unixepoch(), unixepoch()
+FROM control_plane_state WHERE singleton = 1;
+UPDATE operations
+SET state = 'running', phase = 'transferring', revision = revision + 1, updated_at = 4
+WHERE id = 'copy-operation-1';
+INSERT INTO copy_publication_intents (
+  operation_id, client_id, manifest_sha256, recovery_sha256,
+  r2_storage_key, r2_version, sidecar_driver_id, sidecar_storage_key,
+  expected_location_count, incarnation, lease_id, fencing_token,
+  state, created_at, updated_at
+)
+SELECT
+  'copy-operation-1', 'client-1',
+  '3333333333333333333333333333333333333333333333333333333333333333',
+  '9999999999999999999999999999999999999999999999999999999999999999',
+  'manifests/99/recovery.json', 'copy-r2-version',
+  'driver-1', 'manifests/99/sidecar.json', 0,
+  incarnation, 'copy-lease-1', 1, 'staging', 4, 4
+FROM control_plane_state WHERE singleton = 1;
+UPDATE operations
+SET state = 'verifying', phase = 'verifying', revision = revision + 1, updated_at = 4
+WHERE id = 'copy-operation-1';
+UPDATE operations
+SET state = 'committing', phase = 'committing', revision = revision + 1, updated_at = 4
+WHERE id = 'copy-operation-1';"
+
+expect_failure \
+  "UPDATE copy_publication_intents
+   SET state = 'committed', committed_at = 4, updated_at = 4
+   WHERE operation_id = 'copy-operation-1';" \
+  "copy commit before its recovery head is visible"
+
+execute "UPDATE leases SET fencing_token = 2, updated_at = 5 WHERE id = 'copy-lease-1';"
+
+expect_failure \
+  "UPDATE recovery_manifests
+   SET recovery_sha256 = '9999999999999999999999999999999999999999999999999999999999999999',
+       r2_storage_key = 'manifests/99/recovery.json', r2_version = 'copy-r2-version',
+       sidecar_storage_key = 'manifests/99/sidecar.json', revision = revision + 1
+   WHERE manifest_sha256 = '3333333333333333333333333333333333333333333333333333333333333333';" \
+  "recovery head replacement through a superseded copy fence"
+
+execute "
+UPDATE copy_publication_intents SET fencing_token = 2, updated_at = 5
+WHERE operation_id = 'copy-operation-1' AND state = 'staging';
+UPDATE recovery_manifests
+SET recovery_sha256 = '9999999999999999999999999999999999999999999999999999999999999999',
+    r2_storage_key = 'manifests/99/recovery.json', r2_version = 'copy-r2-version',
+    sidecar_storage_key = 'manifests/99/sidecar.json', revision = revision + 1, updated_at = 5
+WHERE manifest_sha256 = '3333333333333333333333333333333333333333333333333333333333333333';
+UPDATE copy_publication_intents SET state = 'committed', committed_at = 5, updated_at = 5
+WHERE operation_id = 'copy-operation-1';
+UPDATE operations
+SET state = 'succeeded', phase = 'succeeded', revision = revision + 1,
+    finished_at = 5, updated_at = 5
+WHERE id = 'copy-operation-1';
+UPDATE leases SET released_at = unixepoch(), updated_at = unixepoch()
+WHERE id = 'copy-lease-1';
+INSERT INTO protocol_assertions
+SELECT recovery.recovery_sha256 =
+         '9999999999999999999999999999999999999999999999999999999999999999'
+       AND recovery.revision = 2
+       AND publication.state = 'committed'
+       AND operation.state = 'succeeded'
+FROM recovery_manifests AS recovery
+JOIN copy_intents AS copy ON copy.manifest_sha256 = recovery.manifest_sha256
+JOIN copy_publication_intents AS publication ON publication.operation_id = copy.operation_id
+JOIN operations AS operation ON operation.id = copy.operation_id
+WHERE copy.operation_id = 'copy-operation-1';
+PRAGMA foreign_key_check;"
+
+expect_failure \
+  "UPDATE recovery_manifests SET revision = revision + 1
+   WHERE manifest_sha256 = '3333333333333333333333333333333333333333333333333333333333333333';" \
+  "published recovery revision change without a new copy operation"

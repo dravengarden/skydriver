@@ -223,9 +223,22 @@ recovery document under
 `<prefix>/manifests/<manifest-prefix>/<manifest-sha256>/<recovery-sha256>.json`.
 Including the recovery digest allows multiple immutable location-set snapshots
 for one logical manifest without sidecar-key collisions. The replicator does
-not mutate D1 itself. A later fenced copy publication endpoint consumes this
-verified result, so a client crash can leave only content-addressed staging
-objects and an unreachable sidecar.
+not mutate D1 itself.
+
+The copy control protocol pins the current recovery digest and monotonically
+increasing recovery revision when it creates an operation. A controlled SDK
+holds a renewable write lease while it fetches that exact recovery document,
+runs the replicator, and stages the updated document in the immutable R2
+archive. The Worker rejects any update that changes the content manifest,
+removes or rewrites an existing location, adds a location outside the requested
+destination, or leaves an extent without destination coverage. New D1 location
+rows remain `staging` until one final batch advances the recovery head with a
+revision CAS, makes every verified destination location available, succeeds
+the operation, and releases the lease. A stale or concurrent loser cannot
+advance the head; an exact committed publication remains replayable after the
+lease is released. A client crash can therefore leave only content-addressed
+provider objects, an immutable sidecar, R2 metadata, and unreachable D1 staging
+rows.
 
 ### Move
 
@@ -240,6 +253,40 @@ After `destination_published`, failure leaves an extra replica. Source deletion
 requires the same operation id, current fencing token, verified destination,
 and satisfied replica policy. Deletion is idempotent. A missing source after a
 verified destination is success; a missing destination is never success.
+
+Move creation pins the current recovery digest and revision, plus the exact D1
+revision of every available location on the requested source driver. That
+source must cover every ciphertext extent. It also snapshots the namespace's
+minimum-replica and move-grace policy, so a retry cannot silently change the
+meaning of an already-created operation. The V1 policy JSON fields are:
+
+```json
+{
+  "replica_policy_json": {"minimum_available_replicas": 1},
+  "retention_policy_json": {"move_grace_seconds": 86400}
+}
+```
+
+An omitted `minimum_available_replicas` defaults to `1`; an omitted
+`move_grace_seconds` defaults to 24 hours. The accepted bounds are 1 through 64
+replicas and 60 seconds through 365 days of grace.
+
+Destination publication reuses the copy protocol's immutable sidecar, R2
+staging, verified-location set, and recovery-head revision CAS. Unlike copy,
+the move operation remains `running` under the same renewable write lease. The
+SDK then constructs another immutable recovery document by removing exactly
+the pinned source-driver locations. One final fenced D1 batch advances the
+recovery head again, changes those source locations from `available` to
+`tombstoned`, records each post-tombstone revision and grace deadline, and
+releases the client lease. Exact destination and tombstone requests remain
+replayable after a lost response.
+
+This first safe Move boundary ends at `source_delete_pending`. It makes the
+source unreachable to new restores but does not delete provider bytes. A later
+janitor must wait for grace, recheck current read leases and replica policy,
+perform idempotent provider deletion, and only then advance through `deleting`
+to `succeeded`. Until that janitor is implemented and passes the production
+verification gate, physical move deletion remains disabled.
 
 ### Restore
 

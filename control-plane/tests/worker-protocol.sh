@@ -16,6 +16,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+report_error() {
+  if [[ -f "$server_log" ]]; then
+    cat "$server_log" >&2
+  fi
+}
+trap report_error ERR
+
 wrangler=(
   pnpm exec wrangler
   --config "$repository_root/control-plane/wrangler.jsonc"
@@ -79,6 +86,36 @@ restore_recovery=$(jq -cn \
     }]
   }')
 restore_recovery_bytes=${#restore_recovery}
+restore_recovery_sha=$(printf '%s' "$restore_recovery" | sha256sum | cut -d' ' -f1)
+copy_recovery=$(jq -cn \
+  --argjson recovery "$restore_recovery" \
+  '$recovery | .locations += [{
+    extent_sha256: "2222222222222222222222222222222222222222222222222222222222222222",
+    driver_id: "copy-driver",
+    storage_key: "copy/payload",
+    provider_version: "copy-v1",
+    offset: 0,
+    length: 18
+  }]')
+copy_without_source=$(jq -cn \
+  --argjson recovery "$copy_recovery" \
+  '$recovery | .locations = [.locations[-1]]')
+move_recovery=$(jq -cn \
+  --argjson recovery "$copy_recovery" \
+  '$recovery | .locations += [{
+    extent_sha256: "2222222222222222222222222222222222222222222222222222222222222222",
+    driver_id: "move-driver",
+    storage_key: "move/payload",
+    provider_version: "move-v1",
+    offset: 0,
+    length: 18
+  }]')
+move_final_recovery=$(jq -cn \
+  --argjson recovery "$move_recovery" \
+  '$recovery | .locations = [.locations[] | select(.driver_id != "restore-driver")]')
+move_underreplicated_recovery=$(jq -cn \
+  --argjson recovery "$move_recovery" \
+  '$recovery | .locations = [.locations[] | select(.driver_id == "move-driver")]')
 printf '%s' "$restore_recovery" >"$state_directory/restore-manifest.json"
 
 "${wrangler[@]}" d1 execute CARRACK_INDEX \
@@ -90,7 +127,9 @@ printf '%s' "$restore_recovery" >"$state_directory/restore-manifest.json"
       replica_policy_json, retention_policy_json, created_at, updated_at
     ) VALUES (
       '202122232425262728292a2b2c2d2e2f', 'worker-e2e',
-      'carrack-aes128gcm-hkdfsha256-v1', 1, 1, '{}', '{}', unixepoch(), unixepoch()
+      'carrack-aes128gcm-hkdfsha256-v1', 1, 1,
+      '{\"minimum_available_replicas\":2}', '{\"move_grace_seconds\":120}',
+      unixepoch(), unixepoch()
     );
     INSERT INTO clients (
       id, name, sdk_version, capabilities_json, labels_json, state, created_at, updated_at
@@ -114,12 +153,23 @@ printf '%s' "$restore_recovery" >"$state_directory/restore-manifest.json"
       '303132333435363738393a3b3c3d3e3f',
       '202122232425262728292a2b2c2d2e2f', 'restorer', unixepoch()
     );
+    INSERT INTO client_namespace_permissions (client_id, namespace_id, role, created_at)
+    VALUES (
+      '303132333435363738393a3b3c3d3e3f',
+      '202122232425262728292a2b2c2d2e2f', 'relay', unixepoch()
+    );
     INSERT INTO credential_envelopes (
       id, envelope_algorithm, key_version, nonce, ciphertext, created_at, rotated_at
     ) VALUES ('restore-credential', 'test/v1', '1', X'01', X'02', unixepoch(), unixepoch());
     INSERT INTO driver_instances (
       id, kind, config_json, credential_ref, created_at, updated_at
     ) VALUES ('restore-driver', 'test/v1', '{}', 'restore-credential', unixepoch(), unixepoch());
+    INSERT INTO driver_instances (
+      id, kind, config_json, created_at, updated_at
+    ) VALUES ('copy-driver', 'test/v1', '{}', unixepoch(), unixepoch());
+    INSERT INTO driver_instances (
+      id, kind, config_json, created_at, updated_at
+    ) VALUES ('move-driver', 'test/v1', '{}', unixepoch(), unixepoch());
     INSERT INTO objects (id, namespace_id, logical_name, created_at, updated_at)
     VALUES (
       'restore-object', '202122232425262728292a2b2c2d2e2f', 'restore/empty',
@@ -163,6 +213,8 @@ printf '%s' "$restore_recovery" >"$state_directory/restore-manifest.json"
       18, 'staging', unixepoch(), unixepoch()
     );
     UPDATE locations SET state = 'verified', verified_at = unixepoch(), updated_at = unixepoch()
+    WHERE id = 'restore-location';
+    UPDATE locations SET state = 'available', revision = revision + 1, updated_at = unixepoch()
     WHERE id = 'restore-location';
     INSERT INTO recovery_manifests (
       manifest_sha256, version_id, schema_version, r2_storage_key,
@@ -356,6 +408,384 @@ failed_result=$(curl --silent --show-error --fail-with-body \
 jq -e --arg restore_id "$failed_restore_id" '
   .operation_id == $restore_id and .state == "failed"
 ' <<<"$failed_result" >/dev/null
+
+copy_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn --arg manifest_sha "$restore_manifest_sha" '{
+    namespace_id: "202122232425262728292a2b2c2d2e2f",
+    manifest_sha256: $manifest_sha,
+    destination_driver_id: "copy-driver",
+    idempotency_key: "worker-e2e-copy-1"
+  }')" \
+  "$base_url/api/v1/copies")
+copy_id=$(jq -r .id <<<"$copy_operation")
+copy_incarnation=$(jq -r .incarnation <<<"$copy_operation")
+jq -e \
+  --arg manifest_sha "$restore_manifest_sha" \
+  --arg recovery_sha "$restore_recovery_sha" '
+  .kind == "copy" and .state == "planned" and
+  .manifest_sha256 == $manifest_sha and
+  .source_recovery_sha256 == $recovery_sha and
+  .source_recovery_revision == 1 and
+  .destination_driver_id == "copy-driver"
+' <<<"$copy_operation" >/dev/null
+
+copy_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/operations/$copy_id/claim")
+copy_lease_id=$(jq -r .lease_id <<<"$copy_lease")
+copy_fence=$(jq -r .fencing_token <<<"$copy_lease")
+
+copy_source=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn \
+    --arg lease_id "$copy_lease_id" \
+    --arg incarnation "$copy_incarnation" \
+    --argjson fence "$copy_fence" \
+    '{lease_id: $lease_id, incarnation: $incarnation, fencing_token: $fence}')" \
+  "$base_url/api/v1/copies/$copy_id/manifest")
+[[ "$copy_source" == "$restore_recovery" ]]
+
+losing_copy_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn --arg manifest_sha "$restore_manifest_sha" '{
+    namespace_id: "202122232425262728292a2b2c2d2e2f",
+    manifest_sha256: $manifest_sha,
+    destination_driver_id: "copy-driver",
+    idempotency_key: "worker-e2e-copy-loser"
+  }')" \
+  "$base_url/api/v1/copies")
+losing_copy_id=$(jq -r .id <<<"$losing_copy_operation")
+losing_copy_incarnation=$(jq -r .incarnation <<<"$losing_copy_operation")
+losing_copy_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/operations/$losing_copy_id/claim")
+
+invalid_staged_copy=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data-binary "$copy_without_source" \
+  "$base_url/api/v1/recovery-manifests/stage")
+invalid_copy_publication=$(jq -cn \
+  --arg operation_id "$copy_id" \
+  --arg lease_id "$copy_lease_id" \
+  --arg incarnation "$copy_incarnation" \
+  --arg manifest_sha "$restore_manifest_sha" \
+  --arg recovery_sha "$(jq -r .recovery_sha256 <<<"$invalid_staged_copy")" \
+  --arg r2_key "$(jq -r .r2_key <<<"$invalid_staged_copy")" \
+  --arg r2_version "$(jq -r .r2_version <<<"$invalid_staged_copy")" \
+  --argjson fence "$copy_fence" '
+  {
+    operation_id: $operation_id,
+    lease_id: $lease_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    manifest_sha256: $manifest_sha,
+    recovery_sha256: $recovery_sha,
+    r2_key: $r2_key,
+    r2_version: $r2_version,
+    sidecar_driver_id: "copy-driver",
+    sidecar_storage_key: "copy/invalid-recovery.json"
+  }')
+removed_source_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$invalid_copy_publication" \
+  "$base_url/api/v1/copies/publish")
+[[ "$removed_source_status" == 400 ]]
+
+staged_copy=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data-binary "$copy_recovery" \
+  "$base_url/api/v1/recovery-manifests/stage")
+copy_recovery_sha=$(jq -r .recovery_sha256 <<<"$staged_copy")
+restaged_copy=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data-binary "$copy_recovery" \
+  "$base_url/api/v1/recovery-manifests/stage")
+jq -e \
+  --arg recovery_sha "$copy_recovery_sha" \
+  --arg r2_version "$(jq -r .r2_version <<<"$staged_copy")" '
+  .recovery_sha256 == $recovery_sha and .r2_version == $r2_version
+' <<<"$restaged_copy" >/dev/null
+
+copy_publication=$(jq -cn \
+  --arg operation_id "$copy_id" \
+  --arg lease_id "$copy_lease_id" \
+  --arg incarnation "$copy_incarnation" \
+  --arg manifest_sha "$restore_manifest_sha" \
+  --arg recovery_sha "$copy_recovery_sha" \
+  --arg r2_key "$(jq -r .r2_key <<<"$staged_copy")" \
+  --arg r2_version "$(jq -r .r2_version <<<"$staged_copy")" \
+  --argjson fence "$copy_fence" '
+  {
+    operation_id: $operation_id,
+    lease_id: $lease_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    manifest_sha256: $manifest_sha,
+    recovery_sha256: $recovery_sha,
+    r2_key: $r2_key,
+    r2_version: $r2_version,
+    sidecar_driver_id: "copy-driver",
+    sidecar_storage_key: "copy/recovery.json"
+  }')
+
+stale_copy_publication=$(jq ".fencing_token = $((copy_fence + 1))" <<<"$copy_publication")
+stale_copy_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$stale_copy_publication" \
+  "$base_url/api/v1/copies/publish")
+[[ "$stale_copy_status" == 409 ]]
+
+published_copy=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$copy_publication" \
+  "$base_url/api/v1/copies/publish")
+jq -e \
+  --arg copy_id "$copy_id" \
+  --arg manifest_sha "$restore_manifest_sha" \
+  --arg recovery_sha "$copy_recovery_sha" '
+  .operation_id == $copy_id and .manifest_sha256 == $manifest_sha and
+  .recovery_sha256 == $recovery_sha and .destination_driver_id == "copy-driver" and
+  .locations_added == 1 and .recovery_revision == 2 and .state == "published"
+' <<<"$published_copy" >/dev/null
+
+losing_publication=$(jq \
+  --arg operation_id "$losing_copy_id" \
+  --arg lease_id "$(jq -r .lease_id <<<"$losing_copy_lease")" \
+  --arg incarnation "$losing_copy_incarnation" \
+  --argjson fence "$(jq -r .fencing_token <<<"$losing_copy_lease")" '
+  .operation_id = $operation_id |
+  .lease_id = $lease_id |
+  .incarnation = $incarnation |
+  .fencing_token = $fence
+' <<<"$copy_publication")
+losing_copy_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$losing_publication" \
+  "$base_url/api/v1/copies/publish")
+[[ "$losing_copy_status" == 409 ]]
+
+replayed_copy=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$copy_publication" \
+  "$base_url/api/v1/copies/publish")
+[[ "$replayed_copy" == "$published_copy" ]]
+
+copied_restore=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn --arg manifest_sha "$restore_manifest_sha" '{
+    namespace_id: "202122232425262728292a2b2c2d2e2f",
+    manifest_sha256: $manifest_sha,
+    idempotency_key: "worker-e2e-restored-copy"
+  }')" \
+  "$base_url/api/v1/restores")
+copied_restore_id=$(jq -r .id <<<"$copied_restore")
+copied_restore_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/restores/$copied_restore_id/claim")
+copied_recovery=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn \
+    --arg lease_id "$(jq -r .lease_id <<<"$copied_restore_lease")" \
+    --arg incarnation "$(jq -r .incarnation <<<"$copied_restore_lease")" \
+    --argjson fence "$(jq -r .fencing_token <<<"$copied_restore_lease")" \
+    '{lease_id: $lease_id, incarnation: $incarnation, fencing_token: $fence}')" \
+  "$base_url/api/v1/restores/$copied_restore_id/manifest")
+[[ "$copied_recovery" == "$copy_recovery" ]]
+
+move_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn --arg manifest_sha "$restore_manifest_sha" '{
+    namespace_id: "202122232425262728292a2b2c2d2e2f",
+    manifest_sha256: $manifest_sha,
+    source_driver_id: "restore-driver",
+    destination_driver_id: "move-driver",
+    idempotency_key: "worker-e2e-move-1"
+  }')" \
+  "$base_url/api/v1/moves")
+move_id=$(jq -r .id <<<"$move_operation")
+move_incarnation=$(jq -r .incarnation <<<"$move_operation")
+jq -e \
+  --arg manifest_sha "$restore_manifest_sha" \
+  --arg recovery_sha "$copy_recovery_sha" '
+  .kind == "move" and .state == "planned" and .move_state == "copying" and
+  .manifest_sha256 == $manifest_sha and .source_recovery_sha256 == $recovery_sha and
+  .source_recovery_revision == 2 and .source_driver_id == "restore-driver" and
+  .destination_driver_id == "move-driver" and .source_location_count == 1 and
+  .minimum_available_replicas == 2 and .grace_seconds == 120
+' <<<"$move_operation" >/dev/null
+
+move_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/operations/$move_id/claim")
+move_lease_id=$(jq -r .lease_id <<<"$move_lease")
+move_fence=$(jq -r .fencing_token <<<"$move_lease")
+
+move_source=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn \
+    --arg lease_id "$move_lease_id" \
+    --arg incarnation "$move_incarnation" \
+    --argjson fence "$move_fence" \
+    '{lease_id: $lease_id, incarnation: $incarnation, fencing_token: $fence}')" \
+  "$base_url/api/v1/moves/$move_id/manifest")
+[[ "$move_source" == "$copy_recovery" ]]
+
+staged_move=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data-binary "$move_recovery" \
+  "$base_url/api/v1/recovery-manifests/stage")
+move_recovery_sha=$(jq -r .recovery_sha256 <<<"$staged_move")
+move_publication=$(jq -cn \
+  --arg operation_id "$move_id" \
+  --arg lease_id "$move_lease_id" \
+  --arg incarnation "$move_incarnation" \
+  --arg manifest_sha "$restore_manifest_sha" \
+  --arg recovery_sha "$move_recovery_sha" \
+  --arg r2_key "$(jq -r .r2_key <<<"$staged_move")" \
+  --arg r2_version "$(jq -r .r2_version <<<"$staged_move")" \
+  --argjson fence "$move_fence" '
+  {
+    operation_id: $operation_id,
+    lease_id: $lease_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    manifest_sha256: $manifest_sha,
+    recovery_sha256: $recovery_sha,
+    r2_key: $r2_key,
+    r2_version: $r2_version,
+    sidecar_driver_id: "move-driver",
+    sidecar_storage_key: "move/recovery-with-source.json"
+  }')
+
+published_move=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$move_publication" \
+  "$base_url/api/v1/moves/publish-destination")
+jq -e \
+  --arg move_id "$move_id" \
+  --arg recovery_sha "$move_recovery_sha" '
+  .operation_id == $move_id and .recovery_sha256 == $recovery_sha and
+  .destination_driver_id == "move-driver" and .locations_added == 1 and
+  .recovery_revision == 3 and .state == "destination_published"
+' <<<"$published_move" >/dev/null
+
+published_move_restore=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn --arg manifest_sha "$restore_manifest_sha" '{
+    namespace_id: "202122232425262728292a2b2c2d2e2f",
+    manifest_sha256: $manifest_sha,
+    idempotency_key: "worker-e2e-restored-move-destination"
+  }')" \
+  "$base_url/api/v1/restores")
+published_move_restore_id=$(jq -r .id <<<"$published_move_restore")
+published_move_restore_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/restores/$published_move_restore_id/claim")
+published_move_recovery=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn \
+    --arg lease_id "$(jq -r .lease_id <<<"$published_move_restore_lease")" \
+    --arg incarnation "$(jq -r .incarnation <<<"$published_move_restore_lease")" \
+    --argjson fence "$(jq -r .fencing_token <<<"$published_move_restore_lease")" \
+    '{lease_id: $lease_id, incarnation: $incarnation, fencing_token: $fence}')" \
+  "$base_url/api/v1/restores/$published_move_restore_id/manifest")
+[[ "$published_move_recovery" == "$move_recovery" ]]
+
+staged_move_final=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data-binary "$move_final_recovery" \
+  "$base_url/api/v1/recovery-manifests/stage")
+move_final_sha=$(jq -r .recovery_sha256 <<<"$staged_move_final")
+move_tombstone=$(jq -cn \
+  --arg operation_id "$move_id" \
+  --arg lease_id "$move_lease_id" \
+  --arg incarnation "$move_incarnation" \
+  --arg manifest_sha "$restore_manifest_sha" \
+  --arg recovery_sha "$move_final_sha" \
+  --arg r2_key "$(jq -r .r2_key <<<"$staged_move_final")" \
+  --arg r2_version "$(jq -r .r2_version <<<"$staged_move_final")" \
+  --argjson fence "$move_fence" '
+  {
+    operation_id: $operation_id,
+    lease_id: $lease_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    manifest_sha256: $manifest_sha,
+    recovery_sha256: $recovery_sha,
+    r2_key: $r2_key,
+    r2_version: $r2_version,
+    sidecar_driver_id: "move-driver",
+    sidecar_storage_key: "move/recovery-final.json"
+  }')
+staged_move_underreplicated=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data-binary "$move_underreplicated_recovery" \
+  "$base_url/api/v1/recovery-manifests/stage")
+underreplicated_move_tombstone=$(jq \
+  --arg recovery_sha "$(jq -r .recovery_sha256 <<<"$staged_move_underreplicated")" \
+  --arg r2_key "$(jq -r .r2_key <<<"$staged_move_underreplicated")" \
+  --arg r2_version "$(jq -r .r2_version <<<"$staged_move_underreplicated")" '
+  .recovery_sha256 = $recovery_sha | .r2_key = $r2_key | .r2_version = $r2_version
+' <<<"$move_tombstone")
+underreplicated_move_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$underreplicated_move_tombstone" \
+  "$base_url/api/v1/moves/tombstone-source")
+[[ "$underreplicated_move_status" == 400 ]]
+
+stale_move_tombstone=$(jq ".fencing_token = $((move_fence + 1))" <<<"$move_tombstone")
+stale_move_tombstone_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$stale_move_tombstone" \
+  "$base_url/api/v1/moves/tombstone-source")
+[[ "$stale_move_tombstone_status" == 409 ]]
+
+tombstoned_move=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$move_tombstone" \
+  "$base_url/api/v1/moves/tombstone-source")
+jq -e \
+  --arg move_id "$move_id" \
+  --arg recovery_sha "$move_final_sha" '
+  .operation_id == $move_id and .recovery_sha256 == $recovery_sha and
+  .source_driver_id == "restore-driver" and .source_locations_tombstoned == 1 and
+  .recovery_revision == 4 and .grace_until > 0 and .state == "source_delete_pending"
+' <<<"$tombstoned_move" >/dev/null
+
+replayed_move_tombstone=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$move_tombstone" \
+  "$base_url/api/v1/moves/tombstone-source")
+[[ "$replayed_move_tombstone" == "$tombstoned_move" ]]
+
+final_move_restore=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn --arg manifest_sha "$restore_manifest_sha" '{
+    namespace_id: "202122232425262728292a2b2c2d2e2f",
+    manifest_sha256: $manifest_sha,
+    idempotency_key: "worker-e2e-restored-move-final"
+  }')" \
+  "$base_url/api/v1/restores")
+final_move_restore_id=$(jq -r .id <<<"$final_move_restore")
+final_move_restore_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/restores/$final_move_restore_id/claim")
+final_move_recovery=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn \
+    --arg lease_id "$(jq -r .lease_id <<<"$final_move_restore_lease")" \
+    --arg incarnation "$(jq -r .incarnation <<<"$final_move_restore_lease")" \
+    --argjson fence "$(jq -r .fencing_token <<<"$final_move_restore_lease")" \
+    '{lease_id: $lease_id, incarnation: $incarnation, fencing_token: $fence}')" \
+  "$base_url/api/v1/restores/$final_move_restore_id/manifest")
+[[ "$final_move_recovery" == "$move_final_recovery" ]]
 
 operation=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" \

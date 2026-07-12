@@ -1,6 +1,7 @@
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 
 use crate::{clients::AuthenticatedClient, manifests};
@@ -55,7 +56,9 @@ struct FailRequest {
 #[derive(Deserialize)]
 struct ManifestArchiveRow {
     manifest_sha256: String,
+    recovery_sha256: Option<String>,
     r2_storage_key: String,
+    r2_version: Option<String>,
     ciphertext_bytes: u64,
 }
 
@@ -529,7 +532,8 @@ pub(crate) async fn fetch_manifest(
     let database = env.d1("CARRACK_INDEX")?;
     let archived = database
         .prepare(
-            "SELECT intent.manifest_sha256, recovery.r2_storage_key, recovery.ciphertext_bytes \
+            "SELECT intent.manifest_sha256, recovery.recovery_sha256, \
+                    recovery.r2_storage_key, recovery.r2_version, recovery.ciphertext_bytes \
              FROM restore_intents AS intent \
              JOIN operations AS operation ON operation.id = intent.operation_id \
              JOIN recovery_manifests AS recovery \
@@ -563,6 +567,13 @@ pub(crate) async fn fetch_manifest(
     let Some(object) = bucket.get(&archived.r2_storage_key).execute().await? else {
         return Response::error("durable recovery manifest is missing", 503);
     };
+    if archived
+        .r2_version
+        .as_ref()
+        .is_some_and(|version| version.as_str() != object.version().as_str())
+    {
+        return Response::error("durable recovery manifest version changed", 503);
+    }
     if object.size() != archived.ciphertext_bytes {
         return Response::error("durable recovery manifest size changed", 503);
     }
@@ -570,6 +581,13 @@ pub(crate) async fn fetch_manifest(
         return Response::error("durable recovery manifest body is missing", 503);
     };
     let encoded = body.bytes().await?;
+    if archived
+        .recovery_sha256
+        .as_ref()
+        .is_some_and(|expected| expected != &lowercase_hex(&Sha256::digest(&encoded)))
+    {
+        return Response::error("durable recovery manifest hash changed", 503);
+    }
     let Ok(validated) = manifests::validate(&encoded) else {
         return Response::error("durable recovery manifest is corrupt", 503);
     };
@@ -849,6 +867,15 @@ fn random_hex() -> Result<String> {
     }
 
     Ok(encoded)
+}
+
+fn lowercase_hex(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+
+    encoded
 }
 
 fn valid_hex(value: &str, length: usize) -> bool {

@@ -1,6 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Write as _,
+};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 const MAXIMUM_RECOVERY_BYTES: usize = 16 << 20;
 const FRAME_TAG_BYTES: u64 = 16;
@@ -14,7 +18,7 @@ pub(crate) struct RecoveryManifest {
     pub(crate) locations: Vec<Location>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ContentManifest {
     pub(crate) schema_version: String,
@@ -28,7 +32,7 @@ pub(crate) struct ContentManifest {
     pub(crate) packs: Vec<Pack>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Layout {
     #[serde(rename = "physical_block_bytes")]
@@ -39,7 +43,7 @@ pub(crate) struct Layout {
     pub(crate) logical_pack: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Crypto {
     pub(crate) suite: String,
@@ -47,7 +51,7 @@ pub(crate) struct Crypto {
     pub(crate) key_epoch: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Pack {
     pub(crate) ordinal: u64,
@@ -60,7 +64,7 @@ pub(crate) struct Pack {
     pub(crate) extents: Vec<Extent>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Extent {
     pub(crate) ordinal: u64,
@@ -88,6 +92,25 @@ pub(crate) struct ValidatedRecovery {
     pub(crate) object_id: String,
     pub(crate) generation: u64,
     pub(crate) recovery: RecoveryManifest,
+}
+
+pub(crate) fn location_id(location: &Location) -> String {
+    let identity = format!(
+        "carrack/location/v1\0{}\0{}\0{}\0{}\0{}",
+        location.extent_sha256,
+        location.driver_id,
+        location.storage_key,
+        location.offset,
+        location.length,
+    );
+    let digest = Sha256::digest(identity.as_bytes());
+    let mut encoded = String::with_capacity(digest.len() * 2);
+
+    for byte in digest {
+        write!(encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+
+    encoded
 }
 
 pub(crate) fn validate(encoded: &[u8]) -> Result<ValidatedRecovery, String> {

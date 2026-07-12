@@ -131,9 +131,22 @@ content-addressed destination objects, and independently reads every object
 back before returning a new location. Only after all payload groups verify does
 it write an immutable recovery sidecar addressed by both the logical manifest
 and complete recovery-document SHA-256. Replaying the same copy converges on
-the same objects and does not duplicate locations. This SDK stage never
-publishes control-plane metadata and never deletes a source; fenced copy
-publication and the later move saga remain separate operation steps.
+the same objects and does not duplicate locations. The controlled copy SDK pins
+the current recovery revision, renews a write lease during provider I/O, and
+cancels in-flight reads if renewal fails. The Worker accepts only an updated
+recovery document that preserves the exact content manifest, retains every
+source location, and covers every extent on the requested destination. It then
+publishes the new locations and recovery head in one fenced revision CAS.
+Concurrent losers remain unreachable staging, and an exact request can be
+replayed after lease release. Copy never deletes a source; the later move saga
+remains a separate operation. The controlled move SDK pins every available
+location on one source driver, publishes and verifies a complete destination
+replica first, then publishes a second recovery revision that removes exactly
+those pinned sources. The same live write fence protects both revisions. D1
+changes the removed locations to `tombstoned` and records a policy-derived
+grace deadline, while the operation remains `source_delete_pending` for an
+explicit janitor. Provider deletion is intentionally not performed by the
+move client.
 
 Carrack prefers native drivers where Go already has a mature protocol or SDK:
 S3-compatible storage, R2, public HTTP, and local filesystems do not pass

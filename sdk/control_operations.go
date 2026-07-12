@@ -11,6 +11,9 @@ import (
 const (
 	minimumOperationLeaseSeconds = 15
 	maximumOperationLeaseSeconds = 300
+	operationKindCopy            = "copy"
+	operationKindMove            = "move"
+	operationStateRunning        = "running"
 )
 
 // CreateImportOperationRequest identifies one idempotent import attempt.
@@ -184,7 +187,7 @@ func (client *ControlClient) ClaimImportOperation(
 
 	if response.OperationID != operation.ID || response.Incarnation != operation.Incarnation ||
 		response.LeaseID == "" || response.OwnerClientID == "" || response.FencingToken == 0 ||
-		response.OperationRevision == 0 || response.OperationState != "running" {
+		response.OperationRevision == 0 || response.OperationState != operationStateRunning {
 		return OperationLease{}, fmt.Errorf("%w: invalid operation lease identity", ErrControlPlaneResponse)
 	}
 
@@ -203,11 +206,33 @@ func (client *ControlClient) ReportProgress(
 		return ProgressSnapshot{}, err
 	}
 
+	return client.reportOperationProgress(ctx, progressIdentity{
+		operationID: operation.ID,
+		componentID: operation.ID + "/transfer",
+		leaseID:     lease.LeaseID,
+		incarnation: lease.Incarnation,
+		fence:       lease.FencingToken,
+	}, sample)
+}
+
+type progressIdentity struct {
+	operationID string
+	componentID string
+	leaseID     string
+	incarnation string
+	fence       uint64
+}
+
+func (client *ControlClient) reportOperationProgress(
+	ctx context.Context,
+	identity progressIdentity,
+	sample ProgressSample,
+) (ProgressSnapshot, error) {
 	body, err := json.Marshal(progressBody{
-		LeaseID:             lease.LeaseID,
-		Incarnation:         lease.Incarnation,
-		FencingToken:        lease.FencingToken,
-		Attempt:             lease.FencingToken,
+		LeaseID:             identity.leaseID,
+		Incarnation:         identity.incarnation,
+		FencingToken:        identity.fence,
+		Attempt:             identity.fence,
 		Sequence:            sample.Sequence,
 		WireBytesRead:       sample.WireBytesRead,
 		WireBytesWritten:    sample.WireBytesWritten,
@@ -222,12 +247,13 @@ func (client *ControlClient) ReportProgress(
 
 	var response ProgressSnapshot
 
-	path := "/api/v1/operations/" + operation.ID + "/progress"
+	path := "/api/v1/operations/" + identity.operationID + "/progress"
 	if err := client.authenticatedPost(ctx, path, body, &response); err != nil {
 		return ProgressSnapshot{}, err
 	}
 
-	if !validProgressResponse(response, lease, sample) {
+	if response.ComponentID != identity.componentID ||
+		!validProgressResponse(response, identity.fence, sample) {
 		return ProgressSnapshot{}, fmt.Errorf("%w: invalid operation progress identity", ErrControlPlaneResponse)
 	}
 
@@ -327,10 +353,10 @@ func validateProgressRequest(
 
 func validProgressResponse(
 	response ProgressSnapshot,
-	lease OperationLease,
+	fencingToken uint64,
 	sample ProgressSample,
 ) bool {
-	if response.ComponentID == "" || response.Attempt != lease.FencingToken {
+	if response.ComponentID == "" || response.Attempt != fencingToken {
 		return false
 	}
 

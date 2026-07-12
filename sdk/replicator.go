@@ -71,6 +71,13 @@ type ReplicationResult struct {
 	ReplicaRetryCount uint64
 }
 
+// RecoverySidecar is a verified provider copy of one recovery manifest.
+type RecoverySidecar struct {
+	Recovery manifest.RecoveryManifest
+	Key      string
+	Object   provider.Object
+}
+
 // NewReplicator validates source readers, a readable destination, and explicit bounds.
 func NewReplicator(
 	readers map[string]provider.Reader,
@@ -168,6 +175,41 @@ func (replicator *Replicator) Replicate(
 		VerifiedExtents: statistics.extents, CiphertextBytes: statistics.ciphertextBytes,
 		ReplicaRetryCount: statistics.replicaRetries,
 	}, nil
+}
+
+// WriteRecoverySidecar writes and reads back a content-addressed recovery
+// manifest without copying payload bytes or publishing control-plane metadata.
+func (replicator *Replicator) WriteRecoverySidecar(
+	ctx context.Context,
+	prefix string,
+	recovery manifest.RecoveryManifest,
+) (RecoverySidecar, error) {
+	if replicator == nil || replicator.destination == nil {
+		return RecoverySidecar{}, fmt.Errorf("%w: replicator is not initialized", ErrInvalidReplication)
+	}
+
+	if !validDestinationPrefix(prefix) {
+		return RecoverySidecar{}, fmt.Errorf("%w: invalid recovery destination prefix", ErrInvalidReplication)
+	}
+
+	if err := recovery.Validate(); err != nil {
+		return RecoverySidecar{}, fmt.Errorf("%w: invalid recovery sidecar: %w", ErrInvalidReplication, err)
+	}
+
+	key, object, err := writeRecoverySidecar(
+		ctx,
+		replicator.destination,
+		prefix,
+		recovery,
+		replicator.maximumObjectBytes,
+		ErrInvalidReplication,
+		ErrReplicationIntegrity,
+	)
+	if err != nil {
+		return RecoverySidecar{}, fmt.Errorf("write recovery sidecar: %w", err)
+	}
+
+	return RecoverySidecar{Recovery: recovery, Key: key, Object: object}, nil
 }
 
 type replicationExtent struct {
