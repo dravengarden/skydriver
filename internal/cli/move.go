@@ -51,12 +51,12 @@ func newMoveSweepCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
 		},
 	}
 	command.Flags().StringVar(&flags.controlURL, controlURLFlag, "", "Carrack control-plane URL")
-	command.Flags().StringVar(&flags.localDriverID, "local-driver-id", "", "local filesystem source driver ID")
-	command.Flags().StringVar(&flags.localRoot, "local-root", "", "local filesystem archive root")
+	command.Flags().StringVar(&flags.localDriverID, localDriverIDFlag, "", "local filesystem source driver ID")
+	command.Flags().StringVar(&flags.localRoot, localRootFlag, "", "local filesystem archive root")
 	command.Flags().Uint64Var(&flags.leaseSeconds, "lease-seconds", 60, "delete task lease duration")
 	command.Flags().StringVar(&flags.outputFormat, "format", "table", "output format: table, json, or yaml")
 
-	for _, name := range []string{controlURLFlag, "local-driver-id", "local-root"} {
+	for _, name := range []string{controlURLFlag, localDriverIDFlag, localRootFlag} {
 		if err := command.MarkFlagRequired(name); err != nil {
 			panic(err)
 		}

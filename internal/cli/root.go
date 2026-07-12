@@ -33,6 +33,8 @@ const (
 	destinationPrefixFlag        = "destination-prefix"
 	stagingDirectoryFlag         = "staging-directory"
 	runCommandName               = "run"
+	localDriverIDFlag            = "local-driver-id"
+	localRootFlag                = "local-root"
 )
 
 var (

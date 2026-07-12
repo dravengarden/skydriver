@@ -264,6 +264,26 @@ and unavailable drivers or inconclusive provider failures. A single pass does
 not declare permanent data loss; reconciliation and repair remain separate
 control-plane operations.
 
+An administrator can run the same local scrub as a fenced control-plane
+operation. The command renews its lease during provider reads and commits the
+complete evidence set, location state changes, and integrity findings in one
+idempotent D1 transaction:
+
+```bash
+export CARRACK_CONTROL_TOKEN="$(read-administrator-token)"
+
+carrack verify run \
+  --control-url https://carrack.example.com \
+  --namespace 202122232425262728292a2b2c2d2e2f \
+  --manifest <manifest-sha256> \
+  --local-driver-id local-mirror \
+  --local-root /srv/carrack/archive \
+  --idempotency-key local-mirror-scrub-2026-07-12
+```
+
+The idempotency key names one audit attempt. Retrying that attempt reuses its
+pinned recovery revision; a later scheduled scrub must use a new key.
+
 The local filesystem Copy path creates and publishes a verified destination
 replica while retaining every source location:
 
