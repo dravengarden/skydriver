@@ -7,10 +7,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -41,9 +43,77 @@ func TestFactoryOpensRootedReadWriter(t *testing.T) {
 	}
 
 	if handle.Reader == nil || handle.Writer == nil || handle.Deleter == nil ||
+		handle.Inventory == nil ||
 		!handle.Capabilities.RangeRead || !handle.Capabilities.StreamingWrite ||
-		!handle.Capabilities.Delete {
+		!handle.Capabilities.Delete || !handle.Capabilities.Inventory {
 		t.Fatalf("unexpected local filesystem capabilities: %+v", handle.Capabilities)
+	}
+}
+
+func TestClientListsBoundedStableInventoryPages(t *testing.T) {
+	t.Parallel()
+
+	rootPath := t.TempDir()
+	client := newClient(t, rootPath)
+
+	const objectCount = 70
+
+	for index := range objectCount {
+		key := fmt.Sprintf("owned/objects/%03d.bin", index)
+
+		payload := fmt.Appendf(nil, "inventory object %03d", index)
+		if _, err := client.Put(context.Background(), key, bytes.NewReader(payload), putOptions(payload)); err != nil {
+			t.Fatalf("put inventory fixture %q: %v", key, err)
+		}
+	}
+
+	outside := []byte("outside inventory prefix")
+	if _, err := client.Put(
+		context.Background(),
+		"other/object.bin",
+		bytes.NewReader(outside),
+		putOptions(outside),
+	); err != nil {
+		t.Fatalf("put outside inventory fixture: %v", err)
+	}
+
+	first, err := client.List(context.Background(), "owned", "")
+	if err != nil {
+		t.Fatalf("list first inventory page: %v", err)
+	}
+
+	if len(first.Objects) != 64 || first.NextCursor != "owned/objects/063.bin" {
+		t.Fatalf("unexpected first inventory page: count=%d cursor=%q", len(first.Objects), first.NextCursor)
+	}
+
+	second, err := client.List(context.Background(), "owned", first.NextCursor)
+	if err != nil {
+		t.Fatalf("list second inventory page: %v", err)
+	}
+
+	if len(second.Objects) != objectCount-len(first.Objects) || second.NextCursor != "" {
+		t.Fatalf("unexpected final inventory page: count=%d cursor=%q", len(second.Objects), second.NextCursor)
+	}
+
+	objects := slices.Concat(first.Objects, second.Objects)
+	for index, object := range objects {
+		expectedKey := fmt.Sprintf("owned/objects/%03d.bin", index)
+		if object.Key != expectedKey || object.SizeBytes == 0 || object.ETag == "" || object.Version == "" {
+			t.Errorf("unexpected inventory object %d: %+v", index, object)
+		}
+	}
+
+	empty, err := client.List(context.Background(), "missing", "")
+	if err != nil {
+		t.Fatalf("list absent inventory prefix: %v", err)
+	}
+
+	if len(empty.Objects) != 0 || empty.NextCursor != "" {
+		t.Fatalf("absent prefix returned inventory: %+v", empty)
+	}
+
+	if _, err := client.List(context.Background(), "owned", "other/object.bin"); !errors.Is(err, localfs.ErrInvalidObject) {
+		t.Fatalf("outside inventory cursor was not rejected: %v", err)
 	}
 }
 

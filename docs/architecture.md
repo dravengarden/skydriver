@@ -278,13 +278,15 @@ meaning of an already-created operation. The V1 policy JSON fields are:
   "retention_policy_json": {
     "move_grace_seconds": 86400,
     "gc_minimum_age_seconds": 604800,
-    "gc_grace_seconds": 86400
+    "gc_grace_seconds": 86400,
+    "inventory_quarantine_seconds": 86400
   }
 }
 ```
 
 An omitted `minimum_available_replicas` defaults to `1`; an omitted
-`move_grace_seconds` or `gc_grace_seconds` defaults to 24 hours, and an omitted
+`move_grace_seconds`, `gc_grace_seconds`, or
+`inventory_quarantine_seconds` defaults to 24 hours, and an omitted
 `gc_minimum_age_seconds` defaults to seven days. The accepted bounds are 1
 through 64 replicas and 60 seconds through 365 days for each retention value.
 
@@ -638,6 +640,29 @@ D1. Periodic, rate-limited inventory compares Carrack-owned provider prefixes
 with indexed locations. Unknown objects enter a separate quarantine grace
 period before deletion. Missing indexed objects become `missing` or `corrupt`
 and trigger repair; reconciliation never silently edits manifests.
+
+The implemented explicit-operator path creates a distinct inventory intent on
+the existing `reconcile` operation state machine. Creation pins namespace,
+enabled driver revision, normalized owned prefix, and
+`inventory_quarantine_seconds`. The driver returns deterministic pages of at
+most 64 objects. Each page carries the current operation lease and fencing
+token, a strictly chained opaque cursor, and a server-computed digest. A lease
+takeover starts a new attempt and page chain; exact pages can be replayed, while
+a changed page under the same attempt is rejected. Final completion hashes the
+ordered page digests and requires a complete terminal page before any finding
+is committed.
+
+An object is known when the same `(driver, storage key)` is held by a non-deleted
+location or a non-missing durable recovery sidecar. Every other observed object
+is retained in `quarantined_provider_objects`, with immutable provider identity,
+first and last observation, policy-derived grace, operation identity, and a
+visible `provider_object/quarantined` integrity finding. A changed provider
+identity or reappearance after resolution restarts quarantine grace. An
+indexed location or durable sidecar absent from the complete report opens a
+`missing` finding, but inventory alone does not change location or manifest
+state because provider listing may be stale. Adoption, repair scheduling, and
+quarantine deletion are separate future fenced operations; the inventory path
+performs no provider writes or deletes.
 
 Cloudflare Cron Triggers are the planned scheduler for mark, expired-lease
 cleanup, and reconciliation planning; production scheduling is not enabled in

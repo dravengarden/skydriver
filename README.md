@@ -160,8 +160,9 @@ tasks, repeats active-read, reachability, replica-policy, incarnation, and
 fence checks immediately before I/O, calls an idempotent driver deleter, and
 only then advances D1 through `deleting` to `succeeded`. Lost completion
 responses converge from the retained task record. The local filesystem driver
-implements this delete capability; other drivers remain unavailable to the
-janitor until they advertise and implement the same contract.
+implements both delete and bounded inventory capabilities; other drivers
+remain unavailable to those paths until they advertise and implement the same
+contracts.
 
 Carrack prefers native drivers where Go already has a mature protocol or SDK:
 S3-compatible storage, R2, public HTTP, and local filesystems do not pass
@@ -310,6 +311,30 @@ The Worker recomputes the submitted report before committing it. Exact retries
 are idempotent, changed reports are rejected, and resolved discrepancies close
 only findings with the same condition and subject identity.
 
+Provider inventory is the provider-to-D1 half of reconciliation. The initial
+operator path inventories one Carrack-owned local filesystem prefix in bounded
+pages under a renewable fence:
+
+```bash
+carrack reconcile inventory \
+  --control-url https://carrack.example.com \
+  --namespace 202122232425262728292a2b2c2d2e2f \
+  --local-driver-id local-archive \
+  --local-root /srv/carrack/archive \
+  --prefix archive \
+  --idempotency-key local-archive-inventory-2026-07-12
+```
+
+The registered driver ID and local root must describe the same provider scope.
+Each page contains at most 64 objects, exact page retries are harmless, and the
+Worker commits classifications only after validating the complete cursor chain
+and report digest. Objects already referenced by a location or durable recovery
+sidecar are known. Other discovered objects enter the quarantine ledger and
+open `quarantined` findings. Indexed objects absent from the report open
+`missing` findings for later verification; one inventory response does not
+change location state. Inventory never adopts an object, edits a manifest, or
+deletes provider bytes.
+
 A relay can repair provider objects that verification has proven missing while
 another exact replica remains available. This local-filesystem path preserves
 the original storage keys and recovery revision:
@@ -374,7 +399,8 @@ policy, not command-line overrides:
 {
   "move_grace_seconds": 86400,
   "gc_minimum_age_seconds": 604800,
-  "gc_grace_seconds": 86400
+  "gc_grace_seconds": 86400,
+  "inventory_quarantine_seconds": 86400
 }
 ```
 

@@ -320,6 +320,8 @@ fn lease_statements(
                  phase = CASE \
                      WHEN EXISTS(SELECT 1 FROM repair_intents \
                                  WHERE operation_id = operations.id) THEN 'repairing' \
+                     WHEN EXISTS(SELECT 1 FROM inventory_intents \
+                                 WHERE operation_id = operations.id) THEN 'inventorying' \
                      WHEN kind = 'compact' THEN 'compacting' \
                      WHEN kind = 'verify' THEN 'verifying' \
                      WHEN kind = 'reconcile' THEN 'reconciling' \

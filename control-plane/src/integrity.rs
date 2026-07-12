@@ -151,8 +151,10 @@ pub(crate) async fn list(request: &Request, env: &Env) -> Result<Response> {
                     END AS root_version, \
                     CASE WHEN finding.subject_kind = 'extent' THEN finding.subject_id \
                          ELSE subject_extent.ciphertext_sha256 END AS extent_sha256, \
-                    subject_location.driver_id, subject_location.storage_key, \
-                    subject_location.state AS location_state, \
+                    COALESCE(subject_location.driver_id, subject_provider.driver_id) AS driver_id, \
+                    COALESCE(subject_location.storage_key, subject_provider.storage_key) \
+                        AS storage_key, \
+                    COALESCE(subject_location.state, subject_provider.state) AS location_state, \
                     subject_location.verified_at AS last_verified_at, \
                     CASE \
                       WHEN finding.subject_kind = 'location' THEN (\
@@ -174,6 +176,11 @@ pub(crate) async fn list(request: &Request, env: &Env) -> Result<Response> {
              LEFT JOIN locations AS subject_location \
                ON finding.subject_kind = 'location' \
               AND subject_location.id = finding.subject_id \
+             LEFT JOIN quarantined_provider_objects AS subject_provider \
+               ON finding.subject_kind = 'provider_object' \
+              AND finding.subject_id = json_array(\
+                    subject_provider.driver_id, subject_provider.storage_key\
+                  ) \
              LEFT JOIN extents AS subject_extent ON subject_extent.id = subject_location.extent_id \
              LEFT JOIN packs AS subject_pack ON subject_pack.id = subject_extent.pack_id \
              WHERE finding.state = ?1 AND (?2 IS NULL OR finding.condition = ?2) \

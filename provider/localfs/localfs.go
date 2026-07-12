@@ -31,6 +31,7 @@ const (
 	uploadDirectoryMode                      = fs.FileMode(0o700)
 	temporaryAttempts                        = 4
 	temporaryRandomBytes                     = 16
+	inventoryPageObjects                     = 64
 )
 
 var (
@@ -41,7 +42,8 @@ var (
 	// ErrInvalidRange indicates an empty, overflowing, or out-of-bounds read.
 	ErrInvalidRange = errors.New("invalid Carrack local filesystem range")
 	// ErrIntegrity indicates that immutable object bytes differ from their declaration.
-	ErrIntegrity = errors.New("carrack local filesystem integrity mismatch")
+	ErrIntegrity         = errors.New("carrack local filesystem integrity mismatch")
+	errInventoryPageFull = errors.New("local filesystem inventory page is full")
 )
 
 // DriverConfig contains non-secret local filesystem configuration.
@@ -74,11 +76,11 @@ func (Factory) Open(
 	return provider.Handle{
 		ID: specification.ID, Kind: DriverKind,
 		Capabilities: provider.Capabilities{
-			RangeRead: true, StreamingWrite: true, Delete: true,
+			RangeRead: true, StreamingWrite: true, Delete: true, Inventory: true,
 			MaximumObjectBytes: maximumObjectBytes, PreferredObjectBytes: 1 << 30,
 			SafeConcurrency: safeConcurrency,
 		},
-		Reader: client, Writer: client, Deleter: client,
+		Reader: client, Writer: client, Deleter: client, Inventory: client,
 	}, nil
 }
 
@@ -275,6 +277,65 @@ func (client *Client) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// List returns one deterministic, bounded page of regular objects beneath a
+// Carrack-owned prefix. The cursor is the last key returned by the prior page.
+func (client *Client) List(
+	ctx context.Context,
+	prefix,
+	cursor string,
+) (provider.InventoryPage, error) {
+	if err := validateKey(prefix); err != nil {
+		return provider.InventoryPage{}, err
+	}
+
+	if cursor != "" {
+		if err := validateKey(cursor); err != nil {
+			return provider.InventoryPage{}, err
+		}
+
+		if !keyWithinPrefix(prefix, cursor) {
+			return provider.InventoryPage{}, fmt.Errorf(
+				"%w: inventory cursor is outside prefix",
+				ErrInvalidObject,
+			)
+		}
+	}
+
+	if err := ctx.Err(); err != nil {
+		return provider.InventoryPage{}, fmt.Errorf("list local filesystem objects: %w", err)
+	}
+
+	keys, err := client.inventoryKeys(ctx, prefix, cursor)
+	if err != nil {
+		return provider.InventoryPage{}, err
+	}
+
+	more := len(keys) > inventoryPageObjects
+	if more {
+		keys = keys[:inventoryPageObjects]
+	}
+
+	page := provider.InventoryPage{Objects: make([]provider.Object, 0, len(keys))}
+	for _, key := range keys {
+		object, statErr := client.Stat(ctx, key)
+		if statErr != nil {
+			return provider.InventoryPage{}, fmt.Errorf(
+				"inventory local filesystem object %q: %w",
+				key,
+				statErr,
+			)
+		}
+
+		page.Objects = append(page.Objects, object)
+	}
+
+	if more {
+		page.NextCursor = page.Objects[len(page.Objects)-1].Key
+	}
+
+	return page, nil
+}
+
 // Put validates and atomically publishes one immutable regular file.
 func (client *Client) Put(
 	ctx context.Context,
@@ -304,6 +365,68 @@ func (client *Client) Put(
 	}
 
 	return object, nil
+}
+
+func (client *Client) inventoryKeys(
+	ctx context.Context,
+	prefix,
+	cursor string,
+) ([]string, error) {
+	if client == nil || client.rootPath == "" {
+		return nil, fmt.Errorf("%w: client is not initialized", ErrInvalidConfiguration)
+	}
+
+	keys := make([]string, 0, inventoryPageObjects+1)
+
+	walkErr := fs.WalkDir(os.DirFS(client.rootPath), prefix, func(key string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) && key == prefix {
+				return fs.SkipDir
+			}
+
+			return fmt.Errorf("%w: walk inventory prefix %q: %w", ErrInvalidObject, prefix, err)
+		}
+
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("walk inventory prefix canceled: %w", err)
+		}
+
+		if entry.IsDir() {
+			return nil
+		}
+
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf(
+				"%w: inventory object %q is not a regular file",
+				ErrInvalidObject,
+				key,
+			)
+		}
+
+		if key <= cursor {
+			return nil
+		}
+
+		keys = append(keys, key)
+		if len(keys) > inventoryPageObjects {
+			return errInventoryPageFull
+		}
+
+		return nil
+	})
+	if walkErr != nil && !errors.Is(walkErr, errInventoryPageFull) {
+		return nil, fmt.Errorf("list local filesystem objects: %w", walkErr)
+	}
+
+	// WalkDir is lexical, but retain an explicit ordering invariant if its
+	// implementation changes or a different fs.FS is introduced later.
+	slices.Sort(keys)
+
+	return keys, nil
+}
+
+func keyWithinPrefix(prefix, key string) bool {
+	return strings.HasPrefix(key, prefix+"/")
 }
 
 func (client *Client) openRoot() (*os.Root, error) {

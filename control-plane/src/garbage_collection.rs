@@ -29,6 +29,8 @@ struct RetentionPolicy {
     gc_minimum_age: Option<u64>,
     #[serde(rename = "gc_grace_seconds")]
     gc_grace: Option<u64>,
+    #[serde(default, rename = "inventory_quarantine_seconds")]
+    _inventory_quarantine: Option<u64>,
 }
 
 #[derive(Deserialize)]

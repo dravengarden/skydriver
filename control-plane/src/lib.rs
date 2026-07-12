@@ -8,6 +8,7 @@ mod compaction;
 mod copying;
 mod garbage_collection;
 mod integrity;
+mod inventory;
 mod key_grants;
 pub mod keys;
 mod manifest_archive;
@@ -389,6 +390,66 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
 
             reconciliation::create(&mut request, &context.env, &client).await
         })
+        .post_async(
+            "/api/v1/inventory-reconciliations",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+
+                inventory::create(&mut request, &context.env, &client).await
+            },
+        )
+        .post_async(
+            "/api/v1/inventory-reconciliations/:id/pages",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+                let Some(operation_id) = context.param("id") else {
+                    return Response::error("operation ID is required", 400);
+                };
+
+                inventory::report_page(
+                    &mut request,
+                    &context.env,
+                    &client,
+                    operation_id,
+                )
+                .await
+            },
+        )
+        .post_async(
+            "/api/v1/inventory-reconciliations/:id/complete",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+                let Some(operation_id) = context.param("id") else {
+                    return Response::error("operation ID is required", 400);
+                };
+
+                inventory::complete(
+                    &mut request,
+                    &context.env,
+                    &client,
+                    operation_id,
+                )
+                .await
+            },
+        )
         .post_async(
             "/api/v1/reconciliations/:id/snapshot",
             |mut request, context| async move {

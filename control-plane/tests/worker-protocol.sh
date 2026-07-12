@@ -314,7 +314,7 @@ printf '%s' "$compact_source_recovery" >"$state_directory/compact-source-manifes
       '202122232425262728292a2b2c2d2e2f', 'worker-e2e',
       'carrack-aes128gcm-hkdfsha256-v1', 1, 1,
       '{\"minimum_available_replicas\":2}',
-      '{\"move_grace_seconds\":120,\"gc_minimum_age_seconds\":60,\"gc_grace_seconds\":60}',
+      '{\"move_grace_seconds\":120,\"gc_minimum_age_seconds\":60,\"gc_grace_seconds\":60,\"inventory_quarantine_seconds\":90}',
       unixepoch(), unixepoch()
     );
     INSERT INTO admin_users (username, password_hash, created_at, updated_at)
@@ -1818,6 +1818,108 @@ no_missing_repair_status=$(curl --silent --output /dev/null --write-out '%{http_
     <<<"$repair_request")" \
   "$base_url/api/v1/repairs")
 [[ "$no_missing_repair_status" == 409 ]]
+
+inventory_request=$(jq -cn '{
+  namespace_id: "202122232425262728292a2b2c2d2e2f",
+  driver_id: "copy-driver",
+  prefix: "copy",
+  idempotency_key: "worker-e2e-inventory-copy-prefix"
+}')
+inventory_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$inventory_request" \
+  "$base_url/api/v1/inventory-reconciliations")
+inventory_id=$(jq -r .id <<<"$inventory_operation")
+jq -e '
+  .kind == "reconcile" and .state == "planned" and .driver_id == "copy-driver" and
+  .driver_revision == 1 and .prefix == "copy" and .quarantine_grace_seconds == 90
+' <<<"$inventory_operation" >/dev/null
+inventory_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/operations/$inventory_id/claim")
+inventory_page_request=$(jq -cn \
+  --arg lease_id "$(jq -r .lease_id <<<"$inventory_lease")" \
+  --arg incarnation "$(jq -r .incarnation <<<"$inventory_lease")" \
+  --argjson fence "$(jq -r .fencing_token <<<"$inventory_lease")" '{
+    lease_id: $lease_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    sequence: 1,
+    cursor: "",
+    next_cursor: "",
+    objects: [{
+      storage_key: "copy/orphan-upload",
+      provider_version: "orphan-v1",
+      etag: "orphan-etag",
+      size_bytes: 19
+    }]
+  }')
+stale_inventory_page_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.fencing_token += 1' <<<"$inventory_page_request")" \
+  "$base_url/api/v1/inventory-reconciliations/$inventory_id/pages")
+[[ "$stale_inventory_page_status" == 409 ]]
+inventory_page=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$inventory_page_request" \
+  "$base_url/api/v1/inventory-reconciliations/$inventory_id/pages")
+jq -e --arg operation_id "$inventory_id" '
+  .operation_id == $operation_id and .sequence == 1 and .object_count == 1 and
+  .next_cursor == "" and (.report_sha256 | length) == 64
+' <<<"$inventory_page" >/dev/null
+replayed_inventory_page=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$inventory_page_request" \
+  "$base_url/api/v1/inventory-reconciliations/$inventory_id/pages")
+[[ "$replayed_inventory_page" == "$inventory_page" ]]
+changed_inventory_page_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.objects[0].size_bytes += 1' <<<"$inventory_page_request")" \
+  "$base_url/api/v1/inventory-reconciliations/$inventory_id/pages")
+[[ "$changed_inventory_page_status" == 409 ]]
+inventory_report_sha=$(printf '%s' "$(jq -r .report_sha256 <<<"$inventory_page")" | sha256sum | cut -d' ' -f1)
+inventory_completion_request=$(jq -cn \
+  --arg lease_id "$(jq -r .lease_id <<<"$inventory_lease")" \
+  --arg incarnation "$(jq -r .incarnation <<<"$inventory_lease")" \
+  --arg report_sha "$inventory_report_sha" \
+  --argjson fence "$(jq -r .fencing_token <<<"$inventory_lease")" '{
+    lease_id: $lease_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    last_sequence: 1,
+    report_sha256: $report_sha
+  }')
+inventory_completion=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$inventory_completion_request" \
+  "$base_url/api/v1/inventory-reconciliations/$inventory_id/complete")
+jq -e --arg operation_id "$inventory_id" --arg report_sha "$inventory_report_sha" '
+  .operation_id == $operation_id and .state == "succeeded" and
+  .report_sha256 == $report_sha and .pages == 1 and .objects == 1 and
+  .known == 0 and .quarantined == 1 and .missing == 1
+' <<<"$inventory_completion" >/dev/null
+replayed_inventory_completion=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$inventory_completion_request" \
+  "$base_url/api/v1/inventory-reconciliations/$inventory_id/complete")
+[[ "$replayed_inventory_completion" == "$inventory_completion" ]]
+changed_inventory_completion_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.report_sha256 = ("0" * 64)' <<<"$inventory_completion_request")" \
+  "$base_url/api/v1/inventory-reconciliations/$inventory_id/complete")
+[[ "$changed_inventory_completion_status" == 409 ]]
+inventory_findings=$(curl --silent --show-error --fail-with-body \
+  -H "$session" "$base_url/api/integrity/findings")
+jq -e '
+  .next_cursor == null and (.findings | length) == 2 and
+  (.findings | any(
+    .subject_kind == "provider_object" and .condition == "quarantined" and
+    .state == "open" and .evidence.driver_id == "copy-driver" and
+    .evidence.storage_key == "copy/orphan-upload" and
+    .required_action == "Review evidence before adoption, relocation, or cleanup."
+  )) and
+  (.findings | any(
+    .subject_kind == "location" and .condition == "missing" and
+    .state == "open" and .driver_id == "copy-driver" and
+    .storage_key == "copy/payload" and .location_state == "available" and
+    .evidence.source == "provider_inventory"
+  ))
+' <<<"$inventory_findings" >/dev/null
 
 single_pack_compact_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   -H "$authorization" -H "$json" \

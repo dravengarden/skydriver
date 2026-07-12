@@ -70,10 +70,11 @@ confirm `/api/summary` can read the migrated D1 database.
 ## Garbage collection
 
 Namespace `retention_policy_json` accepts `move_grace_seconds`,
-`gc_minimum_age_seconds`, and `gc_grace_seconds`. GC age defaults to seven days;
-both grace periods default to one day. Every value must be between 60 seconds
-and 365 days. An existing operation pins its cutoff and grace, so changing the
-namespace cannot change an in-flight epoch.
+`gc_minimum_age_seconds`, `gc_grace_seconds`, and
+`inventory_quarantine_seconds`. GC age defaults to seven days; Move, GC, and
+inventory quarantine grace default to one day. Every value must be between 60
+seconds and 365 days. An existing operation pins its cutoff and grace, so
+changing the namespace cannot change in-flight work.
 
 Run `carrack gc mark` with an `administrator` token. The Worker atomically
 selects only complete unreachable provider objects, tombstones their indexed
@@ -91,6 +92,22 @@ task. Provider failure is retained for retry.
 Do not schedule these commands automatically yet. The explicit GC protocol is
 implemented and tested, but production Cron activation remains subject to the
 fault-injection and disaster-recovery gate in `docs/requirements.md`.
+
+## Provider inventory
+
+Run `carrack reconcile inventory` with an `administrator` token, the exact
+registered local driver ID and root, and a dedicated Carrack-owned prefix. The
+SDK lists only regular files under that prefix in bounded pages and maintains a
+renewable operation fence through final report commit. Unknown objects are
+retained in quarantine for the pinned `inventory_quarantine_seconds`; absent
+indexed objects produce findings for a later Verify or Repair decision.
+
+Inventory is deliberately read-only. It does not adopt provider objects,
+change manifest or location state, or invoke provider deletion. Do not overlap
+owned prefixes across namespaces: an unknown object already quarantined for a
+different namespace rejects completion instead of guessing ownership. Cron
+scheduling, adoption, and quarantine cleanup remain disabled pending their own
+fenced protocols and production fault-injection gates.
 
 ## Integrity findings
 

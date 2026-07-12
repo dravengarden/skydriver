@@ -3,10 +3,15 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dravengarden/carrack/manifest"
@@ -101,5 +106,117 @@ func TestReconcileRunCommandCommitsPinnedMetadataReport(t *testing.T) {
 
 	if result.Completion.State != "succeeded" || result.Completion.Degraded != 1 {
 		t.Fatalf("unexpected reconciliation result: %+v", result)
+	}
+}
+
+func TestReconcileInventoryCommandReportsLocalObjects(t *testing.T) {
+	rootPath := t.TempDir()
+
+	objectPath := filepath.Join(rootPath, "archive", "objects", "unknown")
+	if err := os.MkdirAll(filepath.Dir(objectPath), 0o700); err != nil {
+		t.Fatalf("create inventory fixture directory: %v", err)
+	}
+
+	if err := os.WriteFile(objectPath, []byte("unknown provider object"), 0o600); err != nil {
+		t.Fatalf("write inventory fixture: %v", err)
+	}
+
+	token := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{10}, 32))
+
+	const (
+		operationID = "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf"
+		incarnation = "0123456789abcdef0123456789abcdef"
+		namespaceID = "202122232425262728292a2b2c2d2e2f"
+		pageHash    = "1111111111111111111111111111111111111111111111111111111111111111"
+	)
+
+	reportDigest := sha256.Sum256([]byte(pageHash))
+	reportHash := hex.EncodeToString(reportDigest[:])
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != "Bearer "+token {
+			http.Error(response, "invalid authorization", http.StatusUnauthorized)
+
+			return
+		}
+
+		response.Header().Set("Content-Type", "application/json")
+
+		var value any
+
+		switch request.URL.Path {
+		case "/api/v1/inventory-reconciliations":
+			value = sdk.InventoryOperation{
+				ID: operationID, NamespaceID: namespaceID, Kind: "reconcile",
+				State: "planned", Phase: "planned", RequestedBy: "cli-client",
+				Incarnation: incarnation, Revision: 1, DriverID: "local-main",
+				DriverRevision: 1, Prefix: "archive", QuarantineGraceSeconds: 86_400,
+				CreatedAt: 1, UpdatedAt: 1,
+			}
+		case "/api/v1/operations/" + operationID + "/claim":
+			value = sdk.OperationLease{
+				OperationID: operationID, LeaseID: "operation/" + operationID + "/write",
+				OwnerClientID: "cli-client", Incarnation: incarnation, FencingToken: 1,
+				ExpiresAt: 100, OperationRevision: 2, OperationState: "running",
+			}
+		case "/api/v1/inventory-reconciliations/" + operationID + "/pages":
+			var body struct {
+				Sequence uint64 `json:"sequence"`
+				Objects  []struct {
+					StorageKey string `json:"storage_key"`
+				} `json:"objects"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Errorf("decode CLI inventory page: %v", err)
+			}
+
+			if body.Sequence != 1 || len(body.Objects) != 1 ||
+				body.Objects[0].StorageKey != "archive/objects/unknown" {
+				t.Errorf("unexpected CLI inventory page: %+v", body)
+			}
+
+			value = sdk.InventoryPageReceipt{
+				OperationID: operationID, Sequence: 1, ReportSHA256: pageHash, ObjectCount: 1,
+			}
+		case "/api/v1/inventory-reconciliations/" + operationID + "/complete":
+			var body struct {
+				ReportSHA256 string `json:"report_sha256"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Errorf("decode CLI inventory completion: %v", err)
+			}
+
+			if body.ReportSHA256 != reportHash {
+				t.Errorf("unexpected CLI inventory report hash: %q", body.ReportSHA256)
+			}
+
+			value = sdk.CompletedInventory{
+				OperationID: operationID, State: "succeeded", ReportSHA256: reportHash,
+				Pages: 1, Objects: 1, Quarantined: 1,
+			}
+		default:
+			http.NotFound(response, request)
+
+			return
+		}
+
+		if err := json.NewEncoder(response).Encode(value); err != nil {
+			t.Errorf("encode CLI inventory response: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv(controlTokenEnvironment, token)
+
+	var stdout bytes.Buffer
+	if err := Run(context.Background(), []string{
+		"reconcile", "inventory", "--control-url", server.URL,
+		"--namespace", namespaceID, "--local-driver-id", "local-main",
+		"--local-root", rootPath, "--prefix", "archive",
+		"--idempotency-key", "cli-inventory-local-main-archive", "--format", "json",
+	}, &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatalf("run inventory reconcile command: %v", err)
+	}
+
+	if !strings.Contains(stdout.String(), `"quarantined": 1`) {
+		t.Fatalf("unexpected inventory reconciliation output: %s", stdout.String())
 	}
 }
