@@ -55,6 +55,11 @@ func TestControlClientPinsReconciliationSnapshot(t *testing.T) {
 					Length:     recovery.Locations[0].Length, State: "available",
 				}},
 			}
+		case "/api/v1/reconciliations/" + operationID + "/complete":
+			value = sdk.CompletedReconcile{
+				OperationID: operationID, ManifestSHA256: recovery.ManifestSHA256,
+				State: "succeeded", Degraded: 1,
+			}
 		default:
 			http.NotFound(response, request)
 
@@ -92,5 +97,23 @@ func TestControlClientPinsReconciliationSnapshot(t *testing.T) {
 
 	if snapshot.RecoveryRevision != 3 || len(snapshot.Locations) != 1 {
 		t.Fatalf("unexpected reconcile snapshot: %+v", snapshot)
+	}
+
+	result, err := (sdk.Reconciler{}).Reconcile(
+		snapshot.Recovery,
+		snapshot.Locations,
+		snapshot.MinimumAvailableReplicas,
+	)
+	if err != nil {
+		t.Fatalf("reconcile snapshot: %v", err)
+	}
+
+	completed, err := client.CompleteReconcile(context.Background(), operation, lease, result)
+	if err != nil {
+		t.Fatalf("complete reconcile operation: %v", err)
+	}
+
+	if completed.Degraded != 1 {
+		t.Fatalf("unexpected reconcile completion: %+v", completed)
 	}
 }

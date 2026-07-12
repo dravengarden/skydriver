@@ -1369,3 +1369,35 @@ jq -e --argjson recovery "$move_final_recovery" '
   (.locations | any(.driver_id == "copy-driver" and .state == "available")) and
   (.locations | any(.driver_id == "move-driver" and .state == "missing"))
 ' <<<"$reconcile_snapshot" >/dev/null
+
+reconcile_completion=$(jq -cn \
+  --arg lease_id "$(jq -r .lease_id <<<"$reconcile_lease")" \
+  --arg incarnation "$(jq -r .incarnation <<<"$reconcile_lease")" \
+  --arg manifest_sha "$restore_manifest_sha" \
+  --argjson fence "$(jq -r .fencing_token <<<"$reconcile_lease")" '{
+    lease_id: $lease_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    manifest_sha256: $manifest_sha,
+    evidence: [{
+      condition: "degraded",
+      subject_id: "2222222222222222222222222222222222222222222222222222222222222222",
+      extent_sha256: "2222222222222222222222222222222222222222222222222222222222222222",
+      available: 1,
+      required: 2
+    }]
+  }')
+completed_reconcile=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$reconcile_completion" \
+  "$base_url/api/v1/reconciliations/$reconcile_id/complete")
+jq -e '.state == "succeeded" and .unindexed == 0 and .orphan == 0 and .degraded == 1' \
+  <<<"$completed_reconcile" >/dev/null
+replayed_reconcile=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$reconcile_completion" \
+  "$base_url/api/v1/reconciliations/$reconcile_id/complete")
+[[ "$replayed_reconcile" == "$completed_reconcile" ]]
+changed_reconcile_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.evidence[0].available = 0' <<<"$reconcile_completion")" \
+  "$base_url/api/v1/reconciliations/$reconcile_id/complete")
+[[ "$changed_reconcile_status" == 409 ]]

@@ -56,6 +56,24 @@ type reconcileSnapshotBody struct {
 	FencingToken uint64 `json:"fencing_token"`
 }
 
+type completeReconcileBody struct {
+	LeaseID        string                   `json:"lease_id"`
+	Incarnation    string                   `json:"incarnation"`
+	FencingToken   uint64                   `json:"fencing_token"`
+	ManifestSHA256 string                   `json:"manifest_sha256"`
+	Evidence       []ReconciliationEvidence `json:"evidence"`
+}
+
+// CompletedReconcile confirms durable findings and released ownership.
+type CompletedReconcile struct {
+	OperationID    string `json:"operation_id"`
+	ManifestSHA256 string `json:"manifest_sha256"`
+	State          string `json:"state"`
+	Unindexed      uint64 `json:"unindexed"`
+	Orphan         uint64 `json:"orphan"`
+	Degraded       uint64 `json:"degraded"`
+}
+
 // CreateReconcileOperation creates or returns one pinned metadata audit.
 func (client *ControlClient) CreateReconcileOperation(
 	ctx context.Context,
@@ -151,6 +169,44 @@ func (client *ControlClient) FetchReconcileSnapshot(
 		if err := validateIndexedLocation(location); err != nil {
 			return ReconcileSnapshot{}, fmt.Errorf("%w: reconcile snapshot location: %w", ErrControlPlaneResponse, err)
 		}
+	}
+
+	return response, nil
+}
+
+// CompleteReconcile submits the deterministic report for server recomputation and commit.
+func (client *ControlClient) CompleteReconcile(
+	ctx context.Context,
+	operation ReconcileOperation,
+	lease OperationLease,
+	result ReconciliationResult,
+) (CompletedReconcile, error) {
+	if lease.OperationID != operation.ID || lease.Incarnation != operation.Incarnation ||
+		lease.LeaseID == "" || lease.FencingToken == 0 ||
+		result.ManifestSHA256 != operation.ManifestSHA256 {
+		return CompletedReconcile{}, fmt.Errorf("%w: invalid reconcile completion", ErrInvalidControlPlane)
+	}
+
+	body, err := json.Marshal(completeReconcileBody{
+		LeaseID: lease.LeaseID, Incarnation: lease.Incarnation,
+		FencingToken: lease.FencingToken, ManifestSHA256: result.ManifestSHA256,
+		Evidence: result.Evidence,
+	})
+	if err != nil {
+		return CompletedReconcile{}, fmt.Errorf("marshal reconcile completion: %w", err)
+	}
+
+	var response CompletedReconcile
+
+	path := "/api/v1/reconciliations/" + operation.ID + "/complete"
+	if err := client.authenticatedPost(ctx, path, body, &response); err != nil {
+		return CompletedReconcile{}, err
+	}
+
+	if response.OperationID != operation.ID || response.ManifestSHA256 != operation.ManifestSHA256 ||
+		response.State != operationStateSucceeded || response.Unindexed != result.RecoveryOnly ||
+		response.Orphan != result.IndexOnly || response.Degraded != result.Degraded {
+		return CompletedReconcile{}, fmt.Errorf("%w: reconcile completion identity changed", ErrControlPlaneResponse)
 	}
 
 	return response, nil
