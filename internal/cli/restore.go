@@ -78,9 +78,9 @@ func newRestoreCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
 			return writeValue(stdout, flags.outputFormat, result)
 		},
 	}
-	command.Flags().StringVar(&flags.controlURL, "control-url", "", "Carrack control-plane URL")
-	command.Flags().StringVar(&flags.namespaceID, "namespace", "", "namespace ID")
-	command.Flags().StringVar(&flags.manifestSHA256, "manifest", "", "published manifest SHA-256")
+	command.Flags().StringVar(&flags.controlURL, controlURLFlag, "", "Carrack control-plane URL")
+	command.Flags().StringVar(&flags.namespaceID, namespaceFlag, "", "namespace ID")
+	command.Flags().StringVar(&flags.manifestSHA256, manifestFlag, "", "published manifest SHA-256")
 	command.Flags().StringVar(&flags.driverID, "driver-id", "", "provider driver ID used by manifest locations")
 	command.Flags().StringVar(&flags.publicDriverID, "public-http-driver-id", "", "public HTTP driver ID used by manifest locations")
 	command.Flags().StringVar(&flags.publicBaseURL, "public-http-base-url", "", "public HTTP archive base URL")
@@ -97,7 +97,7 @@ func newRestoreCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
 	command.Flags().DurationVar(&flags.renewalInterval, "renewal-interval", 30*time.Second, "read lease renewal interval")
 	command.Flags().StringVar(&flags.outputFormat, "format", "table", "output format: table, json, or yaml")
 
-	for _, name := range []string{"control-url", "namespace", "manifest"} {
+	for _, name := range []string{controlURLFlag, namespaceFlag, manifestFlag} {
 		if err := command.MarkFlagRequired(name); err != nil {
 			panic(err)
 		}

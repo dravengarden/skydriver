@@ -213,6 +213,30 @@ carrack restore ./restored.bin \
 Driver IDs must match the manifest locations. The local root must already
 exist; Carrack creates only object-key subdirectories beneath it.
 
+The first user-facing Move path copies between two distinct local filesystem
+drivers. A `relay` or `administrator` token executes through destination
+publication and source tombstoning, but does not physically delete the source:
+
+```bash
+export CARRACK_CONTROL_TOKEN="$(read-relay-token)"
+
+carrack move run \
+  --control-url https://carrack.example.com \
+  --namespace 202122232425262728292a2b2c2d2e2f \
+  --manifest <manifest-sha256> \
+  --source-local-driver-id local-source \
+  --source-local-root /srv/carrack/source \
+  --destination-local-driver-id local-destination \
+  --destination-local-root /srv/carrack/destination \
+  --destination-prefix moved \
+  --staging-directory /var/tmp/carrack
+```
+
+Source and destination driver IDs and canonical roots must differ. The command
+derives a stable idempotency key from the complete Move identity, renews its
+write fence during direct provider I/O, and prints the operation ID and grace
+deadline required by the later janitor handoff.
+
 After a Move reaches `source_delete_pending` and its grace deadline passes, an
 explicit janitor token can sweep a local filesystem source:
 

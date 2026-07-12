@@ -19,6 +19,10 @@ import (
 const (
 	developmentVersion = "0.1.0-dev"
 	outputFormatJSON   = "json"
+	controlURLFlag     = "control-url"
+	namespaceFlag      = "namespace"
+	manifestFlag       = "manifest"
+	moveCommandName    = "move"
 )
 
 var (
@@ -148,6 +152,22 @@ func writeTable(writer io.Writer, value any) error {
 			typedValue.State,
 		); err != nil {
 			return fmt.Errorf("write move sweep table: %w", err)
+		}
+	case moveRunResult:
+		if _, err := fmt.Fprintf(
+			table,
+			"OPERATION ID\tSOURCE\tDESTINATION\tOBJECTS\tLOCATIONS\tBYTES\tRECOVERY REVISION\tGRACE UNTIL\tSTATE\n%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%s\n",
+			typedValue.OperationID,
+			typedValue.SourceDriverID,
+			typedValue.DestinationDriverID,
+			typedValue.ObjectsWritten,
+			typedValue.LocationsAdded,
+			typedValue.CiphertextBytes,
+			typedValue.RecoveryRevision,
+			typedValue.GraceUntil,
+			typedValue.State,
+		); err != nil {
+			return fmt.Errorf("write move run table: %w", err)
 		}
 	case sdk.ControlledRestoreResult:
 		if _, err := fmt.Fprintf(

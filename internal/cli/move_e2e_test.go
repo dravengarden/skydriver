@@ -82,7 +82,7 @@ func TestMoveSweepCommandDeletesAuthorizedLocalObject(t *testing.T) {
 	)
 
 	err := Run(context.Background(), []string{
-		"move", "sweep", operationID,
+		moveCommandName, "sweep", operationID,
 		"--control-url", control.URL,
 		"--local-driver-id", "local-source",
 		"--local-root", root,

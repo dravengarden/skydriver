@@ -28,8 +28,8 @@ type moveSweepFlags struct {
 }
 
 func newMoveCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
-	command := &cobra.Command{Use: "move", Short: "Operate durable move sagas"}
-	command.AddCommand(newMoveSweepCommand(ctx, stdout))
+	command := &cobra.Command{Use: moveCommandName, Short: "Operate durable move sagas"}
+	command.AddCommand(newMoveRunCommand(ctx, stdout), newMoveSweepCommand(ctx, stdout))
 
 	return command
 }
@@ -50,13 +50,13 @@ func newMoveSweepCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
 			return writeValue(stdout, flags.outputFormat, result)
 		},
 	}
-	command.Flags().StringVar(&flags.controlURL, "control-url", "", "Carrack control-plane URL")
+	command.Flags().StringVar(&flags.controlURL, controlURLFlag, "", "Carrack control-plane URL")
 	command.Flags().StringVar(&flags.localDriverID, "local-driver-id", "", "local filesystem source driver ID")
 	command.Flags().StringVar(&flags.localRoot, "local-root", "", "local filesystem archive root")
 	command.Flags().Uint64Var(&flags.leaseSeconds, "lease-seconds", 60, "delete task lease duration")
 	command.Flags().StringVar(&flags.outputFormat, "format", "table", "output format: table, json, or yaml")
 
-	for _, name := range []string{"control-url", "local-driver-id", "local-root"} {
+	for _, name := range []string{controlURLFlag, "local-driver-id", "local-root"} {
 		if err := command.MarkFlagRequired(name); err != nil {
 			panic(err)
 		}
