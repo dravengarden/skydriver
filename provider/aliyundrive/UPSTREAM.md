@@ -19,7 +19,10 @@ The intentionally retained behaviours are:
   source, without an OpenList server;
 - per-operation request limits below the documented account/application caps;
 - 20 MiB sequential upload parts with at most 10,000 parts;
-- short-lived download URLs and exact HTTP range reads;
+- short-lived download URLs whose `206`, byte span, resolved total size, and
+  declared body length must prove the exact requested range;
+- one token refresh after an explicit expiry response, while throttling,
+  authorization loss, and quota errors remain caller-visible;
 - no internal-upload hostname rewrite outside Beijing ECS.
 
 Upstream changes must be reviewed rather than copied mechanically. Carrack's

@@ -212,6 +212,22 @@ func (server *fakeAliyunRestore) ServeHTTP(response http.ResponseWriter, request
 			server.testing.Errorf("download range is %q, want %q", request.Header.Get("Range"), expectedRange)
 		}
 
+		if request.Header.Get("Accept-Encoding") != "identity" {
+			server.testing.Errorf(
+				"download encoding is %q, want identity",
+				request.Header.Get("Accept-Encoding"),
+			)
+		}
+
+		response.Header().Set("Content-Length", strconv.Itoa(len(server.ciphertext)))
+		response.Header().Set(
+			"Content-Range",
+			fmt.Sprintf(
+				"bytes 0-%d/%d",
+				len(server.ciphertext)-1,
+				len(server.ciphertext),
+			),
+		)
 		response.WriteHeader(http.StatusPartialContent)
 		_, _ = response.Write(server.ciphertext)
 	default:

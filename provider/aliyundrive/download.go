@@ -2,9 +2,12 @@ package aliyundrive
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/dravengarden/carrack/provider"
 )
@@ -67,7 +70,9 @@ func (client *Client) OpenRange(
 		return nil, fmt.Errorf("create Aliyun Drive download request: %w", err)
 	}
 
-	request.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+length-1))
+	end := offset + length - 1
+	request.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, end))
+	request.Header.Set("Accept-Encoding", "identity")
 	request.Header.Set("User-Agent", "carrack/0.1")
 
 	response, err := client.httpClient.Do(request)
@@ -75,15 +80,49 @@ func (client *Client) OpenRange(
 		return nil, fmt.Errorf("download Aliyun Drive object: %w", err)
 	}
 
-	if response.StatusCode != http.StatusPartialContent {
-		if err := response.Body.Close(); err != nil {
-			return nil, fmt.Errorf("close rejected Aliyun Drive download: %w", err)
-		}
+	if response.StatusCode != http.StatusPartialContent ||
+		(response.ContentLength >= 0 && uint64(response.ContentLength) != length) ||
+		!exactDownloadContentRange(
+			response.Header.Get("Content-Range"),
+			offset,
+			end,
+			uint64(file.Size),
+		) {
+		closeErr := response.Body.Close()
 
-		return nil, fmt.Errorf("download Aliyun Drive range: %w: HTTP status %d", errInvalidAPIResponse, response.StatusCode)
+		return nil, errors.Join(
+			fmt.Errorf(
+				"download Aliyun Drive range: %w: HTTP status or range headers changed",
+				errInvalidAPIResponse,
+			),
+			closeErr,
+		)
 	}
 
 	return response.Body, nil
+}
+
+func exactDownloadContentRange(value string, expectedStart, expectedEnd, expectedTotal uint64) bool {
+	if !strings.HasPrefix(value, "bytes ") {
+		return false
+	}
+
+	span, total, found := strings.Cut(strings.TrimPrefix(value, "bytes "), "/")
+	if !found {
+		return false
+	}
+
+	start, end, found := strings.Cut(span, "-")
+	if !found {
+		return false
+	}
+
+	parsedStart, startErr := strconv.ParseUint(start, 10, 64)
+	parsedEnd, endErr := strconv.ParseUint(end, 10, 64)
+	parsedTotal, totalErr := strconv.ParseUint(total, 10, 64)
+
+	return startErr == nil && endErr == nil && totalErr == nil &&
+		parsedStart == expectedStart && parsedEnd == expectedEnd && parsedTotal == expectedTotal
 }
 
 func (client *Client) getDownloadURL(ctx context.Context, fileID string) (string, error) {

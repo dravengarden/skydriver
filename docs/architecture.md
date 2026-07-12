@@ -150,8 +150,11 @@ accepts only operator-configured HTTPS or loopback origins, same-origin
 redirects, canonical relative keys, and exact range responses. The local
 driver confines canonical keys beneath an existing root, derives identity from
 the complete file SHA-256, and atomically publishes exact-length verified
-objects without replacement. S3, R2, and Google Drive drivers are added behind
-the same contract.
+objects without replacement. Aliyun Drive accepts a signed range response only
+when its status, byte span, resolved total size, and any declared body length
+match the request. Token-expiry errors invalidate and retry once; throttling,
+authorization loss, and quota errors remain visible to the caller. S3, R2, and
+Google Drive drivers are added behind the same contract.
 
 Driver implementations follow a value-based split:
 

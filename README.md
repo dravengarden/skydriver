@@ -38,8 +38,11 @@ future drivers use the same object and operation model.
 The Go SDK includes an Aliyun Drive provider for the official Open API. It
 supports OpenList-compatible OAuth renewal without running an OpenList server,
 automatic folder creation, bounded-memory multipart uploads, metadata lookup,
-and exact range downloads. The provider deliberately keeps uploads sequential
-and applies the same conservative per-operation request limits as OpenList.
+and exact range downloads. A download is accepted only when `206`,
+`Content-Range`, the resolved object size, and any declared `Content-Length`
+prove the requested bytes; partial bodies remain read errors. The provider
+deliberately keeps uploads sequential and applies the same conservative
+per-operation request limits as OpenList.
 
 Providers are selected through an immutable runtime registry of versioned,
 compiled factories. A control-plane `DriverSpec` carries a kind, strict
