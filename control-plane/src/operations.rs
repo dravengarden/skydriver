@@ -276,7 +276,8 @@ fn lease_statements(
                     state.incarnation, ?3, ?4, ?4 \
              FROM operations AS operation \
              JOIN control_plane_state AS state ON state.singleton = 1 \
-             WHERE operation.id = ?5 AND operation.kind IN ('import', 'copy', 'move', 'verify') \
+             WHERE operation.id = ?5 \
+               AND operation.kind IN ('import', 'copy', 'move', 'verify', 'reconcile') \
                AND operation.state IN ('planned', 'running') AND state.mode = 'active' \
                AND operation.incarnation = state.incarnation \
                AND EXISTS(SELECT 1 FROM client_namespace_permissions \
@@ -284,7 +285,8 @@ fn lease_statements(
                             AND (role = 'administrator' \
                                  OR (operation.kind = 'import' AND role = 'importer') \
                                  OR (operation.kind IN ('copy', 'move') AND role = 'relay') \
-                                 OR (operation.kind = 'verify' AND role = 'administrator'))) \
+                                 OR (operation.kind IN ('verify', 'reconcile') \
+                                     AND role = 'administrator'))) \
              ON CONFLICT(resource_kind, resource_id, lease_kind) DO UPDATE SET \
                  id = excluded.id, owner_client_id = excluded.owner_client_id, \
                  operation_id = excluded.operation_id, \
@@ -312,7 +314,10 @@ fn lease_statements(
         .prepare(
             "UPDATE operations \
              SET state = 'running', \
-                 phase = CASE WHEN kind = 'verify' THEN 'verifying' ELSE 'transferring' END, \
+                 phase = CASE \
+                     WHEN kind = 'verify' THEN 'verifying' \
+                     WHEN kind = 'reconcile' THEN 'reconciling' \
+                     ELSE 'transferring' END, \
                  revision = revision + CASE WHEN state = 'planned' THEN 1 ELSE 0 END, \
                  started_at = COALESCE(started_at, ?1), updated_at = ?1 \
              WHERE id = ?2 AND state IN ('planned', 'running') \

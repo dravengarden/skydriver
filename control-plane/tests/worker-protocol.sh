@@ -1338,3 +1338,34 @@ missing_location_reverify_status=$(curl --silent --output /dev/null --write-out 
     <<<"$missing_verify_request")" \
   "$base_url/api/v1/verifications")
 [[ "$missing_location_reverify_status" == 409 ]]
+
+reconcile_request=$(jq -cn --arg manifest_sha "$restore_manifest_sha" '{
+  namespace_id: "202122232425262728292a2b2c2d2e2f",
+  manifest_sha256: $manifest_sha,
+  idempotency_key: "worker-e2e-reconcile-final-recovery"
+}')
+reconcile_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$reconcile_request" \
+  "$base_url/api/v1/reconciliations")
+reconcile_id=$(jq -r .id <<<"$reconcile_operation")
+jq -e --arg manifest_sha "$restore_manifest_sha" '
+  .kind == "reconcile" and .state == "planned" and
+  .manifest_sha256 == $manifest_sha and .recovery_revision >= 2 and
+  .minimum_available_replicas == 2
+' <<<"$reconcile_operation" >/dev/null
+reconcile_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/operations/$reconcile_id/claim")
+reconcile_snapshot=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn \
+    --arg lease_id "$(jq -r .lease_id <<<"$reconcile_lease")" \
+    --arg incarnation "$(jq -r .incarnation <<<"$reconcile_lease")" \
+    --argjson fence "$(jq -r .fencing_token <<<"$reconcile_lease")" \
+    '{lease_id: $lease_id, incarnation: $incarnation, fencing_token: $fence}')" \
+  "$base_url/api/v1/reconciliations/$reconcile_id/snapshot")
+jq -e --argjson recovery "$move_final_recovery" '
+  .recovery == $recovery and .minimum_available_replicas == 2 and
+  (.locations | any(.driver_id == "copy-driver" and .state == "available")) and
+  (.locations | any(.driver_id == "move-driver" and .state == "missing"))
+' <<<"$reconcile_snapshot" >/dev/null
