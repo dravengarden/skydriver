@@ -13,7 +13,11 @@ import (
 // ErrInvalidReconciliation indicates an unsafe or inconsistent index snapshot.
 var ErrInvalidReconciliation = errors.New("invalid Carrack reconciliation input")
 
-const indexedStateAvailable = "available"
+const (
+	indexedStateAvailable = "available"
+	indexedStateMissing   = string(VerificationMissing)
+	indexedStateCorrupt   = string(VerificationCorrupt)
+)
 
 // ReconciliationCondition identifies one metadata-only discrepancy.
 type ReconciliationCondition string
@@ -188,7 +192,8 @@ func validateIndexedLocation(location IndexedLocation) error {
 
 func validIndexedLocationState(state string) bool {
 	switch state {
-	case "staging", "verified", indexedStateAvailable, "missing", "corrupt", "quarantined", "tombstoned", "deleted":
+	case "staging", "verified", indexedStateAvailable, indexedStateMissing, indexedStateCorrupt,
+		"quarantined", "tombstoned", "deleted":
 		return true
 	default:
 		return false

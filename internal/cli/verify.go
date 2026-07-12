@@ -79,7 +79,7 @@ func newVerifyRunCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
 				return err
 			}
 
-			if flags.outputFormat == "table" {
+			if flags.outputFormat == outputFormatTable {
 				return writeValue(stdout, flags.outputFormat, result.Verification)
 			}
 
@@ -91,13 +91,13 @@ func newVerifyRunCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
 	command.Flags().StringVar(&flags.manifestSHA256, manifestFlag, "", "published manifest SHA-256")
 	command.Flags().StringVar(&flags.localDriverID, localDriverIDFlag, "", "local filesystem driver ID")
 	command.Flags().StringVar(&flags.localRoot, localRootFlag, "", "local filesystem archive root")
-	command.Flags().StringVar(&flags.idempotencyKey, "idempotency-key", "", "stable identity for this audit attempt")
+	command.Flags().StringVar(&flags.idempotencyKey, idempotencyKeyFlag, "", "stable identity for this audit attempt")
 	command.Flags().Uint64Var(&flags.leaseSeconds, "lease-seconds", 60, "verification lease duration")
 	command.Flags().DurationVar(&flags.renewalInterval, "renewal-interval", 30*time.Second, "lease renewal interval")
 	command.Flags().StringVar(&flags.outputFormat, "format", "table", "output format: table, json, or yaml")
 
 	for _, name := range []string{
-		controlURLFlag, namespaceFlag, manifestFlag, localDriverIDFlag, localRootFlag, "idempotency-key",
+		controlURLFlag, namespaceFlag, manifestFlag, localDriverIDFlag, localRootFlag, idempotencyKeyFlag,
 	} {
 		if err := command.MarkFlagRequired(name); err != nil {
 			panic(err)

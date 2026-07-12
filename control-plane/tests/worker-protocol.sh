@@ -1401,3 +1401,111 @@ changed_reconcile_status=$(curl --silent --output /dev/null --write-out '%{http_
   --data "$(jq '.evidence[0].available = 0' <<<"$reconcile_completion")" \
   "$base_url/api/v1/reconciliations/$reconcile_id/complete")
 [[ "$changed_reconcile_status" == 409 ]]
+
+repair_request=$(jq -cn --arg manifest_sha "$restore_manifest_sha" '{
+  namespace_id: "202122232425262728292a2b2c2d2e2f",
+  manifest_sha256: $manifest_sha,
+  target_driver_id: "move-driver",
+  idempotency_key: "worker-e2e-repair-missing-move-driver"
+}')
+repair_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$repair_request" \
+  "$base_url/api/v1/repairs")
+repair_id=$(jq -r .id <<<"$repair_operation")
+jq -e --arg manifest_sha "$restore_manifest_sha" '
+  .kind == "copy" and .state == "planned" and .phase == "planned" and
+  .manifest_sha256 == $manifest_sha and .recovery_revision >= 2 and
+  .target_driver_id == "move-driver" and .expected_object_count == 1 and
+  .expected_target_count == 1 and
+  .useful_bytes_total == 18
+' <<<"$repair_operation" >/dev/null
+replayed_repair=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$repair_request" \
+  "$base_url/api/v1/repairs")
+[[ "$replayed_repair" == "$repair_operation" ]]
+
+changed_repair_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.target_driver_id = "copy-driver"' <<<"$repair_request")" \
+  "$base_url/api/v1/repairs")
+[[ "$changed_repair_status" == 409 ]]
+
+repair_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/operations/$repair_id/claim")
+repair_snapshot_request=$(jq -cn \
+  --arg lease_id "$(jq -r .lease_id <<<"$repair_lease")" \
+  --arg incarnation "$(jq -r .incarnation <<<"$repair_lease")" \
+  --argjson fence "$(jq -r .fencing_token <<<"$repair_lease")" \
+  '{lease_id: $lease_id, incarnation: $incarnation, fencing_token: $fence}')
+repair_snapshot=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$repair_snapshot_request" \
+  "$base_url/api/v1/repairs/$repair_id/snapshot")
+jq -e --argjson recovery "$move_final_recovery" '
+  . as $snapshot |
+  .recovery == $recovery and .target_driver_id == "move-driver" and
+  (.target_location_ids | length) == 1 and
+  (.locations | any(.driver_id == "copy-driver" and .state == "available")) and
+  (.locations | any(
+    .id == $snapshot.target_location_ids[0] and
+    .driver_id == "move-driver" and .state == "missing"
+  ))
+' <<<"$repair_snapshot" >/dev/null
+
+stale_repair_snapshot_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.fencing_token += 1' <<<"$repair_snapshot_request")" \
+  "$base_url/api/v1/repairs/$repair_id/snapshot")
+[[ "$stale_repair_snapshot_status" == 409 ]]
+
+repair_completion=$(jq -cn \
+  --arg lease_id "$(jq -r .lease_id <<<"$repair_lease")" \
+  --arg incarnation "$(jq -r .incarnation <<<"$repair_lease")" \
+  --arg manifest_sha "$restore_manifest_sha" \
+  --argjson fence "$(jq -r .fencing_token <<<"$repair_lease")" '{
+    lease_id: $lease_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    manifest_sha256: $manifest_sha,
+    objects: [{
+      driver_id: "move-driver",
+      storage_key: "move/payload",
+      provider_version: "move-v1",
+      etag: "move-repaired-etag",
+      size_bytes: 18
+    }]
+  }')
+completed_repair=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$repair_completion" \
+  "$base_url/api/v1/repairs/$repair_id/complete")
+jq -e \
+  --arg operation_id "$repair_id" \
+  --arg manifest_sha "$restore_manifest_sha" \
+  --argjson recovery_revision "$(jq -r .recovery_revision <<<"$repair_operation")" '
+  .operation_id == $operation_id and .manifest_sha256 == $manifest_sha and
+  .state == "succeeded" and .objects_repaired == 1 and
+  .locations_repaired == 1 and .ciphertext_bytes == 18 and
+  .recovery_revision == $recovery_revision
+' <<<"$completed_repair" >/dev/null
+replayed_repair_completion=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$repair_completion" \
+  "$base_url/api/v1/repairs/$repair_id/complete")
+[[ "$replayed_repair_completion" == "$completed_repair" ]]
+
+changed_repair_completion_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.objects[0].etag = "changed-etag"' <<<"$repair_completion")" \
+  "$base_url/api/v1/repairs/$repair_id/complete")
+[[ "$changed_repair_completion_status" == 409 ]]
+
+completed_repair_snapshot_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" --data "$repair_snapshot_request" \
+  "$base_url/api/v1/repairs/$repair_id/snapshot")
+[[ "$completed_repair_snapshot_status" == 409 ]]
+
+no_missing_repair_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.idempotency_key = "worker-e2e-no-longer-missing-move-driver"' \
+    <<<"$repair_request")" \
+  "$base_url/api/v1/repairs")
+[[ "$no_missing_repair_status" == 409 ]]

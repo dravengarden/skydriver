@@ -139,14 +139,23 @@ source location, and covers every extent on the requested destination. It then
 publishes the new locations and recovery head in one fenced revision CAS.
 Concurrent losers remain unreachable staging, and an exact request can be
 replayed after lease release. Copy never deletes a source; the later move saga
-remains a separate operation. The controlled move SDK pins every available
-location on one source driver, publishes and verifies a complete destination
-replica first, then publishes a second recovery revision that removes exactly
-those pinned sources. The same live write fence protects both revisions. D1
-changes the removed locations to `tombstoned` and records a policy-derived
-grace deadline, while the operation remains `source_delete_pending` for an
-explicit janitor. Provider deletion is intentionally not performed by the
-move client. An authorized `MoveJanitor` later claims object-grouped delete
+remains a separate operation. Controlled Repair is the narrower,
+location-preserving path for objects proven missing: the Worker pins the exact
+location revisions and complete provider-object identities, while the SDK
+reconstructs every object from separately available, SHA-256-verified ranges.
+After independent destination readback, one fenced D1 batch moves only those
+locations through `verified` to `available`, resolves matching findings, and
+closes the operation without changing the recovery revision. A changed
+provider version or any corrupt range in the target object requires relocation
+through Copy instead of an unsafe overwrite. The controlled move SDK pins every
+available location on one source driver, publishes and verifies a complete
+destination replica first, then publishes a second recovery revision that
+removes exactly those pinned sources. The same live write fence protects both
+revisions. D1 changes the removed locations to `tombstoned` and records a
+policy-derived grace deadline, while the operation remains
+`source_delete_pending` for an explicit janitor. Provider deletion is
+intentionally not performed by the move client. An authorized `MoveJanitor`
+later claims object-grouped delete
 tasks, repeats active-read, reachability, replica-policy, incarnation, and
 fence checks immediately before I/O, calls an idempotent driver deleter, and
 only then advances D1 through `deleting` to `succeeded`. Lost completion
@@ -283,6 +292,48 @@ carrack verify run \
 
 The idempotency key names one audit attempt. Retrying that attempt reuses its
 pinned recovery revision; a later scheduled scrub must use a new key.
+
+Metadata reconciliation is a separate administrator operation. It compares a
+validated R2 recovery document with the complete D1 location snapshot under one
+renewable fence and records `unindexed`, `orphan`, and `degraded` findings
+without contacting providers or editing the manifest:
+
+```bash
+carrack reconcile run \
+  --control-url https://carrack.example.com \
+  --namespace 202122232425262728292a2b2c2d2e2f \
+  --manifest <manifest-sha256> \
+  --idempotency-key metadata-reconcile-2026-07-12
+```
+
+The Worker recomputes the submitted report before committing it. Exact retries
+are idempotent, changed reports are rejected, and resolved discrepancies close
+only findings with the same condition and subject identity.
+
+A relay can repair provider objects that verification has proven missing while
+another exact replica remains available. This local-filesystem path preserves
+the original storage keys and recovery revision:
+
+```bash
+export CARRACK_CONTROL_TOKEN="$(read-relay-token)"
+
+carrack repair run \
+  --control-url https://carrack.example.com \
+  --namespace 202122232425262728292a2b2c2d2e2f \
+  --manifest <manifest-sha256> \
+  --source-local-driver-id local-source \
+  --source-local-root /srv/carrack/source \
+  --destination-local-driver-id local-mirror \
+  --destination-local-root /srv/carrack/mirror \
+  --idempotency-key local-mirror-repair-2026-07-12 \
+  --staging-directory /var/tmp/carrack
+```
+
+The operation repairs only the target locations pinned when that idempotency
+key was created. Newly missing locations require a new operation. Every range
+in a target object must have a different, currently available source; corrupt
+target objects and providers that cannot reproduce the pinned version identity
+are rejected for relocation through Copy.
 
 The local filesystem Copy path creates and publishes a verified destination
 replica while retaining every source location:

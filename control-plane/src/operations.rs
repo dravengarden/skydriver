@@ -315,6 +315,8 @@ fn lease_statements(
             "UPDATE operations \
              SET state = 'running', \
                  phase = CASE \
+                     WHEN EXISTS(SELECT 1 FROM repair_intents \
+                                 WHERE operation_id = operations.id) THEN 'repairing' \
                      WHEN kind = 'verify' THEN 'verifying' \
                      WHEN kind = 'reconcile' THEN 'reconciling' \
                      ELSE 'transferring' END, \

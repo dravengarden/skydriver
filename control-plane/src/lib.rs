@@ -15,6 +15,7 @@ mod operations;
 pub mod protocol;
 mod publication;
 mod reconciliation;
+mod repairing;
 mod restoration;
 mod telemetry;
 mod verification;
@@ -230,6 +231,59 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
                 };
 
                 reconciliation::complete(
+                    &mut request,
+                    &context.env,
+                    &client,
+                    operation_id,
+                )
+                .await
+            },
+        )
+        .post_async("/api/v1/repairs", |mut request, context| async move {
+            if external_maintenance(&context.env) {
+                return Response::error("control-plane mutations are disabled", 409);
+            }
+
+            let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                return Response::error("client authentication required", 401);
+            };
+
+            repairing::create(&mut request, &context.env, &client).await
+        })
+        .post_async(
+            "/api/v1/repairs/:id/snapshot",
+            |mut request, context| async move {
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+                let Some(operation_id) = context.param("id") else {
+                    return Response::error("operation ID is required", 400);
+                };
+
+                repairing::fetch_snapshot(
+                    &mut request,
+                    &context.env,
+                    &client,
+                    operation_id,
+                )
+                .await
+            },
+        )
+        .post_async(
+            "/api/v1/repairs/:id/complete",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+                let Some(operation_id) = context.param("id") else {
+                    return Response::error("operation ID is required", 400);
+                };
+
+                repairing::complete(
                     &mut request,
                     &context.env,
                     &client,

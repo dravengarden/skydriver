@@ -20,7 +20,7 @@ import (
 
 const (
 	clientTokenBytes        = 32
-	maximumControlBodyBytes = 1 << 20
+	maximumControlBodyBytes = 64 << 20
 )
 
 var (

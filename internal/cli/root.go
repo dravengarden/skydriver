@@ -20,6 +20,7 @@ const (
 	developmentVersion           = "0.1.0-dev"
 	versionCommandName           = "version"
 	outputFormatJSON             = "json"
+	outputFormatTable            = "table"
 	controlURLFlag               = "control-url"
 	namespaceFlag                = "namespace"
 	manifestFlag                 = "manifest"
@@ -33,6 +34,9 @@ const (
 	destinationPrefixFlag        = "destination-prefix"
 	stagingDirectoryFlag         = "staging-directory"
 	runCommandName               = "run"
+	reconcileCommandName         = "reconcile"
+	repairCommandName            = "repair"
+	idempotencyKeyFlag           = "idempotency-key"
 	localDriverIDFlag            = "local-driver-id"
 	localRootFlag                = "local-root"
 )
@@ -71,6 +75,8 @@ func newRootCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Comman
 		newCopyCommand(ctx, stdout),
 		newMoveCommand(ctx, stdout),
 		newVerifyCommand(ctx, stdout),
+		newReconcileCommand(ctx, stdout),
+		newRepairCommand(ctx, stdout),
 	)
 
 	return command
@@ -134,7 +140,7 @@ func writeValue(writer io.Writer, outputFormat string, value any) error {
 		if err := encoder.Close(); err != nil {
 			return fmt.Errorf("close YAML encoder: %w", err)
 		}
-	case "table":
+	case outputFormatTable:
 		if err := writeTable(writer, value); err != nil {
 			return err
 		}
