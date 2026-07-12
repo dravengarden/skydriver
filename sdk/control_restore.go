@@ -344,10 +344,24 @@ func validRestoreOperation(
 	requested CreateRestoreOperationRequest,
 ) bool {
 	return validControlHex(operation.ID, 32) && operation.NamespaceID == requested.NamespaceID &&
-		operation.Kind == "restore" && operation.State == operationStatePlanned &&
-		operation.Phase == operationStatePlanned &&
+		operation.Kind == "restore" && validRestoreOperationState(operation) &&
 		validControlHex(operation.Incarnation, 32) && operation.Revision > 0 &&
 		operation.UsefulBytesTotal <= math.MaxInt64 && operation.VersionID != "" &&
 		operation.ObjectID != "" && operation.Generation > 0 &&
 		operation.ManifestSHA256 == requested.ManifestSHA256
+}
+
+func validRestoreOperationState(operation RestoreOperation) bool {
+	switch operation.State {
+	case operationStatePlanned:
+		return operation.Phase == operationStatePlanned
+	case operationStateRunning:
+		return operation.Phase == "restoring"
+	case operationStateSucceeded:
+		return operation.Phase == "completed"
+	case operationStateFailed:
+		return operation.Phase == operationStateFailed
+	default:
+		return false
+	}
 }

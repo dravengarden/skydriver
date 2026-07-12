@@ -10,8 +10,13 @@ import (
 	"github.com/dravengarden/carrack/cryptostream"
 )
 
-// ErrRestoreLeaseLost indicates that provider I/O was cancelled after renewal failed.
-var ErrRestoreLeaseLost = errors.New("carrack restore read lease was lost")
+var (
+	// ErrRestoreLeaseLost indicates that provider I/O was cancelled after renewal failed.
+	ErrRestoreLeaseLost = errors.New("carrack restore read lease was lost")
+	// ErrRestoreOperationFailed indicates that an exact idempotent retry found a
+	// previously recorded terminal integrity failure.
+	ErrRestoreOperationFailed = errors.New("carrack restore operation previously failed")
+)
 
 // ControlledRestorer coordinates the control-plane read lease with local I/O.
 type ControlledRestorer struct {
@@ -36,6 +41,7 @@ type ControlledRestoreResult struct {
 	Restore          RestoreResult
 	Completion       CompletedRestore
 	TelemetryWarning string
+	AlreadyCompleted bool
 }
 
 // NewControlledRestorer constructs a restore coordinator with an explicit renewal cadence.
@@ -63,8 +69,8 @@ func (coordinator *ControlledRestorer) Restore(
 	ctx context.Context,
 	requested ControlledRestoreRequest,
 ) (ControlledRestoreResult, error) {
-	if coordinator == nil || coordinator.control == nil || coordinator.restorer == nil {
-		return ControlledRestoreResult{}, fmt.Errorf("%w: controlled restorer is not initialized", ErrInvalidConfiguration)
+	if err := validateControlledRestore(coordinator, requested); err != nil {
+		return ControlledRestoreResult{}, err
 	}
 
 	operation, err := coordinator.control.CreateRestoreOperation(ctx, CreateRestoreOperationRequest{
@@ -73,6 +79,10 @@ func (coordinator *ControlledRestorer) Restore(
 	})
 	if err != nil {
 		return ControlledRestoreResult{}, fmt.Errorf("create controlled restore: %w", err)
+	}
+
+	if operation.State == operationStateSucceeded || operation.State == operationStateFailed {
+		return completedControlledRestore(operation)
 	}
 
 	lease, err := coordinator.control.ClaimRestoreOperation(ctx, operation, coordinator.leaseSeconds)
@@ -157,6 +167,36 @@ func (coordinator *ControlledRestorer) Restore(
 		Operation: operation, Restore: restored, Completion: completion,
 		TelemetryWarning: progressReporter.warning(),
 	}, nil
+}
+
+func completedControlledRestore(operation RestoreOperation) (ControlledRestoreResult, error) {
+	completion := CompletedRestore{
+		OperationID: operation.ID, ManifestSHA256: operation.ManifestSHA256, State: operation.State,
+	}
+
+	result := ControlledRestoreResult{Operation: operation, Completion: completion}
+	if operation.State == operationStateFailed {
+		return result, fmt.Errorf("%w: operation %s", ErrRestoreOperationFailed, operation.ID)
+	}
+
+	result.AlreadyCompleted = true
+
+	return result, nil
+}
+
+func validateControlledRestore(
+	coordinator *ControlledRestorer,
+	requested ControlledRestoreRequest,
+) error {
+	if coordinator == nil || coordinator.control == nil || coordinator.restorer == nil {
+		return fmt.Errorf("%w: controlled restorer is not initialized", ErrInvalidConfiguration)
+	}
+
+	if requested.Destination == "" {
+		return fmt.Errorf("%w: invalid controlled restore request", ErrInvalidConfiguration)
+	}
+
+	return nil
 }
 
 func epochKeyIsZero(key cryptostream.EpochKey) bool {

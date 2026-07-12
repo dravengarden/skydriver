@@ -374,6 +374,16 @@ completion rechecks the manifest and plaintext identities under the live read
 fence, advances the operation through verification and commit states, and
 releases the lease in one D1 batch.
 
+The caller scopes a restore idempotency key to the same manifest and local
+destination. Exact creation retries return the current durable operation, not a
+new read intent. A `running` receipt resumes through the existing local journal.
+A `succeeded` receipt proves that local atomic publication preceded the D1
+completion, so the SDK returns `AlreadyCompleted` without another provider
+read. A `failed` receipt returns a stable terminal-failure error without
+re-reading known-bad ciphertext. The Worker's exact complete and fail requests
+remain replayable with their original released fence, covering clients that
+retry the terminal HTTP call directly.
+
 The portable recovery manifest is metadata and may be returned by the control
 plane, but only under that same live read fence. The Worker resolves the
 operation's pinned intent to its durable R2 object, revalidates the complete
