@@ -52,6 +52,27 @@ struct PublishResponse {
     state: &'static str,
 }
 
+#[derive(Deserialize)]
+struct PublicationConstraintRow {
+    kind: String,
+    namespace_id: String,
+    object_id: Option<String>,
+    source_generation: Option<u64>,
+    target_generation: Option<u64>,
+    source_plaintext_sha256: Option<String>,
+    source_plaintext_bytes: Option<u64>,
+    source_pack_count: Option<u64>,
+    expected_object_revision: Option<u64>,
+    target_root_version: Option<u32>,
+    target_key_epoch: Option<u64>,
+    destination_driver_id: Option<String>,
+    current_generation: Option<u64>,
+    current_object_revision: Option<u64>,
+    source_state: Option<String>,
+    publication_state: Option<String>,
+    source_pack_ids_json: String,
+}
+
 pub(crate) async fn publish(
     request: &mut Request,
     env: &Env,
@@ -64,6 +85,9 @@ pub(crate) async fn publish(
 
     let (validated, r2_bytes) = load_recovery(env, &requested).await?;
     let database = env.d1("CARRACK_INDEX")?;
+    if !publication_matches_operation(&database, client, &requested, &validated).await? {
+        return Response::error("publication does not match its operation intent", 409);
+    }
     create_intent(&database, client, &requested, &validated).await?;
 
     let Some(intent) = load_intent(&database, &requested.operation_id).await? else {
@@ -78,7 +102,12 @@ pub(crate) async fn publish(
     }
 
     stage_metadata(&database, client, &requested, &validated).await?;
-    finalize(&database, client, &requested, &validated, r2_bytes).await?;
+    if finalize(&database, client, &requested, &validated, r2_bytes)
+        .await
+        .is_err()
+    {
+        return Response::error("publication commit lost its fence or object revision", 409);
+    }
 
     let committed = load_intent(&database, &requested.operation_id)
         .await?
@@ -88,6 +117,89 @@ pub(crate) async fn publish(
     }
 
     published_response(&requested, &validated)
+}
+
+async fn publication_matches_operation(
+    database: &D1Database,
+    client: &AuthenticatedClient,
+    requested: &PublishRequest,
+    validated: &manifests::ValidatedRecovery,
+) -> Result<bool> {
+    let constraint = database
+        .prepare(
+            "SELECT operation.kind, operation.namespace_id, compact.object_id, \
+                    compact.source_generation, compact.target_generation, \
+                    compact.source_plaintext_sha256, \
+                    compact.source_plaintext_bytes, compact.source_pack_count, \
+                    compact.expected_object_revision, compact.target_root_version, \
+                    compact.target_key_epoch, compact.destination_driver_id, \
+                    object.current_generation, object.revision AS current_object_revision, \
+                    source.state AS source_state, publication.state AS publication_state, \
+                    COALESCE((SELECT json_group_array(version_pack.pack_id) \
+                              FROM version_packs AS version_pack \
+                              WHERE version_pack.version_id = compact.version_id), '[]') \
+                        AS source_pack_ids_json \
+             FROM operations AS operation \
+             LEFT JOIN compact_intents AS compact ON compact.operation_id = operation.id \
+             LEFT JOIN objects AS object ON object.id = compact.object_id \
+             LEFT JOIN object_versions AS source ON source.id = compact.version_id \
+             LEFT JOIN publication_intents AS publication \
+               ON publication.operation_id = operation.id \
+             WHERE operation.id = ?1 AND operation.requested_by = ?2 \
+               AND operation.kind IN ('import', 'compact')",
+        )
+        .bind(&[
+            JsValue::from_str(&requested.operation_id),
+            JsValue::from_str(&client.id),
+        ])?
+        .first::<PublicationConstraintRow>(None)
+        .await?;
+    let Some(constraint) = constraint else {
+        return Ok(false);
+    };
+    if constraint.namespace_id != validated.namespace_id {
+        return Ok(false);
+    }
+    if constraint.kind == "import" {
+        return Ok(true);
+    }
+
+    let source_pack_ids = serde_json::from_str::<Vec<String>>(&constraint.source_pack_ids_json)?;
+    let content = &validated.recovery.manifest;
+    let target_pack_count = u64::try_from(content.packs.len())
+        .map_err(|error| worker::Error::RustError(error.to_string()))?;
+    let Some(source_pack_count) = constraint.source_pack_count else {
+        return Ok(false);
+    };
+    let current_source = constraint.current_generation == constraint.source_generation
+        && constraint.current_object_revision == constraint.expected_object_revision
+        && constraint.source_state.as_deref() == Some("published");
+    let committed = constraint.publication_state.as_deref() == Some("committed");
+
+    Ok(
+        constraint.object_id.as_deref() == Some(validated.object_id.as_str())
+            && constraint.target_generation == Some(validated.generation)
+            && constraint.source_plaintext_sha256.as_deref()
+                == Some(content.plaintext_sha256.as_str())
+            && constraint.source_plaintext_bytes == Some(content.plaintext_size)
+            && target_pack_count > 0
+            && target_pack_count < source_pack_count
+            && constraint.expected_object_revision == Some(requested.expected_object_revision)
+            && constraint.target_root_version == Some(content.crypto.root_version)
+            && constraint.target_key_epoch == Some(content.crypto.key_epoch)
+            && constraint.destination_driver_id.as_deref()
+                == Some(requested.sidecar_driver_id.as_str())
+            && (current_source || committed)
+            && content
+                .packs
+                .iter()
+                .all(|pack| !source_pack_ids.contains(&pack.id))
+            && validated
+                .recovery
+                .locations
+                .iter()
+                .all(|location| location.driver_id == requested.sidecar_driver_id),
+    )
 }
 
 async fn load_recovery(
@@ -155,7 +267,7 @@ async fn create_intent(
              JOIN control_plane_state AS state ON state.singleton = 1 \
              JOIN leases AS lease ON lease.id = ?12 AND lease.operation_id = operation.id \
              JOIN import_intents AS import ON import.operation_id = operation.id \
-             WHERE operation.id = ?13 AND operation.kind = 'import' \
+             WHERE operation.id = ?13 AND operation.kind IN ('import', 'compact') \
                AND operation.state = 'running' AND operation.incarnation = state.incarnation \
                AND operation.namespace_id = ?14 AND state.mode = 'active' \
                AND state.incarnation = ?15 AND lease.owner_client_id = ?1 \
@@ -166,10 +278,25 @@ async fn create_intent(
                     OR operation.useful_bytes_total = ?19) \
                AND EXISTS(SELECT 1 FROM client_namespace_permissions \
                           WHERE client_id = ?1 AND namespace_id = operation.namespace_id \
-                            AND role IN ('importer', 'administrator')) \
-               AND (NOT EXISTS(SELECT 1 FROM objects WHERE id = ?2) \
+                            AND (role = 'administrator' \
+                                 OR (operation.kind = 'import' AND role = 'importer') \
+                                 OR (operation.kind = 'compact' AND role = 'relay'))) \
+               AND (operation.kind = 'compact' \
+                    OR NOT EXISTS(SELECT 1 FROM objects WHERE id = ?2) \
                     OR EXISTS(SELECT 1 FROM objects \
                               WHERE id = ?2 AND namespace_id = ?14 AND logical_name = ?2)) \
+               AND (operation.kind = 'import' OR EXISTS(\
+                   SELECT 1 FROM compact_intents AS compact \
+                   WHERE compact.operation_id = operation.id \
+                     AND compact.object_id = ?2 \
+                     AND compact.target_generation = ?3 \
+                     AND compact.source_plaintext_sha256 = ?20 \
+                     AND compact.source_plaintext_bytes = ?19 \
+                     AND compact.expected_object_revision = ?10 \
+                     AND compact.target_root_version = ?17 \
+                     AND compact.target_key_epoch = ?18 \
+                     AND compact.destination_driver_id = ?8\
+               )) \
                AND NOT EXISTS(\
                    SELECT 1 FROM object_versions AS version \
                    JOIN objects AS object ON object.id = version.object_id \
@@ -214,6 +341,7 @@ async fn create_intent(
             ),
             integer(validated.recovery.manifest.crypto.key_epoch)?,
             integer(validated.recovery.manifest.plaintext_size)?,
+            JsValue::from_str(&validated.recovery.manifest.plaintext_sha256),
         ])?
         .run()
         .await?;
@@ -514,6 +642,10 @@ fn location_statements(
     Ok(vec![insert, verify, publish])
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the complete publication and compaction CAS remains auditable as one statement set"
+)]
 async fn finalize(
     database: &D1Database,
     client: &AuthenticatedClient,
@@ -611,6 +743,23 @@ async fn finalize(
                 integer(requested.expected_object_revision)?,
             ])?,
     );
+    statements.push(
+        database
+            .prepare(format!(
+                "UPDATE object_versions SET state = 'retired' \
+                 WHERE id = (SELECT version_id FROM compact_intents WHERE operation_id = ?1) \
+                   AND state = 'published' \
+                   AND EXISTS(SELECT 1 FROM compact_intents AS compact \
+                              JOIN objects AS object ON object.id = compact.object_id \
+                              WHERE compact.operation_id = ?1 \
+                                AND object.current_generation = compact.target_generation) \
+                   AND {guard}"
+            ))
+            .bind(&[
+                JsValue::from_str(&requested.operation_id),
+                JsValue::from_str(&client.id),
+            ])?,
+    );
     statements.extend(completion_statements(database, requested, &now)?);
 
     database.batch(statements).await?;
@@ -632,6 +781,40 @@ fn completion_statements(
         .bind(&[
             JsValue::from_str(now),
             JsValue::from_str(&requested.operation_id),
+        ])?;
+    let finish_attempts = database
+        .prepare(
+            "UPDATE operation_attempts \
+             SET state = 'succeeded', finished_at = ?1, \
+                 useful_bytes_verified = MAX(\
+                     useful_bytes_verified, \
+                     COALESCE((SELECT useful_bytes_total FROM operations WHERE id = ?2), 0)\
+                 ) \
+             WHERE component_id IN (SELECT id FROM operation_components \
+                                    WHERE operation_id = ?2) \
+               AND attempt = ?3 AND lease_id = ?4 AND incarnation = ?5 \
+               AND state = 'running'",
+        )
+        .bind(&[
+            JsValue::from_str(now),
+            JsValue::from_str(&requested.operation_id),
+            integer(requested.fencing_token)?,
+            JsValue::from_str(&requested.lease_id),
+            JsValue::from_str(&requested.incarnation),
+        ])?;
+    let finish_components = database
+        .prepare(
+            "UPDATE operation_components \
+             SET state = 'succeeded', useful_bytes_verified = useful_bytes_total, \
+                 finished_at = ?1, revision = revision + 1, updated_at = ?1 \
+             WHERE operation_id = ?2 AND state = 'running' \
+               AND lease_id = ?3 AND fencing_token = ?4",
+        )
+        .bind(&[
+            JsValue::from_str(now),
+            JsValue::from_str(&requested.operation_id),
+            JsValue::from_str(&requested.lease_id),
+            integer(requested.fencing_token)?,
         ])?;
     let succeed = database
         .prepare(
@@ -656,7 +839,13 @@ fn completion_statements(
             JsValue::from_str(&requested.incarnation),
         ])?;
 
-    Ok(vec![commit, succeed, release])
+    Ok(vec![
+        commit,
+        finish_attempts,
+        finish_components,
+        succeed,
+        release,
+    ])
 }
 
 fn published_response(

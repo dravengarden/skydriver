@@ -4,7 +4,9 @@
 //! directly between Carrack agents and storage providers.
 
 mod clients;
+mod compaction;
 mod copying;
+mod integrity;
 mod key_grants;
 pub mod keys;
 mod manifest_archive;
@@ -186,6 +188,96 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
 
             operations::create(&mut request, &context.env, &client).await
         })
+        .post_async("/api/v1/compactions", |mut request, context| async move {
+            if external_maintenance(&context.env) {
+                return Response::error("control-plane mutations are disabled", 409);
+            }
+
+            let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                return Response::error("client authentication required", 401);
+            };
+
+            compaction::create(&mut request, &context.env, &client).await
+        })
+        .post_async(
+            "/api/v1/compactions/:id/manifest",
+            |mut request, context| async move {
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+                let Some(operation_id) = context.param("id") else {
+                    return Response::error("operation ID is required", 400);
+                };
+
+                compaction::fetch_manifest(
+                    &mut request,
+                    &context.env,
+                    &client,
+                    operation_id,
+                )
+                .await
+            },
+        )
+        .post_async(
+            "/api/v1/compactions/:id/source-key",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+                let Some(operation_id) = context.param("id") else {
+                    return Response::error("operation ID is required", 400);
+                };
+
+                key_grants::grant_compact_source(
+                    &mut request,
+                    &context.env,
+                    &client,
+                    operation_id,
+                )
+                .await
+            },
+        )
+        .post_async(
+            "/api/v1/compactions/:id/target-key",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+                let Some(operation_id) = context.param("id") else {
+                    return Response::error("operation ID is required", 400);
+                };
+
+                key_grants::grant_compact_target(
+                    &mut request,
+                    &context.env,
+                    &client,
+                    operation_id,
+                )
+                .await
+            },
+        )
+        .post_async(
+            "/api/v1/compactions/publish",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+
+                let Some(client) = clients::authenticate(&request, &context.env).await? else {
+                    return Response::error("client authentication required", 401);
+                };
+
+                publication::publish(&mut request, &context.env, &client).await
+            },
+        )
         .post_async("/api/v1/reconciliations", |mut request, context| async move {
             if external_maintenance(&context.env) {
                 return Response::error("control-plane mutations are disabled", 409);
@@ -668,6 +760,9 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
         })
         .get_async("/api/components/live", |request, context| async move {
             live_components(&request, &context.env).await
+        })
+        .get_async("/api/integrity/findings", |request, context| async move {
+            integrity::list(&request, &context.env).await
         })
         .post_async("/api/recovery/begin", |mut request, context| async move {
             begin_recovery(&mut request, &context.env).await

@@ -335,6 +335,37 @@ in a target object must have a different, currently available source; corrupt
 target objects and providers that cannot reproduce the pinned version identity
 are rejected for relocation through Copy.
 
+An administrator or relay can compact a current multi-pack generation into a
+smaller immutable replacement. The initial CLI path decrypts from one local
+archive root into an explicit local workspace and re-encrypts to a distinct
+local archive root:
+
+```bash
+carrack compact run \
+  --control-url https://carrack.example.com \
+  --namespace 202122232425262728292a2b2c2d2e2f \
+  --manifest <source-manifest-sha256> \
+  --source-local-driver-id local-source \
+  --source-local-root /srv/carrack/source \
+  --destination-local-driver-id local-compacted \
+  --destination-local-root /srv/carrack/compacted \
+  --destination-prefix compacted \
+  --idempotency-key compact-object-2026-07-12 \
+  --staging-directory /var/tmp/carrack
+```
+
+Creation pins the current source generation, recovery revision, object
+revision, both source and target crypto contexts, and destination. Every new
+pack ID is persisted before encryption. Publication is accepted only when the
+replacement preserves the complete plaintext identity, uses fewer packs,
+shares no pack ID with the source, and still wins the pinned object-revision
+CAS. The target becomes current and the source becomes `retired` in the same D1
+batch; source payload remains available for active readers and later GC.
+Compaction may leave its plaintext workspace file after an interruption so an
+exact retry can converge. A successful publication removes that plaintext file
+and retains only the non-secret plan. Treat the staging directory as sensitive
+until the command succeeds or the operator explicitly cleans up a failed run.
+
 The local filesystem Copy path creates and publishes a verified destination
 replica while retaining every source location:
 

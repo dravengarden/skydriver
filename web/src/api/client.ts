@@ -38,13 +38,50 @@ const LiveComponentsSchema = v.object({
     components: v.array(LiveComponentSchema),
 });
 
+const IntegrityFindingSchema = v.object({
+    id: v.string(),
+    namespace_id: v.nullable(v.string()),
+    namespace_name: v.nullable(v.string()),
+    subject_kind: v.string(),
+    subject_id: v.string(),
+    condition: v.string(),
+    state: v.string(),
+    evidence: v.unknown(),
+    first_observed_at: v.number(),
+    last_observed_at: v.number(),
+    resolved_at: v.nullable(v.number()),
+    revision: v.number(),
+    manifest_sha256: v.nullable(v.string()),
+    root_version: v.nullable(v.number()),
+    extent_sha256: v.nullable(v.string()),
+    driver_id: v.nullable(v.string()),
+    storage_key: v.nullable(v.string()),
+    location_state: v.nullable(v.string()),
+    last_verified_at: v.nullable(v.number()),
+    available_repair_sources: v.number(),
+    repairable: v.boolean(),
+    required_action: v.string(),
+});
+
+const IntegrityFindingsSchema = v.object({
+    observed_at: v.number(),
+    next_cursor: v.nullable(v.string()),
+    findings: v.array(IntegrityFindingSchema),
+});
+
 export type Session = v.InferOutput<typeof SessionSchema>;
 export type Summary = v.InferOutput<typeof SummarySchema>;
 export type LiveComponent = v.InferOutput<typeof LiveComponentSchema>;
 export type LiveComponents = v.InferOutput<typeof LiveComponentsSchema>;
+export type IntegrityFinding = v.InferOutput<typeof IntegrityFindingSchema>;
+export type IntegrityFindings = v.InferOutput<typeof IntegrityFindingsSchema>;
 
 export function parseSession(input: unknown): Session {
     return v.parse(SessionSchema, input);
+}
+
+export function parseIntegrityFindings(input: unknown): IntegrityFindings {
+    return v.parse(IntegrityFindingsSchema, input);
 }
 
 async function requestJson<TSchema extends v.BaseSchema<unknown, unknown, v.BaseIssue<unknown>>>(
@@ -87,4 +124,17 @@ export function fetchSummary(): Promise<Summary> {
 
 export function fetchLiveComponents(): Promise<LiveComponents> {
     return requestJson("/api/components/live", undefined, LiveComponentsSchema);
+}
+
+export function fetchIntegrityFindings(cursor: string | null): Promise<IntegrityFindings> {
+    const parameters = new URLSearchParams({ state: "open", limit: "50" });
+    if (cursor !== null) {
+        parameters.set("cursor", cursor);
+    }
+
+    return requestJson(
+        `/api/integrity/findings?${parameters.toString()}`,
+        undefined,
+        IntegrityFindingsSchema,
+    );
 }

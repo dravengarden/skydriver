@@ -20,6 +20,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { fetchLiveComponents, fetchSummary } from "../api/client";
 import type { LiveComponent } from "../api/client";
+import { IntegrityFindings } from "./IntegrityFindings";
 
 interface DashboardProps {
     readonly username: string;
@@ -248,6 +249,8 @@ export function Dashboard({ username, onLogout }: DashboardProps) {
                         />
                     </Box>
                 )}
+
+                <IntegrityFindings />
 
                 <Stack
                     direction="row"

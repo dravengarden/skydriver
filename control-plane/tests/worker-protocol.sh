@@ -35,6 +35,9 @@ wrangler=(
 raw_token=0123456789abcdef0123456789abcdef
 token=$(printf '%s' "$raw_token" | base64 -w0 | tr '+/' '-_' | tr -d '=')
 verifier=$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)
+admin_username=worker-e2e-operator
+admin_password=invalid-login
+admin_password_hash='$argon2id$v=19$m=19456,t=2,p=1$ip90n1xsUQEay9O8cV4YhQ$iDsJkzgRGFO44Tlu6RRg7NpZFPp4PMMnKhF12B/RZW8'
 restore_content=$(jq -cn '{
   schema_version: "carrack.manifest.v1",
   namespace_id: "202122232425262728292a2b2c2d2e2f",
@@ -87,6 +90,129 @@ restore_recovery=$(jq -cn \
   }')
 restore_recovery_bytes=${#restore_recovery}
 restore_recovery_sha=$(printf '%s' "$restore_recovery" | sha256sum | cut -d' ' -f1)
+compact_source_content=$(jq -cn '{
+  schema_version: "carrack.manifest.v1",
+  namespace_id: "202122232425262728292a2b2c2d2e2f",
+  object_id: "compact-object",
+  generation: 1,
+  plaintext_size: 2,
+  plaintext_sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  layout: {
+    physical_block_bytes: 1,
+    crypto_frame_bytes: 1,
+    logical_pack_bytes: 1
+  },
+  crypto: {
+    suite: "carrack-aes128gcm-hkdfsha256-v1",
+    root_version: 1,
+    key_epoch: 7
+  },
+  packs: [{
+    ordinal: 0,
+    pack_id: "606162636465666768696a6b6c6d6e6f",
+    plaintext_offset: 0,
+    plaintext_size: 1,
+    ciphertext_size: 17,
+    ciphertext_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    extents: [{
+      ordinal: 0,
+      first_frame: 0,
+      frame_count: 1,
+      ciphertext_offset: 0,
+      ciphertext_size: 17,
+      ciphertext_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }]
+  }, {
+    ordinal: 1,
+    pack_id: "707172737475767778797a7b7c7d7e7f",
+    plaintext_offset: 1,
+    plaintext_size: 1,
+    ciphertext_size: 17,
+    ciphertext_sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    extents: [{
+      ordinal: 0,
+      first_frame: 0,
+      frame_count: 1,
+      ciphertext_offset: 0,
+      ciphertext_size: 17,
+      ciphertext_sha256: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }]
+  }]
+}')
+compact_source_manifest_sha=$(printf '%s' "$compact_source_content" | sha256sum | cut -d' ' -f1)
+compact_source_recovery=$(jq -cn \
+  --arg manifest_sha "$compact_source_manifest_sha" \
+  --argjson manifest "$compact_source_content" '{
+    schema_version: "carrack.recovery.v1",
+    manifest_sha256: $manifest_sha,
+    manifest: $manifest,
+    locations: [{
+      extent_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      driver_id: "restore-driver",
+      storage_key: "compact/source-0",
+      provider_version: "compact-source-v1",
+      offset: 0,
+      length: 17
+    }, {
+      extent_sha256: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      driver_id: "restore-driver",
+      storage_key: "compact/source-1",
+      provider_version: "compact-source-v1",
+      offset: 0,
+      length: 17
+    }]
+  }')
+compact_source_recovery_bytes=${#compact_source_recovery}
+compact_target_content=$(jq -cn '{
+  schema_version: "carrack.manifest.v1",
+  namespace_id: "202122232425262728292a2b2c2d2e2f",
+  object_id: "compact-object",
+  generation: 2,
+  plaintext_size: 2,
+  plaintext_sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  layout: {
+    physical_block_bytes: 2,
+    crypto_frame_bytes: 1,
+    logical_pack_bytes: 2
+  },
+  crypto: {
+    suite: "carrack-aes128gcm-hkdfsha256-v1",
+    root_version: 1,
+    key_epoch: 1
+  },
+  packs: [{
+    ordinal: 0,
+    pack_id: "808182838485868788898a8b8c8d8e8f",
+    plaintext_offset: 0,
+    plaintext_size: 2,
+    ciphertext_size: 34,
+    ciphertext_sha256: "9999999999999999999999999999999999999999999999999999999999999999",
+    extents: [{
+      ordinal: 0,
+      first_frame: 0,
+      frame_count: 2,
+      ciphertext_offset: 0,
+      ciphertext_size: 34,
+      ciphertext_sha256: "8888888888888888888888888888888888888888888888888888888888888888"
+    }]
+  }]
+}')
+compact_target_manifest_sha=$(printf '%s' "$compact_target_content" | sha256sum | cut -d' ' -f1)
+compact_target_recovery=$(jq -cn \
+  --arg manifest_sha "$compact_target_manifest_sha" \
+  --argjson manifest "$compact_target_content" '{
+    schema_version: "carrack.recovery.v1",
+    manifest_sha256: $manifest_sha,
+    manifest: $manifest,
+    locations: [{
+      extent_sha256: "8888888888888888888888888888888888888888888888888888888888888888",
+      driver_id: "move-driver",
+      storage_key: "compact/target",
+      provider_version: "compact-target-v1",
+      offset: 0,
+      length: 34
+    }]
+  }')
 import_content=$(jq -cn '{
   schema_version: "carrack.manifest.v1",
   namespace_id: "202122232425262728292a2b2c2d2e2f",
@@ -175,6 +301,7 @@ move_underreplicated_recovery=$(jq -cn \
   --argjson recovery "$move_recovery" \
   '$recovery | .locations = [.locations[] | select(.driver_id == "move-driver")]')
 printf '%s' "$restore_recovery" >"$state_directory/restore-manifest.json"
+printf '%s' "$compact_source_recovery" >"$state_directory/compact-source-manifest.json"
 
 "${wrangler[@]}" d1 execute CARRACK_INDEX \
   --local \
@@ -189,6 +316,8 @@ printf '%s' "$restore_recovery" >"$state_directory/restore-manifest.json"
       '{\"minimum_available_replicas\":2}', '{\"move_grace_seconds\":120}',
       unixepoch(), unixepoch()
     );
+    INSERT INTO admin_users (username, password_hash, created_at, updated_at)
+    VALUES ('$admin_username', '$admin_password_hash', unixepoch(), unixepoch());
     INSERT INTO clients (
       id, name, sdk_version, capabilities_json, labels_json, state, created_at, updated_at
     ) VALUES (
@@ -298,6 +427,86 @@ printf '%s' "$restore_recovery" >"$state_directory/restore-manifest.json"
     WHERE id = 'restore-version';
     UPDATE objects SET current_generation = 1, updated_at = unixepoch()
     WHERE id = 'restore-object';
+    INSERT INTO objects (id, namespace_id, logical_name, created_at, updated_at)
+    VALUES (
+      'compact-object', '202122232425262728292a2b2c2d2e2f', 'compact/object',
+      unixepoch(), unixepoch()
+    );
+    INSERT INTO object_versions (
+      id, object_id, generation, manifest_sha256, plaintext_sha256,
+      plaintext_bytes, chunk_count, pack_count, state, created_at
+    ) VALUES (
+      'compact-version-1', 'compact-object', 1,
+      '$compact_source_manifest_sha',
+      'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+      2, 2, 2, 'staging', unixepoch()
+    );
+    INSERT INTO packs (
+      id, namespace_id, crypto_suite, root_key_version, key_epoch,
+      ciphertext_sha256, plaintext_bytes, ciphertext_bytes, frame_bytes, created_at
+    ) VALUES (
+      '606162636465666768696a6b6c6d6e6f',
+      '202122232425262728292a2b2c2d2e2f',
+      'carrack-aes128gcm-hkdfsha256-v1', 1, 7,
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      1, 17, 1, unixepoch()
+    ), (
+      '707172737475767778797a7b7c7d7e7f',
+      '202122232425262728292a2b2c2d2e2f',
+      'carrack-aes128gcm-hkdfsha256-v1', 1, 7,
+      'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      1, 17, 1, unixepoch()
+    );
+    INSERT INTO extents (
+      id, pack_id, ordinal, first_frame, frame_count, ciphertext_offset,
+      ciphertext_bytes, ciphertext_sha256, created_at
+    ) VALUES (
+      'compact-extent-0', '606162636465666768696a6b6c6d6e6f', 0, 0, 1, 0, 17,
+      'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      unixepoch()
+    ), (
+      'compact-extent-1', '707172737475767778797a7b7c7d7e7f', 0, 0, 1, 0, 17,
+      'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+      unixepoch()
+    );
+    INSERT INTO version_packs (version_id, ordinal, pack_id, plaintext_offset)
+    VALUES
+      ('compact-version-1', 0, '606162636465666768696a6b6c6d6e6f', 0),
+      ('compact-version-1', 1, '707172737475767778797a7b7c7d7e7f', 1);
+    INSERT INTO locations (
+      id, extent_id, driver_id, storage_key, provider_version,
+      storage_offset, storage_length, ciphertext_sha256, ciphertext_bytes,
+      state, created_at, updated_at
+    ) VALUES (
+      'compact-location-0', 'compact-extent-0', 'restore-driver',
+      'compact/source-0', 'compact-source-v1', 0, 17,
+      'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      17, 'staging', unixepoch(), unixepoch()
+    ), (
+      'compact-location-1', 'compact-extent-1', 'restore-driver',
+      'compact/source-1', 'compact-source-v1', 0, 17,
+      'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+      17, 'staging', unixepoch(), unixepoch()
+    );
+    UPDATE locations SET state = 'verified', verified_at = unixepoch(),
+      revision = revision + 1, updated_at = unixepoch()
+    WHERE id IN ('compact-location-0', 'compact-location-1');
+    UPDATE locations SET state = 'available', revision = revision + 1,
+      updated_at = unixepoch()
+    WHERE id IN ('compact-location-0', 'compact-location-1');
+    INSERT INTO recovery_manifests (
+      manifest_sha256, version_id, schema_version, r2_storage_key,
+      sidecar_driver_id, sidecar_storage_key, state, ciphertext_bytes,
+      verified_at, created_at, updated_at
+    ) VALUES (
+      '$compact_source_manifest_sha', 'compact-version-1', 'carrack.recovery.v1',
+      'compact/source-manifest.json', 'restore-driver', 'compact/source-sidecar.json',
+      'durable', $compact_source_recovery_bytes, unixepoch(), unixepoch(), unixepoch()
+    );
+    UPDATE object_versions SET state = 'published', published_at = unixepoch()
+    WHERE id = 'compact-version-1';
+    UPDATE objects SET current_generation = 1, updated_at = unixepoch()
+    WHERE id = 'compact-object';
   " >/dev/null
 
 "${wrangler[@]}" r2 object put carrack-manifests-preview/restore/manifest.json \
@@ -305,12 +514,18 @@ printf '%s' "$restore_recovery" >"$state_directory/restore-manifest.json"
   --persist-to "$state_directory" \
   --file "$state_directory/restore-manifest.json" >/dev/null
 
+"${wrangler[@]}" r2 object put carrack-manifests-preview/compact/source-manifest.json \
+  --local \
+  --persist-to "$state_directory" \
+  --file "$state_directory/compact-source-manifest.json" >/dev/null
+
 "${wrangler[@]}" dev \
   --local \
   --persist-to "$state_directory" \
   --port "$port" \
   --inspector-port 0 \
   --var CARRACK_ROOT_KEY_V1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
+  --var CARRACK_SESSION_KEY:worker-e2e-session-key-0123456789abcdef0123456789abcdef \
   --show-interactive-dev-session=false >"$server_log" 2>&1 &
 server_pid=$!
 
@@ -334,6 +549,33 @@ fi
 base_url="http://127.0.0.1:$port"
 authorization="Authorization: Bearer $token"
 json='Content-Type: application/json'
+
+unauthenticated_findings_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  "$base_url/api/integrity/findings")
+[[ "$unauthenticated_findings_status" == 401 ]]
+
+login_response=$(curl --silent --show-error --fail-with-body \
+  --dump-header "$state_directory/login.headers" \
+  -H "$json" \
+  --data "$(jq -cn --arg username "$admin_username" --arg password "$admin_password" \
+    '{username: $username, password: $password}')" \
+  "$base_url/api/auth/login")
+jq -e --arg username "$admin_username" \
+  '.authenticated == true and .username == $username' <<<"$login_response" >/dev/null
+session_cookie=$(awk '
+  tolower($1) == "set-cookie:" {
+    split($2, parts, ";")
+    gsub("\r", "", parts[1])
+    print parts[1]
+  }
+' "$state_directory/login.headers")
+[[ "$session_cookie" == carrack_session=* ]]
+session="Cookie: $session_cookie"
+
+authenticated_session=$(curl --silent --show-error --fail-with-body \
+  -H "$session" "$base_url/api/auth/session")
+jq -e --arg username "$admin_username" \
+  '.authenticated == true and .username == $username' <<<"$authenticated_session" >/dev/null
 
 restore=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" \
@@ -1402,6 +1644,53 @@ changed_reconcile_status=$(curl --silent --output /dev/null --write-out '%{http_
   "$base_url/api/v1/reconciliations/$reconcile_id/complete")
 [[ "$changed_reconcile_status" == 409 ]]
 
+invalid_findings_cursor_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$session" "$base_url/api/integrity/findings?cursor=not-base64!")
+[[ "$invalid_findings_cursor_status" == 400 ]]
+
+open_findings_page_one=$(curl --silent --show-error --fail-with-body \
+  -H "$session" "$base_url/api/integrity/findings?limit=1")
+jq -e '
+  (.observed_at | type) == "number" and
+  (.next_cursor | type) == "string" and
+  (.findings | length) == 1
+' <<<"$open_findings_page_one" >/dev/null
+findings_cursor=$(jq -r .next_cursor <<<"$open_findings_page_one")
+open_findings_page_two=$(curl --silent --show-error --fail-with-body --get \
+  -H "$session" \
+  --data-urlencode "limit=1" \
+  --data-urlencode "cursor=$findings_cursor" \
+  "$base_url/api/integrity/findings")
+jq -e '(.findings | length) == 1 and .next_cursor == null' \
+  <<<"$open_findings_page_two" >/dev/null
+open_findings=$(jq -s '{findings: (.[0].findings + .[1].findings)}' \
+  <<<"$open_findings_page_one"$'\n'"$open_findings_page_two")
+jq -e --arg manifest_sha "$restore_manifest_sha" '
+  (.findings | length) == 2 and
+  (.findings | any(
+    .condition == "missing" and .state == "open" and
+    .namespace_id == "202122232425262728292a2b2c2d2e2f" and
+    .namespace_name == "worker-e2e" and .subject_kind == "location" and
+    .manifest_sha256 == $manifest_sha and .root_version == 1 and
+    .extent_sha256 == "2222222222222222222222222222222222222222222222222222222222222222" and
+    .driver_id == "move-driver" and .storage_key == "move/payload" and
+    .location_state == "missing" and .available_repair_sources == 1 and
+    .repairable == true and
+    .required_action == "Repair from a separately verified replica." and
+    .evidence.condition == "missing"
+  )) and
+  (.findings | any(
+    .condition == "degraded" and .state == "open" and
+    .namespace_name == "worker-e2e" and .subject_kind == "extent" and
+    .manifest_sha256 == $manifest_sha and .root_version == 1 and
+    .extent_sha256 == "2222222222222222222222222222222222222222222222222222222222222222" and
+    .driver_id == null and .location_state == null and
+    .available_repair_sources == 1 and .repairable == false and
+    .required_action == "Copy or repair from an independently available replica." and
+    .evidence.condition == "degraded"
+  ))
+' <<<"$open_findings" >/dev/null
+
 repair_request=$(jq -cn --arg manifest_sha "$restore_manifest_sha" '{
   namespace_id: "202122232425262728292a2b2c2d2e2f",
   manifest_sha256: $manifest_sha,
@@ -1487,6 +1776,25 @@ jq -e \
   .locations_repaired == 1 and .ciphertext_bytes == 18 and
   .recovery_revision == $recovery_revision
 ' <<<"$completed_repair" >/dev/null
+
+open_findings_after_repair=$(curl --silent --show-error --fail-with-body \
+  -H "$session" "$base_url/api/integrity/findings")
+jq -e '.findings == [] and .next_cursor == null' \
+  <<<"$open_findings_after_repair" >/dev/null
+resolved_missing_finding=$(curl --silent --show-error --fail-with-body --get \
+  -H "$session" \
+  --data-urlencode "state=resolved" \
+  --data-urlencode "condition=missing" \
+  "$base_url/api/integrity/findings")
+jq -e --arg manifest_sha "$restore_manifest_sha" '
+  .next_cursor == null and (.findings | length) == 1 and
+  .findings[0].condition == "missing" and .findings[0].state == "resolved" and
+  .findings[0].manifest_sha256 == $manifest_sha and
+  .findings[0].location_state == "available" and
+  .findings[0].available_repair_sources == 1 and
+  .findings[0].repairable == false and
+  (.findings[0].resolved_at | type) == "number"
+' <<<"$resolved_missing_finding" >/dev/null
 replayed_repair_completion=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" --data "$repair_completion" \
   "$base_url/api/v1/repairs/$repair_id/complete")
@@ -1509,3 +1817,234 @@ no_missing_repair_status=$(curl --silent --output /dev/null --write-out '%{http_
     <<<"$repair_request")" \
   "$base_url/api/v1/repairs")
 [[ "$no_missing_repair_status" == 409 ]]
+
+single_pack_compact_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn --arg manifest_sha "$restore_manifest_sha" '{
+    namespace_id: "202122232425262728292a2b2c2d2e2f",
+    manifest_sha256: $manifest_sha,
+    destination_driver_id: "move-driver",
+    idempotency_key: "worker-e2e-compact-single-pack"
+  }')" \
+  "$base_url/api/v1/compactions")
+[[ "$single_pack_compact_status" == 404 ]]
+
+compact_request=$(jq -cn --arg manifest_sha "$compact_source_manifest_sha" '{
+  namespace_id: "202122232425262728292a2b2c2d2e2f",
+  manifest_sha256: $manifest_sha,
+  destination_driver_id: "move-driver",
+  idempotency_key: "worker-e2e-compact-two-packs"
+}')
+compact_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$compact_request" \
+  "$base_url/api/v1/compactions")
+compact_id=$(jq -r .id <<<"$compact_operation")
+compact_incarnation=$(jq -r .incarnation <<<"$compact_operation")
+jq -e --arg manifest_sha "$compact_source_manifest_sha" '
+  .kind == "compact" and .state == "planned" and .phase == "planned" and
+  .object_id == "compact-object" and .source_generation == 1 and
+  .target_generation == 2 and .source_manifest_sha256 == $manifest_sha and
+  .source_pack_count == 2 and .source_root_version == 1 and
+  .source_key_epoch == 7 and .target_root_version == 1 and
+  .target_key_epoch == 1 and .expected_object_revision == 1 and
+  .destination_driver_id == "move-driver" and .useful_bytes_total == 2
+' <<<"$compact_operation" >/dev/null
+
+replayed_compact=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$compact_request" \
+  "$base_url/api/v1/compactions")
+[[ "$replayed_compact" == "$compact_operation" ]]
+changed_compact_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.destination_driver_id = "copy-driver"' <<<"$compact_request")" \
+  "$base_url/api/v1/compactions")
+[[ "$changed_compact_status" == 409 ]]
+
+losing_compact_request=$(jq \
+  '.idempotency_key = "worker-e2e-compact-two-packs-loser"' \
+  <<<"$compact_request")
+losing_compact_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$losing_compact_request" \
+  "$base_url/api/v1/compactions")
+losing_compact_id=$(jq -r .id <<<"$losing_compact_operation")
+losing_compact_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/operations/$losing_compact_id/claim")
+
+compact_lease=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v1/operations/$compact_id/claim")
+compact_lease_id=$(jq -r .lease_id <<<"$compact_lease")
+compact_fence=$(jq -r .fencing_token <<<"$compact_lease")
+jq -e '.operation_state == "running"' <<<"$compact_lease" >/dev/null
+
+compact_manifest_fence=$(jq -cn \
+  --arg lease_id "$compact_lease_id" \
+  --arg incarnation "$compact_incarnation" \
+  --argjson fence "$compact_fence" \
+  '{lease_id: $lease_id, incarnation: $incarnation, fencing_token: $fence}')
+fetched_compact_source=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$compact_manifest_fence" \
+  "$base_url/api/v1/compactions/$compact_id/manifest")
+[[ "$fetched_compact_source" == "$compact_source_recovery" ]]
+
+compact_source_key_request=$(jq -cn \
+  --arg lease_id "$compact_lease_id" \
+  --arg incarnation "$compact_incarnation" \
+  --argjson fence "$compact_fence" '{
+    lease_id: $lease_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    root_version: 1,
+    key_epoch: 7
+  }')
+compact_source_key=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$compact_source_key_request" \
+  "$base_url/api/v1/compactions/$compact_id/source-key")
+jq -e --arg operation_id "$compact_id" '
+  .operation_id == $operation_id and .purpose == "source" and
+  .root_version == 1 and .key_epoch == 7 and
+  .epoch_key == "gFJYocreVdq4o7taC21pJ1P8jLoqaibruBF6HNpPbbA"
+' <<<"$compact_source_key" >/dev/null
+
+compact_target_key_request=$(jq '.key_epoch = 1' <<<"$compact_source_key_request")
+compact_target_key=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$compact_target_key_request" \
+  "$base_url/api/v1/compactions/$compact_id/target-key")
+jq -e --arg operation_id "$compact_id" '
+  .operation_id == $operation_id and .purpose == "target" and
+  .root_version == 1 and .key_epoch == 1 and
+  (.epoch_key | type == "string" and length == 43)
+' <<<"$compact_target_key" >/dev/null
+wrong_compact_key_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.key_epoch = 2' <<<"$compact_target_key_request")" \
+  "$base_url/api/v1/compactions/$compact_id/target-key")
+[[ "$wrong_compact_key_status" == 409 ]]
+
+reused_pack_content=$(jq \
+  '.packs[0].pack_id = "606162636465666768696a6b6c6d6e6f"' \
+  <<<"$compact_target_content")
+reused_pack_manifest_sha=$(printf '%s' "$reused_pack_content" | sha256sum | cut -d' ' -f1)
+reused_pack_recovery=$(jq -cn \
+  --arg manifest_sha "$reused_pack_manifest_sha" \
+  --argjson recovery "$compact_target_recovery" \
+  --argjson manifest "$reused_pack_content" '
+  $recovery | .manifest_sha256 = $manifest_sha | .manifest = $manifest')
+staged_reused_pack=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data-binary "$reused_pack_recovery" \
+  "$base_url/api/v1/recovery-manifests/stage")
+reused_pack_publication=$(jq -cn \
+  --arg operation_id "$compact_id" \
+  --arg lease_id "$compact_lease_id" \
+  --arg incarnation "$compact_incarnation" \
+  --arg manifest_sha "$reused_pack_manifest_sha" \
+  --arg recovery_sha "$(jq -r .recovery_sha256 <<<"$staged_reused_pack")" \
+  --arg r2_key "$(jq -r .r2_key <<<"$staged_reused_pack")" \
+  --arg r2_version "$(jq -r .r2_version <<<"$staged_reused_pack")" \
+  --argjson fence "$compact_fence" \
+  --argjson object_revision "$(jq -r .expected_object_revision <<<"$compact_operation")" '{
+    operation_id: $operation_id,
+    lease_id: $lease_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    manifest_sha256: $manifest_sha,
+    recovery_sha256: $recovery_sha,
+    r2_key: $r2_key,
+    r2_version: $r2_version,
+    sidecar_driver_id: "move-driver",
+    sidecar_storage_key: "compact/reused-pack-sidecar.json",
+    expected_object_revision: $object_revision
+  }')
+reused_pack_publication_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" --data "$reused_pack_publication" \
+  "$base_url/api/v1/compactions/publish")
+[[ "$reused_pack_publication_status" == 409 ]]
+
+staged_compact_target=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data-binary "$compact_target_recovery" \
+  "$base_url/api/v1/recovery-manifests/stage")
+compact_publication=$(jq -cn \
+  --arg operation_id "$compact_id" \
+  --arg lease_id "$compact_lease_id" \
+  --arg incarnation "$compact_incarnation" \
+  --arg manifest_sha "$compact_target_manifest_sha" \
+  --arg recovery_sha "$(jq -r .recovery_sha256 <<<"$staged_compact_target")" \
+  --arg r2_key "$(jq -r .r2_key <<<"$staged_compact_target")" \
+  --arg r2_version "$(jq -r .r2_version <<<"$staged_compact_target")" \
+  --argjson fence "$compact_fence" \
+  --argjson object_revision "$(jq -r .expected_object_revision <<<"$compact_operation")" '{
+    operation_id: $operation_id,
+    lease_id: $lease_id,
+    incarnation: $incarnation,
+    fencing_token: $fence,
+    manifest_sha256: $manifest_sha,
+    recovery_sha256: $recovery_sha,
+    r2_key: $r2_key,
+    r2_version: $r2_version,
+    sidecar_driver_id: "move-driver",
+    sidecar_storage_key: "compact/target-sidecar.json",
+    expected_object_revision: $object_revision
+  }')
+published_compact=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$compact_publication" \
+  "$base_url/api/v1/compactions/publish")
+jq -e --arg operation_id "$compact_id" --arg manifest_sha "$compact_target_manifest_sha" '
+  .operation_id == $operation_id and .object_id == "compact-object" and
+  .generation == 2 and .manifest_sha256 == $manifest_sha and .state == "published"
+' <<<"$published_compact" >/dev/null
+
+losing_compact_publication=$(jq \
+  --arg operation_id "$losing_compact_id" \
+  --arg lease_id "$(jq -r .lease_id <<<"$losing_compact_lease")" \
+  --arg incarnation "$(jq -r .incarnation <<<"$losing_compact_operation")" \
+  --argjson fence "$(jq -r .fencing_token <<<"$losing_compact_lease")" '
+  .operation_id = $operation_id |
+  .lease_id = $lease_id |
+  .incarnation = $incarnation |
+  .fencing_token = $fence
+' <<<"$compact_publication")
+losing_compact_publication_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" --data "$losing_compact_publication" \
+  "$base_url/api/v1/compactions/publish")
+[[ "$losing_compact_publication_status" == 409 ]]
+
+replayed_compact_publication=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$compact_publication" \
+  "$base_url/api/v1/compactions/publish")
+[[ "$replayed_compact_publication" == "$published_compact" ]]
+changed_compact_publication_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.expected_object_revision += 1' <<<"$compact_publication")" \
+  "$base_url/api/v1/compactions/publish")
+[[ "$changed_compact_publication_status" == 409 ]]
+
+completed_compact=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$compact_request" \
+  "$base_url/api/v1/compactions")
+jq -e --arg operation_id "$compact_id" '
+  .id == $operation_id and .state == "succeeded" and .phase == "succeeded"
+' <<<"$completed_compact" >/dev/null
+
+retired_source_restore_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn --arg manifest_sha "$compact_source_manifest_sha" '{
+    namespace_id: "202122232425262728292a2b2c2d2e2f",
+    manifest_sha256: $manifest_sha,
+    idempotency_key: "worker-e2e-retired-compact-source"
+  }')" \
+  "$base_url/api/v1/restores")
+[[ "$retired_source_restore_status" == 409 ]]
+
+compact_target_restore=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" \
+  --data "$(jq -cn --arg manifest_sha "$compact_target_manifest_sha" '{
+    namespace_id: "202122232425262728292a2b2c2d2e2f",
+    manifest_sha256: $manifest_sha,
+    idempotency_key: "worker-e2e-current-compact-target"
+  }')" \
+  "$base_url/api/v1/restores")
+jq -e --arg manifest_sha "$compact_target_manifest_sha" '
+  .object_id == "compact-object" and .generation == 2 and
+  .manifest_sha256 == $manifest_sha and .state == "planned"
+' <<<"$compact_target_restore" >/dev/null

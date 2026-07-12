@@ -51,6 +51,54 @@ struct ImportGrantResponse {
     epoch_key: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompactGrantRequest {
+    lease_id: String,
+    incarnation: String,
+    fencing_token: u64,
+    root_version: u32,
+    key_epoch: u64,
+}
+
+#[derive(Serialize)]
+struct CompactGrantResponse {
+    operation_id: String,
+    purpose: &'static str,
+    root_version: u32,
+    key_epoch: u64,
+    epoch_key: String,
+}
+
+#[derive(Clone, Copy)]
+enum CompactKeyPurpose {
+    Source,
+    Target,
+}
+
+impl CompactKeyPurpose {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Source => "source",
+            Self::Target => "target",
+        }
+    }
+
+    const fn root_column(self) -> &'static str {
+        match self {
+            Self::Source => "compact.source_root_version",
+            Self::Target => "compact.target_root_version",
+        }
+    }
+
+    const fn epoch_column(self) -> &'static str {
+        match self {
+            Self::Source => "compact.source_key_epoch",
+            Self::Target => "compact.target_key_epoch",
+        }
+    }
+}
+
 pub(crate) async fn grant_restore(
     request: &mut Request,
     env: &Env,
@@ -199,6 +247,139 @@ pub(crate) async fn grant_import(
     let encoded_epoch = encoded_epoch_key(env, &context, "import")?;
     let mut response = Response::from_json(&ImportGrantResponse {
         operation_id: operation_id.to_owned(),
+        root_version: context.root_version,
+        key_epoch: context.key_epoch,
+        epoch_key: encoded_epoch,
+    })?;
+    response
+        .headers_mut()
+        .set("Cache-Control", "no-store, max-age=0")?;
+    response.headers_mut().set("Pragma", "no-cache")?;
+
+    Ok(response)
+}
+
+pub(crate) async fn grant_compact_source(
+    request: &mut Request,
+    env: &Env,
+    client: &AuthenticatedClient,
+    operation_id: &str,
+) -> Result<Response> {
+    grant_compact(
+        request,
+        env,
+        client,
+        operation_id,
+        CompactKeyPurpose::Source,
+    )
+    .await
+}
+
+pub(crate) async fn grant_compact_target(
+    request: &mut Request,
+    env: &Env,
+    client: &AuthenticatedClient,
+    operation_id: &str,
+) -> Result<Response> {
+    grant_compact(
+        request,
+        env,
+        client,
+        operation_id,
+        CompactKeyPurpose::Target,
+    )
+    .await
+}
+
+async fn grant_compact(
+    request: &mut Request,
+    env: &Env,
+    client: &AuthenticatedClient,
+    operation_id: &str,
+    purpose: CompactKeyPurpose,
+) -> Result<Response> {
+    let requested = request.json::<CompactGrantRequest>().await?;
+    if !valid_hex(operation_id, 32)
+        || !valid_string(&requested.lease_id, 256)
+        || !valid_hex(&requested.incarnation, 32)
+        || requested.fencing_token == 0
+        || requested.root_version == 0
+        || requested.key_epoch == 0
+    {
+        return Response::error(
+            format!("invalid compact {} key grant", purpose.label()),
+            400,
+        );
+    }
+
+    let database = env.d1("CARRACK_INDEX")?;
+    let context = database
+        .prepare(format!(
+            "SELECT operation.namespace_id, {} AS root_version, {} AS key_epoch \
+             FROM operations AS operation \
+             JOIN compact_intents AS compact ON compact.operation_id = operation.id \
+             JOIN leases AS lease ON lease.operation_id = operation.id \
+             JOIN control_plane_state AS state ON state.singleton = 1 \
+             WHERE operation.id = ?1 AND operation.kind = 'compact' \
+               AND operation.state = 'running' AND operation.requested_by = ?2 \
+               AND {} = ?3 AND {} = ?4 \
+               AND lease.id = ?5 AND lease.owner_client_id = ?2 \
+               AND lease.incarnation = ?6 AND lease.fencing_token = ?7 \
+               AND lease.lease_kind = 'write' AND lease.released_at IS NULL \
+               AND lease.expires_at > unixepoch() AND state.mode = 'active' \
+               AND state.incarnation = lease.incarnation \
+               AND operation.incarnation = state.incarnation \
+               AND EXISTS(SELECT 1 FROM client_namespace_permissions \
+                          WHERE client_id = ?2 AND namespace_id = operation.namespace_id \
+                            AND role IN ('relay', 'administrator'))",
+            purpose.root_column(),
+            purpose.epoch_column(),
+            purpose.root_column(),
+            purpose.epoch_column(),
+        ))
+        .bind(&[
+            JsValue::from_str(operation_id),
+            JsValue::from_str(&client.id),
+            JsValue::from_str(&requested.root_version.to_string()),
+            JsValue::from_str(&requested.key_epoch.to_string()),
+            JsValue::from_str(&requested.lease_id),
+            JsValue::from_str(&requested.incarnation),
+            JsValue::from_str(&requested.fencing_token.to_string()),
+        ])?
+        .first::<GrantContext>(None)
+        .await?;
+    let Some(context) = context else {
+        return Response::error(
+            format!(
+                "compact {} key grant fence or crypto identity is unavailable",
+                purpose.label()
+            ),
+            409,
+        );
+    };
+
+    let source_manifest = if matches!(purpose, CompactKeyPurpose::Source) {
+        database
+            .prepare("SELECT source_manifest_sha256 FROM compact_intents WHERE operation_id = ?1")
+            .bind(&[JsValue::from_str(operation_id)])?
+            .first::<String>(Some("source_manifest_sha256"))
+            .await?
+    } else {
+        None
+    };
+    record_audit(
+        env,
+        client,
+        operation_id,
+        &context,
+        source_manifest.as_deref(),
+    )
+    .await?;
+
+    let encoded_epoch = encoded_epoch_key(env, &context, "compact")?;
+    let mut response = Response::from_json(&CompactGrantResponse {
+        operation_id: operation_id.to_owned(),
+        purpose: purpose.label(),
         root_version: context.root_version,
         key_epoch: context.key_epoch,
         epoch_key: encoded_epoch,

@@ -13,6 +13,7 @@ const (
 	maximumOperationLeaseSeconds = 300
 	operationKindCopy            = "copy"
 	operationKindMove            = "move"
+	operationKindCompact         = "compact"
 	operationStateRunning        = "running"
 	operationStateSucceeded      = "succeeded"
 	publicationStatePublished    = "published"

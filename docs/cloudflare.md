@@ -67,6 +67,28 @@ pnpm exec wrangler deploy --config control-plane/wrangler.jsonc
 After deployment, verify `/api/health`, sign in with the preset account, and
 confirm `/api/summary` can read the migrated D1 database.
 
+## Integrity findings
+
+The authenticated dashboard polls open integrity findings every 15 seconds. It
+shows the server-projected namespace, manifest and root-key identities, provider
+location, last successful verification, independently available repair sources,
+raw evidence, and the required conservative operator action. `REPAIRABLE` is a
+server decision: it is set only for a currently missing location with at least
+one other available location for the same extent. It does not start a repair.
+
+Operators and diagnostic clients can read the same projection directly:
+
+```text
+GET /api/integrity/findings?state=open&condition=missing&limit=50
+```
+
+The endpoint requires an administrator session. `state` defaults to `open` and
+accepts `open`, `acknowledged`, `tombstoned`, or `resolved`; `condition` is
+optional. The response's `next_cursor` is opaque. Pass it back as `cursor` to
+load the next page and do not persist or decode it. A resolved finding remains
+queryable for audit, but never reports as repairable after its location has
+returned to `available`.
+
 ## D1 backup and recovery
 
 D1 Time Travel is a short-window rollback mechanism, not Carrack's only data

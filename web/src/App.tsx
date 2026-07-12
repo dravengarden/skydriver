@@ -34,6 +34,7 @@ export function App() {
             queryClient.setQueryData(["session"], value);
             queryClient.removeQueries({ queryKey: ["summary"] });
             queryClient.removeQueries({ queryKey: ["live-components"] });
+            queryClient.removeQueries({ queryKey: ["integrity-findings"] });
         },
     });
 

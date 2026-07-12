@@ -198,6 +198,10 @@ expect_failure \
   "UPDATE object_versions SET plaintext_bytes = 9 WHERE id = 'version-1';" \
   "mutation of published identity"
 
+expect_failure \
+  "DELETE FROM version_packs WHERE version_id = 'version-1';" \
+  "mutation of published version pack membership"
+
 execute "
 INSERT INTO object_versions (
   id, object_id, generation, manifest_sha256, plaintext_sha256,

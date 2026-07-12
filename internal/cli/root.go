@@ -36,6 +36,7 @@ const (
 	runCommandName               = "run"
 	reconcileCommandName         = "reconcile"
 	repairCommandName            = "repair"
+	compactCommandName           = "compact"
 	idempotencyKeyFlag           = "idempotency-key"
 	localDriverIDFlag            = "local-driver-id"
 	localRootFlag                = "local-root"
@@ -77,6 +78,7 @@ func newRootCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Comman
 		newVerifyCommand(ctx, stdout),
 		newReconcileCommand(ctx, stdout),
 		newRepairCommand(ctx, stdout),
+		newCompactCommand(ctx, stdout),
 	)
 
 	return command
