@@ -228,6 +228,10 @@ repair sources, and required manual action.
 - Quarantine deletion MUST require explicit acknowledgement, an exact-revision
   tombstone, a second policy-derived grace period, and a janitor task bound to
   the inventoried driver revision and provider identity.
+- Quarantine action retries MUST recover an exact committed receipt without a
+  new claim. Completion replay with a changed lease, incarnation, or fencing
+  token MUST be rejected, and a recovery-invalidated action MUST remain
+  terminal.
 - Immediately before deleting a quarantined object, the janitor MUST compare
   provider `Stat` identity and the control plane MUST recheck references,
   recovery sidecars, grace, driver revision, incarnation, role, and fencing.

@@ -96,6 +96,9 @@ struct LiveAction {
 #[derive(Deserialize)]
 struct CompletionRow {
     action: String,
+    lease_id: String,
+    incarnation: String,
+    fencing_token: u64,
     result_revision: u64,
     result_state: String,
     delete_after: Option<u64>,
@@ -262,12 +265,11 @@ pub(crate) async fn complete(
     }
 
     let database = env.d1("CARRACK_INDEX")?;
+    if let Some(response) = replay_completion(&database, operation_id, client, &requested).await? {
+        return Ok(response);
+    }
     let live = load_live_action(&database, operation_id, client, &requested).await?;
     let Some(live) = live else {
-        if let Some(completion) = load_completion(&database, operation_id, &client.id).await? {
-            return completion_response(operation_id, completion);
-        }
-
         return Response::error("quarantine action fence is stale or unavailable", 409);
     };
     let now = copying::current_unix_seconds();
@@ -316,6 +318,9 @@ pub(crate) async fn complete(
     let Some(completion) = completion else {
         return Response::error("quarantine action was not committed", 409);
     };
+    if !same_completion_fence(&completion, &requested) {
+        return Response::error("quarantine action completion identity changed", 409);
+    }
 
     completion_response(operation_id, completion)
 }
@@ -749,7 +754,8 @@ async fn load_completion(
 ) -> Result<Option<CompletionRow>> {
     database
         .prepare(
-            "SELECT completion.action, completion.result_revision, \
+            "SELECT completion.action, completion.lease_id, completion.incarnation, \
+                    completion.fencing_token, completion.result_revision, \
                     completion.result_state, completion.delete_after \
              FROM quarantine_action_completions AS completion \
              JOIN operations AS operation ON operation.id = completion.operation_id \
@@ -763,6 +769,32 @@ async fn load_completion(
         ])?
         .first::<CompletionRow>(None)
         .await
+}
+
+async fn replay_completion(
+    database: &D1Database,
+    operation_id: &str,
+    client: &AuthenticatedClient,
+    requested: &CompleteRequest,
+) -> Result<Option<Response>> {
+    let completion = load_completion(database, operation_id, &client.id).await?;
+    let Some(completion) = completion else {
+        return Ok(None);
+    };
+    if !same_completion_fence(&completion, requested) {
+        return Ok(Some(Response::error(
+            "quarantine action completion replay changed its fence",
+            409,
+        )?));
+    }
+
+    Ok(Some(completion_response(operation_id, completion)?))
+}
+
+fn same_completion_fence(completion: &CompletionRow, requested: &CompleteRequest) -> bool {
+    completion.lease_id == requested.lease_id
+        && completion.incarnation == requested.incarnation
+        && completion.fencing_token == requested.fencing_token
 }
 
 fn completion_response(operation_id: &str, completion: CompletionRow) -> Result<Response> {

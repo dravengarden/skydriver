@@ -388,7 +388,12 @@ carrack quarantine tombstone \
 
 Both transitions are administrator-only `gc` operations protected by a write
 lease, fencing token, provider identity, and quarantine revision CAS. A later
-inventory preserves acknowledgement or tombstone state when identity is
+retry with the same idempotency key returns the durable completion without
+another claim; a recovery-invalidated action returns an explicit terminal
+error. Completion replay is accepted only with the original lease,
+incarnation, and fencing token. A deterministic matrix interrupts before and
+after create, claim, and completion for both acknowledge and tombstone actions.
+A later inventory preserves acknowledgement or tombstone state when identity is
 unchanged, resets review if identity changes, and resolves cleanup intent if a
 D1 location or recovery sidecar appears. Driver revision is part of that
 identity: changing the registered provider configuration restarts review.

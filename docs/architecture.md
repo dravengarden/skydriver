@@ -858,7 +858,17 @@ operator reason, and the current `inventory_quarantine_seconds`. Completion
 rechecks that the object still has no non-deleted location or non-missing
 recovery sidecar, changes the object and integrity-finding states in one D1
 batch, records an audit event, succeeds the operation, and releases the lease.
-Exact completion is replayable; any changed or stale revision is rejected.
+Exact completion is replayable only with the original lease ID, incarnation,
+and fencing token; any changed fence or stale quarantine revision is rejected.
+An exact idempotent create after commit returns the durable transition receipt
+without another claim. Recovery-invalidated `failed` or `cancelled` operations
+return a stable terminal error instead of starting a replacement action.
+
+A deterministic matrix interrupts immediately before and after create, claim,
+and completion for both acknowledge and tombstone. All 12 cases converge on one
+logical operation creation, claim transition, and quarantine lifecycle commit.
+Completion response loss is recovered from the operation receipt without
+another claim or completion request.
 
 Acknowledgement is allowed only after the discovery quarantine expires.
 Tombstoning starts a second full `inventory_quarantine_seconds` grace and

@@ -2,8 +2,13 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
+
+// ErrQuarantineOperationFailed indicates that control-plane recovery
+// invalidated an exact idempotent review before it could complete.
+var ErrQuarantineOperationFailed = errors.New("carrack quarantine operation previously failed")
 
 // ControlledQuarantineRequest identifies one exact object review transition.
 type ControlledQuarantineRequest struct {
@@ -18,8 +23,9 @@ type ControlledQuarantineRequest struct {
 
 // ControlledQuarantineResult contains the pinned intent and committed lifecycle state.
 type ControlledQuarantineResult struct {
-	Operation  QuarantineActionOperation
-	Completion CompletedQuarantineAction
+	Operation        QuarantineActionOperation
+	Completion       CompletedQuarantineAction
+	AlreadyCompleted bool
 }
 
 // ControlledQuarantineReviewer coordinates short, fenced D1 review transitions.
@@ -59,10 +65,21 @@ func (reviewer *ControlledQuarantineReviewer) Act(
 		return ControlledQuarantineResult{}, fmt.Errorf("create controlled quarantine action: %w", err)
 	}
 
-	if operation.State == operationStateSucceeded {
-		completion := completedQuarantineActionFromOperation(operation)
-
-		return ControlledQuarantineResult{Operation: operation, Completion: completion}, nil
+	switch operation.State {
+	case operationStateSucceeded:
+		return completedControlledQuarantine(operation), nil
+	case operationStateFailed, operationStateCancelled:
+		return ControlledQuarantineResult{Operation: operation}, fmt.Errorf(
+			"%w: operation %s",
+			ErrQuarantineOperationFailed,
+			operation.ID,
+		)
+	case operationStatePlanned, operationStateRunning:
+	default:
+		return ControlledQuarantineResult{}, fmt.Errorf(
+			"%w: unsupported controlled quarantine state",
+			ErrControlPlaneResponse,
+		)
 	}
 
 	lease, err := reviewer.control.ClaimQuarantineAction(ctx, operation, reviewer.leaseSeconds)
@@ -76,6 +93,15 @@ func (reviewer *ControlledQuarantineReviewer) Act(
 	}
 
 	return ControlledQuarantineResult{Operation: operation, Completion: completion}, nil
+}
+
+func completedControlledQuarantine(
+	operation QuarantineActionOperation,
+) ControlledQuarantineResult {
+	return ControlledQuarantineResult{
+		Operation: operation, Completion: completedQuarantineActionFromOperation(operation),
+		AlreadyCompleted: true,
+	}
 }
 
 func completedQuarantineActionFromOperation(

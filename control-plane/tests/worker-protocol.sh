@@ -530,7 +530,8 @@ printf '%s' "$compact_source_recovery" >"$state_directory/compact-source-manifes
   --show-interactive-dev-session=false >"$server_log" 2>&1 &
 server_pid=$!
 
-for _ in $(seq 1 60); do
+# A cold release-to-Wasm build can exceed 15 seconds on CI or a fresh checkout.
+for _ in $(seq 1 240); do
   if curl --silent --fail "http://127.0.0.1:$port/api/health" >/dev/null; then
     break
   fi
@@ -2180,6 +2181,11 @@ replayed_acknowledged=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" --data "$acknowledge_completion_request" \
   "$base_url/api/v1/quarantine-actions/$acknowledge_id/complete")
 [[ "$replayed_acknowledged" == "$acknowledged" ]]
+changed_acknowledge_replay_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.fencing_token += 1' <<<"$acknowledge_completion_request")" \
+  "$base_url/api/v1/quarantine-actions/$acknowledge_id/complete")
+[[ "$changed_acknowledge_replay_status" == 409 ]]
 acknowledged_finding=$(curl --silent --show-error --fail-with-body --get \
   -H "$session" --data-urlencode "state=acknowledged" \
   --data-urlencode "condition=quarantined" "$base_url/api/integrity/findings")

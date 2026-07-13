@@ -166,7 +166,8 @@ func validQuarantineActionOperation(
 	operation QuarantineActionOperation,
 	requested CreateQuarantineActionRequest,
 ) bool {
-	if !validQuarantineOperationIdentity(operation, requested) {
+	if !validQuarantineOperationIdentity(operation, requested) ||
+		!validQuarantineOperationState(operation) {
 		return false
 	}
 
@@ -175,8 +176,7 @@ func validQuarantineActionOperation(
 			validCompletedResult(operation)
 	}
 
-	return (operation.State == operationStatePlanned || operation.State == operationStateRunning) &&
-		operation.ResultRevision == nil && operation.ResultState == nil && operation.DeleteAfter == nil
+	return operation.ResultRevision == nil && operation.ResultState == nil && operation.DeleteAfter == nil
 }
 
 func validQuarantineOperationIdentity(
@@ -188,10 +188,27 @@ func validQuarantineOperationIdentity(
 		operation.ExpectedRevision == requested.ExpectedRevision && operation.Reason == requested.Reason &&
 		operation.Kind == operationKindGC && validControlHex(operation.ID, 32) &&
 		validControlHex(operation.Incarnation, 32) && operation.Revision > 0 &&
+		validControlString(operation.RequestedBy, 2_048) &&
 		operation.DriverRevision > 0 && operation.SizeBytes <= math.MaxInt64 &&
 		validOptionalInventoryIdentity(operation.ProviderVersion) &&
 		validOptionalInventoryIdentity(operation.ETag) && operation.GraceSeconds >= 60 &&
-		operation.GraceSeconds <= 31_536_000
+		operation.GraceSeconds <= 31_536_000 && operation.CreatedAt > 0 &&
+		operation.UpdatedAt >= operation.CreatedAt
+}
+
+func validQuarantineOperationState(operation QuarantineActionOperation) bool {
+	switch operation.State {
+	case operationStatePlanned:
+		return operation.Phase == operationStatePlanned
+	case operationStateRunning:
+		return operation.Phase == "reviewing_quarantine"
+	case operationStateSucceeded:
+		return operation.Phase == operationPhaseCompleted
+	case operationStateFailed, operationStateCancelled:
+		return operation.Phase == operationPhaseRecovered
+	default:
+		return false
+	}
 }
 
 func validCompletedResult(operation QuarantineActionOperation) bool {
@@ -204,7 +221,8 @@ func validCompletedResult(operation QuarantineActionOperation) bool {
 		return *operation.ResultState == operationStateAcknowledged && operation.DeleteAfter == nil
 	}
 
-	return *operation.ResultState == operationStateTombstoned && operation.DeleteAfter != nil
+	return *operation.ResultState == operationStateTombstoned && operation.DeleteAfter != nil &&
+		*operation.DeleteAfter > operation.UpdatedAt
 }
 
 func validCompletedQuarantineAction(
@@ -221,7 +239,8 @@ func validCompletedQuarantineAction(
 		return completed.QuarantineState == operationStateAcknowledged && completed.DeleteAfter == nil
 	}
 
-	return completed.QuarantineState == operationStateTombstoned && completed.DeleteAfter != nil
+	return completed.QuarantineState == operationStateTombstoned && completed.DeleteAfter != nil &&
+		*completed.DeleteAfter > operation.UpdatedAt
 }
 
 func validQuarantineAction(action QuarantineAction) bool {
