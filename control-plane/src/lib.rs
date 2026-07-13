@@ -25,6 +25,12 @@ mod repairing;
 mod restoration;
 mod telemetry;
 mod verification;
+mod vfs_authorization;
+mod vfs_identifiers;
+mod vfs_merkle;
+mod vfs_put;
+mod vfs_put_commit;
+mod vfs_tokens;
 
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -167,6 +173,55 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
                 None => Response::error("client authentication required", 401),
             }
         })
+        .post_async("/api/v2/puts/prepare", |mut request, context| async move {
+            if external_maintenance(&context.env) {
+                return Response::error("control-plane mutations are disabled", 409);
+            }
+
+            let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                return Response::error("VFS token authentication required", 401);
+            };
+
+            vfs_put::prepare(&mut request, &context.env, &token).await
+        })
+        .post_async(
+            "/api/v2/puts/:id/block-manifest",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+                let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                    return Response::error("VFS token authentication required", 401);
+                };
+                let Some(intent_id) = context.param("id") else {
+                    return Response::error("VFS put intent ID is required", 400);
+                };
+
+                vfs_put_commit::stage_block_manifest(
+                    &mut request,
+                    &context.env,
+                    &token,
+                    intent_id,
+                )
+                .await
+            },
+        )
+        .post_async(
+            "/api/v2/puts/:id/commit",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+                let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                    return Response::error("VFS token authentication required", 401);
+                };
+                let Some(intent_id) = context.param("id") else {
+                    return Response::error("VFS put intent ID is required", 400);
+                };
+
+                vfs_put_commit::commit(&mut request, &context.env, &token, intent_id).await
+            },
+        )
         .post_async(
             "/api/v1/recovery-manifests/stage",
             |mut request, context| async move {

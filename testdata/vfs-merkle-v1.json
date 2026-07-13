@@ -1,0 +1,165 @@
+{
+  "schema": "carrack.vfs-merkle.golden.v1",
+  "files": [
+    {
+      "name": "empty",
+      "payload_hex": "",
+      "expected": {
+        "size_bytes": 0,
+        "block_bytes": 4,
+        "blocks": null,
+        "tree_digest": "bad6f195c78bcff7e53772353d68a75c6fe72b766a9b5eaba3b4ee3c6c6b439a",
+        "root": "c003d57745178277e62f45d869c5187325430cabab04a440827c3b78087dead7"
+      }
+    },
+    {
+      "name": "single",
+      "payload_hex": "616263",
+      "expected": {
+        "size_bytes": 3,
+        "block_bytes": 4,
+        "blocks": [
+          {
+            "index": 0,
+            "offset": 0,
+            "size_bytes": 3,
+            "digest": "62bedb441eb622eb0eeeefe5b0f69fbe3650d5f441d9341e5d52699f4d05b6c8"
+          }
+        ],
+        "tree_digest": "62bedb441eb622eb0eeeefe5b0f69fbe3650d5f441d9341e5d52699f4d05b6c8",
+        "root": "d60042cf44d28c3a12f278cffde67620f94f1a3e4c82208102da97b96cd5b4d9"
+      }
+    },
+    {
+      "name": "left-complete",
+      "payload_hex": "00010203040506070809",
+      "expected": {
+        "size_bytes": 10,
+        "block_bytes": 4,
+        "blocks": [
+          {
+            "index": 0,
+            "offset": 0,
+            "size_bytes": 4,
+            "digest": "162ebabf32e3727277d8a481f49825430134564d88bb1cd29eda9f23e0f84452"
+          },
+          {
+            "index": 1,
+            "offset": 4,
+            "size_bytes": 4,
+            "digest": "5dea29a025f0c676ea42d005b90920d3d99433392c912a1070d2a968ed26d7a4"
+          },
+          {
+            "index": 2,
+            "offset": 8,
+            "size_bytes": 2,
+            "digest": "55d3dd3cc3dfb2c414cf53df640cd8720e820de02f9530ffbbf4baa349eafa38"
+          }
+        ],
+        "tree_digest": "933236b95b8f92ce4e5cde494d88f4a84477bd6497513cd95bc1717e6721e9d8",
+        "root": "ad777efcbf5d5ab06bf200d777484b984f9fca39c582f1bd76369e0431e1e0f7"
+      }
+    },
+    {
+      "name": "power-of-two",
+      "payload_hex": "6361727261636b21",
+      "expected": {
+        "size_bytes": 8,
+        "block_bytes": 4,
+        "blocks": [
+          {
+            "index": 0,
+            "offset": 0,
+            "size_bytes": 4,
+            "digest": "a2e02c5599361f90b774265a8b3d400fc677a2746e49459c25c09b61b56384b8"
+          },
+          {
+            "index": 1,
+            "offset": 4,
+            "size_bytes": 4,
+            "digest": "b303f8a79848fce31b3d20030433ef8f92806739cf23e8a5863aea82ef33d573"
+          }
+        ],
+        "tree_digest": "e670e9db476b53e5fe21030c2becf796f4450dd520c6344dccf50dbdf13ed9c3",
+        "root": "83224626ba5221c41d7558ad9dae9e449dcb89be23cc4cb96371d7bd81963e5e"
+      }
+    }
+  ],
+  "directories": [
+    {
+      "name": "empty",
+      "entries": [],
+      "expected": {
+        "entries": [],
+        "tree_digest": "14a9ef609aa0bb727bfa636ecc26e02696940e46da5a3d12b498e7f91c417707",
+        "root": "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254"
+      }
+    },
+    {
+      "name": "mixed",
+      "entries": [
+        {
+          "name": "é.txt",
+          "kind": "file",
+          "stable_id": "30415263748596a7b8c9daebfc0d1e2f",
+          "version_id": "405162738495a6b7c8d9eafb0c1d2e3f",
+          "data_root": "c003d57745178277e62f45d869c5187325430cabab04a440827c3b78087dead7",
+          "metadata_root": "7f8375a6dbb0bbb8aa2a4c5893444ec014588c02e59841088b1064646663bfc7"
+        },
+        {
+          "name": "zeta.bin",
+          "kind": "file",
+          "stable_id": "00112233445566778899aabbccddeeff",
+          "version_id": "102132435465768798a9bacbdcedfe0f",
+          "size_bytes": 10,
+          "data_root": "ad777efcbf5d5ab06bf200d777484b984f9fca39c582f1bd76369e0431e1e0f7",
+          "metadata_root": "7f8375a6dbb0bbb8aa2a4c5893444ec014588c02e59841088b1064646663bfc7"
+        },
+        {
+          "name": "docs",
+          "kind": "directory",
+          "stable_id": "2031425364758697a8b9cadbecfd0e1f",
+          "data_root": "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254"
+        }
+      ],
+      "expected": {
+        "entries": [
+          {
+            "entry": {
+              "name": "docs",
+              "kind": "directory",
+              "stable_id": "2031425364758697a8b9cadbecfd0e1f",
+              "data_root": "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254"
+            },
+            "digest": "3d7d930690f8c979bf23a48435d9011c7a3c13f602afbc4ebc16ba4cd1503886"
+          },
+          {
+            "entry": {
+              "name": "zeta.bin",
+              "kind": "file",
+              "stable_id": "00112233445566778899aabbccddeeff",
+              "version_id": "102132435465768798a9bacbdcedfe0f",
+              "size_bytes": 10,
+              "data_root": "ad777efcbf5d5ab06bf200d777484b984f9fca39c582f1bd76369e0431e1e0f7",
+              "metadata_root": "7f8375a6dbb0bbb8aa2a4c5893444ec014588c02e59841088b1064646663bfc7"
+            },
+            "digest": "00f628e247597d6a7603f7e97fdfbf82276f89e7e2f1931cfe98875d5ac5f26b"
+          },
+          {
+            "entry": {
+              "name": "é.txt",
+              "kind": "file",
+              "stable_id": "30415263748596a7b8c9daebfc0d1e2f",
+              "version_id": "405162738495a6b7c8d9eafb0c1d2e3f",
+              "data_root": "c003d57745178277e62f45d869c5187325430cabab04a440827c3b78087dead7",
+              "metadata_root": "7f8375a6dbb0bbb8aa2a4c5893444ec014588c02e59841088b1064646663bfc7"
+            },
+            "digest": "3b92fa1b8a5a064b9981b3918a2fec6d9b3cdb975dd0ba23f7234cedf5ebae22"
+          }
+        ],
+        "tree_digest": "8eae99d3a90a091ed266494774b02098c34dc57d8dee65401f51f954485f4c4d",
+        "root": "5bd3bd36a7ccda1f492c0315bab463943b7a088a24a81d513118b0c3abc1d8b2"
+      }
+    }
+  ]
+}

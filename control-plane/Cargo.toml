@@ -17,6 +17,7 @@ hkdf = "0.12.4"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 sha2 = "0.10.9"
+unicode-normalization = "0.1.25"
 worker = { version = "0.8.5", features = ["d1"] }
 
 [lints]
