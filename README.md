@@ -488,7 +488,10 @@ The mark transaction considers only complete provider objects whose indexed
 ranges are all old enough and unreachable. Published versions, durable
 recovery sidecars, Move sources, and versions protected by a current read or
 write lease are excluded. Marking writes D1 tombstones and a future grace
-deadline; it never performs provider I/O. Exact retries return the same epoch.
+deadline; it never performs provider I/O. Exact retries retain the original
+lease, incarnation, and fence and return the durable mark receipt without
+another claim. Empty epochs succeed with zero candidates; a recovery-invalidated
+epoch returns an explicit terminal error.
 
 After the reported grace deadline, a `janitor` or `administrator` token can
 sweep one local filesystem driver:

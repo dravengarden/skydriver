@@ -2,8 +2,13 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
+
+// ErrGCOperationFailed indicates that control-plane recovery invalidated an
+// exact idempotent GC epoch before its mark phase completed.
+var ErrGCOperationFailed = errors.New("carrack GC operation previously failed")
 
 // ControlledGCRequest identifies one policy-derived namespace mark pass.
 type ControlledGCRequest struct {
@@ -13,8 +18,9 @@ type ControlledGCRequest struct {
 
 // ControlledGCResult contains the durable epoch and its mark/grace handoff.
 type ControlledGCResult struct {
-	Operation GCOperation
-	Mark      GCMark
+	Operation     GCOperation
+	Mark          GCMark
+	AlreadyMarked bool
 }
 
 // ControlledGarbageCollector coordinates the short fenced mark phase.
@@ -52,8 +58,21 @@ func (collector *ControlledGarbageCollector) Mark(
 		return ControlledGCResult{}, fmt.Errorf("create controlled GC: %w", err)
 	}
 
-	if operation.GCState != operationPhaseMarking {
-		return ControlledGCResult{Operation: operation, Mark: gcMarkFromOperation(operation)}, nil
+	switch operation.GCState {
+	case operationPhaseGrace, operationPhaseSweeping, operationStateSucceeded:
+		return completedControlledGCMark(operation), nil
+	case operationStateFailed:
+		return ControlledGCResult{Operation: operation}, fmt.Errorf(
+			"%w: operation %s",
+			ErrGCOperationFailed,
+			operation.ID,
+		)
+	case operationPhaseMarking:
+	default:
+		return ControlledGCResult{}, fmt.Errorf(
+			"%w: unsupported controlled GC state",
+			ErrControlPlaneResponse,
+		)
 	}
 
 	lease, err := collector.control.ClaimGCOperation(ctx, operation, collector.leaseSeconds)
@@ -67,6 +86,12 @@ func (collector *ControlledGarbageCollector) Mark(
 	}
 
 	return ControlledGCResult{Operation: operation, Mark: mark}, nil
+}
+
+func completedControlledGCMark(operation GCOperation) ControlledGCResult {
+	return ControlledGCResult{
+		Operation: operation, Mark: gcMarkFromOperation(operation), AlreadyMarked: true,
+	}
 }
 
 func gcMarkFromOperation(operation GCOperation) GCMark {

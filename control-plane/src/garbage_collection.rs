@@ -322,6 +322,10 @@ pub(crate) async fn mark(
         return Response::error("GC operation is unavailable", 409);
     };
     if operation.gc_state != "marking" {
+        if !has_committed_mark_fence(&database, client, operation_id, &requested).await? {
+            return Response::error("GC mark replay changed its fence", 409);
+        }
+
         return mark_response(&operation);
     }
     if operation.state != "running" || operation.phase != "marking" {
@@ -1053,6 +1057,37 @@ async fn has_live_mark_fence(
                AND operation.kind = 'gc' AND operation.state = 'running' \
                AND operation.phase = 'marking' AND operation.incarnation = control.incarnation \
                AND control.mode = 'active'",
+        )
+        .bind(&[
+            JsValue::from_str(&requested.lease_id),
+            JsValue::from_str(operation_id),
+            JsValue::from_str(&client.id),
+            JsValue::from_str(&requested.incarnation),
+            copying::integer(requested.fencing_token)?,
+        ])?
+        .first::<LiveFenceRow>(None)
+        .await?;
+
+    Ok(fence.is_some_and(|row| row.lease_id == requested.lease_id))
+}
+
+async fn has_committed_mark_fence(
+    database: &D1Database,
+    client: &AuthenticatedClient,
+    operation_id: &str,
+    requested: &MarkRequest,
+) -> Result<bool> {
+    let fence = database
+        .prepare(
+            "SELECT lease.id AS lease_id \
+             FROM leases AS lease \
+             JOIN operations AS operation ON operation.id = lease.operation_id \
+             JOIN gc_epochs AS epoch ON epoch.id = operation.id \
+             WHERE lease.id = ?1 AND lease.operation_id = ?2 AND lease.owner_client_id = ?3 \
+               AND lease.incarnation = ?4 AND lease.fencing_token = ?5 \
+               AND lease.lease_kind = 'write' AND lease.released_at IS NOT NULL \
+               AND operation.kind = 'gc' AND operation.requested_by = ?3 \
+               AND epoch.state IN ('grace', 'sweeping', 'succeeded')",
         )
         .bind(&[
             JsValue::from_str(&requested.lease_id),

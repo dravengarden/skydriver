@@ -709,6 +709,20 @@ epoch. Durable recovery sidecars and locations owned by an unfinished Move are
 always excluded. Marking writes a `gc_candidate`, `tombstoned_at`, and a new
 location revision under one operation fence. It does not delete provider data.
 
+An exact idempotent create after mark returns the durable candidate/object
+counts, grace deadline, and current epoch state. The SDK exposes this as an
+`AlreadyMarked` receipt and does not claim another operation lease. Empty marks
+return `succeeded` with zero counts; non-empty marks hand off to `grace`.
+Recovery-invalidated `failed` or `cancelled` operations return a stable terminal
+error instead of appearing to be a successful mark.
+
+Direct mark replay requires the original released lease ID, incarnation, and
+fencing token even after the D1 batch committed. A changed fence cannot obtain
+the mark receipt. A deterministic matrix interrupts before and after create,
+claim, and mark for both empty and non-empty epochs. All 12 cases converge on
+one logical creation, claim transition, and atomic mark; mark response loss is
+recovered from the operation receipt without another claim.
+
 ### Grace period
 
 Candidates remain physically present during a policy-derived grace period. A

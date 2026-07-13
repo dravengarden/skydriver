@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 )
 
 const operationKindGC = "gc"
@@ -192,8 +193,12 @@ func (client *ControlClient) FailGCDelete(
 func validGCOperation(operation GCOperation, namespaceID string) bool {
 	if operation.NamespaceID != namespaceID || operation.Kind != operationKindGC ||
 		!validControlHex(operation.ID, 32) || !validControlHex(operation.Incarnation, 32) ||
-		operation.Revision == 0 || operation.CutoffAt == 0 || operation.GraceSeconds < 60 ||
-		operation.GraceSeconds > 31_536_000 {
+		!validControlString(operation.RequestedBy, 2_048) || operation.Revision == 0 ||
+		operation.CutoffAt == 0 || operation.CutoffAt > math.MaxInt64 ||
+		operation.GraceSeconds < 60 || operation.GraceSeconds > 31_536_000 ||
+		operation.CandidateCount > math.MaxInt64 || operation.ObjectCount > operation.CandidateCount ||
+		operation.CreatedAt == 0 || operation.UpdatedAt < operation.CreatedAt ||
+		(operation.GraceUntil != nil && (*operation.GraceUntil == 0 || *operation.GraceUntil > math.MaxInt64)) {
 		return false
 	}
 
@@ -203,39 +208,55 @@ func validGCOperation(operation GCOperation, namespaceID string) bool {
 func validGCOperationState(operation GCOperation) bool {
 	switch operation.GCState {
 	case operationPhaseMarking:
-		return operation.GraceUntil == nil && operation.CandidateCount == 0 && operation.ObjectCount == 0
-	case operationPhaseGrace, operationPhaseSweeping:
-		return validActiveGCOperation(operation)
+		return validMarkingGCOperation(operation)
+	case operationPhaseGrace:
+		return operation.State == operationStateRunning && operation.Phase == operationPhaseGrace &&
+			validMarkedGCCounts(operation)
+	case operationPhaseSweeping:
+		return operation.State == operationStateRunning && operation.Phase == operationPhaseSweeping &&
+			validMarkedGCCounts(operation)
 	case operationStateSucceeded:
-		return operation.State == operationStateSucceeded && validTerminalGCCounts(operation)
+		return operation.State == operationStateSucceeded && operation.Phase == operationStateSucceeded &&
+			validTerminalGCCounts(operation)
 	case operationStateFailed:
-		return operation.State == operationStateFailed
+		return (operation.State == operationStateFailed || operation.State == operationStateCancelled) &&
+			operation.Phase == operationPhaseRecovered && validTerminalGCCounts(operation)
 	default:
 		return false
 	}
 }
 
-func validActiveGCOperation(operation GCOperation) bool {
-	return operation.State == operationStateRunning && operation.GraceUntil != nil &&
-		operation.CandidateCount > 0 && operation.ObjectCount > 0
+func validMarkingGCOperation(operation GCOperation) bool {
+	statePhaseValid := operation.State == operationStatePlanned && operation.Phase == operationStatePlanned ||
+		operation.State == operationStateRunning && operation.Phase == operationPhaseMarking
+
+	return statePhaseValid && operation.GraceUntil == nil &&
+		operation.CandidateCount == 0 && operation.ObjectCount == 0
+}
+
+func validMarkedGCCounts(operation GCOperation) bool {
+	return operation.GraceUntil != nil && operation.CandidateCount > 0 &&
+		operation.ObjectCount > 0 && operation.ObjectCount <= operation.CandidateCount
 }
 
 func validTerminalGCCounts(operation GCOperation) bool {
 	zero := operation.CandidateCount == 0 && operation.ObjectCount == 0 && operation.GraceUntil == nil
-	marked := operation.CandidateCount > 0 && operation.ObjectCount > 0 && operation.GraceUntil != nil
+	marked := validMarkedGCCounts(operation)
 
 	return zero || marked
 }
 
 func validGCMark(mark GCMark, operationID string) bool {
-	if mark.OperationID != operationID {
+	if mark.OperationID != operationID || mark.CandidatesMarked > math.MaxInt64 ||
+		mark.ObjectsMarked > mark.CandidatesMarked ||
+		(mark.GraceUntil != nil && (*mark.GraceUntil == 0 || *mark.GraceUntil > math.MaxInt64)) {
 		return false
 	}
 
-	if mark.State == operationStateSucceeded {
-		return mark.CandidatesMarked == 0 && mark.ObjectsMarked == 0 && mark.GraceUntil == nil
-	}
+	zero := mark.CandidatesMarked == 0 && mark.ObjectsMarked == 0 && mark.GraceUntil == nil
+	marked := mark.CandidatesMarked > 0 && mark.ObjectsMarked > 0 && mark.GraceUntil != nil
 
-	return mark.State == operationPhaseGrace && mark.CandidatesMarked > 0 && mark.ObjectsMarked > 0 &&
-		mark.GraceUntil != nil
+	return mark.State == operationStateSucceeded && zero ||
+		(mark.State == operationPhaseGrace || mark.State == operationPhaseSweeping ||
+			mark.State == operationStateSucceeded) && marked
 }

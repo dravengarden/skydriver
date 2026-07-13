@@ -3192,6 +3192,22 @@ replayed_gc_mark=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" --data "$gc_mark_request" \
   "$base_url/api/v1/gc/$gc_id/mark")
 [[ "$replayed_gc_mark" == "$marked_gc" ]]
+committed_stale_gc_mark_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization" -H "$json" \
+  --data "$(jq '.fencing_token += 1' <<<"$gc_mark_request")" \
+  "$base_url/api/v1/gc/$gc_id/mark")
+[[ "$committed_stale_gc_mark_status" == 409 ]]
+terminal_gc_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$gc_request" \
+  "$base_url/api/v1/gc/epochs")
+replayed_terminal_gc_operation=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization" -H "$json" --data "$gc_request" \
+  "$base_url/api/v1/gc/epochs")
+[[ "$replayed_terminal_gc_operation" == "$terminal_gc_operation" ]]
+jq -e '
+  .state == "running" and .phase == "grace" and .gc_state == "grace" and
+  .candidate_count == 2 and .object_count == 2 and .grace_until > 0
+' <<<"$terminal_gc_operation" >/dev/null
 
 early_gc_claim_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
