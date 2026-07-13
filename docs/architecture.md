@@ -896,9 +896,10 @@ identity, restored D1 incarnation, or newly referenced object cannot commit.
 The finding is resolved and an audit event retains the exact task identity and
 outcome. Automatic scheduling remains disabled.
 
-Cloudflare Cron Triggers are the planned scheduler for mark, expired-lease
-cleanup, and reconciliation planning; production scheduling is not enabled in
-the current explicit-operator implementation. D1 Time Travel is a control-plane
+Cloudflare Cron Triggers run bounded metadata hygiene for expired sessions and
+Put intents. They do not contact providers. Destructive GC mark/sweep,
+expired-lease recovery, and reconciliation planning remain explicit operator
+workflows until their production gates pass. D1 Time Travel is a control-plane
 recovery mechanism, not a substitute for payload replicas.
 
 ## Disaster recovery and stale clients

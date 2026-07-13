@@ -60,6 +60,21 @@ CREATE TABLE vfs_v2_protocol_assertions (
 INSERT INTO vfs_v2_protocol_assertions
 SELECT COUNT(*) = 12 FROM vfs_actions;
 
+INSERT INTO vfs_v2_protocol_assertions
+SELECT COUNT(*) = 10 FROM sqlite_schema
+WHERE type = 'index' AND name IN (
+  'idx_vfs_directories_active_parent',
+  'idx_vfs_files_active_filesystem',
+  'idx_vfs_locations_version_state_driver',
+  'idx_vfs_locations_driver_state_version',
+  'idx_vfs_directory_drivers_active_driver',
+  'idx_vfs_audit_events_token_time',
+  'idx_vfs_token_verifiers_created',
+  'idx_admin_configuration_sessions_expires_at',
+  'idx_vfs_catalog_outbox_claimable',
+  'idx_vfs_snapshots_expiry'
+);
+
 INSERT INTO credential_envelopes (
   id, envelope_algorithm, key_version, nonce, ciphertext, created_at, rotated_at
 ) VALUES ('vfs-credential', 'test/v1', '1', X'01', X'02', 1, 1);

@@ -4,11 +4,24 @@ set -euo pipefail
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 config="$repository_root/control-plane/wrangler.jsonc"
 
+node --check "$repository_root/control-plane/scripts/deploy-worker.mjs"
+
 node - "$config" <<'NODE'
 const fs = require("node:fs");
 
 const configPath = process.argv[2];
 const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+const headers = fs.readFileSync(
+    require("node:path").join(require("node:path").dirname(configPath), "../web/public/_headers"),
+    "utf8",
+);
+const deployScript = fs.readFileSync(
+    require("node:path").join(
+        require("node:path").dirname(configPath),
+        "scripts/deploy-worker.mjs",
+    ),
+    "utf8",
+);
 
 function fail(message) {
     throw new Error(`invalid Cloudflare environment configuration: ${message}`);
@@ -63,6 +76,11 @@ for (const [name, wanted] of Object.entries(expected)) {
         fail(`${name} must disable workers.dev and preview URLs`);
     }
     if (
+        JSON.stringify(environment.triggers?.crons) !== JSON.stringify(["*/15 * * * *"])
+    ) {
+        fail(`${name} must run bounded metadata maintenance every 15 minutes`);
+    }
+    if (
         !Array.isArray(environment.routes) ||
         environment.routes.length !== 1 ||
         environment.routes[0].pattern !== wanted.hostname ||
@@ -93,5 +111,27 @@ for (const [name, wanted] of Object.entries(expected)) {
 
 if (new Set(identities).size !== identities.length) {
     fail("dev and prod resource identities must never overlap");
+}
+
+for (const requiredHeader of [
+    "Content-Security-Policy:",
+    "Strict-Transport-Security:",
+    "X-Content-Type-Options:",
+    "X-Frame-Options:",
+    "Referrer-Policy:",
+    "Permissions-Policy:",
+    "Cross-Origin-Opener-Policy:",
+    "Cross-Origin-Resource-Policy:",
+]) {
+    if (!headers.includes(requiredHeader)) {
+        fail(`static assets omit ${requiredHeader}`);
+    }
+}
+
+if (!deployScript.includes("/workers/scripts/${workerName}/schedules")) {
+    fail("routine deploys must synchronize Cron schedules through the account API");
+}
+if (deployScript.includes('wrangler(["triggers", "deploy"')) {
+    fail("routine deploys must not require zone-scoped route permissions");
 }
 NODE

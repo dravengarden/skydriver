@@ -11,6 +11,7 @@ mod integrity;
 mod inventory;
 mod key_grants;
 pub mod keys;
+mod maintenance;
 mod management;
 mod management_configuration;
 mod management_driver_configuration;
@@ -48,8 +49,8 @@ mod vfs_tokens;
 
 use serde::{Deserialize, Serialize};
 use worker::{
-    Context, D1Database, D1PreparedStatement, Date, Env, Request, Response, Result, Router, event,
-    wasm_bindgen::JsValue,
+    Context, D1Database, D1PreparedStatement, Date, Env, Request, Response, Result, Router,
+    ScheduleContext, ScheduledEvent, event, wasm_bindgen::JsValue,
 };
 
 #[derive(Serialize)]
@@ -127,7 +128,11 @@ struct LiveComponentsResponse {
 )]
 pub async fn main(request: Request, env: Env, _context: Context) -> Result<Response> {
     if !request.path().starts_with("/api/") {
-        return env.assets("ASSETS")?.fetch_request(request).await;
+        return env
+            .assets("ASSETS")?
+            .fetch_request(request)
+            .await
+            .and_then(security_headers);
     }
 
     Router::new()
@@ -1368,6 +1373,36 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
         )
         .run(request, env)
         .await
+        .and_then(security_headers)
+}
+
+/// Runs bounded, idempotent D1 hygiene from the environment's Cron Trigger.
+#[event(scheduled)]
+pub async fn scheduled(_event: ScheduledEvent, env: Env, _context: ScheduleContext) {
+    if let Err(error) = maintenance::run(&env).await {
+        worker::console_error!("Carrack scheduled metadata maintenance failed: {error:?}");
+    }
+}
+
+fn security_headers(mut response: Response) -> Result<Response> {
+    let headers = response.headers_mut();
+    headers.set(
+        "Content-Security-Policy",
+        "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; \
+         form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+         img-src 'self' data:; font-src 'self' data:; connect-src 'self'",
+    )?;
+    headers.set("Strict-Transport-Security", "max-age=31536000")?;
+    headers.set("X-Content-Type-Options", "nosniff")?;
+    headers.set("X-Frame-Options", "DENY")?;
+    headers.set("Referrer-Policy", "no-referrer")?;
+    headers.set(
+        "Permissions-Policy",
+        "camera=(), geolocation=(), microphone=(), payment=(), usb=()",
+    )?;
+    headers.set("Cross-Origin-Opener-Policy", "same-origin")?;
+    headers.set("Cross-Origin-Resource-Policy", "same-origin")?;
+    Ok(response)
 }
 
 async fn report_progress(

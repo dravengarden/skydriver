@@ -544,6 +544,27 @@ if ! curl --silent --fail "http://127.0.0.1:$port/api/health" >/dev/null; then
   exit 1
 fi
 
+curl --silent --show-error --dump-header "$state_directory/security.headers" \
+  --output /dev/null "http://127.0.0.1:$port/api/health"
+for expected_header in \
+  content-security-policy strict-transport-security x-content-type-options \
+  x-frame-options referrer-policy permissions-policy \
+  cross-origin-opener-policy cross-origin-resource-policy; do
+  if ! awk -F: -v wanted="$expected_header" \
+    'tolower($1) == wanted { found = 1 } END { exit !found }' \
+    "$state_directory/security.headers"; then
+    echo "local Worker omitted security header $expected_header" >&2
+    exit 1
+  fi
+done
+
+if ! curl --silent --show-error --fail \
+  "http://127.0.0.1:$port/cdn-cgi/handler/scheduled?cron=*/15+*+*+*+*" \
+  >/dev/null; then
+  echo "local Worker scheduled metadata maintenance failed" >&2
+  exit 1
+fi
+
 base_url="http://127.0.0.1:$port"
 authorization="Authorization: Bearer $token"
 json='Content-Type: application/json'

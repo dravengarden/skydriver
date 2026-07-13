@@ -38,7 +38,10 @@ the product hostname and development prefixes that hostname with `dev.`. Both
 `workers.dev` and version preview URLs are disabled. The committed Wrangler
 configuration records the exact custom domain, DNS record, and certificate
 binding, while routine version deployments deliberately leave those stable
-triggers unchanged.
+routes unchanged. The deploy helper synchronizes only the environment's Cron
+schedules through the account-scoped Worker schedules API; it does not use
+Wrangler's combined trigger command, which also reads zone routes and would
+unnecessarily require `Workers Routes: Edit`.
 
 The public UUIDs and bucket names are committed in
 `control-plane/wrangler.jsonc`; credentials and Worker runtime secrets are
@@ -80,7 +83,9 @@ The operator console has no username or account directory. Each environment
 uses one independent `CARRACK_ADMIN_TOKEN` Worker secret, following Stormbird's
 operator-credential model. A successful login exchanges that credential for a
 random 12-hour HttpOnly browser session. D1 stores only the session's SHA-256
-verifier; logout deletes it and expired rows are purged on the next login.
+verifier; logout deletes it. A 15-minute metadata-hygiene Cron Trigger also
+deletes expired operator and configuration sessions, so cleanup does not depend
+on a later login.
 
 Set independent operator, archive-root, and VFS-master secrets for each environment:
 
@@ -153,6 +158,13 @@ provider credential or compatibility experiments.
 
 ## Garbage collection
 
+The Worker Cron Trigger performs metadata hygiene only. Each run deletes at
+most 500 expired rows from each ephemeral session table and moves at most 250
+expired V2 Put intents from `prepared` to the durable `expired` state. It never
+contacts a driver and never deletes provider objects. The bounds keep one
+maintenance invocation from monopolizing D1; later invocations drain any
+backlog.
+
 Namespace `retention_policy_json` accepts `move_grace_seconds`,
 `gc_minimum_age_seconds`, `gc_grace_seconds`, and
 `inventory_quarantine_seconds`. GC age defaults to seven days; Move, GC, and
@@ -176,6 +188,22 @@ task. Provider failure is retained for retry.
 Do not schedule these commands automatically yet. The explicit GC protocol is
 implemented and tested, but production Cron activation remains subject to the
 fault-injection and disaster-recovery gate in `docs/requirements.md`.
+
+## D1 cost and index maintenance
+
+Schema migrations include only indexes tied to production query shapes,
+including reverse foreign-key traversal, active directory and file scans,
+location lookup, token audit lookup, outbox claiming, snapshot expiry, and
+session expiry. `control-plane/tests/vfs-v2-protocol.sh` fails if a required
+index disappears. Use `EXPLAIN QUERY PLAN` when adding or changing a query;
+avoid an index that has no concrete read or maintenance path because every
+index also adds storage and write work.
+
+After applying an index-changing migration to one environment, run
+`PRAGMA optimize;` against that same environment so SQLite can refresh planner
+statistics. Never run the command against the other environment by accident.
+Inspect D1 analytics after representative traffic and remove demonstrably
+unused indexes only through a new append-only migration.
 
 ## Provider inventory
 
