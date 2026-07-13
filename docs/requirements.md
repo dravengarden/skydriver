@@ -92,6 +92,9 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
   policy MUST NOT change bundle, frame, extent, or ciphertext identities.
 - Proxy policy MUST be injected below the driver and MUST NOT appear in object
   identity, manifests, or crypto metadata.
+- Carrack MUST NOT embed, download, configure, supervise, or launch a proxy
+  daemon. HTTP-capable drivers MUST use Go's standard HTTP transport with either
+  direct routing or an external `http`, `https`, `socks5`, or `socks5h` proxy.
 - A driver MUST distinguish transient, throttled, authorization, quota,
   not-found, integrity, and permanent errors when its provider exposes enough
   evidence to do so.

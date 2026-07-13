@@ -74,6 +74,20 @@ the OpenList-compatible refresh-token source. A rotated refresh token must be
 persisted through the supplied callback before the new access token is used.
 Neither tokens nor download URLs belong in manifests, D1, logs, or Git.
 
+Carrack does not embed or manage sing-box. Its HTTP clients use Go's standard
+transport and can connect directly or through an external HTTP/HTTPS/SOCKS5
+proxy. The CLI honors the standard proxy environment variables; for example:
+
+```bash
+HTTPS_PROXY=http://127.0.0.1:8080 carrack restore ...
+HTTPS_PROXY=socks5h://127.0.0.1:1080 carrack restore ...
+```
+
+Use `NO_PROXY` for direct destinations. If VLESS or another outbound protocol
+is needed, run sing-box as a separate service and point Carrack at the service's
+HTTP or SOCKS listener. Proxy URLs and credentials never belong in manifests or
+control-plane metadata.
+
 The V1 default layout uses 64 MiB physical blocks, 8 MiB crypto frames, and
 8 GiB target logical packs. A physical block is Carrack's independently
 verified leaf, not a provider multipart-upload part. Drivers choose their own

@@ -94,6 +94,8 @@ type CredentialStore interface {
 }
 
 // Dependencies are SDK-owned runtime facilities shared by driver factories.
+// HTTPClient is caller-owned and may use Go's standard HTTP/HTTPS/SOCKS5 proxy
+// support. Driver factories must not start or manage proxy daemons.
 type Dependencies struct {
 	HTTPClient  *http.Client
 	Credentials CredentialStore

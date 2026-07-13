@@ -124,7 +124,7 @@ DriverRef
   config         kind-specific validated configuration
   credential_ref optional encrypted credential reference
   rate_policy    control-plane policy plus driver-safe defaults
-  proxy_policy   direct, external proxy, or managed sing-box
+  proxy_policy   direct or an external HTTP/HTTPS/SOCKS5 proxy URL
 ```
 
 The Go SDK owns a registry mapping `kind` to a typed factory. Adding R2 or
@@ -922,15 +922,15 @@ object or location. All HTTP-capable drivers receive an SDK-owned transport.
 Supported policy shapes are:
 
 - `direct`;
-- external HTTP or SOCKS5 endpoint;
-- managed sing-box, where the SDK starts a pinned sing-box binary with an
-  ephemeral local SOCKS endpoint from a validated outbound configuration such
-  as VLESS.
+- an external `http`, `https`, `socks5`, or `socks5h` endpoint.
 
-Embedding sing-box internals directly would couple Carrack to an unstable and
-large implementation surface. A managed subprocess keeps the boundary explicit
-and lets all drivers share the same proxy. Proxy credentials stay in memory or
-`0600` ephemeral files and never enter manifests or logs.
+Carrack uses Go's standard `net/http.Transport` for both HTTP CONNECT and
+SOCKS5. The CLI inherits `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`; embedded
+SDK callers may inject an equivalent `http.Client`. Carrack does not embed,
+download, configure, supervise, or launch sing-box or any other proxy daemon.
+When an outbound protocol such as VLESS is required, an independently operated
+sing-box service exposes a local HTTP or SOCKS endpoint and remains outside the
+Carrack lifecycle. Proxy credentials never enter manifests, D1, or logs.
 
 Host routing such as hawk's direct Aliyun Drive policy remains an Omega concern.
 It is independent from Carrack unless an operator explicitly selects a Carrack
