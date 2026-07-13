@@ -20,6 +20,7 @@ const MAXIMUM_CREDENTIAL_BYTES: usize = 64 << 10;
 const DIRECTORY_AAD_DOMAIN: &str = "carrack.vfs.directory-key-envelope.v1";
 const CREDENTIAL_AAD_DOMAIN: &str = "carrack.vfs.driver-credential-envelope.v1";
 const BOOTSTRAP_TOKEN_INFO: &str = "carrack.vfs.bootstrap-token.v1";
+const CHILD_TOKEN_INFO: &str = "carrack.vfs.child-token.v1";
 
 pub(crate) struct SealedEnvelope {
     pub(crate) nonce: Vec<u8>,
@@ -143,6 +144,40 @@ pub(crate) fn derive_bootstrap_token(
     let expanded = hkdf
         .expand(&info, &mut token)
         .map_err(|_| worker::Error::RustError("derive VFS bootstrap bearer token".to_owned()));
+    master_key.zeroize();
+    expanded?;
+
+    let encoded = URL_SAFE_NO_PAD.encode(token);
+    token.zeroize();
+    Ok(encoded)
+}
+
+/// Derives a recoverable attenuated bearer without retaining it in D1.
+///
+/// The parent identity and caller-supplied idempotency key are domain-separated
+/// inputs, while the canonical request digest is the HKDF salt. An exact retry
+/// returns the same secret; any scope change returns a different secret and is
+/// rejected by the immutable receipt.
+pub(crate) fn derive_child_token(
+    env: &Env,
+    parent_token_id: &str,
+    request_sha256: &[u8; 32],
+    idempotency_key: &str,
+) -> Result<String> {
+    let mut master_key = load_master_key(env, MASTER_KEY_VERSION)?;
+    let hkdf = Hkdf::<Sha256>::new(Some(request_sha256), &master_key);
+    let mut token = [0_u8; 32];
+    let mut info = Vec::with_capacity(
+        CHILD_TOKEN_INFO.len() + parent_token_id.len() + idempotency_key.len() + 2,
+    );
+    info.extend_from_slice(CHILD_TOKEN_INFO.as_bytes());
+    info.push(0);
+    info.extend_from_slice(parent_token_id.as_bytes());
+    info.push(0);
+    info.extend_from_slice(idempotency_key.as_bytes());
+    let expanded = hkdf
+        .expand(&info, &mut token)
+        .map_err(|_| worker::Error::RustError("derive VFS child bearer token".to_owned()));
     master_key.zeroize();
     expanded?;
 

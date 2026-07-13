@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 
@@ -56,7 +55,12 @@ func newVFSCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
 		Use:   vfsCommandName,
 		Short: "Operate the Carrack virtual filesystem",
 	}
-	command.AddCommand(newVFSPutCommand(ctx, stdout), newVFSJournalCommand(stdout))
+	command.AddCommand(
+		newVFSPutCommand(ctx, stdout),
+		newVFSDirectoryCommand(ctx, stdout),
+		newVFSTokenCommand(ctx, stdout),
+		newVFSJournalCommand(stdout),
+	)
 
 	return command
 }
@@ -145,16 +149,11 @@ func executeVFSPut(
 		return sdk.VFSPutResult{}, err
 	}
 
-	token, err := sdk.ParseVFSToken(getenv(vfsTokenEnvironment))
+	control, err := newVFSControlClientFromEnvironment(flags.controlURL, getenv)
 	if err != nil {
-		return sdk.VFSPutResult{}, fmt.Errorf("parse VFS token: %w", err)
+		return sdk.VFSPutResult{}, err
 	}
-	defer token.Clear()
-
-	control, err := sdk.NewVFSControlClient(flags.controlURL, token, &http.Client{})
-	if err != nil {
-		return sdk.VFSPutResult{}, fmt.Errorf("construct VFS control client: %w", err)
-	}
+	defer control.Clear()
 
 	registry := driver.NewRegistry()
 	if registerErr := registry.Register(driverlocalfs.Kind, driverlocalfs.Factory); registerErr != nil {

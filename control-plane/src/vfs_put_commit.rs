@@ -167,25 +167,25 @@ struct StoredEntry {
     revision: u64,
 }
 
-struct DirectoryUpdate {
-    directory_id: String,
-    expected_revision: u64,
-    expected_root: String,
-    new_root: String,
+pub(crate) struct DirectoryUpdate {
+    pub(crate) directory_id: String,
+    pub(crate) expected_revision: u64,
+    pub(crate) expected_root: String,
+    pub(crate) new_root: String,
 }
 
-struct LinkUpdate {
-    parent_directory_id: String,
-    child_directory_id: String,
-    name: String,
-    expected_revision: u64,
-    new_child_root: String,
+pub(crate) struct LinkUpdate {
+    pub(crate) parent_directory_id: String,
+    pub(crate) child_directory_id: String,
+    pub(crate) name: String,
+    pub(crate) expected_revision: u64,
+    pub(crate) new_child_root: String,
 }
 
-struct RootPlan {
-    directories: Vec<DirectoryUpdate>,
-    links: Vec<LinkUpdate>,
-    root: String,
+pub(crate) struct RootPlan {
+    pub(crate) directories: Vec<DirectoryUpdate>,
+    pub(crate) links: Vec<LinkUpdate>,
+    pub(crate) root: String,
 }
 
 enum Replacement {
@@ -625,6 +625,147 @@ async fn plan_directory_roots(
             name: directory.name,
             data_root: new_root,
         };
+        current_id = parent_id;
+    }
+}
+
+/// Plans the Merkle path for adding one absent child directory entry.
+///
+/// Every current directory root is independently recomputed from its stored
+/// entries before the new roots are accepted. The returned optimistic proof is
+/// consumed by one D1 batch; a concurrent namespace mutation invalidates it and
+/// causes the caller to re-plan.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the namespace planner verifies the target and complete ancestor chain in one walk"
+)]
+pub(crate) async fn plan_new_child_directory_roots(
+    database: &D1Database,
+    filesystem_id: &str,
+    parent_directory_id: &str,
+    child_directory_id: &str,
+    child_name: &str,
+    child_root: &str,
+) -> Result<Option<RootPlan>> {
+    let mut visited = BTreeSet::new();
+    let mut directories = Vec::new();
+    let mut links = Vec::new();
+    let mut current_id = parent_directory_id.to_owned();
+    let mut replacement = Replacement::Child {
+        id: child_directory_id.to_owned(),
+        name: child_name.to_owned(),
+        data_root: child_root.to_owned(),
+    };
+    let mut adding_child = true;
+
+    loop {
+        if directories.len() >= MAXIMUM_DIRECTORY_DEPTH || !visited.insert(current_id.clone()) {
+            return Err(worker::Error::RustError(
+                "VFS directory ancestry is cyclic or too deep".to_owned(),
+            ));
+        }
+        let Some(directory) = load_directory(database, &current_id).await? else {
+            return Ok(None);
+        };
+        if directory.filesystem_id != filesystem_id || directory.state != "active" {
+            return Ok(None);
+        }
+        let stored = load_directory_entries(database, &current_id).await?;
+        let current_entries = stored
+            .iter()
+            .map(|entry| entry.entry.clone())
+            .collect::<Vec<_>>();
+        let current_root = lowercase_hex(&directory_root(&current_entries).map_err(|error| {
+            worker::Error::RustError(format!("verify current VFS directory root: {error:?}"))
+        })?)?;
+        if current_root != directory.data_root {
+            return Err(worker::Error::RustError(format!(
+                "VFS directory {} root does not match its entries",
+                directory.id
+            )));
+        }
+
+        let Replacement::Child {
+            id,
+            name,
+            data_root,
+        } = &replacement
+        else {
+            return Err(worker::Error::RustError(
+                "VFS child-directory planner has an invalid replacement".to_owned(),
+            ));
+        };
+        let mut entries = Vec::with_capacity(stored.len() + usize::from(adding_child));
+        let mut matched = None;
+        for candidate in stored {
+            if entry_name(&candidate.entry) == name {
+                if matched.replace(candidate).is_some() {
+                    return Err(worker::Error::RustError(
+                        "VFS directory contains duplicate canonical entries".to_owned(),
+                    ));
+                }
+            } else {
+                entries.push(candidate.entry);
+            }
+        }
+
+        if adding_child {
+            if matched.is_some() {
+                return Ok(None);
+            }
+        } else {
+            let Some(existing) = matched else {
+                return Ok(None);
+            };
+            if !matches!(
+                &existing.entry,
+                DirectoryEntry::Directory { stable_id, .. }
+                    if *stable_id == decode_identifier(id)?
+            ) {
+                return Ok(None);
+            }
+            links.push(LinkUpdate {
+                parent_directory_id: directory.id.clone(),
+                child_directory_id: id.clone(),
+                name: name.clone(),
+                expected_revision: existing.revision,
+                new_child_root: data_root.clone(),
+            });
+        }
+        entries.push(DirectoryEntry::Directory {
+            name: name.clone(),
+            stable_id: decode_identifier(id)?,
+            data_root: decode_digest(data_root)?,
+        });
+
+        let new_root = lowercase_hex(&directory_root(&entries).map_err(|error| {
+            worker::Error::RustError(format!("compute VFS directory root: {error:?}"))
+        })?)?;
+        if new_root == directory.data_root {
+            return Err(worker::Error::RustError(
+                "VFS directory creation did not change its parent root".to_owned(),
+            ));
+        }
+        directories.push(DirectoryUpdate {
+            directory_id: directory.id.clone(),
+            expected_revision: directory.revision,
+            expected_root: directory.data_root,
+            new_root: new_root.clone(),
+        });
+
+        let Some(parent_id) = directory.parent_id else {
+            return Ok(Some(RootPlan {
+                directories,
+                links,
+                root: new_root,
+            }));
+        };
+        replacement = Replacement::Child {
+            id: directory.id,
+            name: directory.name,
+            data_root: new_root,
+        };
+        adding_child = false;
         current_id = parent_id;
     }
 }

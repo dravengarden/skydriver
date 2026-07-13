@@ -25,14 +25,19 @@ mod repairing;
 mod restoration;
 mod telemetry;
 mod verification;
+mod vfs_access;
 mod vfs_authorization;
 mod vfs_bootstrap;
+mod vfs_directories;
+mod vfs_directory_management;
 mod vfs_envelopes;
 mod vfs_grants;
 mod vfs_identifiers;
 mod vfs_merkle;
+mod vfs_policy_management;
 mod vfs_put;
 mod vfs_put_commit;
+mod vfs_token_management;
 mod vfs_tokens;
 
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
@@ -191,6 +196,139 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
             }
             response
         })
+        .get_async(
+            "/api/v2/directories/:id/entries",
+            |request, context| async move {
+                let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                    return Response::error("VFS token authentication required", 401);
+                };
+                let Some(directory_id) = context.param("id") else {
+                    return Response::error("VFS directory ID is required", 400);
+                };
+
+                vfs_directories::list(&request, &context.env, &token, directory_id).await
+            },
+        )
+        .post_async(
+            "/api/v2/directories/:id/children",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+                let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                    return Response::error("VFS token authentication required", 401);
+                };
+                let Some(parent_directory_id) = context.param("id") else {
+                    return Response::error("VFS parent directory ID is required", 400);
+                };
+
+                vfs_directory_management::create(
+                    &mut request,
+                    &context.env,
+                    &token,
+                    parent_directory_id,
+                )
+                .await
+            },
+        )
+        .get_async(
+            "/api/v2/directories/:id/acl",
+            |request, context| async move {
+                let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                    return Response::error("VFS token authentication required", 401);
+                };
+                let Some(directory_id) = context.param("id") else {
+                    return Response::error("VFS directory ID is required", 400);
+                };
+                vfs_policy_management::list_acl(&context.env, &token, directory_id).await
+            },
+        )
+        .post_async(
+            "/api/v2/directories/:id/acl/replace",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+                let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                    return Response::error("VFS token authentication required", 401);
+                };
+                let Some(directory_id) = context.param("id") else {
+                    return Response::error("VFS directory ID is required", 400);
+                };
+                vfs_policy_management::replace_acl(
+                    &mut request,
+                    &context.env,
+                    &token,
+                    directory_id,
+                )
+                .await
+            },
+        )
+        .get_async(
+            "/api/v2/directories/:id/placements",
+            |request, context| async move {
+                let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                    return Response::error("VFS token authentication required", 401);
+                };
+                let Some(directory_id) = context.param("id") else {
+                    return Response::error("VFS directory ID is required", 400);
+                };
+                vfs_policy_management::list_placements(&context.env, &token, directory_id).await
+            },
+        )
+        .post_async(
+            "/api/v2/directories/:id/placements/replace",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+                let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                    return Response::error("VFS token authentication required", 401);
+                };
+                let Some(directory_id) = context.param("id") else {
+                    return Response::error("VFS directory ID is required", 400);
+                };
+                vfs_policy_management::replace_placements(
+                    &mut request,
+                    &context.env,
+                    &token,
+                    directory_id,
+                )
+                .await
+            },
+        )
+        .post_async("/api/v2/tokens", |mut request, context| async move {
+            if external_maintenance(&context.env) {
+                return Response::error("control-plane mutations are disabled", 409);
+            }
+            let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                return Response::error("VFS token authentication required", 401);
+            };
+
+            vfs_token_management::issue(&mut request, &context.env, &token).await
+        })
+        .post_async(
+            "/api/v2/tokens/:id/revoke",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+                let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                    return Response::error("VFS token authentication required", 401);
+                };
+                let Some(target_token_id) = context.param("id") else {
+                    return Response::error("VFS token ID is required", 400);
+                };
+
+                vfs_token_management::revoke(
+                    &mut request,
+                    &context.env,
+                    &token,
+                    target_token_id,
+                )
+                .await
+            },
+        )
         .post_async("/api/v2/puts/prepare", |mut request, context| async move {
             if external_maintenance(&context.env) {
                 return Response::error("control-plane mutations are disabled", 409);

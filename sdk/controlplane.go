@@ -201,6 +201,30 @@ func (client *ControlClient) authenticatedPost(
 	return client.request(ctx, http.MethodPost, path, authorization, "application/json", body, destination)
 }
 
+func (client *ControlClient) authenticatedGet(
+	ctx context.Context,
+	path string,
+	query url.Values,
+	destination any,
+) error {
+	if client == nil {
+		return fmt.Errorf("%w: control client is not initialized", ErrInvalidControlPlane)
+	}
+
+	authorization := "Bearer " + base64.RawURLEncoding.EncodeToString(client.token[:])
+
+	return client.requestWithQuery(
+		ctx,
+		http.MethodGet,
+		path,
+		query,
+		authorization,
+		"",
+		nil,
+		destination,
+	)
+}
+
 func (client *ControlClient) authenticatedBinaryPost(
 	ctx context.Context,
 	path string,
@@ -223,12 +247,33 @@ func (client *ControlClient) request(
 	body []byte,
 	destination any,
 ) error {
+	return client.requestWithQuery(
+		ctx,
+		method,
+		path,
+		nil,
+		authorization,
+		contentType,
+		body,
+		destination,
+	)
+}
+
+func (client *ControlClient) requestWithQuery(
+	ctx context.Context,
+	method, path string,
+	query url.Values,
+	authorization, contentType string,
+	body []byte,
+	destination any,
+) error {
 	if client == nil || client.baseURL == nil || client.httpClient == nil {
 		return fmt.Errorf("%w: control client is not initialized", ErrInvalidControlPlane)
 	}
 
 	endpoint := *client.baseURL
 	endpoint.Path += path
+	endpoint.RawQuery = query.Encode()
 
 	requestBody := io.Reader(http.NoBody)
 	if body != nil {

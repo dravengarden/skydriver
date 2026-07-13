@@ -22,7 +22,8 @@ import (
 )
 
 const (
-	vfsTokenBytes = 32
+	vfsTokenBytes     = 32
+	vfsCommittedState = "committed"
 
 	// VFSPlaintextSuite stores complete provider objects without content encryption.
 	VFSPlaintextSuite = "plaintext/v1"
@@ -63,6 +64,16 @@ func (token *VFSToken) Clear() {
 	}
 }
 
+// Encode returns this token's base64url bearer form. It returns an empty
+// string after the token has been cleared.
+func (token *VFSToken) Encode() string {
+	if token == nil || allZeroBytes(token[:]) {
+		return ""
+	}
+
+	return base64.RawURLEncoding.EncodeToString(token[:])
+}
+
 // VFSControlClient accesses VFS metadata and short-lived grant APIs. Payload
 // bytes still flow directly between the caller and a compiled driver.
 type VFSControlClient struct {
@@ -82,6 +93,16 @@ func NewVFSControlClient(
 	}
 
 	return &VFSControlClient{control: control}, nil
+}
+
+// Clear overwrites the client's private bearer copy. The client must not be
+// used after this call.
+func (client *VFSControlClient) Clear() {
+	if client == nil || client.control == nil {
+		return
+	}
+
+	client.control.token.Clear()
 }
 
 // PrepareVFSPutRequest fixes one plaintext identity and optimistic VFS entry precondition.
@@ -464,7 +485,7 @@ func validVFSPutPreparation(response VFSPutPreparation, requested PrepareVFSPutR
 		response.KeyEpoch > 0,
 		response.EncryptionFrameBytes == requested.EncryptionFrameBytes,
 		response.RequiresEncryptionKey == (response.CryptoSuite != VFSPlaintextSuite),
-		response.State == "prepared" || response.State == "committed",
+		response.State == "prepared" || response.State == vfsCommittedState,
 		response.ExpiresAt > 0,
 		requested.PreferredDriverID == nil || response.DriverID == *requested.PreferredDriverID,
 	)
@@ -494,7 +515,7 @@ func validVFSPutReceipt(
 		optionalControlStringEqual(response.NativeID, requested.NativeID) &&
 		optionalControlStringEqual(response.ProviderVersion, requested.ProviderVersion) &&
 		optionalControlStringEqual(response.ETag, requested.ETag) && response.EntryRevision > 0 &&
-		response.CatalogRevisionID > 0 && response.CommittedAt > 0 && response.State == "committed"
+		response.CatalogRevisionID > 0 && response.CommittedAt > 0 && response.State == vfsCommittedState
 }
 
 func validIdentifier(value string) bool {

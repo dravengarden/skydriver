@@ -152,6 +152,10 @@ func writeValue(writer io.Writer, outputFormat string, value any) error {
 			return writeVFSPutTable(writer, result)
 		}
 
+		if supportsVFSManagementTable(value) {
+			return writeVFSManagementTable(writer, value)
+		}
+
 		if err := writeTable(writer, value); err != nil {
 			return err
 		}
