@@ -387,6 +387,10 @@ func supportsVFSManagementTable(value any) bool {
 	switch value.(type) {
 	case sdk.VFSDirectoryPage,
 		sdk.VFSDirectoryCreation,
+		sdk.VFSACL,
+		sdk.VFSCatalogSyncResult,
+		sdk.VFSPlacements,
+		sdk.VFSPolicyMutation,
 		vfsTokenIssueOutput,
 		sdk.VFSTokenRevocation:
 		return true
@@ -415,6 +419,22 @@ func writeVFSManagementTable(writer io.Writer, value any) error {
 			typedValue.State,
 		); err != nil {
 			return fmt.Errorf("write VFS directory-create table: %w", err)
+		}
+	case sdk.VFSACL:
+		if err := writeVFSACLTable(table, typedValue); err != nil {
+			return err
+		}
+	case sdk.VFSCatalogSyncResult:
+		if err := writeVFSCatalogSyncTable(table, typedValue); err != nil {
+			return err
+		}
+	case sdk.VFSPlacements:
+		if err := writeVFSPlacementsTable(table, typedValue); err != nil {
+			return err
+		}
+	case sdk.VFSPolicyMutation:
+		if err := writeVFSPolicyMutationTable(table, typedValue); err != nil {
+			return err
 		}
 	case vfsTokenIssueOutput:
 		if _, err := fmt.Fprintf(

@@ -320,6 +320,61 @@ cli_mkdir=$(env CARRACK_VFS_TOKEN="$root_token" \
   --format json)
 [[ "$(jq -r '.parent_directory_id' <<<"$cli_mkdir")" == "$created_directory_id" ]]
 [[ "$(jq -r '.name' <<<"$cli_mkdir")" == artifacts ]]
+cli_directory_id=$(jq -r '.directory_id' <<<"$cli_mkdir")
+
+cli_catalog_cache="$state_directory/catalog-cache"
+cli_catalog_first=$(env CARRACK_VFS_TOKEN="$root_token" \
+  "$cli_binary" vfs catalog sync "$root_directory_id" \
+  --control-url "$base_url" \
+  --cache-directory "$cli_catalog_cache" \
+  --page-size 1 \
+  --max-concurrency 2 \
+  --format json)
+[[ "$(jq -r '.schema' <<<"$cli_catalog_first")" == carrack.vfs.catalog-sync.v1 ]]
+[[ "$(jq -r '.directories' <<<"$cli_catalog_first")" == 3 ]]
+[[ "$(jq -r '.entries' <<<"$cli_catalog_first")" == 2 ]]
+[[ "$(jq -r '.fetched_nodes' <<<"$cli_catalog_first")" == 3 ]]
+[[ "$(jq -r '.reused_nodes' <<<"$cli_catalog_first")" == 0 ]]
+
+cli_catalog_second=$(env CARRACK_VFS_TOKEN="$root_token" \
+  "$cli_binary" vfs catalog sync "$root_directory_id" \
+  --control-url "$base_url" \
+  --cache-directory "$cli_catalog_cache" \
+  --page-size 1 \
+  --max-concurrency 2 \
+  --format json)
+[[ "$(jq -r '.fetched_nodes' <<<"$cli_catalog_second")" == 0 ]]
+[[ "$(jq -r '.reused_nodes' <<<"$cli_catalog_second")" == 3 ]]
+
+cli_acl=$(env CARRACK_VFS_TOKEN="$root_token" \
+  "$cli_binary" vfs acl show "$cli_directory_id" \
+  --control-url "$base_url" --format json)
+[[ "$(jq -r '.schema' <<<"$cli_acl")" == carrack.vfs.acl.v1 ]]
+cli_acl_revision=$(jq -r '.acl_revision' <<<"$cli_acl")
+cli_acl_replaced=$(env CARRACK_VFS_TOKEN="$root_token" \
+  "$cli_binary" vfs acl replace "$cli_directory_id" "$principal_id" \
+  --control-url "$base_url" \
+  --role viewer \
+  --expected-acl-revision "$cli_acl_revision" \
+  --idempotency-key cli-acl-viewer-v1 \
+  --format json)
+[[ "$(jq -r '.kind' <<<"$cli_acl_replaced")" == acl.replace ]]
+[[ "$(jq -c '.policy.actions' <<<"$cli_acl_replaced")" == '["content.read","directory.list"]' ]]
+
+cli_placements=$(env CARRACK_VFS_TOKEN="$root_token" \
+  "$cli_binary" vfs placement list "$cli_directory_id" \
+  --control-url "$base_url" --format json)
+[[ "$(jq -r '.schema' <<<"$cli_placements")" == carrack.vfs.placements.v1 ]]
+cli_placement_revision=$(jq -r '.placement_revision' <<<"$cli_placements")
+cli_placement_replaced=$(env CARRACK_VFS_TOKEN="$root_token" \
+  "$cli_binary" vfs placement replace "$cli_directory_id" \
+  --control-url "$base_url" \
+  --placement local-main=0 \
+  --expected-placement-revision "$cli_placement_revision" \
+  --idempotency-key cli-placement-local-v1 \
+  --format json)
+[[ "$(jq -r '.kind' <<<"$cli_placement_replaced")" == placement.replace ]]
+[[ "$(jq -r '.policy.placements[0].driver_id' <<<"$cli_placement_replaced")" == local-main ]]
 
 cli_issue=$(env CARRACK_VFS_TOKEN="$root_token" \
   "$cli_binary" vfs token issue "$root_directory_id" \
@@ -420,9 +475,9 @@ child_verifier=$(printf '%s' "$child_token" | sha256sum | cut -d' ' -f1)
        AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'token_revoked') = 3
        AND (SELECT COUNT(*) FROM vfs_directory_create_receipts) = 2
        AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'directory_created') = 2
-       AND (SELECT COUNT(*) FROM vfs_policy_mutation_receipts) = 2
-       AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'acl.replace') = 1
-       AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'placement.replace') = 1
+       AND (SELECT COUNT(*) FROM vfs_policy_mutation_receipts) = 4
+       AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'acl.replace') = 2
+       AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'placement.replace') = 2
        AND EXISTS (
          SELECT 1
          FROM vfs_directories AS child

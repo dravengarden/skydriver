@@ -22,12 +22,19 @@ The current implemented V2 slice includes:
   reauthorized short-lived key and driver grants;
 - framed AES-256-GCM complete-file transforms with per-version HKDF keys; and
 - SDK `Put`, `PutFile`, and `PutBytes` plus `carrack vfs put`, exercised against
-  the real local Worker and `local-filesystem/v2` driver.
+  the real local Worker and `local-filesystem/v2` driver; and
+- revision-consistent directory reads, Merkle-linked child creation,
+  attenuated token lifecycle, direct ACL replacement, and placement replace-all
+  through the Worker, Go SDK, and CLI; and
+- a private local namespace catalog keyed by directory ID and Merkle root, with
+  bounded concurrent prefetch, durable verified nodes, subtree reuse, and final
+  live-root revalidation.
 
-The next slices are metadata checkpoint/delta synchronization and local catalog
-planning; Get, Push, and Pull; remote V2 drivers; V2 reachability/GC; and final
-legacy removal. The archive-oriented CLI and packages below the V2 boundary
-remain available only for migration and existing V1 workflows.
+The next slices add immutable file-version and location records to the local
+catalog, safe R2 checkpoint/delta materialization, and local transfer planning;
+then Get, Push, and Pull; remote V2 drivers; V2 reachability/GC; and final legacy
+removal. The archive-oriented CLI and packages below the V2 boundary remain
+available only for migration and existing V1 workflows.
 
 ## Product boundary
 
@@ -204,6 +211,14 @@ the checkpoint or missing deltas directly, verifies the chain and final root,
 and updates a local SQLite catalog. It then computes the complete transfer plan
 locally. No per-file control-plane request is required on the payload hot path.
 
+The implemented first slice uses the directory Merkle graph directly: private
+local nodes are addressed by `(directory_id, data_root)`, missing directories
+are assembled from revision-pinned pages with bounded cross-directory
+concurrency, and the live root is revalidated after the recursive closure.
+Unchanged subtrees require no control-plane read. Immutable version/location
+records, a query index, and R2 checkpoint/delta publication remain pending;
+`vfs-catalog-v1.md` fixes the current protocol and its exact boundary.
+
 Checkpoints optimize full sequential catalog transfer. Delta segments optimize
 incremental synchronization. A content-addressed Merkle B-tree may be added
 for extremely large partial catalogs without changing directory roots or the
@@ -241,6 +256,11 @@ verification, or conditional publication.
 block-manifest staging, and optimistic commit wire protocol, including
 idempotent replay, token refresh, Merkle-root recomputation, and D1 publication
 invariants.
+`vfs-management-v1.md` defines the implemented directory, token, ACL, and
+placement-management routes, CLI commands, action requirements, and race
+handling.
+`vfs-catalog-v1.md` defines the implemented private local namespace DAG,
+incremental synchronization, cache durability, and root-race handling.
 
 CLI payloads use stdin and stdout rather than command-line byte arguments.
 Machine-readable results have stable JSON schemas. Payload stdout is never

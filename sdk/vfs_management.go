@@ -17,6 +17,8 @@ const (
 	vfsTokenRevokeSchema     = "carrack.vfs.token-revoke-receipt.v1" // #nosec G101 -- protocol schema, not a credential.
 	maximumVFSListLimit      = uint32(1_000)
 	vfsActionCount           = 12
+	vfsEntryKindFile         = "file"
+	vfsEntryKindDirectory    = "directory"
 )
 
 // VFSAction is one exact, non-implying VFS authorization action.
@@ -482,11 +484,11 @@ func validVFSDirectoryEntry(entry VFSDirectoryEntry) bool {
 	}
 
 	switch entry.Kind {
-	case "file":
+	case vfsEntryKindFile:
 		return entry.FileID != nil && validIdentifier(*entry.FileID) &&
 			entry.VersionID != nil && validIdentifier(*entry.VersionID) &&
 			entry.ChildDirectoryID == nil && entry.MetadataRoot != nil && validDigest(*entry.MetadataRoot)
-	case "directory":
+	case vfsEntryKindDirectory:
 		return entry.FileID == nil && entry.VersionID == nil && entry.ChildDirectoryID != nil &&
 			validIdentifier(*entry.ChildDirectoryID) && entry.SizeBytes == 0 && entry.MetadataRoot == nil
 	default:
