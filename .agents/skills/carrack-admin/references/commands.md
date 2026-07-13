@@ -54,6 +54,34 @@ committed receipt against a fresh snapshot. This command changes descriptive
 metadata only; it cannot expand token actions, directory scope, driver scope,
 or expiry.
 
+Validate a driver state transition without changing state:
+
+```bash
+carrack admin driver disable "$driver_id" \
+  --control-url "$CARRACK_CONTROL_URL" \
+  --expected-revision "$driver_revision" \
+  --check \
+  --format json
+```
+
+Review the returned placement count, available-location count, expiry, and all
+warnings. Apply the exact transition with a stable idempotency key:
+
+```bash
+carrack admin driver disable "$driver_id" \
+  --control-url "$CARRACK_CONTROL_URL" \
+  --expected-revision "$driver_revision" \
+  --idempotency-key "$idempotency_key" \
+  --format json
+```
+
+Use `enable` in both commands to enable a disabled driver. Enabling supports
+only driver kinds whose stored redacted configuration has a strict server-side
+validator. For `local-filesystem/v2`, the CLI also opens the configured root on
+the agent host before requesting validation. Disabling preserves locations and
+objects; they remain recorded but unavailable through that driver until it is
+enabled again.
+
 Replace one principal's direct ACL grants:
 
 ```bash

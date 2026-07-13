@@ -1,11 +1,88 @@
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutlineOutlined";
+import PowerSettingsNewOutlinedIcon from "@mui/icons-material/PowerSettingsNewOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
-import { Box, Chip, Paper, Stack, Typography } from "@mui/material";
-import type { UseQueryResult } from "@tanstack/react-query";
-import type { ManagementSnapshot } from "../../api/client";
+import {
+    Alert,
+    Box,
+    Button,
+    Chip,
+    Dialog,
+    DialogActions,
+    DialogContent,
+    DialogTitle,
+    Divider,
+    Paper,
+    Stack,
+    Typography,
+} from "@mui/material";
+import { useMutation, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
+import { useState } from "react";
+import {
+    applyDriverState,
+    fetchManagementSnapshot,
+    validateDriverState,
+    type DriverStateValidation,
+    type DriverView,
+    type ManagementSnapshot,
+} from "../../api/client";
 import { ErrorState, LoadingState, PageHeading, formatBytes, formatDate } from "./shared";
 
-export function DriversPage({ management }: { management: UseQueryResult<ManagementSnapshot> }) {
+interface DriversPageProps {
+    readonly management: UseQueryResult<ManagementSnapshot>;
+    readonly configurationEnabled: boolean;
+    readonly onRequestConfiguration: () => void;
+}
+
+export function DriversPage({
+    management,
+    configurationEnabled,
+    onRequestConfiguration,
+}: DriversPageProps) {
+    const queryClient = useQueryClient();
+    const [selected, setSelected] = useState<DriverView | null>(null);
+    const [validation, setValidation] = useState<DriverStateValidation | null>(null);
+    const validationMutation = useMutation({
+        mutationFn: (driver: DriverView) =>
+            validateDriverState(driver.id, !driver.enabled, driver.revision),
+        onSuccess: setValidation,
+    });
+    const applyMutation = useMutation({
+        mutationFn: async (desired: DriverStateValidation) => {
+            const receipt = await applyDriverState(desired);
+            const refreshed = await queryClient.fetchQuery({
+                queryKey: ["management-snapshot"],
+                queryFn: fetchManagementSnapshot,
+            });
+            const effective = refreshed.drivers.find((driver) => driver.id === receipt.driver_id);
+            if (
+                effective?.revision !== receipt.final_revision ||
+                effective.enabled !== receipt.enabled
+            ) {
+                throw new Error("Committed driver state did not match the re-read state.");
+            }
+            return receipt;
+        },
+        onSuccess: closeDialog,
+    });
+
+    function closeDialog() {
+        setSelected(null);
+        setValidation(null);
+        validationMutation.reset();
+        applyMutation.reset();
+    }
+
+    function openStateChange(driver: DriverView) {
+        if (!configurationEnabled) {
+            onRequestConfiguration();
+            return;
+        }
+        setSelected(driver);
+        setValidation(null);
+        validationMutation.reset();
+        applyMutation.reset();
+    }
+
     if (management.isPending) {
         return <LoadingState />;
     }
@@ -63,6 +140,15 @@ export function DriversPage({ management }: { management: UseQueryResult<Managem
                                         size="small"
                                     />
                                 )}
+                                <Button
+                                    size="small"
+                                    variant="outlined"
+                                    color={driver.enabled ? "warning" : "primary"}
+                                    startIcon={<PowerSettingsNewOutlinedIcon />}
+                                    onClick={() => openStateChange(driver)}
+                                >
+                                    {driver.enabled ? "Disable" : "Enable"}
+                                </Button>
                             </Stack>
                         </Stack>
 
@@ -122,6 +208,102 @@ export function DriversPage({ management }: { management: UseQueryResult<Managem
                     </Paper>
                 )}
             </Stack>
+
+            <Dialog
+                open={selected !== null}
+                onClose={() => !applyMutation.isPending && closeDialog()}
+                fullWidth
+                maxWidth="sm"
+            >
+                <DialogTitle>{selected?.enabled ? "Disable driver" : "Enable driver"}</DialogTitle>
+                <DialogContent>
+                    <Alert severity={selected?.enabled ? "warning" : "info"} sx={{ mb: 2 }}>
+                        The server will validate the stored driver configuration and sign the exact
+                        state transition before it can be applied.
+                    </Alert>
+                    <Typography sx={{ fontWeight: 800 }}>{selected?.id}</Typography>
+                    <Typography color="text.secondary" variant="body2">
+                        {selected?.kind} · revision {String(selected?.revision ?? 0)}
+                    </Typography>
+                    {(validationMutation.isError || applyMutation.isError) && (
+                        <Alert severity="error" sx={{ mt: 2 }}>
+                            The server rejected the change or its committed state could not be
+                            verified. Refresh before retrying.
+                        </Alert>
+                    )}
+                    {validation !== null && (
+                        <Paper variant="outlined" sx={{ mt: 3, p: 2 }}>
+                            <Typography sx={{ fontWeight: 800 }}>
+                                Server-validated change
+                            </Typography>
+                            <Typography color="text.secondary" variant="body2">
+                                Revision {String(validation.expected_revision)} →{" "}
+                                {String(validation.expected_revision + 1)} · validation expires{" "}
+                                {formatDate(validation.validation_expires_at)}
+                            </Typography>
+                            <Divider sx={{ my: 2 }} />
+                            <Typography variant="caption" color="text.secondary">
+                                EFFECTIVE STATE
+                            </Typography>
+                            <Typography sx={{ fontWeight: 700 }}>
+                                {validation.current_enabled ? "Enabled" : "Disabled"} →{" "}
+                                {validation.enabled ? "Enabled" : "Disabled"}
+                            </Typography>
+                            <Stack
+                                direction={{ xs: "column", sm: "row" }}
+                                spacing={3}
+                                sx={{ mt: 2 }}
+                            >
+                                <Box>
+                                    <Typography variant="caption" color="text.secondary">
+                                        COLLECTION PLACEMENTS
+                                    </Typography>
+                                    <Typography sx={{ fontWeight: 700 }}>
+                                        {validation.placement_count.toLocaleString()}
+                                    </Typography>
+                                </Box>
+                                <Box>
+                                    <Typography variant="caption" color="text.secondary">
+                                        AVAILABLE LOCATIONS
+                                    </Typography>
+                                    <Typography sx={{ fontWeight: 700 }}>
+                                        {validation.available_location_count.toLocaleString()}
+                                    </Typography>
+                                </Box>
+                            </Stack>
+                            {validation.warnings.map((warning) => (
+                                <Alert key={warning} severity="warning" sx={{ mt: 2 }}>
+                                    {warning}
+                                </Alert>
+                            ))}
+                        </Paper>
+                    )}
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={closeDialog} disabled={applyMutation.isPending}>
+                        Cancel
+                    </Button>
+                    {validation === null ? (
+                        <Button
+                            variant="contained"
+                            color={selected?.enabled ? "warning" : "primary"}
+                            disabled={selected === null || validationMutation.isPending}
+                            onClick={() => selected !== null && validationMutation.mutate(selected)}
+                        >
+                            Validate state change
+                        </Button>
+                    ) : (
+                        <Button
+                            variant="contained"
+                            color="warning"
+                            disabled={applyMutation.isPending}
+                            onClick={() => applyMutation.mutate(validation)}
+                        >
+                            Apply validated change
+                        </Button>
+                    )}
+                </DialogActions>
+            </Dialog>
         </>
     );
 }

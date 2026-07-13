@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchSession, login, parseHealth, parseIntegrityFindings, parseSession } from "./client";
+import {
+    fetchSession,
+    login,
+    parseHealth,
+    parseIntegrityFindings,
+    parseSession,
+    validateDriverState,
+} from "./client";
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -32,6 +39,34 @@ describe("operator session", () => {
         const call = fetchMock.mock.calls[0];
         expect(call?.[0]).toBe("/api/auth/login");
         expect(JSON.parse(String(call?.[1]?.body))).toEqual({ password: "operator-secret" });
+    });
+});
+
+describe("driver configuration", () => {
+    it("pins validation to the exact desired state and revision", async () => {
+        const validation = {
+            schema: "carrack.management.driver-state-validation.v1",
+            driver_id: "local-main",
+            kind: "local-filesystem/v2",
+            current_enabled: true,
+            enabled: false,
+            expected_revision: 7,
+            placement_count: 2,
+            available_location_count: 4,
+            validation_expires_at: 2_000_000_000,
+            validation_digest: "signed-digest",
+            warnings: ["Disabling affects active placements."],
+        };
+        const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(Response.json(validation));
+        vi.stubGlobal("fetch", fetchMock);
+
+        await expect(validateDriverState("local-main", false, 7)).resolves.toEqual(validation);
+        const call = fetchMock.mock.calls[0];
+        expect(call?.[0]).toBe("/api/admin/drivers/local-main/state/validate");
+        expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+            enabled: false,
+            expected_revision: 7,
+        });
     });
 });
 

@@ -124,7 +124,13 @@ export function Dashboard({ environment, onLogout }: DashboardProps) {
             case "files":
                 return <FilesPage management={management} />;
             case "drivers":
-                return <DriversPage management={management} />;
+                return (
+                    <DriversPage
+                        management={management}
+                        configurationEnabled={configurationEnabled}
+                        onRequestConfiguration={() => setConfigurationDialogOpen(true)}
+                    />
+                );
             case "access":
                 return (
                     <AccessPage

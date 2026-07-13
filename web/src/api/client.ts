@@ -219,6 +219,30 @@ const TokenAnnotationReceiptSchema = v.object({
     state: v.literal("committed"),
 });
 
+const DriverStateValidationSchema = v.object({
+    schema: v.literal("carrack.management.driver-state-validation.v1"),
+    driver_id: v.string(),
+    kind: v.string(),
+    current_enabled: v.boolean(),
+    enabled: v.boolean(),
+    expected_revision: v.number(),
+    placement_count: v.number(),
+    available_location_count: v.number(),
+    validation_expires_at: v.number(),
+    validation_digest: v.string(),
+    warnings: v.array(v.string()),
+});
+
+const DriverStateReceiptSchema = v.object({
+    schema: v.literal("carrack.management.driver-state-receipt.v1"),
+    operation_id: v.string(),
+    driver_id: v.string(),
+    enabled: v.boolean(),
+    final_revision: v.number(),
+    committed_at: v.number(),
+    state: v.literal("committed"),
+});
+
 export type Session = v.InferOutput<typeof SessionSchema>;
 export type ConfigurationSession = v.InferOutput<typeof ConfigurationSessionSchema>;
 export type Health = v.InferOutput<typeof HealthSchema>;
@@ -235,6 +259,8 @@ export type ManagementEventCursor = v.InferOutput<typeof ManagementEventCursorSc
 export type ManagementDirectory = v.InferOutput<typeof ManagementDirectorySchema>;
 export type TokenAnnotationValidation = v.InferOutput<typeof TokenAnnotationValidationSchema>;
 export type TokenAnnotationReceipt = v.InferOutput<typeof TokenAnnotationReceiptSchema>;
+export type DriverStateValidation = v.InferOutput<typeof DriverStateValidationSchema>;
+export type DriverStateReceipt = v.InferOutput<typeof DriverStateReceiptSchema>;
 
 export function parseSession(input: unknown): Session {
     return v.parse(SessionSchema, input);
@@ -374,6 +400,40 @@ export function applyTokenAnnotation(
             }),
         },
         TokenAnnotationReceiptSchema,
+    );
+}
+
+export function validateDriverState(
+    driverId: string,
+    enabled: boolean,
+    expectedRevision: number,
+): Promise<DriverStateValidation> {
+    return requestJson(
+        `/api/admin/drivers/${encodeURIComponent(driverId)}/state/validate`,
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled, expected_revision: expectedRevision }),
+        },
+        DriverStateValidationSchema,
+    );
+}
+
+export function applyDriverState(validation: DriverStateValidation): Promise<DriverStateReceipt> {
+    return requestJson(
+        `/api/admin/drivers/${encodeURIComponent(validation.driver_id)}/state/apply`,
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                enabled: validation.enabled,
+                expected_revision: validation.expected_revision,
+                validation_expires_at: validation.validation_expires_at,
+                validation_digest: validation.validation_digest,
+                idempotency_key: newIdempotencyKey(),
+            }),
+        },
+        DriverStateReceiptSchema,
     );
 }
 

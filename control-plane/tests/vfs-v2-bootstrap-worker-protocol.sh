@@ -210,6 +210,64 @@ cli_annotation_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
 [[ "$(jq -r '.schema' <<<"$cli_annotation_receipt")" == carrack.management.token-annotation-receipt.v1 ]]
 [[ "$(jq -r '.final_revision' <<<"$cli_annotation_receipt")" == 3 ]]
 
+driver_validation=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" -H "$json" \
+  --data '{"enabled":false,"expected_revision":1}' \
+  "$base_url/api/admin/drivers/local-main/state/validate")
+[[ "$(jq -r '.schema' <<<"$driver_validation")" == carrack.management.driver-state-validation.v1 ]]
+[[ "$(jq -r '.current_enabled' <<<"$driver_validation")" == true ]]
+[[ "$(jq -r '.enabled' <<<"$driver_validation")" == false ]]
+[[ "$(jq -r '.placement_count' <<<"$driver_validation")" == 1 ]]
+[[ "$(jq -r '.warnings | length > 0' <<<"$driver_validation")" == true ]]
+driver_validation_expires_at=$(jq -r '.validation_expires_at' <<<"$driver_validation")
+driver_validation_digest=$(jq -r '.validation_digest' <<<"$driver_validation")
+driver_apply=$(jq -cn \
+  --arg digest "$driver_validation_digest" \
+  --argjson expires_at "$driver_validation_expires_at" \
+  '{
+    enabled: false,
+    expected_revision: 1,
+    validation_expires_at: $expires_at,
+    validation_digest: $digest,
+    idempotency_key: "disable-local-main-v1"
+  }')
+driver_receipt=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" -H "$json" --data "$driver_apply" \
+  "$base_url/api/admin/drivers/local-main/state/apply")
+[[ "$(jq -r '.schema' <<<"$driver_receipt")" == carrack.management.driver-state-receipt.v1 ]]
+[[ "$(jq -r '.enabled' <<<"$driver_receipt")" == false ]]
+[[ "$(jq -r '.final_revision' <<<"$driver_receipt")" == 2 ]]
+driver_replay=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" -H "$json" --data "$driver_apply" \
+  "$base_url/api/admin/drivers/local-main/state/apply")
+[[ "$driver_replay" == "$driver_receipt" ]]
+disabled_driver_snapshot=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" "$base_url/api/admin/snapshot")
+[[ "$(jq -r '.drivers[0].enabled' <<<"$disabled_driver_snapshot")" == false ]]
+[[ "$(jq -r '.drivers[0].revision' <<<"$disabled_driver_snapshot")" == 2 ]]
+
+cli_driver_check=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  go run ./cmd/carrack admin driver enable local-main \
+    --control-url "$base_url" \
+    --expected-revision 2 \
+    --check \
+    --format json)
+[[ "$(jq -r '.schema' <<<"$cli_driver_check")" == carrack.management.driver-state-validation.v1 ]]
+[[ "$(jq -r '.enabled' <<<"$cli_driver_check")" == true ]]
+cli_driver_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  go run ./cmd/carrack admin driver enable local-main \
+    --control-url "$base_url" \
+    --expected-revision 2 \
+    --idempotency-key enable-local-main-v2 \
+    --format json)
+[[ "$(jq -r '.schema' <<<"$cli_driver_receipt")" == carrack.management.driver-state-receipt.v1 ]]
+[[ "$(jq -r '.enabled' <<<"$cli_driver_receipt")" == true ]]
+[[ "$(jq -r '.final_revision' <<<"$cli_driver_receipt")" == 3 ]]
+enabled_driver_snapshot=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" "$base_url/api/admin/snapshot")
+[[ "$(jq -r '.drivers[0].enabled' <<<"$enabled_driver_snapshot")" == true ]]
+[[ "$(jq -r '.drivers[0].revision' <<<"$enabled_driver_snapshot")" == 3 ]]
+
 configuration_disabled=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" -c "$cookie_jar" -X POST "$base_url/api/auth/configuration/disable")
 [[ "$(jq -r '.enabled' <<<"$configuration_disabled")" == false ]]

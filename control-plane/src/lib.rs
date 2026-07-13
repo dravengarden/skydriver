@@ -13,6 +13,7 @@ mod key_grants;
 pub mod keys;
 mod management;
 mod management_configuration;
+mod management_driver_configuration;
 mod manifest_archive;
 mod manifests;
 mod move_deletion;
@@ -1284,6 +1285,30 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
                     &mut request,
                     &context.env,
                     token_id.as_deref(),
+                )
+                .await
+            },
+        )
+        .post_async(
+            "/api/admin/drivers/:id/state/validate",
+            |mut request, context| async move {
+                let driver_id = context.param("id").cloned();
+                management_driver_configuration::validate(
+                    &mut request,
+                    &context.env,
+                    driver_id.as_deref(),
+                )
+                .await
+            },
+        )
+        .post_async(
+            "/api/admin/drivers/:id/state/apply",
+            |mut request, context| async move {
+                let driver_id = context.param("id").cloned();
+                management_driver_configuration::apply(
+                    &mut request,
+                    &context.env,
+                    driver_id.as_deref(),
                 )
                 .await
             },

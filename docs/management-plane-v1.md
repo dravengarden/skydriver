@@ -113,33 +113,38 @@ credentials is an explicit exceptional workflow.
 
 `carrack admin` is non-interactive and JSON-first. Every command accepts
 `--control-url`; credentials are read from `CARRACK_OPERATOR_CREDENTIAL` or a
-private file descriptor, never a command-line flag. Commands support:
+private file descriptor, never a command-line flag. The implemented operator
+commands are:
 
 ```text
-carrack admin status
-carrack admin export
-carrack admin watch --after <event-id>
-carrack admin driver list|show|validate|apply|disable|rotate-credential
-carrack admin filesystem list|show|validate|apply
-carrack admin directory stat|list
-carrack admin token list|show|issue|revoke|annotate
-carrack admin acl show|validate|apply
-carrack admin placement show|validate|apply
-carrack admin settings show|validate|apply
+carrack admin snapshot
+carrack admin directory <directory-id>
+carrack admin token annotate <token-id>
+carrack admin driver enable <driver-id>
+carrack admin driver disable <driver-id>
 ```
 
-Mutation input defaults to a JSON or YAML desired-state file. `validate`
-returns normalized desired state, warnings, diff, observed revision, and a
-short-lived validation digest. `apply` requires that digest, the exact observed
-revision, and an idempotency key. `--check` performs client and server
-validation without applying. `--format json` emits stable schemas and no
-decorative text; warnings go to structured output, not ad-hoc stderr strings.
+Mutation commands accept explicit desired-state flags. Server validation
+returns normalized desired state, warnings, affected counts, the observed
+revision, and a short-lived validation digest. Apply requires that digest, the
+exact observed revision, and an idempotency key. `--check` performs client and
+server validation without applying. `--format json` emits stable schemas and
+no decorative text; warnings go to structured output, not ad-hoc stderr
+strings.
 
-Exit status is stable: `0` success, `2` local validation failure, `3` server
-validation failure, `4` authorization failure, `5` revision conflict, and `6`
-ambiguous transport outcome requiring exact idempotent replay. The CLI verifies
-every response schema, identity, revision, validation digest, and receipt before
-reporting success.
+Driver enablement is fail-closed by kind. The current
+`local-filesystem/v2` validator requires an exact non-secret `{root}`
+configuration, no credential reference, a canonical absolute root, and a
+successful local driver probe from the CLI host. Disablement is allowed even
+when placements or available locations exist, but those counts and warnings
+are covered by the signed validation. Disabling does not delete locations or
+provider objects; it makes them unavailable through that driver until a later
+validated enablement.
+
+The CLI treats any local validation, authorization, server validation,
+revision, transport, or receipt mismatch as failure. It verifies every
+response schema, identity, revision, validation digest, and receipt before
+reporting success. More granular stable exit codes remain a future surface.
 
 ## Change observation
 

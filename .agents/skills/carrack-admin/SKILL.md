@@ -44,7 +44,7 @@ or handling a failure.
 
 ## Apply supported changes
 
-For token annotation, ACL, and placement changes:
+For token annotation, driver state, ACL, and placement changes:
 
 1. Read current state and its exact revision.
 2. Build the complete desired replacement locally.
@@ -63,10 +63,18 @@ expiry, and warnings. Then repeat the same desired state without `--check`.
 The CLI enables a short configuration session, applies the signed validation,
 and verifies the receipt against a fresh management snapshot.
 
+For driver enable or disable, run `carrack admin driver enable|disable` with
+`--check` first. Review the exact revision, placement and available-location
+counts, and every server warning. Then repeat with the same desired state and a
+stable idempotency key. Enabling a local-filesystem driver additionally probes
+the configured root from the agent host before server validation. A successful
+apply is not complete until the CLI re-reads the management snapshot and
+matches the receipt.
+
 Do not claim support for driver registration, credential rotation, principal
-management, groups, token authority changes, or global settings until the installed
-CLI exposes their `validate` and `apply` commands. Report the missing surface
-instead of editing D1, calling Wrangler D1 directly, or crafting HTTP.
+management, groups, token authority changes, or global settings until the
+installed CLI exposes their `validate` and `apply` commands. Report the missing
+surface instead of editing D1, calling Wrangler D1 directly, or crafting HTTP.
 
 ## Handle races and ambiguous outcomes
 

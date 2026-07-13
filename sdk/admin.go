@@ -20,6 +20,8 @@ const (
 	managementDirectorySchema       = "carrack.management.directory.v1"
 	tokenAnnotationValidationSchema = "carrack.management.token-annotation-validation.v1"
 	tokenAnnotationReceiptSchema    = "carrack.management.token-annotation-receipt.v1"
+	driverStateValidationSchema     = "carrack.management.driver-state-validation.v1"
+	driverStateReceiptSchema        = "carrack.management.driver-state-receipt.v1"
 )
 
 // OperatorCredential is the environment-scoped break-glass management
@@ -207,6 +209,49 @@ type TokenAnnotationReceipt struct {
 	TokenID       string `json:"token_id"`
 	Label         string `json:"label"`
 	Note          string `json:"note"`
+	FinalRevision uint64 `json:"final_revision"`
+	CommittedAt   uint64 `json:"committed_at"`
+	State         string `json:"state"`
+}
+
+// ValidateDriverStateRequest pins one desired enabled state to an observed
+// driver revision.
+type ValidateDriverStateRequest struct {
+	Enabled          bool   `json:"enabled"`
+	ExpectedRevision uint64 `json:"expected_revision"`
+}
+
+// DriverStateValidation includes the exact signed transition and its impact.
+type DriverStateValidation struct {
+	Schema                 string   `json:"schema"`
+	DriverID               string   `json:"driver_id"`
+	Kind                   string   `json:"kind"`
+	CurrentEnabled         bool     `json:"current_enabled"`
+	Enabled                bool     `json:"enabled"`
+	ExpectedRevision       uint64   `json:"expected_revision"`
+	PlacementCount         uint64   `json:"placement_count"`
+	AvailableLocationCount uint64   `json:"available_location_count"`
+	ValidationExpiresAt    uint64   `json:"validation_expires_at"`
+	ValidationDigest       string   `json:"validation_digest"`
+	Warnings               []string `json:"warnings"`
+}
+
+// ApplyDriverStateRequest binds apply to one signed validation and stable
+// idempotency identity.
+type ApplyDriverStateRequest struct {
+	Enabled             bool   `json:"enabled"`
+	ExpectedRevision    uint64 `json:"expected_revision"`
+	ValidationExpiresAt uint64 `json:"validation_expires_at"`
+	ValidationDigest    string `json:"validation_digest"`
+	IdempotencyKey      string `json:"idempotency_key"`
+}
+
+// DriverStateReceipt is the durable driver state mutation result.
+type DriverStateReceipt struct {
+	Schema        string `json:"schema"`
+	OperationID   string `json:"operation_id"`
+	DriverID      string `json:"driver_id"`
+	Enabled       bool   `json:"enabled"`
 	FinalRevision uint64 `json:"final_revision"`
 	CommittedAt   uint64 `json:"committed_at"`
 	State         string `json:"state"`
@@ -411,6 +456,79 @@ func (client *AdminClient) ApplyTokenAnnotation(
 		response.FinalRevision != requested.ExpectedRevision+1 || response.CommittedAt == 0 ||
 		response.State != "committed" || !validIdentifier(response.OperationID) {
 		return TokenAnnotationReceipt{}, fmt.Errorf("%w: invalid token annotation receipt", ErrControlPlaneResponse)
+	}
+
+	return response, nil
+}
+
+// ValidateDriverState performs local boundary checks and asks the server to
+// validate the typed driver configuration and transition impact.
+func (client *AdminClient) ValidateDriverState(
+	ctx context.Context,
+	driverID string,
+	requested ValidateDriverStateRequest,
+) (DriverStateValidation, error) {
+	if !validControlString(driverID, 256) || requested.ExpectedRevision == 0 {
+		return DriverStateValidation{}, fmt.Errorf("%w: invalid driver state", ErrInvalidControlPlane)
+	}
+
+	if err := client.login(ctx); err != nil {
+		return DriverStateValidation{}, err
+	}
+
+	body, err := json.Marshal(requested)
+	if err != nil {
+		return DriverStateValidation{}, fmt.Errorf("marshal driver state validation: %w", err)
+	}
+
+	var response DriverStateValidation
+
+	path := "/api/admin/drivers/" + url.PathEscape(driverID) + "/state/validate"
+
+	if err := client.request(ctx, http.MethodPost, path, body, &response); err != nil {
+		return DriverStateValidation{}, err
+	}
+
+	if response.Schema != driverStateValidationSchema || response.DriverID != driverID ||
+		response.Enabled != requested.Enabled || response.CurrentEnabled == response.Enabled ||
+		response.ExpectedRevision != requested.ExpectedRevision || response.ValidationExpiresAt == 0 ||
+		!validControlString(response.Kind, 128) || !validManagementDigest(response.ValidationDigest) {
+		return DriverStateValidation{}, fmt.Errorf("%w: invalid driver state validation", ErrControlPlaneResponse)
+	}
+
+	return response, nil
+}
+
+// ApplyDriverState applies one exact validation and verifies the durable receipt.
+func (client *AdminClient) ApplyDriverState(
+	ctx context.Context,
+	driverID string,
+	requested ApplyDriverStateRequest,
+) (DriverStateReceipt, error) {
+	if !validControlString(driverID, 256) || requested.ExpectedRevision == 0 ||
+		requested.ValidationExpiresAt == 0 || !validManagementDigest(requested.ValidationDigest) ||
+		!validIdempotencyKey(requested.IdempotencyKey) {
+		return DriverStateReceipt{}, fmt.Errorf("%w: invalid driver state apply", ErrInvalidControlPlane)
+	}
+
+	body, err := json.Marshal(requested)
+	if err != nil {
+		return DriverStateReceipt{}, fmt.Errorf("marshal driver state apply: %w", err)
+	}
+
+	var response DriverStateReceipt
+
+	path := "/api/admin/drivers/" + url.PathEscape(driverID) + "/state/apply"
+
+	if err := client.request(ctx, http.MethodPost, path, body, &response); err != nil {
+		return DriverStateReceipt{}, err
+	}
+
+	if response.Schema != driverStateReceiptSchema || response.DriverID != driverID ||
+		response.Enabled != requested.Enabled || response.FinalRevision != requested.ExpectedRevision+1 ||
+		response.CommittedAt == 0 || response.State != "committed" ||
+		!validIdentifier(response.OperationID) {
+		return DriverStateReceipt{}, fmt.Errorf("%w: invalid driver state receipt", ErrControlPlaneResponse)
 	}
 
 	return response, nil
