@@ -10,6 +10,8 @@ import (
 	"slices"
 	"sync"
 	"testing"
+
+	"github.com/dravengarden/carrack/provider"
 )
 
 type rotatingTokenSource struct {
@@ -209,6 +211,50 @@ func TestClientSurfacesShortDownloadBody(t *testing.T) {
 	closeErr := stream.Close()
 	if !errors.Is(readErr, io.ErrUnexpectedEOF) || closeErr != nil {
 		t.Fatalf("short download body was not surfaced: read=%v close=%v", readErr, closeErr)
+	}
+}
+
+func TestClientRejectsChangedPinnedObjectBeforeDownload(t *testing.T) {
+	t.Parallel()
+
+	downloadRequested := false
+
+	var server *httptest.Server
+
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/adrive/v1.0/user/getDriveInfo":
+			writeFaultJSON(t, writer, driveInfoResponse{ResourceDriveID: "drive-1"})
+		case "/adrive/v1.0/openFile/list":
+			writeFaultJSON(t, writer, listResponse{Items: []fileRecord{{
+				FileID: "file-2", Name: "object.bin", Size: 9, ContentHash: "changed", Type: objectTypeFile,
+			}}})
+		case "/adrive/v1.0/openFile/getDownloadUrl":
+			downloadRequested = true
+
+			writeFaultJSON(t, writer, downloadURLResponse{URL: server.URL + "/download"})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	tokenSource, err := NewStaticTokenSource("access-token")
+	if err != nil {
+		t.Fatalf("create static token source: %v", err)
+	}
+
+	client := newFaultClient(t, server, tokenSource)
+
+	stream, err := client.OpenPinnedRange(context.Background(), provider.Object{
+		Key: "object.bin", SizeBytes: 9, ETag: "original", Version: "file-1",
+	}, 0, 4)
+	if stream != nil {
+		_ = stream.Close()
+	}
+
+	if !errors.Is(err, errObjectState) || downloadRequested {
+		t.Fatalf("changed object was not rejected before download: err=%v requested=%t", err, downloadRequested)
 	}
 }
 

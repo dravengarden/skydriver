@@ -56,11 +56,11 @@ func (client *Client) Put(
 		return provider.Object{}, fmt.Errorf("%w: body is required", errUpload)
 	}
 
-	if options.SizeBytes == 0 {
-		return provider.Object{}, fmt.Errorf("%w: size must be positive", errUpload)
+	partCount := uint64(1)
+	if options.SizeBytes > 0 {
+		partCount = 1 + (options.SizeBytes-1)/client.uploadPartBytes
 	}
 
-	partCount := 1 + (options.SizeBytes-1)/client.uploadPartBytes
 	if partCount > maximumUploadParts {
 		return provider.Object{}, fmt.Errorf("%w: %d parts exceeds limit %d", errUpload, partCount, maximumUploadParts)
 	}

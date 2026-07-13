@@ -14,6 +14,8 @@ pub mod keys;
 mod management;
 mod management_configuration;
 mod management_driver_configuration;
+mod management_driver_credentials;
+mod management_driver_registration;
 mod manifest_archive;
 mod manifests;
 mod move_deletion;
@@ -1306,6 +1308,42 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
             |mut request, context| async move {
                 let driver_id = context.param("id").cloned();
                 management_driver_configuration::apply(
+                    &mut request,
+                    &context.env,
+                    driver_id.as_deref(),
+                )
+                .await
+            },
+        )
+        .post_async(
+            "/api/admin/drivers/registration/validate",
+            |mut request, context| async move {
+                management_driver_registration::validate(&mut request, &context.env).await
+            },
+        )
+        .post_async(
+            "/api/admin/drivers/registration/apply",
+            |mut request, context| async move {
+                management_driver_registration::apply(&mut request, &context.env).await
+            },
+        )
+        .post_async(
+            "/api/admin/drivers/:id/credential/validate",
+            |mut request, context| async move {
+                let driver_id = context.param("id").cloned();
+                management_driver_credentials::validate(
+                    &mut request,
+                    &context.env,
+                    driver_id.as_deref(),
+                )
+                .await
+            },
+        )
+        .post_async(
+            "/api/admin/drivers/:id/credential/apply",
+            |mut request, context| async move {
+                let driver_id = context.param("id").cloned();
+                management_driver_credentials::apply(
                     &mut request,
                     &context.env,
                     driver_id.as_deref(),

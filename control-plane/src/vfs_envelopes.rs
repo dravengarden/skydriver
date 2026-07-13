@@ -129,6 +129,51 @@ pub(crate) fn open_driver_credential(
     Ok(plaintext)
 }
 
+pub(crate) fn seal_driver_credential(
+    env: &Env,
+    credential_id: &str,
+    revision: u64,
+    plaintext: &[u8],
+) -> Result<SealedEnvelope> {
+    let mut master_key = load_master_key(env, MASTER_KEY_VERSION)?;
+    let result =
+        seal_driver_credential_with_master(&master_key, credential_id, revision, plaintext);
+    master_key.zeroize();
+    result
+}
+
+fn seal_driver_credential_with_master(
+    master_key: &[u8; MASTER_KEY_BYTES],
+    credential_id: &str,
+    revision: u64,
+    plaintext: &[u8],
+) -> Result<SealedEnvelope> {
+    if plaintext.is_empty() || plaintext.len() > MAXIMUM_CREDENTIAL_BYTES || revision == 0 {
+        return Err(worker::Error::RustError(
+            "VFS driver credential plaintext has an invalid length or revision".to_owned(),
+        ));
+    }
+
+    let mut nonce = vec![0_u8; NONCE_BYTES];
+    getrandom::fill(&mut nonce).map_err(|error| {
+        worker::Error::RustError(format!(
+            "generate VFS driver credential envelope nonce: {error}"
+        ))
+    })?;
+    let aad = credential_aad(credential_id, revision);
+    let ciphertext = cipher(master_key)?
+        .encrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: plaintext,
+                aad: &aad,
+            },
+        )
+        .map_err(|_| worker::Error::RustError("seal VFS driver credential envelope".to_owned()))?;
+
+    Ok(SealedEnvelope { nonce, ciphertext })
+}
+
 pub(crate) fn derive_bootstrap_token(
     env: &Env,
     request_sha256: &[u8; 32],
@@ -321,7 +366,10 @@ fn credential_aad(credential_id: &str, revision: u64) -> Vec<u8> {
 mod tests {
     use zeroize::Zeroize as _;
 
-    use super::{ENCRYPTED_SUITE, MASTER_KEY_BYTES, open, seal_directory_key_with_master};
+    use super::{
+        ENCRYPTED_SUITE, MASTER_KEY_BYTES, credential_aad, open, seal_directory_key_with_master,
+        seal_driver_credential_with_master,
+    };
 
     #[test]
     fn directory_envelope_authenticates_every_context_field() {
@@ -347,5 +395,35 @@ mod tests {
 
         master.zeroize();
         directory_key.zeroize();
+    }
+
+    #[test]
+    fn credential_envelope_authenticates_identity_and_revision() {
+        let mut master = [7_u8; MASTER_KEY_BYTES];
+        let mut credential = br#"{"access_token":"private"}"#.to_vec();
+        let sealed =
+            seal_driver_credential_with_master(&master, "credential:aliyun-main", 2, &credential)
+                .expect("seal driver credential");
+        let aad = credential_aad("credential:aliyun-main", 2);
+
+        assert_eq!(
+            open(&master, &sealed.nonce, &sealed.ciphertext, &aad, "test")
+                .expect("open driver credential"),
+            credential
+        );
+        let wrong_revision = credential_aad("credential:aliyun-main", 3);
+        assert!(
+            open(
+                &master,
+                &sealed.nonce,
+                &sealed.ciphertext,
+                &wrong_revision,
+                "test"
+            )
+            .is_err()
+        );
+
+        master.zeroize();
+        credential.zeroize();
     }
 }

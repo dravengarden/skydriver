@@ -1,4 +1,6 @@
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutlineOutlined";
+import AddOutlinedIcon from "@mui/icons-material/AddOutlined";
+import KeyOutlinedIcon from "@mui/icons-material/KeyOutlined";
 import PowerSettingsNewOutlinedIcon from "@mui/icons-material/PowerSettingsNewOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import {
@@ -13,14 +15,21 @@ import {
     Divider,
     Paper,
     Stack,
+    TextField,
     Typography,
 } from "@mui/material";
 import { useMutation, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { useState } from "react";
 import {
+    applyDriverCredential,
+    applyDriverRegistration,
     applyDriverState,
     fetchManagementSnapshot,
+    validateDriverCredential,
+    validateDriverRegistration,
     validateDriverState,
+    type DriverCredentialValidation,
+    type DriverRegistrationValidation,
     type DriverStateValidation,
     type DriverView,
     type ManagementSnapshot,
@@ -41,6 +50,14 @@ export function DriversPage({
     const queryClient = useQueryClient();
     const [selected, setSelected] = useState<DriverView | null>(null);
     const [validation, setValidation] = useState<DriverStateValidation | null>(null);
+    const [credentialTarget, setCredentialTarget] = useState<DriverView | null>(null);
+    const [accessToken, setAccessToken] = useState("");
+    const [credentialValidation, setCredentialValidation] =
+        useState<DriverCredentialValidation | null>(null);
+    const [registrationOpen, setRegistrationOpen] = useState(false);
+    const [registrationId, setRegistrationId] = useState("");
+    const [registrationValidation, setRegistrationValidation] =
+        useState<DriverRegistrationValidation | null>(null);
     const validationMutation = useMutation({
         mutationFn: (driver: DriverView) =>
             validateDriverState(driver.id, !driver.enabled, driver.revision),
@@ -64,6 +81,59 @@ export function DriversPage({
         },
         onSuccess: closeDialog,
     });
+    const credentialValidationMutation = useMutation({
+        mutationFn: (driver: DriverView) =>
+            validateDriverCredential(driver.id, accessToken, driver.revision),
+        onSuccess: setCredentialValidation,
+    });
+    const credentialApplyMutation = useMutation({
+        mutationFn: async (desired: DriverCredentialValidation) => {
+            const receipt = await applyDriverCredential(desired, accessToken);
+            const refreshed = await queryClient.fetchQuery({
+                queryKey: ["management-snapshot"],
+                queryFn: fetchManagementSnapshot,
+            });
+            const effective = refreshed.drivers.find((driver) => driver.id === receipt.driver_id);
+            if (
+                effective?.revision !== receipt.final_revision ||
+                !effective.credential_present ||
+                effective.credential_rotated_at !== receipt.rotated_at
+            ) {
+                throw new Error("Committed driver credential did not match the re-read state.");
+            }
+            return receipt;
+        },
+        onSuccess: closeCredentialDialog,
+    });
+    const registrationValidationMutation = useMutation({
+        mutationFn: () =>
+            validateDriverRegistration(registrationId, "aliyundrive-open/v2", {
+                api_base_url: "https://openapi.alipan.com",
+                drive_type: "resource",
+                root_folder_id: "root",
+                upload_part_bytes: 20 * 1024 * 1024,
+            }),
+        onSuccess: setRegistrationValidation,
+    });
+    const registrationApplyMutation = useMutation({
+        mutationFn: async (desired: DriverRegistrationValidation) => {
+            const receipt = await applyDriverRegistration(desired);
+            const refreshed = await queryClient.fetchQuery({
+                queryKey: ["management-snapshot"],
+                queryFn: fetchManagementSnapshot,
+            });
+            const effective = refreshed.drivers.find((driver) => driver.id === receipt.driver_id);
+            if (
+                effective?.revision !== receipt.final_revision ||
+                effective.kind !== receipt.kind ||
+                effective.enabled
+            ) {
+                throw new Error("Registered driver did not match the re-read state.");
+            }
+            return receipt;
+        },
+        onSuccess: closeRegistrationDialog,
+    });
 
     function closeDialog() {
         setSelected(null);
@@ -83,6 +153,42 @@ export function DriversPage({
         applyMutation.reset();
     }
 
+    function closeCredentialDialog() {
+        setCredentialTarget(null);
+        setAccessToken("");
+        setCredentialValidation(null);
+        credentialValidationMutation.reset();
+        credentialApplyMutation.reset();
+    }
+
+    function openCredentialChange(driver: DriverView) {
+        if (!configurationEnabled) {
+            onRequestConfiguration();
+            return;
+        }
+        setCredentialTarget(driver);
+        setAccessToken("");
+        setCredentialValidation(null);
+        credentialValidationMutation.reset();
+        credentialApplyMutation.reset();
+    }
+
+    function closeRegistrationDialog() {
+        setRegistrationOpen(false);
+        setRegistrationId("");
+        setRegistrationValidation(null);
+        registrationValidationMutation.reset();
+        registrationApplyMutation.reset();
+    }
+
+    function openRegistrationDialog() {
+        if (!configurationEnabled) {
+            onRequestConfiguration();
+            return;
+        }
+        setRegistrationOpen(true);
+    }
+
     if (management.isPending) {
         return <LoadingState />;
     }
@@ -92,10 +198,19 @@ export function DriversPage({
 
     return (
         <>
-            <PageHeading
-                title="Drivers"
-                description="Storage identity, capability posture, complete objects, and redacted configuration."
-            />
+            <Stack direction="row" sx={{ justifyContent: "space-between", alignItems: "start" }}>
+                <PageHeading
+                    title="Drivers"
+                    description="Storage identity, capability posture, complete objects, and redacted configuration."
+                />
+                <Button
+                    variant="contained"
+                    startIcon={<AddOutlinedIcon />}
+                    onClick={openRegistrationDialog}
+                >
+                    Register driver
+                </Button>
+            </Stack>
             <Stack spacing={2}>
                 {management.data.drivers.map((driver) => (
                     <Paper key={driver.id} variant="outlined" sx={{ p: 3 }}>
@@ -139,6 +254,18 @@ export function DriversPage({
                                         }
                                         size="small"
                                     />
+                                )}
+                                {driver.kind === "aliyundrive-open/v2" && (
+                                    <Button
+                                        size="small"
+                                        variant="outlined"
+                                        startIcon={<KeyOutlinedIcon />}
+                                        onClick={() => openCredentialChange(driver)}
+                                    >
+                                        {driver.credential_present
+                                            ? "Rotate credential"
+                                            : "Set credential"}
+                                    </Button>
                                 )}
                                 <Button
                                     size="small"
@@ -208,6 +335,87 @@ export function DriversPage({
                     </Paper>
                 )}
             </Stack>
+
+            <Dialog
+                open={registrationOpen}
+                onClose={() => !registrationApplyMutation.isPending && closeRegistrationDialog()}
+                fullWidth
+                maxWidth="sm"
+            >
+                <DialogTitle>Register Aliyun Drive</DialogTitle>
+                <DialogContent>
+                    <Alert severity="info" sx={{ mb: 2 }}>
+                        Registration creates a disabled driver with the conservative Aliyun Drive
+                        defaults. Set its write-only credential and validate enablement afterward.
+                    </Alert>
+                    <TextField
+                        autoFocus
+                        fullWidth
+                        label="Driver ID"
+                        placeholder="aliyun-main"
+                        value={registrationId}
+                        disabled={registrationValidation !== null}
+                        onChange={(event) => setRegistrationId(event.target.value)}
+                    />
+                    {(registrationValidationMutation.isError ||
+                        registrationApplyMutation.isError) && (
+                        <Alert severity="error" sx={{ mt: 2 }}>
+                            The server rejected registration or the committed driver could not be
+                            verified. Refresh before retrying.
+                        </Alert>
+                    )}
+                    {registrationValidation !== null && (
+                        <Paper variant="outlined" sx={{ mt: 3, p: 2 }}>
+                            <Typography sx={{ fontWeight: 800 }}>
+                                Server-normalized driver
+                            </Typography>
+                            <Typography color="text.secondary" variant="body2">
+                                {registrationValidation.driver_id} · {registrationValidation.kind}
+                                {" · "}revision 1 · disabled
+                            </Typography>
+                            <Box
+                                component="pre"
+                                sx={{ m: 0, mt: 2, p: 1.5, bgcolor: "#f2f5f8", overflowX: "auto" }}
+                            >
+                                {JSON.stringify(registrationValidation.config, null, 2)}
+                            </Box>
+                            {registrationValidation.warnings.map((warning) => (
+                                <Alert key={warning} severity="warning" sx={{ mt: 2 }}>
+                                    {warning}
+                                </Alert>
+                            ))}
+                        </Paper>
+                    )}
+                </DialogContent>
+                <DialogActions>
+                    <Button
+                        onClick={closeRegistrationDialog}
+                        disabled={registrationApplyMutation.isPending}
+                    >
+                        Cancel
+                    </Button>
+                    {registrationValidation === null ? (
+                        <Button
+                            variant="contained"
+                            disabled={
+                                registrationId.trim() === "" ||
+                                registrationValidationMutation.isPending
+                            }
+                            onClick={() => registrationValidationMutation.mutate()}
+                        >
+                            Validate registration
+                        </Button>
+                    ) : (
+                        <Button
+                            variant="contained"
+                            disabled={registrationApplyMutation.isPending}
+                            onClick={() => registrationApplyMutation.mutate(registrationValidation)}
+                        >
+                            Register disabled driver
+                        </Button>
+                    )}
+                </DialogActions>
+            </Dialog>
 
             <Dialog
                 open={selected !== null}
@@ -300,6 +508,94 @@ export function DriversPage({
                             onClick={() => applyMutation.mutate(validation)}
                         >
                             Apply validated change
+                        </Button>
+                    )}
+                </DialogActions>
+            </Dialog>
+
+            <Dialog
+                open={credentialTarget !== null}
+                onClose={() => !credentialApplyMutation.isPending && closeCredentialDialog()}
+                fullWidth
+                maxWidth="sm"
+            >
+                <DialogTitle>
+                    {credentialTarget?.credential_present ? "Rotate credential" : "Set credential"}
+                </DialogTitle>
+                <DialogContent>
+                    <Alert severity="warning" sx={{ mb: 2 }}>
+                        This access token is write-only. Carrack encrypts it before persistence and
+                        never returns it in validation, receipts, snapshots, audit events, or logs.
+                    </Alert>
+                    <Typography sx={{ fontWeight: 800 }}>{credentialTarget?.id}</Typography>
+                    <Typography color="text.secondary" variant="body2" sx={{ mb: 2 }}>
+                        {credentialTarget?.kind} · revision{" "}
+                        {String(credentialTarget?.revision ?? 0)}
+                    </Typography>
+                    <TextField
+                        autoFocus
+                        fullWidth
+                        label="Aliyun Drive access token"
+                        type="password"
+                        autoComplete="new-password"
+                        value={accessToken}
+                        disabled={credentialValidation !== null}
+                        onChange={(event) => setAccessToken(event.target.value)}
+                    />
+                    {(credentialValidationMutation.isError || credentialApplyMutation.isError) && (
+                        <Alert severity="error" sx={{ mt: 2 }}>
+                            The server rejected the credential change or its committed state could
+                            not be verified. Close this dialog before retrying.
+                        </Alert>
+                    )}
+                    {credentialValidation !== null && (
+                        <Paper variant="outlined" sx={{ mt: 3, p: 2 }}>
+                            <Typography sx={{ fontWeight: 800 }}>
+                                Server-validated write-only change
+                            </Typography>
+                            <Typography color="text.secondary" variant="body2">
+                                Driver revision {String(credentialValidation.expected_revision)} →{" "}
+                                {String(credentialValidation.expected_revision + 1)} · credential
+                                revision {String(credentialValidation.credential_revision)}
+                            </Typography>
+                            {credentialValidation.warnings.map((warning) => (
+                                <Alert key={warning} severity="warning" sx={{ mt: 2 }}>
+                                    {warning}
+                                </Alert>
+                            ))}
+                        </Paper>
+                    )}
+                </DialogContent>
+                <DialogActions>
+                    <Button
+                        onClick={closeCredentialDialog}
+                        disabled={credentialApplyMutation.isPending}
+                    >
+                        Cancel
+                    </Button>
+                    {credentialValidation === null ? (
+                        <Button
+                            variant="contained"
+                            disabled={
+                                credentialTarget === null ||
+                                accessToken.length === 0 ||
+                                credentialValidationMutation.isPending
+                            }
+                            onClick={() =>
+                                credentialTarget !== null &&
+                                credentialValidationMutation.mutate(credentialTarget)
+                            }
+                        >
+                            Validate credential
+                        </Button>
+                    ) : (
+                        <Button
+                            variant="contained"
+                            color="warning"
+                            disabled={credentialApplyMutation.isPending}
+                            onClick={() => credentialApplyMutation.mutate(credentialValidation)}
+                        >
+                            Encrypt and apply
                         </Button>
                     )}
                 </DialogActions>

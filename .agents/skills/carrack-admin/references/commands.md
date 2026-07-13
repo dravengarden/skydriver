@@ -25,6 +25,44 @@ verifiers, directory keys, or plaintext file bytes.
 
 ## Existing mutation commands
 
+Register a typed driver in the disabled state. Validate first:
+
+```bash
+carrack admin driver register "$driver_id" \
+  --control-url "$CARRACK_CONTROL_URL" \
+  --kind aliyundrive-open/v2 \
+  --config-file "$config_file" \
+  --check --format json
+```
+
+Apply the same config with a stable idempotency key. The resulting driver is
+revision 1 and disabled:
+
+```bash
+carrack admin driver register "$driver_id" \
+  --control-url "$CARRACK_CONTROL_URL" \
+  --kind aliyundrive-open/v2 \
+  --config-file "$config_file" \
+  --idempotency-key "$idempotency_key" --format json
+```
+
+Set or rotate its write-only credential before enabling it:
+
+```bash
+chmod 600 "$credential_file"
+carrack admin driver credential set "$driver_id" \
+  --control-url "$CARRACK_CONTROL_URL" \
+  --credential-file "$credential_file" \
+  --expected-revision "$driver_revision" \
+  --check --format json
+```
+
+After reviewing the redacted validation, repeat without `--check` and add a
+stable idempotency key. The credential file must be a private regular JSON file
+containing exactly `{ "access_token": "..." }`. Never pass the token in argv,
+print it, or commit the file. Carrack rejects Aliyun refresh tokens until it has
+a durable refresh-token rotation protocol.
+
 Validate a token annotation without changing state:
 
 ```bash

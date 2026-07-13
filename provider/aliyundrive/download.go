@@ -56,6 +56,46 @@ func (client *Client) OpenRange(
 		return nil, fmt.Errorf("open Aliyun Drive range for %q: %w: requested range exceeds object size", key, errObjectState)
 	}
 
+	return client.openResolvedRange(ctx, key, file, offset, length, uint64(file.Size))
+}
+
+// OpenPinnedRange opens an exact range only when the current immutable object
+// still matches every identity field observed by Stat.
+func (client *Client) OpenPinnedRange(
+	ctx context.Context,
+	object provider.Object,
+	offset uint64,
+	length uint64,
+) (io.ReadCloser, error) {
+	if length == 0 {
+		return nil, fmt.Errorf("open Aliyun Drive pinned range: %w: length must be positive", errObjectState)
+	}
+
+	file, err := client.resolve(ctx, object.Key)
+	if err != nil {
+		return nil, fmt.Errorf("open Aliyun Drive pinned range for %q: %w", object.Key, err)
+	}
+
+	current := objectFromFile(object.Key, file)
+	if current != object {
+		return nil, fmt.Errorf("open Aliyun Drive pinned range for %q: %w: object identity changed", object.Key, errObjectState)
+	}
+
+	if offset > current.SizeBytes || length > current.SizeBytes-offset {
+		return nil, fmt.Errorf("open Aliyun Drive pinned range for %q: %w: requested range exceeds object size", object.Key, errObjectState)
+	}
+
+	return client.openResolvedRange(ctx, object.Key, file, offset, length, current.SizeBytes)
+}
+
+func (client *Client) openResolvedRange(
+	ctx context.Context,
+	key string,
+	file fileRecord,
+	offset uint64,
+	length uint64,
+	totalBytes uint64,
+) (io.ReadCloser, error) {
 	downloadURL, err := client.getDownloadURL(ctx, file.FileID)
 	if err != nil {
 		return nil, fmt.Errorf("open Aliyun Drive range for %q: %w", key, err)
@@ -86,7 +126,7 @@ func (client *Client) OpenRange(
 			response.Header.Get("Content-Range"),
 			offset,
 			end,
-			uint64(file.Size),
+			totalBytes,
 		) {
 		closeErr := response.Body.Close()
 

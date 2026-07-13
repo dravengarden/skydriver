@@ -5,28 +5,47 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
+use zeroize::Zeroize as _;
 
-use crate::{management_driver_registration, operator_sessions, vfs_identifiers};
+use crate::{
+    management_driver_registration, operator_sessions,
+    vfs_envelopes::{ENVELOPE_ALGORITHM, MASTER_KEY_VERSION, blob_binding, seal_driver_credential},
+    vfs_identifiers,
+};
 
 const ADMIN_TOKEN_BINDING: &str = "CARRACK_ADMIN_TOKEN";
 const DATABASE_BINDING: &str = "CARRACK_INDEX";
 const VALIDATION_LIFETIME_SECONDS: u64 = 5 * 60;
-const DRIVER_STATE_KIND: &str = "driver.state";
-const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.driver-state.v1\0";
+const CREDENTIAL_KIND: &str = "driver.credential";
+const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.driver-credential.v1\0";
+const ALIYUN_DRIVE_KIND: &str = "aliyundrive-open/v2";
+const MAXIMUM_ACCESS_TOKEN_BYTES: usize = 16 << 10;
 
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct DriverStateRequest {
-    enabled: bool,
+struct AliyunCredential {
+    access_token: String,
+}
+
+impl Drop for AliyunCredential {
+    fn drop(&mut self) {
+        self.access_token.zeroize();
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CredentialRequest {
+    credential: AliyunCredential,
     expected_revision: u64,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ApplyRequest {
-    enabled: bool,
+    credential: AliyunCredential,
     expected_revision: u64,
     validation_expires_at: u64,
     validation_digest: String,
@@ -37,11 +56,9 @@ struct ApplyRequest {
 struct DriverRow {
     kind: String,
     config_json: String,
-    credential_present: u64,
-    enabled: u64,
+    credential_id: Option<String>,
+    credential_revision: Option<u64>,
     revision: u64,
-    placement_count: u64,
-    available_location_count: u64,
 }
 
 #[derive(Deserialize)]
@@ -57,14 +74,12 @@ struct ValidationResponse {
     schema: &'static str,
     driver_id: String,
     kind: String,
-    current_enabled: bool,
-    enabled: bool,
+    current_credential_present: bool,
+    credential_revision: u64,
     expected_revision: u64,
-    placement_count: u64,
-    available_location_count: u64,
     validation_expires_at: u64,
     validation_digest: String,
-    warnings: Vec<String>,
+    warnings: Vec<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -72,9 +87,10 @@ struct ReceiptResponse {
     schema: &'static str,
     operation_id: String,
     driver_id: String,
-    enabled: bool,
+    credential_id: String,
+    credential_revision: u64,
     final_revision: u64,
-    committed_at: u64,
+    rotated_at: u64,
     state: &'static str,
 }
 
@@ -89,44 +105,49 @@ pub(crate) async fn validate(
     let Some(driver_id) = driver_id.filter(|value| valid_string(value, 256)) else {
         return Response::error("valid driver ID is required", 400);
     };
-    let desired = request.json::<DriverStateRequest>().await?;
-    if desired.expected_revision == 0 {
-        return Response::error("driver revision is required", 400);
+    let requested = request.json::<CredentialRequest>().await?;
+    if !valid_credential_request(&requested) {
+        return Response::error("driver credential is invalid", 400);
     }
+
     let database = env.d1(DATABASE_BINDING)?;
-    let Some(current) = load_driver(&database, driver_id).await? else {
+    let Some(driver) = load_driver(&database, driver_id).await? else {
         return Response::error("driver not found", 404);
     };
-    if current.revision != desired.expected_revision {
+    if driver.revision != requested.expected_revision {
         return Response::error("driver revision conflict", 409);
     }
-    if current.enabled == u64::from(desired.enabled) {
-        return Response::error("driver already has the requested state", 400);
-    }
-    if desired.enabled && !valid_driver_configuration(&current) {
-        return Response::error("driver configuration is not valid for enablement", 400);
+    if driver.kind != ALIYUN_DRIVE_KIND
+        || !management_driver_registration::valid_stored_configuration(
+            &driver.kind,
+            &driver.config_json,
+            true,
+        )
+    {
+        return Response::error("driver kind does not accept this credential", 400);
     }
 
     let validation_expires_at = now_seconds() + VALIDATION_LIFETIME_SECONDS;
-    let warnings = state_warnings(&current, desired.enabled);
+    let validation_digest = validation_digest(env, driver_id, &requested, validation_expires_at)?;
     no_store_json(&ValidationResponse {
-        schema: "carrack.management.driver-state-validation.v1",
+        schema: "carrack.management.driver-credential-validation.v1",
         driver_id: driver_id.to_owned(),
-        kind: current.kind,
-        current_enabled: current.enabled == 1,
-        enabled: desired.enabled,
-        expected_revision: desired.expected_revision,
-        placement_count: current.placement_count,
-        available_location_count: current.available_location_count,
+        kind: driver.kind,
+        current_credential_present: driver.credential_id.is_some(),
+        credential_revision: driver.credential_revision.unwrap_or(0) + 1,
+        expected_revision: requested.expected_revision,
         validation_expires_at,
-        validation_digest: validation_digest(env, driver_id, &desired, validation_expires_at)?,
-        warnings,
+        validation_digest,
+        warnings: vec![
+            "The credential is write-only and cannot be recovered from Carrack after this request.",
+            "Clients holding an earlier credential grant may retain it until that grant or provider token expires.",
+        ],
     })
 }
 
 #[allow(
     clippy::too_many_lines,
-    reason = "signed validation, CAS, receipt, audit, replay, and conflict mapping form one transaction"
+    reason = "secret sealing, CAS, receipt, audit, replay, and conflict mapping form one transaction"
 )]
 pub(crate) async fn apply(
     request: &mut Request,
@@ -140,13 +161,14 @@ pub(crate) async fn apply(
         return Response::error("valid driver ID is required", 400);
     };
     let requested = request.json::<ApplyRequest>().await?;
-    if requested.expected_revision == 0 || !valid_string(&requested.idempotency_key, 256) {
-        return Response::error("valid revision and idempotency key are required", 400);
-    }
-    let desired = DriverStateRequest {
-        enabled: requested.enabled,
+    let desired = CredentialRequest {
+        credential: requested.credential,
         expected_revision: requested.expected_revision,
     };
+    if !valid_credential_request(&desired) || !valid_string(&requested.idempotency_key, 256) {
+        return Response::error("driver credential apply is invalid", 400);
+    }
+
     let now = now_seconds();
     if requested.validation_expires_at < now
         || requested.validation_expires_at > now + VALIDATION_LIFETIME_SECONDS
@@ -156,9 +178,14 @@ pub(crate) async fn apply(
     let expected_digest =
         validation_digest(env, driver_id, &desired, requested.validation_expires_at)?;
     if !constant_time_equal(&requested.validation_digest, &expected_digest) {
-        return Response::error("validation digest does not match desired state", 409);
+        return Response::error("validation digest does not match credential", 409);
     }
-    let request_sha256 = request_sha256(driver_id, &desired)?;
+
+    let request_sha256 = request_sha256(
+        driver_id,
+        desired.expected_revision,
+        &requested.validation_digest,
+    );
     let database = env.d1(DATABASE_BINDING)?;
     if let Some(stored) = load_receipt(&database, &requested.idempotency_key).await? {
         return replay(
@@ -168,42 +195,95 @@ pub(crate) async fn apply(
             &requested.validation_digest,
         );
     }
-    let Some(current) = load_driver(&database, driver_id).await? else {
+    let Some(driver) = load_driver(&database, driver_id).await? else {
         return Response::error("driver not found", 404);
     };
-    if current.revision != desired.expected_revision
-        || current.enabled == u64::from(desired.enabled)
-    {
+    if driver.revision != desired.expected_revision {
         return Response::error("driver revision conflict", 409);
     }
-    if desired.enabled && !valid_driver_configuration(&current) {
-        return Response::error("driver configuration is not valid for enablement", 409);
+    if driver.kind != ALIYUN_DRIVE_KIND
+        || !management_driver_registration::valid_stored_configuration(
+            &driver.kind,
+            &driver.config_json,
+            true,
+        )
+    {
+        return Response::error("driver kind does not accept this credential", 409);
     }
 
+    let credential_id = match driver.credential_id {
+        Some(value) => value,
+        None => vfs_identifiers::new_uuid_v7_hex()?,
+    };
+    let credential_revision = driver.credential_revision.unwrap_or(0) + 1;
+    let final_revision = driver.revision + 1;
+    let mut plaintext =
+        serde_json::to_vec(&desired.credential).map_err(|error| json_error(&error))?;
+    let sealed = seal_driver_credential(env, &credential_id, credential_revision, &plaintext);
+    plaintext.zeroize();
+    let sealed = sealed?;
     let operation_id = vfs_identifiers::new_uuid_v7_hex()?;
-    let final_revision = desired.expected_revision + 1;
     let receipt = ReceiptResponse {
-        schema: "carrack.management.driver-state-receipt.v1",
+        schema: "carrack.management.driver-credential-receipt.v1",
         operation_id: operation_id.clone(),
         driver_id: driver_id.to_owned(),
-        enabled: desired.enabled,
+        credential_id: credential_id.clone(),
+        credential_revision,
         final_revision,
-        committed_at: now,
+        rotated_at: now,
         state: "committed",
     };
     let result_json = serde_json::to_string(&receipt).map_err(|error| json_error(&error))?;
+
+    let credential_statement = if driver.credential_revision.is_some() {
+        database
+            .prepare(
+                r"UPDATE credential_envelopes
+                 SET envelope_algorithm = ?1, key_version = ?2, nonce = ?3,
+                     ciphertext = ?4, revision = revision + 1, rotated_at = ?5
+                 WHERE id = ?6 AND revision = ?7",
+            )
+            .bind(&[
+                JsValue::from_str(ENVELOPE_ALGORITHM),
+                JsValue::from_str(MASTER_KEY_VERSION),
+                blob_binding(&sealed.nonce),
+                blob_binding(&sealed.ciphertext),
+                JsValue::from_str(&now.to_string()),
+                JsValue::from_str(&credential_id),
+                JsValue::from_str(&(credential_revision - 1).to_string()),
+            ])?
+    } else {
+        database
+            .prepare(
+                r"INSERT INTO credential_envelopes (
+                     id, envelope_algorithm, key_version, nonce, ciphertext,
+                     revision, created_at, rotated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?6)",
+            )
+            .bind(&[
+                JsValue::from_str(&credential_id),
+                JsValue::from_str(ENVELOPE_ALGORITHM),
+                JsValue::from_str(MASTER_KEY_VERSION),
+                blob_binding(&sealed.nonce),
+                blob_binding(&sealed.ciphertext),
+                JsValue::from_str(&now.to_string()),
+            ])?
+    };
+
     let mutation = database
         .batch(vec![
+            credential_statement,
             database
                 .prepare(
-                    r"UPDATE driver_instances SET enabled = ?1, revision = revision + 1,
-                         updated_at = ?2 WHERE id = ?3 AND revision = ?4",
+                    r"UPDATE driver_instances
+                     SET credential_ref = ?1, revision = revision + 1, updated_at = ?2
+                     WHERE id = ?3 AND revision = ?4",
                 )
                 .bind(&[
-                    JsValue::from_bool(desired.enabled),
+                    JsValue::from_str(&credential_id),
                     JsValue::from_str(&now.to_string()),
                     JsValue::from_str(driver_id),
-                    JsValue::from_str(&desired.expected_revision.to_string()),
+                    JsValue::from_str(&driver.revision.to_string()),
                 ])?,
             database
                 .prepare(
@@ -215,11 +295,11 @@ pub(crate) async fn apply(
                 )
                 .bind(&[
                     JsValue::from_str(&operation_id),
-                    JsValue::from_str(DRIVER_STATE_KIND),
+                    JsValue::from_str(CREDENTIAL_KIND),
                     JsValue::from_str(driver_id),
                     JsValue::from_str(&requested.idempotency_key),
                     JsValue::from_str(&request_sha256),
-                    JsValue::from_str(&desired.expected_revision.to_string()),
+                    JsValue::from_str(&driver.revision.to_string()),
                     JsValue::from_str(&final_revision.to_string()),
                     JsValue::from_str(&requested.validation_digest),
                     JsValue::from_str(&result_json),
@@ -231,13 +311,13 @@ pub(crate) async fn apply(
                          filesystem_id, principal_id, token_id, event_kind, subject_kind,
                          subject_id, details_json, created_at
                      ) VALUES (NULL, NULL, NULL, ?1, 'driver', ?2,
-                               json_object('enabled', ?3, 'final_revision', ?4,
-                                           'source', 'operator'), ?5)",
+                               json_object('credential_revision', ?3,
+                                           'final_revision', ?4, 'source', 'operator'), ?5)",
                 )
                 .bind(&[
-                    JsValue::from_str(DRIVER_STATE_KIND),
+                    JsValue::from_str(CREDENTIAL_KIND),
                     JsValue::from_str(driver_id),
-                    JsValue::from_bool(desired.enabled),
+                    JsValue::from_str(&credential_revision.to_string()),
                     JsValue::from_str(&final_revision.to_string()),
                     JsValue::from_str(&now.to_string()),
                 ])?,
@@ -259,9 +339,10 @@ pub(crate) async fn apply(
             return Response::error("driver revision conflict", 409);
         }
         return Err(worker::Error::RustError(format!(
-            "driver state mutation failed: {error}"
+            "driver credential mutation failed: {error}"
         )));
     }
+
     no_store_json(&receipt)
 }
 
@@ -269,15 +350,12 @@ async fn load_driver(database: &worker::D1Database, driver_id: &str) -> Result<O
     database
         .prepare(
             r"SELECT driver.kind, driver.config_json,
-                    CASE WHEN driver.credential_ref IS NULL THEN 0 ELSE 1 END
-                        AS credential_present,
-                    driver.enabled, driver.revision,
-                    (SELECT COUNT(*) FROM vfs_directory_drivers AS placement
-                     WHERE placement.driver_id = driver.id) AS placement_count,
-                    (SELECT COUNT(*) FROM vfs_locations AS location
-                     WHERE location.driver_id = driver.id AND location.state = 'available')
-                        AS available_location_count
-             FROM driver_instances AS driver WHERE driver.id = ?1",
+                    credential.id AS credential_id,
+                    credential.revision AS credential_revision,
+                    driver.revision
+             FROM driver_instances AS driver
+             LEFT JOIN credential_envelopes AS credential ON credential.id = driver.credential_ref
+             WHERE driver.id = ?1",
         )
         .bind(&[JsValue::from_str(driver_id)])?
         .first::<DriverRow>(None)
@@ -295,7 +373,7 @@ async fn load_receipt(
              WHERE operator_subject = 'operator' AND kind = ?1 AND idempotency_key = ?2",
         )
         .bind(&[
-            JsValue::from_str(DRIVER_STATE_KIND),
+            JsValue::from_str(CREDENTIAL_KIND),
             JsValue::from_str(idempotency_key),
         ])?
         .first::<ReceiptRow>(None)
@@ -324,42 +402,21 @@ fn replay(
     Ok(response)
 }
 
-fn state_warnings(driver: &DriverRow, enabled: bool) -> Vec<String> {
-    let mut warnings = Vec::new();
-    if !enabled && driver.placement_count > 0 {
-        warnings.push(format!(
-            "Disabling this driver removes it from {} active collection placement(s).",
-            driver.placement_count
-        ));
-    }
-    if !enabled && driver.available_location_count > 0 {
-        warnings.push(format!(
-            "{} available object location(s) remain recorded but unusable while disabled.",
-            driver.available_location_count
-        ));
-    }
-    warnings
-}
-
-fn valid_driver_configuration(driver: &DriverRow) -> bool {
-    management_driver_registration::valid_stored_configuration(
-        &driver.kind,
-        &driver.config_json,
-        driver.credential_present == 1,
-    )
-}
-
-fn valid_string(value: &str, maximum_bytes: usize) -> bool {
-    !value.is_empty()
-        && value.len() <= maximum_bytes
-        && value.trim() == value
-        && !value.chars().any(char::is_control)
+fn valid_credential_request(requested: &CredentialRequest) -> bool {
+    requested.expected_revision > 0
+        && !requested.credential.access_token.is_empty()
+        && requested.credential.access_token.len() <= MAXIMUM_ACCESS_TOKEN_BYTES
+        && !requested
+            .credential
+            .access_token
+            .chars()
+            .any(char::is_control)
 }
 
 fn validation_digest(
     env: &Env,
     driver_id: &str,
-    desired: &DriverStateRequest,
+    requested: &CredentialRequest,
     expires_at: u64,
 ) -> Result<String> {
     let secret = env.secret(ADMIN_TOKEN_BINDING)?.to_string();
@@ -368,22 +425,26 @@ fn validation_digest(
     mac.update(VALIDATION_DOMAIN);
     mac.update(driver_id.as_bytes());
     mac.update(&[0]);
-    mac.update(&canonical(desired)?);
+    mac.update(&serde_json::to_vec(requested).map_err(|error| json_error(&error))?);
     mac.update(&expires_at.to_be_bytes());
     Ok(URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
 }
 
-fn request_sha256(driver_id: &str, desired: &DriverStateRequest) -> Result<String> {
+fn request_sha256(driver_id: &str, expected_revision: u64, validation_digest: &str) -> String {
     let mut hash = Sha256::new();
     hash.update(VALIDATION_DOMAIN);
     hash.update(driver_id.as_bytes());
     hash.update([0]);
-    hash.update(canonical(desired)?);
-    Ok(lowercase_hex(&hash.finalize()))
+    hash.update(expected_revision.to_be_bytes());
+    hash.update(validation_digest.as_bytes());
+    lowercase_hex(&hash.finalize())
 }
 
-fn canonical(desired: &DriverStateRequest) -> Result<Vec<u8>> {
-    serde_json::to_vec(desired).map_err(|error| json_error(&error))
+fn valid_string(value: &str, maximum_bytes: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= maximum_bytes
+        && value.trim() == value
+        && !value.chars().any(char::is_control)
 }
 
 fn constant_time_equal(left: &str, right: &str) -> bool {
@@ -427,36 +488,28 @@ fn now_seconds() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{DriverRow, valid_driver_configuration, valid_string};
+    use super::{AliyunCredential, CredentialRequest, request_sha256, valid_credential_request};
 
-    fn local_driver(config_json: &str) -> DriverRow {
-        DriverRow {
-            kind: "local-filesystem/v2".to_owned(),
-            config_json: config_json.to_owned(),
-            credential_present: 0,
-            enabled: 0,
-            revision: 1,
-            placement_count: 0,
-            available_location_count: 0,
-        }
+    #[test]
+    fn validates_bounded_access_tokens() {
+        assert!(valid_credential_request(&CredentialRequest {
+            credential: AliyunCredential {
+                access_token: "access-token".to_owned(),
+            },
+            expected_revision: 1,
+        }));
+        assert!(!valid_credential_request(&CredentialRequest {
+            credential: AliyunCredential {
+                access_token: "line\nbreak".to_owned(),
+            },
+            expected_revision: 1,
+        }));
     }
 
     #[test]
-    fn validates_identifiers_and_local_roots() {
-        assert!(valid_string("local-main", 256));
-        assert!(!valid_string(" local-main", 256));
-    }
-
-    #[test]
-    fn enables_only_typed_exact_configuration() {
-        assert!(valid_driver_configuration(&local_driver(
-            r#"{"root":"/srv/carrack"}"#
-        )));
-        assert!(!valid_driver_configuration(&local_driver(
-            r#"{"root":"/srv/carrack","unknown":true}"#
-        )));
-        let mut unknown = local_driver(r#"{"root":"/srv/carrack"}"#);
-        unknown.kind = "unknown/v1".to_owned();
-        assert!(!valid_driver_configuration(&unknown));
+    fn durable_request_identity_uses_server_digest_not_plaintext() {
+        let identity = request_sha256("aliyun-main", 1, "server-hmac");
+        assert_eq!(identity.len(), 64);
+        assert!(!identity.contains("server-hmac"));
     }
 }

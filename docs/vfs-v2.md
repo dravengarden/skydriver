@@ -15,7 +15,8 @@ remain isolated from one another.
 The current implemented V2 slice includes:
 
 - the complete-object driver contract, capability warnings, local filesystem
-  driver, durable transfer journal, and Go/Rust Merkle formats;
+  and Aliyun Drive Open drivers, durable transfer journal, and Go/Rust Merkle
+  formats;
 - D1 identities, entries, versions, locations, roots, ACLs, attenuated tokens,
   optimistic Put intents and receipts, and catalog mutation/outbox records;
 - one-shot encrypted or plaintext bootstrap, sealed directory-key epochs, and
@@ -32,8 +33,8 @@ The current implemented V2 slice includes:
 
 The next slices add immutable file-version and location records to the local
 catalog, safe R2 checkpoint/delta materialization, and local transfer planning;
-then Get, Push, and Pull; remote V2 drivers; V2 reachability/GC; and final legacy
-removal. The archive-oriented CLI and packages below the V2 boundary remain
+then Get, Push, and Pull; remaining remote V2 drivers; V2 reachability/GC; and
+final legacy removal. The archive-oriented CLI and packages below the V2 boundary remain
 available only for migration and existing V1 workflows.
 
 ## Product boundary
@@ -491,8 +492,8 @@ ordinary VFS file payloads.
    local planning.
 6. Implement high-level `put`, `get`, `push`, and `pull` APIs and AI-stable CLI
    JSON contracts.
-7. Add S3 and R2 drivers, then Google Drive, Aliyun Drive, and WebDAV behind
-   the same contract tests.
+7. Add S3 and R2 drivers, then Google Drive and WebDAV behind the same contract
+   tests; keep the existing Aliyun Drive Open adapter in the shared suite.
 8. Add conservative reachability, grace, and fenced janitor GC.
 9. Remove legacy packs, extents, bundles, compaction, and operation protocols
    after V2 parity and migration tests pass.

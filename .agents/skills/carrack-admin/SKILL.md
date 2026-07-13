@@ -44,7 +44,8 @@ or handling a failure.
 
 ## Apply supported changes
 
-For token annotation, driver state, ACL, and placement changes:
+For token annotation, typed driver registration, write-only driver credential,
+driver state, ACL, and placement changes:
 
 1. Read current state and its exact revision.
 2. Build the complete desired replacement locally.
@@ -71,10 +72,20 @@ the configured root from the agent host before server validation. A successful
 apply is not complete until the CLI re-reads the management snapshot and
 matches the receipt.
 
-Do not claim support for driver registration, credential rotation, principal
-management, groups, token authority changes, or global settings until the
-installed CLI exposes their `validate` and `apply` commands. Report the missing
-surface instead of editing D1, calling Wrangler D1 directly, or crafting HTTP.
+Register a driver with `carrack admin driver register` and `--check` before
+apply. Registration is typed, creates revision 1 in the disabled state, and
+never accepts credentials in the non-secret config. For Aliyun Drive, then run
+`carrack admin driver credential set` with `--check`, using a private regular
+JSON file readable only by its owner, and apply the same file before enabling
+the driver. The only accepted Aliyun credential is `access_token`; refresh
+tokens remain unsupported until Carrack can durably CAS a rotated refresh
+token back into its encrypted envelope. Never put a provider secret in argv,
+stdout, a plan, or Git.
+
+Do not claim support for principal management, groups, token authority changes,
+or global settings until the installed CLI exposes their `validate` and
+`apply` commands. Report the missing surface instead of editing D1, calling
+Wrangler D1 directly, or crafting HTTP.
 
 ## Handle races and ambiguous outcomes
 

@@ -243,6 +243,54 @@ const DriverStateReceiptSchema = v.object({
     state: v.literal("committed"),
 });
 
+const DriverRegistrationValidationSchema = v.object({
+    schema: v.literal("carrack.management.driver-registration-validation.v1"),
+    driver_id: v.string(),
+    kind: v.string(),
+    config: v.unknown(),
+    enabled: v.literal(false),
+    expected_revision: v.literal(0),
+    requires_credential: v.boolean(),
+    validation_expires_at: v.number(),
+    validation_digest: v.string(),
+    warnings: v.array(v.string()),
+});
+
+const DriverRegistrationReceiptSchema = v.object({
+    schema: v.literal("carrack.management.driver-registration-receipt.v1"),
+    operation_id: v.string(),
+    driver_id: v.string(),
+    kind: v.string(),
+    config: v.unknown(),
+    enabled: v.literal(false),
+    final_revision: v.literal(1),
+    committed_at: v.number(),
+    state: v.literal("committed"),
+});
+
+const DriverCredentialValidationSchema = v.object({
+    schema: v.literal("carrack.management.driver-credential-validation.v1"),
+    driver_id: v.string(),
+    kind: v.string(),
+    current_credential_present: v.boolean(),
+    credential_revision: v.number(),
+    expected_revision: v.number(),
+    validation_expires_at: v.number(),
+    validation_digest: v.string(),
+    warnings: v.array(v.string()),
+});
+
+const DriverCredentialReceiptSchema = v.object({
+    schema: v.literal("carrack.management.driver-credential-receipt.v1"),
+    operation_id: v.string(),
+    driver_id: v.string(),
+    credential_id: v.string(),
+    credential_revision: v.number(),
+    final_revision: v.number(),
+    rotated_at: v.number(),
+    state: v.literal("committed"),
+});
+
 export type Session = v.InferOutput<typeof SessionSchema>;
 export type ConfigurationSession = v.InferOutput<typeof ConfigurationSessionSchema>;
 export type Health = v.InferOutput<typeof HealthSchema>;
@@ -261,6 +309,10 @@ export type TokenAnnotationValidation = v.InferOutput<typeof TokenAnnotationVali
 export type TokenAnnotationReceipt = v.InferOutput<typeof TokenAnnotationReceiptSchema>;
 export type DriverStateValidation = v.InferOutput<typeof DriverStateValidationSchema>;
 export type DriverStateReceipt = v.InferOutput<typeof DriverStateReceiptSchema>;
+export type DriverRegistrationValidation = v.InferOutput<typeof DriverRegistrationValidationSchema>;
+export type DriverRegistrationReceipt = v.InferOutput<typeof DriverRegistrationReceiptSchema>;
+export type DriverCredentialValidation = v.InferOutput<typeof DriverCredentialValidationSchema>;
+export type DriverCredentialReceipt = v.InferOutput<typeof DriverCredentialReceiptSchema>;
 
 export function parseSession(input: unknown): Session {
     return v.parse(SessionSchema, input);
@@ -434,6 +486,83 @@ export function applyDriverState(validation: DriverStateValidation): Promise<Dri
             }),
         },
         DriverStateReceiptSchema,
+    );
+}
+
+export function validateDriverRegistration(
+    driverId: string,
+    kind: string,
+    config: unknown,
+): Promise<DriverRegistrationValidation> {
+    return requestJson(
+        "/api/admin/drivers/registration/validate",
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ driver_id: driverId, kind, config }),
+        },
+        DriverRegistrationValidationSchema,
+    );
+}
+
+export function applyDriverRegistration(
+    validation: DriverRegistrationValidation,
+): Promise<DriverRegistrationReceipt> {
+    return requestJson(
+        "/api/admin/drivers/registration/apply",
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                driver_id: validation.driver_id,
+                kind: validation.kind,
+                config: validation.config,
+                validation_expires_at: validation.validation_expires_at,
+                validation_digest: validation.validation_digest,
+                idempotency_key: newIdempotencyKey(),
+            }),
+        },
+        DriverRegistrationReceiptSchema,
+    );
+}
+
+export function validateDriverCredential(
+    driverId: string,
+    accessToken: string,
+    expectedRevision: number,
+): Promise<DriverCredentialValidation> {
+    return requestJson(
+        `/api/admin/drivers/${encodeURIComponent(driverId)}/credential/validate`,
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                credential: { access_token: accessToken },
+                expected_revision: expectedRevision,
+            }),
+        },
+        DriverCredentialValidationSchema,
+    );
+}
+
+export function applyDriverCredential(
+    validation: DriverCredentialValidation,
+    accessToken: string,
+): Promise<DriverCredentialReceipt> {
+    return requestJson(
+        `/api/admin/drivers/${encodeURIComponent(validation.driver_id)}/credential/apply`,
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                credential: { access_token: accessToken },
+                expected_revision: validation.expected_revision,
+                validation_expires_at: validation.validation_expires_at,
+                validation_digest: validation.validation_digest,
+                idempotency_key: newIdempotencyKey(),
+            }),
+        },
+        DriverCredentialReceiptSchema,
     );
 }
 

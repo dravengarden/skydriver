@@ -268,6 +268,97 @@ enabled_driver_snapshot=$(curl --silent --show-error --fail-with-body \
 [[ "$(jq -r '.drivers[0].enabled' <<<"$enabled_driver_snapshot")" == true ]]
 [[ "$(jq -r '.drivers[0].revision' <<<"$enabled_driver_snapshot")" == 3 ]]
 
+aliyun_config="$state_directory/aliyun-driver.json"
+jq -cn '{}' >"$aliyun_config"
+cli_registration_check=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  go run ./cmd/carrack admin driver register aliyun-main \
+    --control-url "$base_url" \
+    --kind aliyundrive-open/v2 \
+    --config-file "$aliyun_config" \
+    --check \
+    --format json)
+[[ "$(jq -r '.schema' <<<"$cli_registration_check")" == carrack.management.driver-registration-validation.v1 ]]
+[[ "$(jq -r '.enabled' <<<"$cli_registration_check")" == false ]]
+[[ "$(jq -r '.requires_credential' <<<"$cli_registration_check")" == true ]]
+[[ "$(jq -r '.config.drive_type' <<<"$cli_registration_check")" == resource ]]
+[[ "$(jq -r '.warnings | length >= 2' <<<"$cli_registration_check")" == true ]]
+cli_registration_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  go run ./cmd/carrack admin driver register aliyun-main \
+    --control-url "$base_url" \
+    --kind aliyundrive-open/v2 \
+    --config-file "$aliyun_config" \
+    --idempotency-key register-aliyun-main-v1 \
+    --format json)
+[[ "$(jq -r '.schema' <<<"$cli_registration_receipt")" == carrack.management.driver-registration-receipt.v1 ]]
+[[ "$(jq -r '.enabled' <<<"$cli_registration_receipt")" == false ]]
+[[ "$(jq -r '.final_revision' <<<"$cli_registration_receipt")" == 1 ]]
+registered_driver_snapshot=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" "$base_url/api/admin/snapshot")
+[[ "$(jq -r '.drivers[] | select(.id == "aliyun-main") | .kind' <<<"$registered_driver_snapshot")" == aliyundrive-open/v2 ]]
+[[ "$(jq -r '.drivers[] | select(.id == "aliyun-main") | .enabled' <<<"$registered_driver_snapshot")" == false ]]
+[[ "$(jq -r '.drivers[] | select(.id == "aliyun-main") | .credential_present' <<<"$registered_driver_snapshot")" == false ]]
+
+aliyun_credential="$state_directory/aliyun-credential.json"
+jq -cn '{access_token: "protocol-access-token"}' >"$aliyun_credential"
+chmod 600 "$aliyun_credential"
+cli_credential_check=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  go run ./cmd/carrack admin driver credential set aliyun-main \
+    --control-url "$base_url" \
+    --credential-file "$aliyun_credential" \
+    --expected-revision 1 \
+    --check \
+    --format json)
+[[ "$(jq -r '.schema' <<<"$cli_credential_check")" == carrack.management.driver-credential-validation.v1 ]]
+[[ "$(jq -r '.credential_revision' <<<"$cli_credential_check")" == 1 ]]
+[[ "$cli_credential_check" != *protocol-access-token* ]]
+cli_credential_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  go run ./cmd/carrack admin driver credential set aliyun-main \
+    --control-url "$base_url" \
+    --credential-file "$aliyun_credential" \
+    --expected-revision 1 \
+    --idempotency-key credential-aliyun-main-v1 \
+    --format json)
+[[ "$(jq -r '.schema' <<<"$cli_credential_receipt")" == carrack.management.driver-credential-receipt.v1 ]]
+[[ "$(jq -r '.credential_revision' <<<"$cli_credential_receipt")" == 1 ]]
+[[ "$(jq -r '.final_revision' <<<"$cli_credential_receipt")" == 2 ]]
+[[ "$cli_credential_receipt" != *protocol-access-token* ]]
+credential_driver_snapshot=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" "$base_url/api/admin/snapshot")
+[[ "$(jq -r '.drivers[] | select(.id == "aliyun-main") | .credential_present' <<<"$credential_driver_snapshot")" == true ]]
+[[ "$(jq -r '.drivers[] | select(.id == "aliyun-main") | .revision' <<<"$credential_driver_snapshot")" == 2 ]]
+[[ "$credential_driver_snapshot" != *protocol-access-token* ]]
+
+cli_aliyun_enable_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  go run ./cmd/carrack admin driver enable aliyun-main \
+    --control-url "$base_url" \
+    --expected-revision 2 \
+    --idempotency-key enable-aliyun-main-v2 \
+    --format json)
+[[ "$(jq -r '.schema' <<<"$cli_aliyun_enable_receipt")" == carrack.management.driver-state-receipt.v1 ]]
+[[ "$(jq -r '.enabled' <<<"$cli_aliyun_enable_receipt")" == true ]]
+[[ "$(jq -r '.final_revision' <<<"$cli_aliyun_enable_receipt")" == 3 ]]
+
+registration_replay_validation=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" -H "$json" \
+  --data '{"driver_id":"aliyun-replay","kind":"aliyundrive-open/v2","config":{}}' \
+  "$base_url/api/admin/drivers/registration/validate")
+registration_replay_apply=$(jq -c \
+  '{
+    driver_id,
+    kind,
+    config,
+    validation_expires_at,
+    validation_digest,
+    idempotency_key: "register-aliyun-replay-v1"
+  }' <<<"$registration_replay_validation")
+registration_replay_receipt=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" -H "$json" --data "$registration_replay_apply" \
+  "$base_url/api/admin/drivers/registration/apply")
+registration_replayed=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" -H "$json" --data "$registration_replay_apply" \
+  "$base_url/api/admin/drivers/registration/apply")
+[[ "$registration_replayed" == "$registration_replay_receipt" ]]
+
 configuration_disabled=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" -c "$cookie_jar" -X POST "$base_url/api/auth/configuration/disable")
 [[ "$(jq -r '.enabled' <<<"$configuration_disabled")" == false ]]

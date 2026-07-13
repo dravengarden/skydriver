@@ -25,6 +25,7 @@ type fakeDrive struct {
 	folderCreated bool
 	fileCompleted bool
 	uploaded      bytes.Buffer
+	completedSize int64
 }
 
 func (drive *fakeDrive) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -74,7 +75,7 @@ func (drive *fakeDrive) list(writer http.ResponseWriter, request *http.Request) 
 		items = append(items, fileRecord{
 			FileID:      "file-1",
 			Name:        "block.bin",
-			Size:        int64(len(testPayload)),
+			Size:        drive.completedSize,
 			ContentHash: "sha1-value",
 			Type:        "file",
 		})
@@ -128,14 +129,46 @@ func (drive *fakeDrive) upload(writer http.ResponseWriter, request *http.Request
 func (drive *fakeDrive) complete(writer http.ResponseWriter) {
 	drive.mutex.Lock()
 	drive.fileCompleted = true
+	drive.completedSize = int64(drive.uploaded.Len())
+	completedSize := drive.completedSize
 	drive.mutex.Unlock()
 	drive.writeJSON(writer, fileRecord{
 		FileID:      "file-1",
 		Name:        "block.bin",
-		Size:        int64(len(testPayload)),
+		Size:        completedSize,
 		ContentHash: "sha1-value",
 		Type:        "file",
 	})
+}
+
+func TestClientUploadsEmptyObject(t *testing.T) {
+	t.Parallel()
+
+	drive := &fakeDrive{testing: t}
+	server := httptest.NewServer(drive)
+	drive.serverURL = server.URL
+	t.Cleanup(server.Close)
+
+	tokenSource, err := NewStaticTokenSource("access-token")
+	if err != nil {
+		t.Fatalf("create token source: %v", err)
+	}
+
+	client, err := NewClient(Options{
+		HTTPClient: server.Client(), TokenSource: tokenSource, APIBaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	object, err := client.Put(context.Background(), "empty.bin", bytes.NewReader(nil), provider.PutOptions{})
+	if err != nil {
+		t.Fatalf("upload empty object: %v", err)
+	}
+
+	if object.SizeBytes != 0 || drive.uploaded.Len() != 0 {
+		t.Fatalf("unexpected empty object result: object=%+v uploaded=%d", object, drive.uploaded.Len())
+	}
 }
 
 func (drive *fakeDrive) download(writer http.ResponseWriter, request *http.Request) {

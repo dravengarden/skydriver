@@ -22,14 +22,15 @@ The currently implemented management surface is:
 | Placement inspection and replace-all | Yes | `Placements`, `ReplacePlacements` | `vfs placement list`, `vfs placement replace` |
 | Recursive verified namespace prefetch | Existing directory pages | `SyncCatalog` | `vfs catalog sync` |
 | Group membership management | No | No | No |
-| Driver registration or credential rotation | No | No | No |
+| Typed driver registration or credential rotation | Operator API | `AdminClient` | `admin driver register`, `admin driver credential set` |
 | Snapshot-pinned metadata reads | No | No | No |
 
-The V2 payload implementation currently has a reference
-`local-filesystem/v2` driver. The management and placement wire contracts are
-driver-kind-neutral, but listing a driver in placement policy does not make an
-unimplemented payload driver usable. S3, R2, Google Drive, Aliyun Drive, and
-WebDAV payload implementations remain later V2 slices.
+These operator-authorized driver mutations are deliberately outside the VFS
+token routes documented below. The V2 payload implementation currently has
+compiled `local-filesystem/v2` and `aliyundrive-open/v2` drivers. The latter
+preserves complete objects and exact range reads, but warns and falls back for
+missing resumable upload, server copy, inventory, and strong checksum support.
+S3, R2, Google Drive, and WebDAV payload implementations remain later slices.
 
 ## Common authentication and errors
 

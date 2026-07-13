@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/dravengarden/carrack/driver"
+	driveraliyun "github.com/dravengarden/carrack/driver/aliyundrive"
 	driverlocalfs "github.com/dravengarden/carrack/driver/localfs"
 	"github.com/dravengarden/carrack/sdk"
 )
@@ -161,6 +162,10 @@ func executeVFSPut(
 	registry := driver.NewRegistry()
 	if registerErr := registry.Register(driverlocalfs.Kind, driverlocalfs.Factory); registerErr != nil {
 		return sdk.VFSPutResult{}, fmt.Errorf("register local filesystem VFS driver: %w", registerErr)
+	}
+
+	if registerErr := registry.Register(driveraliyun.Kind, driveraliyun.Factory); registerErr != nil {
+		return sdk.VFSPutResult{}, fmt.Errorf("register Aliyun Drive VFS driver: %w", registerErr)
 	}
 
 	client, err := sdk.NewVFSClient(control, registry, sdk.VFSClientOptions{

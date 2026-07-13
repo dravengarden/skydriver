@@ -120,6 +120,8 @@ commands are:
 carrack admin snapshot
 carrack admin directory <directory-id>
 carrack admin token annotate <token-id>
+carrack admin driver register <driver-id>
+carrack admin driver credential set <driver-id>
 carrack admin driver enable <driver-id>
 carrack admin driver disable <driver-id>
 ```
@@ -132,10 +134,15 @@ server validation without applying. `--format json` emits stable schemas and
 no decorative text; warnings go to structured output, not ad-hoc stderr
 strings.
 
-Driver enablement is fail-closed by kind. The current
-`local-filesystem/v2` validator requires an exact non-secret `{root}`
-configuration, no credential reference, a canonical absolute root, and a
-successful local driver probe from the CLI host. Disablement is allowed even
+Driver registration and enablement are fail-closed by kind. Registration
+normalizes a typed non-secret configuration and creates a disabled revision-1
+driver. `local-filesystem/v2` requires an exact `{root}` configuration, no
+credential, a canonical absolute root, and a successful local probe from the
+CLI host. `aliyundrive-open/v2` accepts only its documented endpoint, drive,
+root-folder, and upload-part fields; its write-only credential accepts exactly
+one access token, is sealed with AES-256-GCM, and is never returned. Refresh
+tokens remain rejected until durable provider-token rotation can CAS the new
+secret back into the envelope. Disablement is allowed even
 when placements or available locations exist, but those counts and warnings
 are covered by the signed validation. Disabling does not delete locations or
 provider objects; it makes them unavailable through that driver until a later

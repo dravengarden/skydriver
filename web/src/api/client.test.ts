@@ -5,6 +5,8 @@ import {
     parseHealth,
     parseIntegrityFindings,
     parseSession,
+    validateDriverCredential,
+    validateDriverRegistration,
     validateDriverState,
 } from "./client";
 
@@ -67,6 +69,59 @@ describe("driver configuration", () => {
             enabled: false,
             expected_revision: 7,
         });
+    });
+
+    it("normalizes typed registration without embedding a credential", async () => {
+        const validation = {
+            schema: "carrack.management.driver-registration-validation.v1",
+            driver_id: "aliyun-main",
+            kind: "aliyundrive-open/v2",
+            config: { root_folder_id: "root" },
+            enabled: false,
+            expected_revision: 0,
+            requires_credential: true,
+            validation_expires_at: 2_000_000_000,
+            validation_digest: "signed-digest",
+            warnings: [],
+        };
+        const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(Response.json(validation));
+        vi.stubGlobal("fetch", fetchMock);
+
+        await expect(
+            validateDriverRegistration("aliyun-main", "aliyundrive-open/v2", {
+                root_folder_id: "root",
+            }),
+        ).resolves.toEqual(validation);
+        const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+        expect(body).toEqual({
+            driver_id: "aliyun-main",
+            kind: "aliyundrive-open/v2",
+            config: { root_folder_id: "root" },
+        });
+        expect(JSON.stringify(body)).not.toContain("access_token");
+    });
+
+    it("keeps the write-only credential out of the validation response", async () => {
+        const validation = {
+            schema: "carrack.management.driver-credential-validation.v1",
+            driver_id: "aliyun-main",
+            kind: "aliyundrive-open/v2",
+            current_credential_present: false,
+            credential_revision: 1,
+            expected_revision: 1,
+            validation_expires_at: 2_000_000_000,
+            validation_digest: "signed-secret-bound-digest",
+            warnings: [],
+        };
+        const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(Response.json(validation));
+        vi.stubGlobal("fetch", fetchMock);
+
+        await expect(validateDriverCredential("aliyun-main", "private-token", 1)).resolves.toEqual(
+            validation,
+        );
+        const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+        expect(body.credential).toEqual({ access_token: "private-token" });
+        expect(JSON.stringify(validation)).not.toContain("private-token");
     });
 });
 

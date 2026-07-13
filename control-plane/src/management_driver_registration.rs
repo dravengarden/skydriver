@@ -1,0 +1,552 @@
+use std::fmt::Write as _;
+
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use hmac::{Hmac, Mac};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
+
+use crate::{operator_sessions, vfs_identifiers};
+
+const ADMIN_TOKEN_BINDING: &str = "CARRACK_ADMIN_TOKEN";
+const DATABASE_BINDING: &str = "CARRACK_INDEX";
+const VALIDATION_LIFETIME_SECONDS: u64 = 5 * 60;
+const REGISTRATION_KIND: &str = "driver.register";
+const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.driver-registration.v1\0";
+const LOCAL_FILESYSTEM_KIND: &str = "local-filesystem/v2";
+const ALIYUN_DRIVE_KIND: &str = "aliyundrive-open/v2";
+const DEFAULT_ALIYUN_API_BASE_URL: &str = "https://openapi.alipan.com";
+const DEFAULT_ALIYUN_UPLOAD_PART_BYTES: u64 = 20 << 20;
+const MAXIMUM_ALIYUN_UPLOAD_PART_BYTES: u64 = 512 << 20;
+
+type HmacSha256 = Hmac<Sha256>;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RegistrationRequest {
+    driver_id: String,
+    kind: String,
+    config: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApplyRequest {
+    driver_id: String,
+    kind: String,
+    config: Value,
+    validation_expires_at: u64,
+    validation_digest: String,
+    idempotency_key: String,
+}
+
+#[derive(Serialize)]
+struct CanonicalRegistration<'a> {
+    driver_id: &'a str,
+    kind: &'a str,
+    config: &'a Value,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LocalFilesystemConfig {
+    root: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AliyunDriveConfig {
+    #[serde(default = "default_aliyun_api_base_url")]
+    api_base_url: String,
+    #[serde(default = "default_aliyun_drive_type")]
+    drive_type: String,
+    #[serde(default = "default_aliyun_root_folder_id")]
+    root_folder_id: String,
+    #[serde(default = "default_aliyun_upload_part_bytes")]
+    upload_part_bytes: u64,
+}
+
+#[derive(Serialize)]
+struct ValidationResponse {
+    schema: &'static str,
+    driver_id: String,
+    kind: String,
+    config: Value,
+    enabled: bool,
+    expected_revision: u64,
+    requires_credential: bool,
+    validation_expires_at: u64,
+    validation_digest: String,
+    warnings: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ReceiptResponse {
+    schema: &'static str,
+    operation_id: String,
+    driver_id: String,
+    kind: String,
+    config: Value,
+    enabled: bool,
+    final_revision: u64,
+    committed_at: u64,
+    state: &'static str,
+}
+
+#[derive(Deserialize)]
+struct ReceiptRow {
+    resource_id: String,
+    request_sha256: String,
+    validation_digest: String,
+    result_json: String,
+}
+
+pub(crate) async fn validate(request: &mut Request, env: &Env) -> Result<Response> {
+    if !operator_sessions::authorized(request, env).await? {
+        return Response::error("authentication required", 401);
+    }
+
+    let requested = request.json::<RegistrationRequest>().await?;
+    let Ok(normalized) = normalize_registration(requested) else {
+        return Response::error("driver registration is invalid", 400);
+    };
+    let database = env.d1(DATABASE_BINDING)?;
+    if driver_exists(&database, &normalized.driver_id).await? {
+        return Response::error("driver already exists", 409);
+    }
+
+    let validation_expires_at = now_seconds() + VALIDATION_LIFETIME_SECONDS;
+    let validation_digest = validation_digest(env, &normalized, validation_expires_at)?;
+    no_store_json(&ValidationResponse {
+        schema: "carrack.management.driver-registration-validation.v1",
+        requires_credential: normalized.kind == ALIYUN_DRIVE_KIND,
+        warnings: registration_warnings(&normalized.kind),
+        driver_id: normalized.driver_id,
+        kind: normalized.kind,
+        config: normalized.config,
+        enabled: false,
+        expected_revision: 0,
+        validation_expires_at,
+        validation_digest,
+    })
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "signed registration, immutable receipt, audit, replay, and race mapping form one transaction"
+)]
+pub(crate) async fn apply(request: &mut Request, env: &Env) -> Result<Response> {
+    if !operator_sessions::configuration_authorized(request, env).await? {
+        return Response::error("configuration session required", 403);
+    }
+
+    let requested = request.json::<ApplyRequest>().await?;
+    if !valid_string(&requested.idempotency_key, 256) {
+        return Response::error("valid idempotency key is required", 400);
+    }
+    let Ok(normalized) = normalize_registration(RegistrationRequest {
+        driver_id: requested.driver_id,
+        kind: requested.kind,
+        config: requested.config,
+    }) else {
+        return Response::error("driver registration is invalid", 400);
+    };
+    let now = now_seconds();
+    if requested.validation_expires_at < now
+        || requested.validation_expires_at > now + VALIDATION_LIFETIME_SECONDS
+    {
+        return Response::error("validation expired", 409);
+    }
+    let expected_digest = validation_digest(env, &normalized, requested.validation_expires_at)?;
+    if !constant_time_equal(&requested.validation_digest, &expected_digest) {
+        return Response::error("validation digest does not match driver registration", 409);
+    }
+
+    let request_sha256 = request_sha256(&normalized)?;
+    let database = env.d1(DATABASE_BINDING)?;
+    if let Some(stored) = load_receipt(&database, &requested.idempotency_key).await? {
+        return replay(
+            stored,
+            &normalized.driver_id,
+            &request_sha256,
+            &requested.validation_digest,
+        );
+    }
+    if driver_exists(&database, &normalized.driver_id).await? {
+        return Response::error("driver already exists", 409);
+    }
+
+    let operation_id = vfs_identifiers::new_uuid_v7_hex()?;
+    let config_json =
+        serde_json::to_string(&normalized.config).map_err(|error| json_error(&error))?;
+    let receipt = ReceiptResponse {
+        schema: "carrack.management.driver-registration-receipt.v1",
+        operation_id: operation_id.clone(),
+        driver_id: normalized.driver_id.clone(),
+        kind: normalized.kind.clone(),
+        config: normalized.config,
+        enabled: false,
+        final_revision: 1,
+        committed_at: now,
+        state: "committed",
+    };
+    let result_json = serde_json::to_string(&receipt).map_err(|error| json_error(&error))?;
+    let mutation = database
+        .batch(vec![
+            database
+                .prepare(
+                    r"INSERT INTO driver_instances (
+                         id, kind, config_json, credential_ref, enabled, revision,
+                         created_at, updated_at
+                     ) VALUES (?1, ?2, ?3, NULL, 0, 1, ?4, ?4)",
+                )
+                .bind(&[
+                    JsValue::from_str(&receipt.driver_id),
+                    JsValue::from_str(&receipt.kind),
+                    JsValue::from_str(&config_json),
+                    JsValue::from_str(&now.to_string()),
+                ])?,
+            database
+                .prepare(
+                    r"INSERT INTO management_creation_receipts (
+                         operation_id, operator_subject, kind, resource_id, idempotency_key,
+                         request_sha256, final_revision, validation_digest,
+                         result_json, committed_at
+                     ) VALUES (?1, 'operator', ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8)",
+                )
+                .bind(&[
+                    JsValue::from_str(&operation_id),
+                    JsValue::from_str(REGISTRATION_KIND),
+                    JsValue::from_str(&receipt.driver_id),
+                    JsValue::from_str(&requested.idempotency_key),
+                    JsValue::from_str(&request_sha256),
+                    JsValue::from_str(&requested.validation_digest),
+                    JsValue::from_str(&result_json),
+                    JsValue::from_str(&now.to_string()),
+                ])?,
+            database
+                .prepare(
+                    r"INSERT INTO vfs_audit_events (
+                         filesystem_id, principal_id, token_id, event_kind, subject_kind,
+                         subject_id, details_json, created_at
+                     ) VALUES (NULL, NULL, NULL, ?1, 'driver', ?2,
+                               json_object('kind', ?3, 'enabled', 0,
+                                           'final_revision', 1, 'source', 'operator'), ?4)",
+                )
+                .bind(&[
+                    JsValue::from_str(REGISTRATION_KIND),
+                    JsValue::from_str(&receipt.driver_id),
+                    JsValue::from_str(&receipt.kind),
+                    JsValue::from_str(&now.to_string()),
+                ])?,
+        ])
+        .await;
+    if let Err(error) = mutation {
+        if let Some(stored) = load_receipt(&database, &requested.idempotency_key).await? {
+            return replay(
+                stored,
+                &receipt.driver_id,
+                &request_sha256,
+                &requested.validation_digest,
+            );
+        }
+        if driver_exists(&database, &receipt.driver_id).await? {
+            return Response::error("driver already exists", 409);
+        }
+        return Err(worker::Error::RustError(format!(
+            "driver registration failed: {error}"
+        )));
+    }
+
+    no_store_json(&receipt)
+}
+
+fn normalize_registration(requested: RegistrationRequest) -> Result<RegistrationRequest> {
+    if !valid_string(&requested.driver_id, 256) || !valid_string(&requested.kind, 128) {
+        return Err(worker::Error::RustError(
+            "valid driver ID and kind are required".to_owned(),
+        ));
+    }
+
+    let config = match requested.kind.as_str() {
+        LOCAL_FILESYSTEM_KIND => {
+            let config: LocalFilesystemConfig =
+                serde_json::from_value(requested.config).map_err(|error| json_error(&error))?;
+            if !valid_local_root(&config.root) {
+                return Err(worker::Error::RustError(
+                    "local filesystem root is invalid".to_owned(),
+                ));
+            }
+            serde_json::to_value(config).map_err(|error| json_error(&error))?
+        }
+        ALIYUN_DRIVE_KIND => {
+            let config: AliyunDriveConfig =
+                serde_json::from_value(requested.config).map_err(|error| json_error(&error))?;
+            if !valid_aliyun_config(&config) {
+                return Err(worker::Error::RustError(
+                    "Aliyun Drive configuration is invalid".to_owned(),
+                ));
+            }
+            serde_json::to_value(config).map_err(|error| json_error(&error))?
+        }
+        _ => {
+            return Err(worker::Error::RustError(
+                "driver kind is not compiled by this Carrack release".to_owned(),
+            ));
+        }
+    };
+
+    Ok(RegistrationRequest {
+        config,
+        ..requested
+    })
+}
+
+fn valid_aliyun_config(config: &AliyunDriveConfig) -> bool {
+    config.api_base_url.starts_with("https://")
+        && !config.api_base_url.contains('@')
+        && !config.api_base_url.contains('#')
+        && !config.api_base_url.contains('?')
+        && !config.api_base_url.ends_with('/')
+        && matches!(
+            config.drive_type.as_str(),
+            "default" | "resource" | "backup"
+        )
+        && valid_string(&config.root_folder_id, 256)
+        && config.upload_part_bytes > 0
+        && config.upload_part_bytes <= MAXIMUM_ALIYUN_UPLOAD_PART_BYTES
+}
+
+pub(crate) fn valid_stored_configuration(
+    kind: &str,
+    config_json: &str,
+    credential_present: bool,
+) -> bool {
+    match kind {
+        LOCAL_FILESYSTEM_KIND => serde_json::from_str::<LocalFilesystemConfig>(config_json)
+            .is_ok_and(|config| valid_local_root(&config.root) && !credential_present),
+        ALIYUN_DRIVE_KIND => serde_json::from_str::<AliyunDriveConfig>(config_json)
+            .is_ok_and(|config| valid_aliyun_config(&config) && credential_present),
+        _ => false,
+    }
+}
+
+fn registration_warnings(kind: &str) -> Vec<String> {
+    if kind == ALIYUN_DRIVE_KIND {
+        return vec![
+            "The driver is registered disabled and requires a write-only access-token credential before enablement."
+                .to_owned(),
+            "Aliyun Drive resumable upload, delete, and inventory acceleration are unavailable; correctness-preserving complete upload and readback remain available."
+                .to_owned(),
+        ];
+    }
+
+    vec!["The driver is registered disabled and must be enabled separately.".to_owned()]
+}
+
+async fn driver_exists(database: &worker::D1Database, driver_id: &str) -> Result<bool> {
+    Ok(database
+        .prepare("SELECT 1 AS present FROM driver_instances WHERE id = ?1")
+        .bind(&[JsValue::from_str(driver_id)])?
+        .first::<Value>(None)
+        .await?
+        .is_some())
+}
+
+async fn load_receipt(
+    database: &worker::D1Database,
+    idempotency_key: &str,
+) -> Result<Option<ReceiptRow>> {
+    database
+        .prepare(
+            r"SELECT resource_id, request_sha256, validation_digest, result_json
+             FROM management_creation_receipts
+             WHERE operator_subject = 'operator' AND kind = ?1 AND idempotency_key = ?2",
+        )
+        .bind(&[
+            JsValue::from_str(REGISTRATION_KIND),
+            JsValue::from_str(idempotency_key),
+        ])?
+        .first::<ReceiptRow>(None)
+        .await
+}
+
+fn replay(
+    stored: ReceiptRow,
+    driver_id: &str,
+    request_sha256: &str,
+    validation_digest: &str,
+) -> Result<Response> {
+    if stored.resource_id != driver_id
+        || stored.request_sha256 != request_sha256
+        || stored.validation_digest != validation_digest
+    {
+        return Response::error("idempotency key reused for different input", 409);
+    }
+    let mut response = Response::ok(stored.result_json)?;
+    response
+        .headers_mut()
+        .set("Content-Type", "application/json")?;
+    response
+        .headers_mut()
+        .set("Cache-Control", "no-store, max-age=0")?;
+    Ok(response)
+}
+
+fn validation_digest(
+    env: &Env,
+    requested: &RegistrationRequest,
+    expires_at: u64,
+) -> Result<String> {
+    let secret = env.secret(ADMIN_TOKEN_BINDING)?.to_string();
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .map_err(|error| worker::Error::RustError(error.to_string()))?;
+    mac.update(VALIDATION_DOMAIN);
+    mac.update(&canonical(requested)?);
+    mac.update(&expires_at.to_be_bytes());
+    Ok(URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
+}
+
+fn request_sha256(requested: &RegistrationRequest) -> Result<String> {
+    let mut hash = Sha256::new();
+    hash.update(VALIDATION_DOMAIN);
+    hash.update(canonical(requested)?);
+    Ok(lowercase_hex(&hash.finalize()))
+}
+
+fn canonical(requested: &RegistrationRequest) -> Result<Vec<u8>> {
+    serde_json::to_vec(&CanonicalRegistration {
+        driver_id: &requested.driver_id,
+        kind: &requested.kind,
+        config: &requested.config,
+    })
+    .map_err(|error| json_error(&error))
+}
+
+fn valid_local_root(root: &str) -> bool {
+    root.starts_with('/')
+        && root.len() <= 4_096
+        && !root.contains('\0')
+        && !root.chars().any(char::is_control)
+        && (root == "/" || !root.ends_with('/'))
+        && !root
+            .split('/')
+            .any(|component| matches!(component, "." | ".."))
+}
+
+fn valid_string(value: &str, maximum_bytes: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= maximum_bytes
+        && value.trim() == value
+        && !value.chars().any(char::is_control)
+}
+
+fn constant_time_equal(left: &str, right: &str) -> bool {
+    let (Ok(left), Ok(right)) = (URL_SAFE_NO_PAD.decode(left), URL_SAFE_NO_PAD.decode(right))
+    else {
+        return false;
+    };
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .fold(0_u8, |difference, (left, right)| {
+                difference | (left ^ right)
+            })
+            == 0
+}
+
+fn lowercase_hex(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
+}
+
+fn no_store_json<T: Serialize>(value: &T) -> Result<Response> {
+    let mut response = Response::from_json(value)?;
+    response
+        .headers_mut()
+        .set("Cache-Control", "no-store, max-age=0")?;
+    Ok(response)
+}
+
+fn json_error(error: &serde_json::Error) -> worker::Error {
+    worker::Error::RustError(error.to_string())
+}
+
+fn now_seconds() -> u64 {
+    Date::now().as_millis() / 1_000
+}
+
+fn default_aliyun_api_base_url() -> String {
+    DEFAULT_ALIYUN_API_BASE_URL.to_owned()
+}
+
+fn default_aliyun_drive_type() -> String {
+    "resource".to_owned()
+}
+
+fn default_aliyun_root_folder_id() -> String {
+    "root".to_owned()
+}
+
+const fn default_aliyun_upload_part_bytes() -> u64 {
+    DEFAULT_ALIYUN_UPLOAD_PART_BYTES
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{
+        ALIYUN_DRIVE_KIND, RegistrationRequest, normalize_registration, valid_stored_configuration,
+    };
+
+    #[test]
+    fn normalizes_exact_aliyun_defaults() {
+        let normalized = normalize_registration(RegistrationRequest {
+            driver_id: "aliyun-main".to_owned(),
+            kind: ALIYUN_DRIVE_KIND.to_owned(),
+            config: json!({}),
+        })
+        .expect("normalize Aliyun registration");
+
+        assert_eq!(normalized.config["drive_type"], "resource");
+        assert_eq!(normalized.config["root_folder_id"], "root");
+        assert_eq!(normalized.config["upload_part_bytes"], 20 << 20);
+    }
+
+    #[test]
+    fn rejects_unknown_kinds_and_fields() {
+        for (kind, config) in [
+            ("unknown/v1", json!({})),
+            (ALIYUN_DRIVE_KIND, json!({"access_token": "secret"})),
+        ] {
+            assert!(
+                normalize_registration(RegistrationRequest {
+                    driver_id: "driver".to_owned(),
+                    kind: kind.to_owned(),
+                    config,
+                })
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn enablement_requires_kind_specific_credential_posture() {
+        assert!(valid_stored_configuration(
+            ALIYUN_DRIVE_KIND,
+            r#"{"api_base_url":"https://openapi.alipan.com","drive_type":"resource","root_folder_id":"root","upload_part_bytes":20971520}"#,
+            true,
+        ));
+        assert!(!valid_stored_configuration(
+            ALIYUN_DRIVE_KIND,
+            r#"{"api_base_url":"https://openapi.alipan.com","drive_type":"resource","root_folder_id":"root","upload_part_bytes":20971520}"#,
+            false,
+        ));
+    }
+}

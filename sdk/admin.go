@@ -15,13 +15,17 @@ import (
 )
 
 const (
-	operatorCredentialBytes         = 32
-	managementSnapshotSchema        = "carrack.management.snapshot.v1"
-	managementDirectorySchema       = "carrack.management.directory.v1"
-	tokenAnnotationValidationSchema = "carrack.management.token-annotation-validation.v1"
-	tokenAnnotationReceiptSchema    = "carrack.management.token-annotation-receipt.v1"
-	driverStateValidationSchema     = "carrack.management.driver-state-validation.v1"
-	driverStateReceiptSchema        = "carrack.management.driver-state-receipt.v1"
+	operatorCredentialBytes            = 32
+	managementSnapshotSchema           = "carrack.management.snapshot.v1"
+	managementDirectorySchema          = "carrack.management.directory.v1"
+	tokenAnnotationValidationSchema    = "carrack.management.token-annotation-validation.v1"
+	tokenAnnotationReceiptSchema       = "carrack.management.token-annotation-receipt.v1"
+	driverStateValidationSchema        = "carrack.management.driver-state-validation.v1"
+	driverStateReceiptSchema           = "carrack.management.driver-state-receipt.v1"
+	driverRegistrationValidationSchema = "carrack.management.driver-registration-validation.v1"
+	driverRegistrationReceiptSchema    = "carrack.management.driver-registration-receipt.v1"
+	driverCredentialValidationSchema   = "carrack.management.driver-credential-validation.v1"
+	driverCredentialReceiptSchema      = "carrack.management.driver-credential-receipt.v1"
 )
 
 // OperatorCredential is the environment-scoped break-glass management
@@ -257,6 +261,113 @@ type DriverStateReceipt struct {
 	State         string `json:"state"`
 }
 
+// ValidateDriverRegistrationRequest describes one new disabled typed driver.
+// Config contains non-secret fields only.
+type ValidateDriverRegistrationRequest struct {
+	DriverID string          `json:"driver_id"`
+	Kind     string          `json:"kind"`
+	Config   json.RawMessage `json:"config"`
+}
+
+// DriverRegistrationValidation is the normalized, signed registration and
+// its capability or credential warnings.
+type DriverRegistrationValidation struct {
+	Schema              string          `json:"schema"`
+	DriverID            string          `json:"driver_id"`
+	Kind                string          `json:"kind"`
+	Config              json.RawMessage `json:"config"`
+	Enabled             bool            `json:"enabled"`
+	ExpectedRevision    uint64          `json:"expected_revision"`
+	RequiresCredential  bool            `json:"requires_credential"`
+	ValidationExpiresAt uint64          `json:"validation_expires_at"`
+	ValidationDigest    string          `json:"validation_digest"`
+	Warnings            []string        `json:"warnings"`
+}
+
+// ApplyDriverRegistrationRequest binds one normalized registration to its
+// signed validation and stable idempotency identity.
+type ApplyDriverRegistrationRequest struct {
+	DriverID            string          `json:"driver_id"`
+	Kind                string          `json:"kind"`
+	Config              json.RawMessage `json:"config"`
+	ValidationExpiresAt uint64          `json:"validation_expires_at"`
+	ValidationDigest    string          `json:"validation_digest"`
+	IdempotencyKey      string          `json:"idempotency_key"`
+}
+
+// DriverRegistrationReceipt is the durable disabled driver registration.
+type DriverRegistrationReceipt struct {
+	Schema        string          `json:"schema"`
+	OperationID   string          `json:"operation_id"`
+	DriverID      string          `json:"driver_id"`
+	Kind          string          `json:"kind"`
+	Config        json.RawMessage `json:"config"`
+	Enabled       bool            `json:"enabled"`
+	FinalRevision uint64          `json:"final_revision"`
+	CommittedAt   uint64          `json:"committed_at"`
+	State         string          `json:"state"`
+}
+
+// ValidateDriverCredentialRequest carries one write-only typed credential at
+// an exact observed driver revision. Call Clear immediately after use.
+type ValidateDriverCredentialRequest struct {
+	Credential       json.RawMessage `json:"credential"`
+	ExpectedRevision uint64          `json:"expected_revision"`
+}
+
+// Clear overwrites the transient credential JSON.
+func (requested *ValidateDriverCredentialRequest) Clear() {
+	if requested != nil {
+		clear(requested.Credential)
+		requested.Credential = nil
+	}
+}
+
+// DriverCredentialValidation contains no credential material; its digest
+// binds the exact write-only request.
+type DriverCredentialValidation struct {
+	Schema                   string   `json:"schema"`
+	DriverID                 string   `json:"driver_id"`
+	Kind                     string   `json:"kind"`
+	CurrentCredentialPresent bool     `json:"current_credential_present"`
+	CredentialRevision       uint64   `json:"credential_revision"`
+	ExpectedRevision         uint64   `json:"expected_revision"`
+	ValidationExpiresAt      uint64   `json:"validation_expires_at"`
+	ValidationDigest         string   `json:"validation_digest"`
+	Warnings                 []string `json:"warnings"`
+}
+
+// ApplyDriverCredentialRequest resubmits the write-only credential with its
+// exact signed validation. Call Clear immediately after use.
+type ApplyDriverCredentialRequest struct {
+	Credential          json.RawMessage `json:"credential"`
+	ExpectedRevision    uint64          `json:"expected_revision"`
+	ValidationExpiresAt uint64          `json:"validation_expires_at"`
+	ValidationDigest    string          `json:"validation_digest"`
+	IdempotencyKey      string          `json:"idempotency_key"`
+}
+
+// Clear overwrites the transient credential JSON.
+func (requested *ApplyDriverCredentialRequest) Clear() {
+	if requested != nil {
+		clear(requested.Credential)
+		requested.Credential = nil
+	}
+}
+
+// DriverCredentialReceipt proves one encrypted credential revision without
+// exposing secret material or its ciphertext.
+type DriverCredentialReceipt struct {
+	Schema             string `json:"schema"`
+	OperationID        string `json:"operation_id"`
+	DriverID           string `json:"driver_id"`
+	CredentialID       string `json:"credential_id"`
+	CredentialRevision uint64 `json:"credential_revision"`
+	FinalRevision      uint64 `json:"final_revision"`
+	RotatedAt          uint64 `json:"rotated_at"`
+	State              string `json:"state"`
+}
+
 // AdminClient accesses redacted management APIs through a revocable operator
 // session. It never sends this credential as a URL parameter or bearer header.
 type AdminClient struct {
@@ -454,7 +565,7 @@ func (client *AdminClient) ApplyTokenAnnotation(
 	if response.Schema != tokenAnnotationReceiptSchema || response.TokenID != tokenID ||
 		response.Label != requested.Label || response.Note != requested.Note ||
 		response.FinalRevision != requested.ExpectedRevision+1 || response.CommittedAt == 0 ||
-		response.State != "committed" || !validIdentifier(response.OperationID) {
+		response.State != vfsCommittedState || !validIdentifier(response.OperationID) {
 		return TokenAnnotationReceipt{}, fmt.Errorf("%w: invalid token annotation receipt", ErrControlPlaneResponse)
 	}
 
@@ -526,9 +637,168 @@ func (client *AdminClient) ApplyDriverState(
 
 	if response.Schema != driverStateReceiptSchema || response.DriverID != driverID ||
 		response.Enabled != requested.Enabled || response.FinalRevision != requested.ExpectedRevision+1 ||
-		response.CommittedAt == 0 || response.State != "committed" ||
+		response.CommittedAt == 0 || response.State != vfsCommittedState ||
 		!validIdentifier(response.OperationID) {
 		return DriverStateReceipt{}, fmt.Errorf("%w: invalid driver state receipt", ErrControlPlaneResponse)
+	}
+
+	return response, nil
+}
+
+// ValidateDriverRegistration authenticates and asks the server to normalize
+// one new non-secret typed driver configuration.
+func (client *AdminClient) ValidateDriverRegistration(
+	ctx context.Context,
+	requested ValidateDriverRegistrationRequest,
+) (DriverRegistrationValidation, error) {
+	if !validControlString(requested.DriverID, 256) || !validControlString(requested.Kind, 128) ||
+		!validJSONObjectWire(requested.Config) {
+		return DriverRegistrationValidation{}, fmt.Errorf("%w: invalid driver registration", ErrInvalidControlPlane)
+	}
+
+	if err := client.login(ctx); err != nil {
+		return DriverRegistrationValidation{}, err
+	}
+
+	body, err := json.Marshal(requested)
+	if err != nil {
+		return DriverRegistrationValidation{}, fmt.Errorf("marshal driver registration validation: %w", err)
+	}
+
+	var response DriverRegistrationValidation
+
+	if err := client.request(
+		ctx,
+		http.MethodPost,
+		"/api/admin/drivers/registration/validate",
+		body,
+		&response,
+	); err != nil {
+		return DriverRegistrationValidation{}, err
+	}
+
+	if response.Schema != driverRegistrationValidationSchema ||
+		response.DriverID != requested.DriverID || response.Kind != requested.Kind ||
+		response.Enabled || response.ExpectedRevision != 0 || !validJSONObjectWire(response.Config) ||
+		response.ValidationExpiresAt == 0 || !validManagementDigest(response.ValidationDigest) {
+		return DriverRegistrationValidation{}, fmt.Errorf("%w: invalid driver registration validation", ErrControlPlaneResponse)
+	}
+
+	return response, nil
+}
+
+// ApplyDriverRegistration applies one exact normalized validation and verifies
+// the durable disabled-driver receipt.
+func (client *AdminClient) ApplyDriverRegistration(
+	ctx context.Context,
+	requested ApplyDriverRegistrationRequest,
+) (DriverRegistrationReceipt, error) {
+	if !validControlString(requested.DriverID, 256) || !validControlString(requested.Kind, 128) ||
+		!validJSONObjectWire(requested.Config) || requested.ValidationExpiresAt == 0 ||
+		!validManagementDigest(requested.ValidationDigest) ||
+		!validIdempotencyKey(requested.IdempotencyKey) {
+		return DriverRegistrationReceipt{}, fmt.Errorf("%w: invalid driver registration apply", ErrInvalidControlPlane)
+	}
+
+	body, err := json.Marshal(requested)
+	if err != nil {
+		return DriverRegistrationReceipt{}, fmt.Errorf("marshal driver registration apply: %w", err)
+	}
+
+	var response DriverRegistrationReceipt
+
+	if err := client.request(
+		ctx,
+		http.MethodPost,
+		"/api/admin/drivers/registration/apply",
+		body,
+		&response,
+	); err != nil {
+		return DriverRegistrationReceipt{}, err
+	}
+
+	if response.Schema != driverRegistrationReceiptSchema ||
+		response.DriverID != requested.DriverID || response.Kind != requested.Kind ||
+		!bytes.Equal(response.Config, requested.Config) || response.Enabled ||
+		response.FinalRevision != 1 || response.CommittedAt == 0 || response.State != vfsCommittedState ||
+		!validIdentifier(response.OperationID) {
+		return DriverRegistrationReceipt{}, fmt.Errorf("%w: invalid driver registration receipt", ErrControlPlaneResponse)
+	}
+
+	return response, nil
+}
+
+// ValidateDriverCredential performs local boundary checks and asks the server
+// to validate one exact write-only credential.
+func (client *AdminClient) ValidateDriverCredential(
+	ctx context.Context,
+	driverID string,
+	requested ValidateDriverCredentialRequest,
+) (DriverCredentialValidation, error) {
+	if !validControlString(driverID, 256) || requested.ExpectedRevision == 0 ||
+		!validJSONObjectWire(requested.Credential) {
+		return DriverCredentialValidation{}, fmt.Errorf("%w: invalid driver credential", ErrInvalidControlPlane)
+	}
+
+	if err := client.login(ctx); err != nil {
+		return DriverCredentialValidation{}, err
+	}
+
+	body, err := json.Marshal(requested)
+	if err != nil {
+		return DriverCredentialValidation{}, fmt.Errorf("marshal driver credential validation: %w", err)
+	}
+	defer clear(body)
+
+	var response DriverCredentialValidation
+
+	path := "/api/admin/drivers/" + url.PathEscape(driverID) + "/credential/validate"
+	if err := client.request(ctx, http.MethodPost, path, body, &response); err != nil {
+		return DriverCredentialValidation{}, err
+	}
+
+	if response.Schema != driverCredentialValidationSchema || response.DriverID != driverID ||
+		!validControlString(response.Kind, 128) || response.CredentialRevision == 0 ||
+		response.ExpectedRevision != requested.ExpectedRevision || response.ValidationExpiresAt == 0 ||
+		!validManagementDigest(response.ValidationDigest) {
+		return DriverCredentialValidation{}, fmt.Errorf("%w: invalid driver credential validation", ErrControlPlaneResponse)
+	}
+
+	return response, nil
+}
+
+// ApplyDriverCredential seals one exact credential and verifies its durable
+// non-secret receipt.
+func (client *AdminClient) ApplyDriverCredential(
+	ctx context.Context,
+	driverID string,
+	requested ApplyDriverCredentialRequest,
+) (DriverCredentialReceipt, error) {
+	if !validControlString(driverID, 256) || requested.ExpectedRevision == 0 ||
+		!validJSONObjectWire(requested.Credential) || requested.ValidationExpiresAt == 0 ||
+		!validManagementDigest(requested.ValidationDigest) ||
+		!validIdempotencyKey(requested.IdempotencyKey) {
+		return DriverCredentialReceipt{}, fmt.Errorf("%w: invalid driver credential apply", ErrInvalidControlPlane)
+	}
+
+	body, err := json.Marshal(requested)
+	if err != nil {
+		return DriverCredentialReceipt{}, fmt.Errorf("marshal driver credential apply: %w", err)
+	}
+	defer clear(body)
+
+	var response DriverCredentialReceipt
+
+	path := "/api/admin/drivers/" + url.PathEscape(driverID) + "/credential/apply"
+	if err := client.request(ctx, http.MethodPost, path, body, &response); err != nil {
+		return DriverCredentialReceipt{}, err
+	}
+
+	if response.Schema != driverCredentialReceiptSchema || response.DriverID != driverID ||
+		!validIdentifier(response.CredentialID) || response.CredentialRevision == 0 ||
+		response.FinalRevision != requested.ExpectedRevision+1 || response.RotatedAt == 0 ||
+		response.State != vfsCommittedState || !validIdentifier(response.OperationID) {
+		return DriverCredentialReceipt{}, fmt.Errorf("%w: invalid driver credential receipt", ErrControlPlaneResponse)
 	}
 
 	return response, nil
