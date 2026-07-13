@@ -100,6 +100,65 @@ func (store *Store) Load(journalID string) (Snapshot, error) {
 	), nil
 }
 
+// List validates and returns every durably published journal in stable ID
+// order. An unexpected entry or one corrupt journal fails the entire listing;
+// incomplete private directories from an interrupted create are ignored.
+func (store *Store) List() ([]Snapshot, error) {
+	if store == nil || store.rootPath == "" {
+		return nil, fmt.Errorf("%w: store is not initialized", ErrInvalidStore)
+	}
+
+	root, err := os.OpenRoot(store.rootPath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: open root: %w", ErrInvalidStore, err)
+	}
+
+	entries, readErr := fs.ReadDir(root.FS(), ".")
+
+	closeErr := root.Close()
+	if readErr != nil || closeErr != nil {
+		return nil, fmt.Errorf("%w: list root: %w", ErrInvalidStore, errors.Join(readErr, closeErr))
+	}
+
+	journalIDs := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+
+		temporaryID, temporary := strings.CutPrefix(name, temporaryPrefix)
+		if temporary {
+			if !safeJournalDirectoryEntry(entry, temporaryID) {
+				return nil, fmt.Errorf("%w: malformed temporary entry %q", ErrJournalCorrupt, name)
+			}
+
+			continue
+		}
+
+		if !safeJournalDirectoryEntry(entry, name) {
+			return nil, fmt.Errorf("%w: unexpected store entry %q", ErrJournalCorrupt, name)
+		}
+
+		journalIDs = append(journalIDs, name)
+	}
+
+	slices.Sort(journalIDs)
+
+	snapshots := make([]Snapshot, 0, len(journalIDs))
+	for _, journalID := range journalIDs {
+		snapshot, err := store.Load(journalID)
+		if err != nil {
+			return nil, fmt.Errorf("list journal %s: %w", journalID, err)
+		}
+
+		snapshots = append(snapshots, snapshot)
+	}
+
+	return snapshots, nil
+}
+
+func safeJournalDirectoryEntry(entry fs.DirEntry, journalID string) bool {
+	return entry.Type()&fs.ModeSymlink == 0 && entry.IsDir() && validateIdentity(journalID) == nil
+}
+
 func (store *Store) create(plan planRecord) (planEnvelope, stateEnvelope, error) {
 	if store == nil || store.rootPath == "" {
 		return planEnvelope{}, stateEnvelope{}, fmt.Errorf("%w: store is not initialized", ErrInvalidStore)
@@ -701,6 +760,7 @@ func snapshotFromRecords(
 ) Snapshot {
 	snapshot := Snapshot{
 		ID:             plan.record.ID,
+		CreatedAt:      plan.record.CreatedAt,
 		Direction:      plan.record.Direction,
 		Status:         state.record.Status,
 		Revision:       state.record.Revision,

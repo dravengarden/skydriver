@@ -26,6 +26,9 @@ mod restoration;
 mod telemetry;
 mod verification;
 mod vfs_authorization;
+mod vfs_bootstrap;
+mod vfs_envelopes;
+mod vfs_grants;
 mod vfs_identifiers;
 mod vfs_merkle;
 mod vfs_put;
@@ -173,6 +176,21 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
                 None => Response::error("client authentication required", 401),
             }
         })
+        .post_async("/api/v2/bootstrap", |mut request, context| async move {
+            if external_maintenance(&context.env) {
+                return Response::error("control-plane mutations are disabled", 409);
+            }
+            let Some(session) = read_session(&request, &context.env)? else {
+                return Response::error("operator authentication required", 401);
+            };
+
+            let response =
+                vfs_bootstrap::bootstrap(&mut request, &context.env, &session.subject).await;
+            if let Err(error) = &response {
+                worker::console_error!("VFS bootstrap failed: {error:?}");
+            }
+            response
+        })
         .post_async("/api/v2/puts/prepare", |mut request, context| async move {
             if external_maintenance(&context.env) {
                 return Response::error("control-plane mutations are disabled", 409);
@@ -220,6 +238,32 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
                 };
 
                 vfs_put_commit::commit(&mut request, &context.env, &token, intent_id).await
+            },
+        )
+        .post_async(
+            "/api/v2/puts/:id/key-grant",
+            |request, context| async move {
+                let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                    return Response::error("VFS token authentication required", 401);
+                };
+                let Some(intent_id) = context.param("id") else {
+                    return Response::error("VFS put intent ID is required", 400);
+                };
+
+                vfs_grants::grant_put_key(&context.env, &token, intent_id).await
+            },
+        )
+        .post_async(
+            "/api/v2/puts/:id/driver-grant",
+            |request, context| async move {
+                let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                    return Response::error("VFS token authentication required", 401);
+                };
+                let Some(intent_id) = context.param("id") else {
+                    return Response::error("VFS put intent ID is required", 400);
+                };
+
+                vfs_grants::grant_put_driver(&context.env, &token, intent_id).await
             },
         )
         .post_async(

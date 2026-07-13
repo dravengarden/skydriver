@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,6 +25,54 @@ func TestStoreRejectsNonPrivateRoot(t *testing.T) {
 
 	if _, err := NewStore(rootPath); !errors.Is(err, ErrInvalidStore) {
 		t.Fatalf("got %v, want ErrInvalidStore", err)
+	}
+}
+
+func TestStoreListReturnsValidatedPublishedJournalsAndIgnoresInterruptedCreate(t *testing.T) {
+	t.Parallel()
+
+	environment := newTestEnvironment(t, EngineOptions{})
+	for index, payload := range [][]byte{[]byte("first"), []byte("second")} {
+		if _, err := environment.engine.PrepareUpload(
+			context.Background(),
+			environment.handle,
+			NewBytesSource("list-source", payload),
+			fmt.Sprintf("objects/list-%d", index),
+			UploadOptions{PartBytes: 2},
+		); err != nil {
+			t.Fatalf("prepare listed upload: %v", err)
+		}
+	}
+
+	temporaryID := "ffffffffffffffffffffffffffffffff"
+	if err := os.Mkdir(
+		filepath.Join(environment.journalRoot, temporaryPrefix+temporaryID),
+		privateDirectoryMode,
+	); err != nil {
+		t.Fatalf("create interrupted temporary journal: %v", err)
+	}
+
+	snapshots, err := environment.store.List()
+	if err != nil {
+		t.Fatalf("list journals: %v", err)
+	}
+
+	if len(snapshots) != 2 || snapshots[0].ID >= snapshots[1].ID ||
+		snapshots[0].CreatedAt <= 0 || snapshots[1].CreatedAt <= 0 {
+		t.Fatalf("journals were not complete and ordered: %+v", snapshots)
+	}
+}
+
+func TestStoreListRejectsUnexpectedEntries(t *testing.T) {
+	t.Parallel()
+
+	environment := newTestEnvironment(t, EngineOptions{})
+	if err := os.WriteFile(filepath.Join(environment.journalRoot, "unexpected"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("create unexpected store entry: %v", err)
+	}
+
+	if _, err := environment.store.List(); !errors.Is(err, ErrJournalCorrupt) {
+		t.Fatalf("unexpected store entry was not corruption: %v", err)
 	}
 }
 

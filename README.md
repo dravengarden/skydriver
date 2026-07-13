@@ -1,21 +1,55 @@
 # Carrack
 
-Carrack is a business-neutral data transport and encrypted archive system. It
-moves immutable data across consumer and cloud storage while keeping logical
-objects independent from any provider.
+Carrack is a business-neutral virtual filesystem and data transport system. VFS
+V2 stores every immutable file version as one complete provider object; it does
+not split, merge, pack, or stripe file data. Files in one virtual directory may
+live on different drivers while retaining one authenticated directory tree.
 
-Carrack has two components. The Go client SDK performs every payload transfer,
-including import, copy, move, compaction, encryption, and restore. A Rust
-Cloudflare control plane indexes immutable manifests and locations, authorizes
-clients, manages encrypted key material, coordinates leases, and plans garbage
-collection. It also exposes live client, operation, stage, progress, throughput,
-retry, and historical-rate telemetry. It never relays payload bytes.
+Carrack V2 has three implementation surfaces: a Rust Cloudflare control plane,
+a Go CLI and SDK, and compiled Go storage drivers. The client performs every
+payload transfer directly against a selected driver. The control plane manages
+opaque identities, roots, permissions, token attenuation, sealed directory-key
+epochs, driver grants, optimistic publication, and GC metadata. It never relays
+payload bytes or accesses a configured storage driver.
 
 Application-specific ingestion and interpretation belong in separate consumer
 projects. R2, Aliyun Drive, Google Drive, public HTTP/S3, local filesystems, and
-future drivers use the same object and operation model.
+future drivers use the same complete-object VFS contract. External source
+discovery and source-specific synchronization remain caller-owned.
 
-## Initial layout
+## VFS V2 available now
+
+The first end-to-end V2 path bootstraps an encrypted or explicit plaintext root
+and uploads one local file, stdin stream, or SDK byte sequence through the
+`local-filesystem/v2` driver. Upload computes the plaintext Merkle identity,
+encrypts into independently authenticated frames by default, verifies the exact
+complete provider object, and publishes file and directory roots with an
+optimistic D1 transaction.
+
+```bash
+export CARRACK_VFS_TOKEN='<bootstrap or attenuated token>'
+
+carrack vfs put ./release.tar.zst release.tar.zst \
+  --control-url https://carrack.example.com \
+  --directory-id <directory-id> \
+  --preferred-driver-id local-main \
+  --idempotency-key release-2026-07-13 \
+  --format json
+```
+
+Pass `-` as the local filename to spool stdin privately. The SDK exposes `Put`,
+`PutFile`, and `PutBytes`. A failed transfer or lost commit response reports its
+durable journal ID; pass it back with `--resume-journal-id` to resume the exact
+immutable plan. After a hard exit, `carrack vfs journal list --format json`
+discovers validated local candidates without a control token. See [the V2
+design](docs/vfs-v2.md), [bootstrap
+protocol](docs/vfs-bootstrap-v1.md), and [Put protocol](docs/vfs-put-v1.md).
+
+The archive-oriented V1 implementation remains in the repository during the
+V2 migration. Its packs, extents, compaction, and operation APIs are not part of
+the V2 model.
+
+## Legacy V1 layout
 
 - `archive`: configurable physical layout and the canonical gapless small-file
   bundle format. Configured sizes are targets and never add zero padding.

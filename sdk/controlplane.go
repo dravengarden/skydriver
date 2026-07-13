@@ -126,7 +126,7 @@ func NewControlClient(
 // Health reads public control-plane availability without sending the token.
 func (client *ControlClient) Health(ctx context.Context) (ControlHealth, error) {
 	var response ControlHealth
-	if err := client.request(ctx, http.MethodGet, "/api/health", "", nil, &response); err != nil {
+	if err := client.request(ctx, http.MethodGet, "/api/health", "", "", nil, &response); err != nil {
 		return ControlHealth{}, err
 	}
 
@@ -138,7 +138,7 @@ func (client *ControlClient) Session(ctx context.Context) (ClientSession, error)
 	var response ClientSession
 
 	authorization := "Bearer " + base64.RawURLEncoding.EncodeToString(client.token[:])
-	if err := client.request(ctx, http.MethodGet, "/api/client/session", authorization, nil, &response); err != nil {
+	if err := client.request(ctx, http.MethodGet, "/api/client/session", authorization, "", nil, &response); err != nil {
 		return ClientSession{}, err
 	}
 
@@ -198,13 +198,28 @@ func (client *ControlClient) authenticatedPost(
 
 	authorization := "Bearer " + base64.RawURLEncoding.EncodeToString(client.token[:])
 
-	return client.request(ctx, http.MethodPost, path, authorization, body, destination)
+	return client.request(ctx, http.MethodPost, path, authorization, "application/json", body, destination)
+}
+
+func (client *ControlClient) authenticatedBinaryPost(
+	ctx context.Context,
+	path string,
+	body []byte,
+	destination any,
+) error {
+	if client == nil {
+		return fmt.Errorf("%w: control client is not initialized", ErrInvalidControlPlane)
+	}
+
+	authorization := "Bearer " + base64.RawURLEncoding.EncodeToString(client.token[:])
+
+	return client.request(ctx, http.MethodPost, path, authorization, "application/octet-stream", body, destination)
 }
 
 func (client *ControlClient) request(
 	ctx context.Context,
 	method, path string,
-	authorization string,
+	authorization, contentType string,
 	body []byte,
 	destination any,
 ) error {
@@ -231,8 +246,8 @@ func (client *ControlClient) request(
 		request.Header.Set("Authorization", authorization)
 	}
 
-	if body != nil {
-		request.Header.Set("Content-Type", "application/json")
+	if body != nil && contentType != "" {
+		request.Header.Set("Content-Type", contentType)
 	}
 
 	response, err := client.httpClient.Do(request)

@@ -244,6 +244,7 @@ async fn authorize_context(
              JOIN vfs_principals AS principal ON principal.id = verifier.principal_id
              WHERE directory.id = ?1
                AND directory.state = 'active'
+               AND directory.crypto_suite IN ('plaintext/v1', 'carrack-vfs-aes256gcm-hkdfsha256-v1')
                AND placement.state = 'active'
                AND driver.enabled = 1
                AND verifier.principal_id = ?3

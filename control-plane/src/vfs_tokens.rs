@@ -90,7 +90,7 @@ fn bearer_token(request: &Request) -> Result<Option<String>> {
     Ok(Some(token.to_owned()))
 }
 
-fn token_verifier(token: &str) -> String {
+pub(crate) fn token_verifier(token: &str) -> String {
     let digest = Sha256::digest(token.as_bytes());
     let mut encoded = String::with_capacity(digest.len() * 2);
     for byte in digest {

@@ -125,6 +125,7 @@ func (repairer *Repairer) repairObject(
 	}
 
 	path := temporary.Name()
+
 	defer func() {
 		returnErr = errors.Join(returnErr, temporary.Close(), os.Remove(path))
 	}()

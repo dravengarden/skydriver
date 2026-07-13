@@ -9,16 +9,19 @@ rust-version.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+aes-gcm = { version = "0.10.3", default-features = false, features = ["aes", "alloc"] }
 argon2 = "0.5.3"
 base64 = "0.22.1"
 getrandom = { version = "0.3.4", features = ["wasm_js"] }
 hmac = "0.12.1"
 hkdf = "0.12.4"
+js-sys = "0.3.83"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 sha2 = "0.10.9"
 unicode-normalization = "0.1.25"
 worker = { version = "0.8.5", features = ["d1"] }
+zeroize = "1.8.2"
 
 [lints]
 workspace = true

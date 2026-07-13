@@ -1,0 +1,310 @@
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use serde::{Deserialize, Serialize};
+use worker::{D1Database, Date, Env, Response, Result, wasm_bindgen::JsValue};
+use zeroize::Zeroize as _;
+
+use crate::{
+    vfs_envelopes::{
+        DirectoryEnvelopeRef, PLAINTEXT_SUITE, open_directory_key, open_driver_credential,
+    },
+    vfs_put,
+    vfs_tokens::AuthenticatedVfsToken,
+};
+
+const KEY_GRANT_SCHEMA: &str = "carrack.vfs.directory-key-grant.v1";
+const DRIVER_GRANT_SCHEMA: &str = "carrack.vfs.driver-grant.v1";
+
+#[derive(Deserialize)]
+struct PutGrantRow {
+    intent_id: String,
+    filesystem_id: String,
+    principal_id: String,
+    directory_id: String,
+    version_id: String,
+    driver_id: String,
+    crypto_suite: String,
+    key_epoch: u64,
+    state: String,
+    expires_at: u64,
+    key_envelope_algorithm: Option<String>,
+    key_master_version: Option<String>,
+    key_nonce: Option<Vec<u8>>,
+    key_ciphertext: Option<Vec<u8>>,
+    driver_kind: String,
+    driver_config_json: String,
+    driver_revision: u64,
+    credential_id: Option<String>,
+    credential_algorithm: Option<String>,
+    credential_key_version: Option<String>,
+    credential_nonce: Option<Vec<u8>>,
+    credential_ciphertext: Option<Vec<u8>>,
+    credential_revision: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct KeyGrantResponse {
+    schema: &'static str,
+    intent_id: String,
+    directory_id: String,
+    version_id: String,
+    crypto_suite: String,
+    key_epoch: u64,
+    directory_key: Option<String>,
+    expires_at: u64,
+}
+
+#[derive(Serialize)]
+struct DriverGrantResponse {
+    schema: &'static str,
+    intent_id: String,
+    driver_id: String,
+    driver_kind: String,
+    driver_revision: u64,
+    config: serde_json::Value,
+    credential: Option<serde_json::Value>,
+    expires_at: u64,
+}
+
+/// Returns one authorized directory epoch secret for an immutable Put intent.
+///
+/// The caller derives the per-version file key locally. The grant is bounded
+/// by the shorter token or intent expiry and is never cached by intermediaries.
+pub(crate) async fn grant_put_key(
+    env: &Env,
+    token: &AuthenticatedVfsToken,
+    intent_id: &str,
+) -> Result<Response> {
+    let database = env.d1("CARRACK_INDEX")?;
+    let Some(context) = load_context(&database, intent_id).await? else {
+        return Response::error("VFS put intent was not found", 404);
+    };
+    if !grant_allowed(&database, token, &context).await? {
+        return Response::error("VFS directory-key grant is not authorized", 403);
+    }
+
+    let mut directory_key = if context.crypto_suite == PLAINTEXT_SUITE {
+        None
+    } else {
+        let (algorithm, version, nonce, ciphertext) = directory_envelope(&context)?;
+        Some(open_directory_key(
+            env,
+            &DirectoryEnvelopeRef {
+                directory_id: &context.directory_id,
+                key_epoch: context.key_epoch,
+                crypto_suite: &context.crypto_suite,
+                algorithm,
+                master_key_version: version,
+                nonce,
+                ciphertext,
+            },
+        )?)
+    };
+    record_audit(
+        &database,
+        token,
+        &context,
+        "directory_key_granted",
+        serde_json::json!({
+            "intent_id": context.intent_id,
+            "key_epoch": context.key_epoch,
+            "version_id": context.version_id,
+        }),
+    )
+    .await?;
+
+    let encoded_key = directory_key
+        .as_ref()
+        .map(|key| URL_SAFE_NO_PAD.encode(key));
+    if let Some(key) = directory_key.as_mut() {
+        key.zeroize();
+    }
+    no_store(Response::from_json(&KeyGrantResponse {
+        schema: KEY_GRANT_SCHEMA,
+        intent_id: context.intent_id,
+        directory_id: context.directory_id,
+        version_id: context.version_id,
+        crypto_suite: context.crypto_suite,
+        key_epoch: context.key_epoch,
+        directory_key: encoded_key,
+        expires_at: context.expires_at.min(token.expires_at),
+    })?)
+}
+
+/// Returns one authorized compiled-driver configuration and optional decrypted
+/// credential for an immutable Put intent. The control plane does not open the
+/// provider or relay payload bytes.
+pub(crate) async fn grant_put_driver(
+    env: &Env,
+    token: &AuthenticatedVfsToken,
+    intent_id: &str,
+) -> Result<Response> {
+    let database = env.d1("CARRACK_INDEX")?;
+    let Some(context) = load_context(&database, intent_id).await? else {
+        return Response::error("VFS put intent was not found", 404);
+    };
+    if !grant_allowed(&database, token, &context).await? {
+        return Response::error("VFS driver grant is not authorized", 403);
+    }
+
+    let config = serde_json::from_str::<serde_json::Value>(&context.driver_config_json).map_err(
+        |error| {
+            worker::Error::RustError(format!("decode stored VFS driver configuration: {error}"))
+        },
+    )?;
+    let credential = decrypt_credential(env, &context)?;
+    record_audit(
+        &database,
+        token,
+        &context,
+        "driver_granted",
+        serde_json::json!({
+            "credential_present": credential.is_some(),
+            "driver_id": context.driver_id,
+            "driver_revision": context.driver_revision,
+            "intent_id": context.intent_id,
+        }),
+    )
+    .await?;
+
+    no_store(Response::from_json(&DriverGrantResponse {
+        schema: DRIVER_GRANT_SCHEMA,
+        intent_id: context.intent_id,
+        driver_id: context.driver_id,
+        driver_kind: context.driver_kind,
+        driver_revision: context.driver_revision,
+        config,
+        credential,
+        expires_at: context.expires_at.min(token.expires_at),
+    })?)
+}
+
+async fn grant_allowed(
+    database: &D1Database,
+    token: &AuthenticatedVfsToken,
+    context: &PutGrantRow,
+) -> Result<bool> {
+    Ok(context.principal_id == token.principal_id
+        && matches!(context.state.as_str(), "prepared" | "committed")
+        && context.expires_at > current_unix_seconds()
+        && vfs_put::authorized(database, token, &context.directory_id, &context.driver_id).await?)
+}
+
+fn directory_envelope(context: &PutGrantRow) -> Result<(&str, &str, &[u8], &[u8])> {
+    match (
+        context.key_envelope_algorithm.as_deref(),
+        context.key_master_version.as_deref(),
+        context.key_nonce.as_deref(),
+        context.key_ciphertext.as_deref(),
+    ) {
+        (Some(algorithm), Some(version), Some(nonce), Some(ciphertext)) => {
+            Ok((algorithm, version, nonce, ciphertext))
+        }
+        _ => Err(worker::Error::RustError(
+            "encrypted VFS directory has no complete key envelope".to_owned(),
+        )),
+    }
+}
+
+fn decrypt_credential(env: &Env, context: &PutGrantRow) -> Result<Option<serde_json::Value>> {
+    let Some(credential_id) = context.credential_id.as_deref() else {
+        return Ok(None);
+    };
+    let (Some(algorithm), Some(version), Some(nonce), Some(ciphertext), Some(revision)) = (
+        context.credential_algorithm.as_deref(),
+        context.credential_key_version.as_deref(),
+        context.credential_nonce.as_deref(),
+        context.credential_ciphertext.as_deref(),
+        context.credential_revision,
+    ) else {
+        return Err(worker::Error::RustError(
+            "VFS driver credential envelope is incomplete".to_owned(),
+        ));
+    };
+
+    let mut plaintext = open_driver_credential(
+        env,
+        credential_id,
+        revision,
+        algorithm,
+        version,
+        nonce,
+        ciphertext,
+    )?;
+    let decoded = serde_json::from_slice(&plaintext).map_err(|error| {
+        worker::Error::RustError(format!("decode VFS driver credential JSON: {error}"))
+    });
+    plaintext.zeroize();
+    Ok(Some(decoded?))
+}
+
+async fn load_context(database: &D1Database, intent_id: &str) -> Result<Option<PutGrantRow>> {
+    database
+        .prepare(
+            "SELECT intent.id AS intent_id, intent.filesystem_id, intent.principal_id,\
+                    intent.directory_id, intent.version_id, intent.driver_id,\
+                    intent.crypto_suite, intent.key_epoch, intent.state, intent.expires_at,\
+                    key_epoch.envelope_algorithm AS key_envelope_algorithm,\
+                    key_epoch.master_key_version AS key_master_version,\
+                    key_epoch.nonce AS key_nonce, key_epoch.ciphertext AS key_ciphertext,\
+                    driver.kind AS driver_kind, driver.config_json AS driver_config_json,\
+                    driver.revision AS driver_revision,\
+                    credential.id AS credential_id,\
+                    credential.envelope_algorithm AS credential_algorithm,\
+                    credential.key_version AS credential_key_version,\
+                    credential.nonce AS credential_nonce,\
+                    credential.ciphertext AS credential_ciphertext,\
+                    credential.revision AS credential_revision \
+             FROM vfs_put_intents AS intent \
+             JOIN driver_instances AS driver ON driver.id = intent.driver_id \
+             LEFT JOIN vfs_directory_key_epochs AS key_epoch \
+               ON key_epoch.directory_id = intent.directory_id \
+              AND key_epoch.key_epoch = intent.key_epoch \
+              AND key_epoch.crypto_suite = intent.crypto_suite \
+             LEFT JOIN credential_envelopes AS credential \
+               ON credential.id = driver.credential_ref \
+             WHERE intent.id = ?1",
+        )
+        .bind(&[JsValue::from_str(intent_id)])?
+        .first::<PutGrantRow>(None)
+        .await
+}
+
+async fn record_audit(
+    database: &D1Database,
+    token: &AuthenticatedVfsToken,
+    context: &PutGrantRow,
+    event_kind: &str,
+    details: serde_json::Value,
+) -> Result<()> {
+    database
+        .prepare(
+            "INSERT INTO vfs_audit_events (\
+                 filesystem_id, principal_id, token_id, event_kind, subject_kind,\
+                 subject_id, details_json, created_at\
+             ) VALUES (?1, ?2, ?3, ?4, 'put_intent', ?5, ?6, ?7)",
+        )
+        .bind(&[
+            JsValue::from_str(&context.filesystem_id),
+            JsValue::from_str(&token.principal_id),
+            JsValue::from_str(&token.id),
+            JsValue::from_str(event_kind),
+            JsValue::from_str(&context.intent_id),
+            JsValue::from_str(&details.to_string()),
+            JsValue::from_str(&current_unix_seconds().to_string()),
+        ])?
+        .run()
+        .await?;
+    Ok(())
+}
+
+fn no_store(mut response: Response) -> Result<Response> {
+    response
+        .headers_mut()
+        .set("Cache-Control", "no-store, max-age=0")?;
+    response.headers_mut().set("Pragma", "no-cache")?;
+    Ok(response)
+}
+
+fn current_unix_seconds() -> u64 {
+    Date::now().as_millis() / 1_000
+}

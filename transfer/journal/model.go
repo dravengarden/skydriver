@@ -177,6 +177,7 @@ type downloadBlockReceipt struct {
 // the caller and may be inspected safely by CLIs or recovery tooling.
 type Snapshot struct {
 	ID             string
+	CreatedAt      int64
 	Direction      Direction
 	Status         Status
 	Revision       uint64

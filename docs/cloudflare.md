@@ -48,12 +48,20 @@ pnpm exec wrangler secret put CARRACK_SESSION_KEY \
 
 pnpm exec wrangler secret put CARRACK_ROOT_KEY_V1 \
   --config control-plane/wrangler.jsonc
+
+pnpm exec wrangler secret put CARRACK_VFS_MASTER_KEY_V1 \
+  --config control-plane/wrangler.jsonc
 ```
 
 `CARRACK_SESSION_KEY` must be an independently generated high-entropy value.
 `CARRACK_ROOT_KEY_V1` must be the unpadded base64url encoding of exactly 32
 random bytes with a tested offline recovery copy. Add a new versioned binding
 for rotation; never replace an old root while published manifests reference it.
+`CARRACK_VFS_MASTER_KEY_V1` is also an unpadded base64url encoding of exactly
+32 random bytes, generated independently from both legacy secrets. It seals V2
+directory keys and derives the recoverable one-shot bootstrap token. Preserve
+the version while either V2 envelopes or the bootstrap receipt depend on it;
+see `vfs-bootstrap-v1.md`.
 Account provisioning is an operator action performed after the D1 migration;
 do not commit password hashes as migration seed data.
 

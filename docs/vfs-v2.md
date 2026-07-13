@@ -12,6 +12,23 @@ have been replaced with the V2 baseline and the legacy packages have been
 removed. Until then, V1 correctness fixes and V2 implementation changes must
 remain isolated from one another.
 
+The current implemented V2 slice includes:
+
+- the complete-object driver contract, capability warnings, local filesystem
+  driver, durable transfer journal, and Go/Rust Merkle formats;
+- D1 identities, entries, versions, locations, roots, ACLs, attenuated tokens,
+  optimistic Put intents and receipts, and catalog mutation/outbox records;
+- one-shot encrypted or plaintext bootstrap, sealed directory-key epochs, and
+  reauthorized short-lived key and driver grants;
+- framed AES-256-GCM complete-file transforms with per-version HKDF keys; and
+- SDK `Put`, `PutFile`, and `PutBytes` plus `carrack vfs put`, exercised against
+  the real local Worker and `local-filesystem/v2` driver.
+
+The next slices are metadata checkpoint/delta synchronization and local catalog
+planning; Get, Push, and Pull; remote V2 drivers; V2 reachability/GC; and final
+legacy removal. The archive-oriented CLI and packages below the V2 boundary
+remain available only for migration and existing V1 workflows.
+
 ## Product boundary
 
 Carrack maintains a virtual filesystem with three implementation surfaces:
@@ -219,9 +236,11 @@ primitives. Callers may schedule many prepared transfers and supply their own
 source pipeline, but they cannot bypass Carrack hashing, encryption, provider
 verification, or conditional publication.
 
-`vfs-put-v1.md` defines the first implemented prepare, block-manifest staging,
-and optimistic commit wire protocol, including idempotent replay, token refresh,
-Merkle-root recomputation, and D1 publication invariants.
+`vfs-bootstrap-v1.md` defines the one-shot authority bootstrap.
+`vfs-put-v1.md` defines the implemented prepare, key and driver grants,
+block-manifest staging, and optimistic commit wire protocol, including
+idempotent replay, token refresh, Merkle-root recomputation, and D1 publication
+invariants.
 
 CLI payloads use stdin and stdout rather than command-line byte arguments.
 Machine-readable results have stable JSON schemas. Payload stdout is never

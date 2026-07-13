@@ -64,7 +64,7 @@ func Run(ctx context.Context, arguments []string, stdout, stderr io.Writer) erro
 func newRootCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	command := &cobra.Command{
 		Use:           "carrack",
-		Short:         "Move and archive datasets across storage providers",
+		Short:         "Manage a virtual filesystem across storage providers",
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}
@@ -83,6 +83,7 @@ func newRootCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Comman
 		newCompactCommand(ctx, stdout),
 		newGCCommand(ctx, stdout),
 		newQuarantineCommand(ctx, stdout),
+		newVFSCommand(ctx, stdout),
 	)
 
 	return command
@@ -147,6 +148,10 @@ func writeValue(writer io.Writer, outputFormat string, value any) error {
 			return fmt.Errorf("close YAML encoder: %w", err)
 		}
 	case outputFormatTable:
+		if result, ok := value.(sdk.VFSPutResult); ok {
+			return writeVFSPutTable(writer, result)
+		}
+
 		if err := writeTable(writer, value); err != nil {
 			return err
 		}
@@ -254,6 +259,29 @@ func writeTable(writer io.Writer, value any) error {
 
 	if err := table.Flush(); err != nil {
 		return fmt.Errorf("flush table output: %w", err)
+	}
+
+	return nil
+}
+
+func writeVFSPutTable(writer io.Writer, result sdk.VFSPutResult) error {
+	table := tabwriter.NewWriter(writer, 0, 4, 2, ' ', 0)
+	if _, err := fmt.Fprintf(
+		table,
+		"FILE ID\tVERSION ID\tENTRY REVISION\tPLAINTEXT BYTES\tENCODED BYTES\tDRIVER\tSTATE\n%s\t%s\t%d\t%d\t%d\t%s\t%s\n",
+		result.Receipt.FileID,
+		result.Receipt.VersionID,
+		result.Receipt.EntryRevision,
+		result.PlaintextBytes,
+		result.Receipt.EncodedBytes,
+		result.Receipt.DriverID,
+		result.Receipt.State,
+	); err != nil {
+		return fmt.Errorf("write VFS Put table: %w", err)
+	}
+
+	if err := table.Flush(); err != nil {
+		return fmt.Errorf("flush VFS Put table: %w", err)
 	}
 
 	return nil

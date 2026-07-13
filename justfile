@@ -28,6 +28,7 @@ test:
     control-plane/tests/vfs-v2-protocol.sh
     control-plane/tests/vfs-v2-put-protocol.sh
     control-plane/tests/vfs-v2-worker-protocol.sh
+    control-plane/tests/vfs-v2-bootstrap-worker-protocol.sh
     control-plane/tests/worker-protocol.sh
 
 build:

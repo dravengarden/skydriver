@@ -8,6 +8,7 @@ use worker::{
 };
 
 use crate::{
+    vfs_envelopes::{ENCRYPTED_SUITE, PLAINTEXT_SUITE},
     vfs_merkle::{DirectoryEntry, decode_hex, directory_root, validate_block_manifest},
     vfs_put,
     vfs_tokens::AuthenticatedVfsToken,
@@ -18,6 +19,7 @@ const BLOCK_MANIFEST_SCHEMA: &str = "carrack.vfs.block-manifest-stage.v1";
 const MAXIMUM_COMMIT_REBASE_ATTEMPTS: usize = 4;
 const MAXIMUM_DIRECTORY_DEPTH: usize = 32;
 const MAXIMUM_PROVIDER_IDENTITY_BYTES: usize = 1_024;
+const AES_GCM_FRAME_TAG_BYTES: u64 = 16;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -289,8 +291,15 @@ pub(crate) async fn commit(
     if intent.state != "prepared" || intent.expires_at <= current_unix_seconds() {
         return Response::error("VFS put intent is no longer committable", 409);
     }
-    if intent.crypto_suite == "plaintext/v1" && requested.encoded_bytes != intent.plaintext_bytes {
-        return Response::error("plaintext VFS object length differs", 409);
+    let Some(expected_encoded_bytes) = expected_encoded_bytes(
+        &intent.crypto_suite,
+        intent.plaintext_bytes,
+        intent.encryption_frame_bytes,
+    ) else {
+        return Response::error("VFS object encoding is unsupported", 409);
+    };
+    if requested.encoded_bytes != expected_encoded_bytes {
+        return Response::error("VFS object encoded length differs", 409);
     }
     if !vfs_put::authorized(&database, token, &intent.directory_id, &intent.driver_id).await? {
         return Response::error("VFS put commit is not authorized", 403);
@@ -1110,6 +1119,25 @@ fn valid_commit_request(request: &CommitRequest) -> bool {
             .is_none_or(|value| valid_string(value, MAXIMUM_PROVIDER_IDENTITY_BYTES))
 }
 
+fn expected_encoded_bytes(
+    crypto_suite: &str,
+    plaintext_bytes: u64,
+    frame_bytes: u64,
+) -> Option<u64> {
+    match crypto_suite {
+        PLAINTEXT_SUITE => Some(plaintext_bytes),
+        ENCRYPTED_SUITE if frame_bytes > 0 => {
+            let frame_count = if plaintext_bytes == 0 {
+                0
+            } else {
+                1 + (plaintext_bytes - 1) / frame_bytes
+            };
+            plaintext_bytes.checked_add(frame_count.checked_mul(AES_GCM_FRAME_TAG_BYTES)?)
+        }
+        _ => None,
+    }
+}
+
 fn valid_digest(value: &str) -> bool {
     value.len() == 64
         && value != "0000000000000000000000000000000000000000000000000000000000000000"
@@ -1215,5 +1243,14 @@ mod tests {
             provider_version: Some(String::new()),
             ..valid_request()
         }));
+    }
+
+    #[test]
+    fn encoded_length_is_exact_for_each_supported_suite() {
+        assert_eq!(expected_encoded_bytes(PLAINTEXT_SUITE, 9, 4), Some(9));
+        assert_eq!(expected_encoded_bytes(ENCRYPTED_SUITE, 0, 4), Some(0));
+        assert_eq!(expected_encoded_bytes(ENCRYPTED_SUITE, 9, 4), Some(57));
+        assert_eq!(expected_encoded_bytes(ENCRYPTED_SUITE, 9, 0), None);
+        assert_eq!(expected_encoded_bytes("unknown/v1", 9, 4), None);
     }
 }
