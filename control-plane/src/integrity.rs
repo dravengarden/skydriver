@@ -96,7 +96,7 @@ struct FindingsResponse {
     reason = "the complete read-only finding projection remains visible beside its SQL aliases"
 )]
 pub(crate) async fn list(request: &Request, env: &Env) -> Result<Response> {
-    if crate::read_session(request, env)?.is_none() {
+    if !crate::operator_sessions::authorized(request, env).await? {
         return Response::error("authentication required", 401);
     }
 

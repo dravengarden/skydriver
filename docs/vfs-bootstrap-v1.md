@@ -24,16 +24,18 @@ VFS master secret before calling the endpoint:
 
 ```bash
 pnpm exec wrangler secret put CARRACK_VFS_MASTER_KEY_V1 \
+  --env <dev-or-prod> \
   --config control-plane/wrangler.jsonc
 ```
 
 The value is the unpadded base64url encoding of exactly 32 random bytes. Keep a
 tested offline recovery copy. It must be generated independently from
-`CARRACK_SESSION_KEY` and the legacy `CARRACK_ROOT_KEY_V1`.
+`CARRACK_ADMIN_TOKEN` and the legacy `CARRACK_ROOT_KEY_V1`.
 
-The caller first authenticates through `POST /api/auth/login` and sends the
-resulting operator session cookie. External maintenance mode rejects the
-mutation. A VFS bearer token cannot invoke bootstrap.
+The caller first authenticates through `POST /api/auth/login` with the
+environment's operator credential and sends the resulting revocable session
+cookie. External maintenance mode rejects the mutation. A VFS bearer token
+cannot invoke bootstrap.
 
 ## Request
 

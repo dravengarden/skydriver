@@ -1,16 +1,68 @@
-import { describe, expect, it } from "vitest";
-import { parseIntegrityFindings, parseSession } from "./client";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { fetchSession, login, parseHealth, parseIntegrityFindings, parseSession } from "./client";
+
+afterEach(() => {
+    vi.unstubAllGlobals();
+});
 
 describe("parseSession", () => {
     it("accepts a valid authenticated session", () => {
-        expect(parseSession({ authenticated: true, username: "operator" })).toEqual({
-            authenticated: true,
-            username: "operator",
-        });
+        expect(parseSession({ authenticated: true })).toEqual({ authenticated: true });
     });
 
     it("rejects malformed API data", () => {
-        expect(() => parseSession({ authenticated: "yes", username: null })).toThrow();
+        expect(() => parseSession({ authenticated: "yes" })).toThrow();
+    });
+});
+
+describe("operator session", () => {
+    it("maps an unauthorized status to a logged-out session", async () => {
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 401 })));
+
+        await expect(fetchSession()).resolves.toEqual({ authenticated: false });
+    });
+
+    it("sends only the operator credential during login", async () => {
+        const fetchMock = vi
+            .fn<typeof fetch>()
+            .mockResolvedValue(Response.json({ authenticated: true }, { status: 200 }));
+        vi.stubGlobal("fetch", fetchMock);
+
+        await expect(login("operator-secret")).resolves.toEqual({ authenticated: true });
+        const call = fetchMock.mock.calls[0];
+        expect(call?.[0]).toBe("/api/auth/login");
+        expect(JSON.parse(String(call?.[1]?.body))).toEqual({ password: "operator-secret" });
+    });
+});
+
+describe("parseHealth", () => {
+    it("requires an explicit deployment environment", () => {
+        expect(
+            parseHealth({
+                service: "carrack-control-plane",
+                environment: "dev",
+                transfer_mode: "direct",
+                mode: "active",
+                incarnation: "0123456789abcdef0123456789abcdef",
+                revision: 1,
+                external_maintenance: false,
+                mutations_allowed: true,
+            }),
+        ).toMatchObject({ environment: "dev", mutations_allowed: true });
+    });
+
+    it("rejects health without an environment", () => {
+        expect(() =>
+            parseHealth({
+                service: "carrack-control-plane",
+                transfer_mode: "direct",
+                mode: "active",
+                incarnation: "0123456789abcdef0123456789abcdef",
+                revision: 1,
+                external_maintenance: false,
+                mutations_allowed: true,
+            }),
+        ).toThrow();
     });
 });
 

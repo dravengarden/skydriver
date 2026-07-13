@@ -31,6 +31,9 @@ CLI/agent processes are SDK consumers, not a third architectural component.
   derived rather than stored. Root seeds stay in Cloudflare secrets or Secrets
   Store and have offline recovery copies.
 - Run `just verify` before committing.
+- Use `.agents/skills/carrack-admin` for Carrack management inspection and
+  supported VFS policy changes. Agents must not bypass its CLI validation with
+  direct D1 writes or reconstructed management HTTP requests.
 - Treat `docs/requirements.md` as the normative product and correctness
   baseline. Architecture and implementation changes must preserve its MUST and
   MUST NOT guarantees or revise the requirements deliberately.

@@ -50,6 +50,7 @@ type ClientSession struct {
 // ControlHealth reports whether the current incarnation accepts mutations.
 type ControlHealth struct {
 	Service             string `json:"service"`
+	Environment         string `json:"environment"`
 	TransferMode        string `json:"transfer_mode"`
 	Mode                string `json:"mode"`
 	Incarnation         string `json:"incarnation"`

@@ -1,304 +1,344 @@
-import CloudDoneOutlinedIcon from "@mui/icons-material/CloudDoneOutlined";
-import DatasetOutlinedIcon from "@mui/icons-material/DatasetOutlined";
-import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
+import AdminPanelSettingsOutlinedIcon from "@mui/icons-material/AdminPanelSettingsOutlined";
+import DashboardOutlinedIcon from "@mui/icons-material/DashboardOutlined";
+import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
+import KeyOutlinedIcon from "@mui/icons-material/KeyOutlined";
 import LogoutOutlinedIcon from "@mui/icons-material/LogoutOutlined";
-import RouteOutlinedIcon from "@mui/icons-material/RouteOutlined";
+import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
+import StorageOutlinedIcon from "@mui/icons-material/StorageOutlined";
+import TimelineOutlinedIcon from "@mui/icons-material/TimelineOutlined";
 import {
+    Alert,
     AppBar,
     Box,
     Button,
     Chip,
-    CircularProgress,
-    Container,
-    LinearProgress,
-    Paper,
+    Dialog,
+    DialogActions,
+    DialogContent,
+    DialogTitle,
+    Divider,
+    List,
+    ListItemButton,
+    ListItemIcon,
+    ListItemText,
+    Snackbar,
     Stack,
+    TextField,
     Toolbar,
     Typography,
 } from "@mui/material";
-import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
-import { fetchLiveComponents, fetchSummary } from "../api/client";
-import type { LiveComponent } from "../api/client";
-import { IntegrityFindings } from "./IntegrityFindings";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
+import {
+    disableConfiguration,
+    enableConfiguration,
+    fetchConfigurationSession,
+    fetchManagementEventCursor,
+    fetchManagementSnapshot,
+} from "../api/client";
+import { CarrackMark } from "../brand/CarrackLogo";
+import { AccessPage } from "./pages/AccessPage";
+import { ActivityPage } from "./pages/ActivityPage";
+import { DriversPage } from "./pages/DriversPage";
+import { FilesPage } from "./pages/FilesPage";
+import { OverviewPage } from "./pages/OverviewPage";
+import { SettingsPage } from "./pages/SettingsPage";
 
 interface DashboardProps {
-    readonly username: string;
+    readonly environment: string;
     readonly onLogout: () => void;
 }
 
-interface MetricProps {
+type Page = "overview" | "files" | "drivers" | "access" | "activity" | "settings";
+
+const navigation: ReadonlyArray<{
+    readonly id: Page;
     readonly label: string;
-    readonly value: number;
-    readonly icon: ReactNode;
-}
+    readonly icon: React.ReactNode;
+}> = [
+    { id: "overview", label: "Overview", icon: <DashboardOutlinedIcon /> },
+    { id: "files", label: "Files", icon: <FolderOutlinedIcon /> },
+    { id: "drivers", label: "Drivers", icon: <StorageOutlinedIcon /> },
+    { id: "access", label: "Access", icon: <KeyOutlinedIcon /> },
+    { id: "activity", label: "Activity", icon: <TimelineOutlinedIcon /> },
+    { id: "settings", label: "Settings", icon: <SettingsOutlinedIcon /> },
+];
 
-function Metric({ label, value, icon }: MetricProps) {
-    return (
-        <Paper sx={{ p: 3, border: "1px solid", borderColor: "divider" }} elevation={0}>
-            <Stack direction="row" sx={{ justifyContent: "space-between", alignItems: "center" }}>
-                <Box>
-                    <Typography color="text.secondary" variant="body2">
-                        {label}
-                    </Typography>
-                    <Typography variant="h4" sx={{ mt: 0.5, fontWeight: 800 }}>
-                        {value.toLocaleString()}
-                    </Typography>
-                </Box>
-                <Box sx={{ color: "primary.main" }}>{icon}</Box>
-            </Stack>
-        </Paper>
-    );
-}
-
-function formatRate(bytesPerSecond: number): string {
-    const units = ["B/s", "KiB/s", "MiB/s", "GiB/s"] as const;
-    let value = bytesPerSecond;
-    let unit = 0;
-
-    while (value >= 1024 && unit < units.length - 1) {
-        value /= 1024;
-        unit += 1;
-    }
-
-    return `${value.toFixed(value >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
-}
-
-function formatBytes(bytes: number): string {
-    return formatRate(bytes).replace("/s", "");
-}
-
-function formatLastSample(unixSeconds: number | null): string {
-    if (unixSeconds === null) {
-        return "not reporting";
-    }
-
-    return new Date(unixSeconds * 1_000).toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
+export function Dashboard({ environment, onLogout }: DashboardProps) {
+    const queryClient = useQueryClient();
+    const [page, setPage] = useState<Page>("overview");
+    const [configurationDialogOpen, setConfigurationDialogOpen] = useState(false);
+    const [credential, setCredential] = useState("");
+    const [changeNoticeOpen, setChangeNoticeOpen] = useState(false);
+    const previousCursor = useRef<number | null>(null);
+    const management = useQuery({
+        queryKey: ["management-snapshot"],
+        queryFn: fetchManagementSnapshot,
+        staleTime: Number.POSITIVE_INFINITY,
     });
-}
+    const eventCursor = useQuery({
+        queryKey: ["management-event-cursor"],
+        queryFn: fetchManagementEventCursor,
+        refetchInterval: 3_000,
+    });
+    const configuration = useQuery({
+        queryKey: ["configuration-session"],
+        queryFn: fetchConfigurationSession,
+        refetchInterval: 30_000,
+    });
+    const enableMutation = useMutation({
+        mutationFn: enableConfiguration,
+        onSuccess: (value) => {
+            queryClient.setQueryData(["configuration-session"], value);
+            setCredential("");
+            setConfigurationDialogOpen(false);
+        },
+    });
+    const disableMutation = useMutation({
+        mutationFn: disableConfiguration,
+        onSuccess: (value) => queryClient.setQueryData(["configuration-session"], value),
+    });
 
-function progress(component: LiveComponent): number | undefined {
-    if (component.useful_bytes_total === null || component.useful_bytes_total === 0) {
-        return undefined;
-    }
+    useEffect(() => {
+        const cursor = eventCursor.data?.event_cursor;
+        if (cursor === undefined) {
+            return;
+        }
+        if (previousCursor.current !== null && previousCursor.current !== cursor) {
+            setChangeNoticeOpen(true);
+            void queryClient.invalidateQueries({
+                queryKey: ["management-snapshot"],
+            });
+            void queryClient.invalidateQueries({
+                queryKey: ["management-directory"],
+            });
+        }
+        previousCursor.current = cursor;
+    }, [eventCursor.data?.event_cursor, queryClient]);
 
-    return Math.min(100, (100 * component.useful_bytes_verified) / component.useful_bytes_total);
-}
-
-function statusColor(state: string): "success" | "warning" | "info" {
-    if (state === "stalled") {
-        return "warning";
-    }
-
-    return state === "running" ? "success" : "info";
-}
-
-function ComponentCard({ component }: { readonly component: LiveComponent }) {
-    const percentage = progress(component);
+    const configurationEnabled = configuration.data?.enabled === true;
+    const content = (() => {
+        switch (page) {
+            case "overview":
+                return <OverviewPage management={management} onNavigate={setPage} />;
+            case "files":
+                return <FilesPage management={management} />;
+            case "drivers":
+                return <DriversPage management={management} />;
+            case "access":
+                return (
+                    <AccessPage
+                        management={management}
+                        configurationEnabled={configurationEnabled}
+                        onRequestConfiguration={() => setConfigurationDialogOpen(true)}
+                    />
+                );
+            case "activity":
+                return <ActivityPage />;
+            case "settings":
+                return (
+                    <SettingsPage
+                        configuration={configuration.data}
+                        onEnable={() => setConfigurationDialogOpen(true)}
+                        onDisable={() => disableMutation.mutate()}
+                    />
+                );
+        }
+    })();
 
     return (
-        <Paper
-            sx={{ p: { xs: 2, sm: 2.5 }, border: "1px solid", borderColor: "divider" }}
-            elevation={0}
-        >
-            <Stack
-                direction="row"
-                sx={{ alignItems: "flex-start", justifyContent: "space-between", gap: 2 }}
-            >
-                <Box sx={{ minWidth: 0 }}>
-                    <Typography variant="subtitle1" sx={{ fontWeight: 800 }} noWrap>
-                        {component.component_kind}
-                    </Typography>
-                    <Typography color="text.secondary" variant="body2" noWrap>
-                        {component.operation_kind} · {component.operation_phase} ·{" "}
-                        {component.client_name ?? "unassigned"}
-                    </Typography>
-                </Box>
-                <Chip
-                    label={component.component_state}
-                    color={statusColor(component.component_state)}
-                    size="small"
-                />
-            </Stack>
-
-            <Box sx={{ mt: 2.5 }}>
-                <Stack direction="row" sx={{ justifyContent: "space-between", mb: 0.75 }}>
-                    <Typography color="text.secondary" variant="caption">
-                        Verified progress
-                    </Typography>
-                    <Typography variant="caption" sx={{ fontWeight: 700 }}>
-                        {percentage === undefined ? "unknown total" : `${percentage.toFixed(1)}%`}
-                    </Typography>
-                </Stack>
-                <LinearProgress
-                    variant={percentage === undefined ? "indeterminate" : "determinate"}
-                    value={percentage}
-                />
-            </Box>
+        <Box component="main" sx={{ minHeight: "100dvh", bgcolor: "#f6f8fb" }}>
+            <AppBar position="sticky" color="inherit" elevation={0}>
+                <Toolbar
+                    sx={{
+                        borderBottom: "1px solid",
+                        borderColor: "divider",
+                        gap: { xs: 1, sm: 2 },
+                        px: { xs: 1.5, sm: 3 },
+                    }}
+                >
+                    <Stack
+                        direction="row"
+                        spacing={1.2}
+                        sx={{
+                            alignItems: "center",
+                            minWidth: { xs: 0, sm: 210 },
+                        }}
+                    >
+                        <CarrackMark width={32} height={32} title="Carrack" />
+                        <Box>
+                            <Typography
+                                sx={{
+                                    fontWeight: 900,
+                                    letterSpacing: "0.12em",
+                                    lineHeight: 1,
+                                }}
+                            >
+                                CARRACK
+                            </Typography>
+                            <Typography
+                                color="text.secondary"
+                                variant="caption"
+                                sx={{ display: { xs: "none", sm: "block" } }}
+                            >
+                                Control plane
+                            </Typography>
+                        </Box>
+                    </Stack>
+                    <Stack
+                        direction="row"
+                        spacing={1}
+                        sx={{ ml: "auto", alignItems: "center", minWidth: 0 }}
+                    >
+                        <Chip
+                            label={environment.toUpperCase()}
+                            color={environment === "prod" ? "error" : "info"}
+                            size="small"
+                        />
+                        <Chip
+                            icon={<AdminPanelSettingsOutlinedIcon />}
+                            label={configurationEnabled ? "CHANGES ENABLED" : "READ ONLY"}
+                            color={configurationEnabled ? "warning" : "default"}
+                            size="small"
+                            aria-label={
+                                configurationEnabled
+                                    ? "Configuration changes enabled"
+                                    : "Read-only configuration"
+                            }
+                            onClick={
+                                configurationEnabled
+                                    ? () => setPage("settings")
+                                    : () => setConfigurationDialogOpen(true)
+                            }
+                            sx={{
+                                width: { xs: 34, sm: "auto" },
+                                "& .MuiChip-label": {
+                                    display: { xs: "none", sm: "block" },
+                                },
+                                "& .MuiChip-icon": {
+                                    mx: { xs: "auto", sm: undefined },
+                                },
+                            }}
+                        />
+                        <Button
+                            color="inherit"
+                            startIcon={<LogoutOutlinedIcon />}
+                            onClick={onLogout}
+                            sx={{ display: { xs: "none", sm: "inline-flex" } }}
+                        >
+                            Logout
+                        </Button>
+                    </Stack>
+                </Toolbar>
+            </AppBar>
 
             <Box
                 sx={{
                     display: "grid",
-                    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-                    gap: 1.5,
-                    mt: 2.5,
+                    gridTemplateColumns: {
+                        xs: "minmax(0, 1fr)",
+                        md: "240px minmax(0, 1fr)",
+                    },
                 }}
             >
-                {[
-                    ["1 minute", component.rate_1m_bps],
-                    ["5 minutes", component.rate_5m_bps],
-                    ["15 minutes", component.rate_15m_bps],
-                    ["Active average", component.lifetime_active_bps],
-                ].map(([label, value]) => (
-                    <Box key={label}>
+                <Box
+                    component="nav"
+                    sx={{
+                        minHeight: { md: "calc(100dvh - 65px)" },
+                        borderRight: { md: "1px solid" },
+                        borderBottom: { xs: "1px solid", md: 0 },
+                        borderColor: "divider",
+                        bgcolor: "background.paper",
+                        p: { xs: 1, md: 2 },
+                        minWidth: 0,
+                        maxWidth: { xs: "100vw", md: "none" },
+                        overflow: "hidden",
+                    }}
+                >
+                    <List
+                        disablePadding
+                        sx={{
+                            display: { xs: "flex", md: "block" },
+                            gap: 0.5,
+                            overflowX: "auto",
+                            width: "100%",
+                            minWidth: 0,
+                        }}
+                    >
+                        {navigation.map((item) => (
+                            <ListItemButton
+                                key={item.id}
+                                selected={page === item.id}
+                                onClick={() => setPage(item.id)}
+                                sx={{
+                                    borderRadius: 2,
+                                    minWidth: { xs: "max-content", md: 0 },
+                                }}
+                            >
+                                <ListItemIcon sx={{ minWidth: 36 }}>{item.icon}</ListItemIcon>
+                                <ListItemText primary={item.label} />
+                            </ListItemButton>
+                        ))}
+                    </List>
+                    <Divider sx={{ my: 2, display: { xs: "none", md: "block" } }} />
+                    <Box sx={{ px: 1, display: { xs: "none", md: "block" } }}>
                         <Typography color="text.secondary" variant="caption">
-                            {label}
-                        </Typography>
-                        <Typography sx={{ fontWeight: 750 }}>
-                            {formatRate(Number(value))}
+                            Payload bytes move directly between clients and storage drivers.
                         </Typography>
                     </Box>
-                ))}
+                </Box>
+                <Box sx={{ minWidth: 0, p: { xs: 2, sm: 3, lg: 5 } }}>{content}</Box>
             </Box>
 
-            <Typography color="text.secondary" variant="caption" sx={{ display: "block", mt: 2 }}>
-                {formatBytes(component.wire_bytes_read + component.wire_bytes_written)} wire ·{" "}
-                {component.retry_count.toLocaleString()} retries ·{" "}
-                {component.throttle_count.toLocaleString()} throttles
-            </Typography>
-            <Typography color="text.secondary" variant="caption" sx={{ display: "block", mt: 0.5 }}>
-                Last sample {formatLastSample(component.last_sample_at)}
-            </Typography>
-        </Paper>
-    );
-}
-
-export function Dashboard({ username, onLogout }: DashboardProps) {
-    const summary = useQuery({ queryKey: ["summary"], queryFn: fetchSummary });
-    const liveComponents = useQuery({
-        queryKey: ["live-components"],
-        queryFn: fetchLiveComponents,
-        refetchInterval: 5_000,
-    });
-
-    return (
-        <Box component="main" sx={{ minHeight: "100dvh", bgcolor: "background.default" }}>
-            <AppBar position="static" color="transparent" elevation={0}>
-                <Toolbar sx={{ borderBottom: "1px solid", borderColor: "divider" }}>
-                    <Typography variant="h6" sx={{ flexGrow: 1, fontWeight: 900 }}>
-                        CARRACK
+            <Dialog
+                open={configurationDialogOpen}
+                onClose={() => !enableMutation.isPending && setConfigurationDialogOpen(false)}
+                fullWidth
+                maxWidth="xs"
+            >
+                <DialogTitle>Enable configuration changes</DialogTitle>
+                <DialogContent>
+                    <Typography color="text.secondary" variant="body2" sx={{ mb: 2 }}>
+                        Re-enter the operator credential. The server grants a separate 15-minute
+                        configuration session; file-content access is not granted.
                     </Typography>
-                    <Chip label="DIRECT TRANSFER" color="success" size="small" sx={{ mr: 2 }} />
-                    <Typography color="text.secondary" sx={{ mr: 2 }}>
-                        {username}
-                    </Typography>
-                    <Button color="inherit" startIcon={<LogoutOutlinedIcon />} onClick={onLogout}>
-                        Logout
-                    </Button>
-                </Toolbar>
-            </AppBar>
-
-            <Container maxWidth="lg" sx={{ py: { xs: 4, md: 7 } }}>
-                <Typography variant="h3" sx={{ fontWeight: 850 }}>
-                    Archive overview
-                </Typography>
-                <Typography color="text.secondary" sx={{ mt: 1, mb: 4 }}>
-                    Index and client state. Payload bytes bypass this Worker.
-                </Typography>
-
-                {summary.isPending ? (
-                    <CircularProgress />
-                ) : summary.isError ? (
-                    <Paper sx={{ p: 3 }}>
-                        <Typography color="error">Unable to load the D1 summary.</Typography>
-                    </Paper>
-                ) : (
-                    <Box
-                        sx={{
-                            display: "grid",
-                            gridTemplateColumns: {
-                                xs: "1fr",
-                                sm: "repeat(2, 1fr)",
-                                lg: "repeat(4, 1fr)",
-                            },
-                            gap: 2,
-                        }}
-                    >
-                        <Metric
-                            label="Operations"
-                            value={summary.data.operations}
-                            icon={<RouteOutlinedIcon />}
-                        />
-                        <Metric
-                            label="Logical objects"
-                            value={summary.data.objects}
-                            icon={<DatasetOutlinedIcon />}
-                        />
-                        <Metric
-                            label="Physical packs"
-                            value={summary.data.packs}
-                            icon={<Inventory2OutlinedIcon />}
-                        />
-                        <Metric
-                            label="Verified locations"
-                            value={summary.data.verified_locations}
-                            icon={<CloudDoneOutlinedIcon />}
-                        />
-                    </Box>
-                )}
-
-                <IntegrityFindings />
-
-                <Stack
-                    direction="row"
-                    sx={{ alignItems: "baseline", justifyContent: "space-between", mt: 6, mb: 2 }}
-                >
-                    <Box>
-                        <Typography variant="h4" sx={{ fontWeight: 850 }}>
-                            Live components
-                        </Typography>
-                        <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-                            Verified progress and active-transfer throughput.
-                        </Typography>
-                    </Box>
-                    {liveComponents.data !== undefined && (
-                        <Typography color="text.secondary" variant="caption">
-                            {liveComponents.data.components.length} active
-                        </Typography>
+                    {enableMutation.isError && (
+                        <Alert severity="error" sx={{ mb: 2 }}>
+                            The server rejected this credential.
+                        </Alert>
                     )}
-                </Stack>
-
-                {liveComponents.isPending ? (
-                    <CircularProgress />
-                ) : liveComponents.isError ? (
-                    <Paper sx={{ p: 3 }}>
-                        <Typography color="error">Unable to load live component state.</Typography>
-                    </Paper>
-                ) : liveComponents.data.components.length === 0 ? (
-                    <Paper sx={{ p: 3, border: "1px solid", borderColor: "divider" }} elevation={0}>
-                        <Typography sx={{ fontWeight: 700 }}>No active components</Typography>
-                        <Typography color="text.secondary" variant="body2" sx={{ mt: 0.5 }}>
-                            Running imports, copies, moves, restores, and maintenance stages appear
-                            here.
-                        </Typography>
-                    </Paper>
-                ) : (
-                    <Box
-                        sx={{
-                            display: "grid",
-                            gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 340px), 1fr))",
-                            gap: 2,
+                    <TextField
+                        autoFocus
+                        fullWidth
+                        label="Operator credential"
+                        type="password"
+                        value={credential}
+                        onChange={(event) => setCredential(event.target.value)}
+                        onKeyDown={(event) => {
+                            if (event.key === "Enter" && credential.length > 0) {
+                                enableMutation.mutate(credential);
+                            }
                         }}
+                    />
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setConfigurationDialogOpen(false)}>Cancel</Button>
+                    <Button
+                        variant="contained"
+                        disabled={credential.length === 0 || enableMutation.isPending}
+                        onClick={() => enableMutation.mutate(credential)}
                     >
-                        {liveComponents.data.components.map((component) => (
-                            <ComponentCard key={component.component_id} component={component} />
-                        ))}
-                    </Box>
-                )}
-            </Container>
+                        Enable for 15 minutes
+                    </Button>
+                </DialogActions>
+            </Dialog>
+
+            <Snackbar
+                open={changeNoticeOpen}
+                autoHideDuration={6_000}
+                onClose={() => setChangeNoticeOpen(false)}
+                message="Carrack state changed. The latest server state is now loaded."
+            />
         </Box>
     );
 }

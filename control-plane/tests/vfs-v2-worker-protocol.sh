@@ -134,7 +134,7 @@ printf '%s' "$manifest_hex" | xxd -r -p >"$state_directory/block-manifest.bin"
   --port "$port" \
   --inspector-port 0 \
   --var CARRACK_ROOT_KEY_V1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
-  --var CARRACK_SESSION_KEY:vfs-worker-session-key-0123456789abcdef0123456789abcdef \
+  --var CARRACK_ADMIN_TOKEN:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
   --show-interactive-dev-session=false >"$server_log" 2>&1 &
 server_pid=$!
 

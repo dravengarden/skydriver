@@ -31,10 +31,28 @@ test:
     control-plane/tests/vfs-v2-bootstrap-worker-protocol.sh
     control-plane/tests/vfs-v2-management-worker-protocol.sh
     control-plane/tests/worker-protocol.sh
+    control-plane/tests/cloudflare-environments.sh
 
 build:
     go build ./...
     pnpm --filter @carrack/web build
-    pnpm exec wrangler deploy --dry-run --config control-plane/wrangler.jsonc
+    pnpm exec wrangler deploy --dry-run --env dev --config control-plane/wrangler.jsonc
+    pnpm exec wrangler deploy --dry-run --env prod --config control-plane/wrangler.jsonc
+
+migrate-dev:
+    node control-plane/scripts/apply-migrations.mjs dev
+
+migrate-prod:
+    test "${CARRACK_MIGRATE_PROD:-}" = "1"
+    node control-plane/scripts/apply-migrations.mjs prod
+
+deploy-dev: verify
+    node control-plane/scripts/deploy-worker.mjs dev
+
+deploy-prod: verify
+    node control-plane/scripts/deploy-worker.mjs prod
+
+audit-cloudflare:
+    node control-plane/scripts/audit-environments.mjs
 
 verify: check-format lint test build

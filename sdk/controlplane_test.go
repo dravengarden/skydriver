@@ -31,7 +31,7 @@ func TestControlClientAuthenticatesWithoutLeakingTokenToHealth(t *testing.T) {
 				t.Error("health request sent authentication token")
 			}
 
-			_, _ = response.Write([]byte(`{"service":"carrack-control-plane","transfer_mode":"direct","mode":"active","incarnation":"0123456789abcdef0123456789abcdef","revision":1,"external_maintenance":false,"mutations_allowed":true}`))
+			_, _ = response.Write([]byte(`{"service":"carrack-control-plane","environment":"dev","transfer_mode":"direct","mode":"active","incarnation":"0123456789abcdef0123456789abcdef","revision":1,"external_maintenance":false,"mutations_allowed":true}`))
 		case "/api/client/session":
 			if request.Header.Get("Authorization") != "Bearer "+encoded {
 				t.Error("session request did not send the expected bearer token")
@@ -54,7 +54,7 @@ func TestControlClientAuthenticatesWithoutLeakingTokenToHealth(t *testing.T) {
 		t.Fatalf("read health: %v", err)
 	}
 
-	if !health.MutationsAllowed || health.Mode != "active" {
+	if !health.MutationsAllowed || health.Mode != "active" || health.Environment != "dev" {
 		t.Fatalf("unexpected health response: %+v", health)
 	}
 

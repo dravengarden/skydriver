@@ -37,17 +37,7 @@ wrangler=(
   --local \
   --persist-to "$state_directory" >/dev/null
 
-admin_username=vfs-management-operator
-admin_password=invalid-login
-admin_password_hash='$argon2id$v=19$m=19456,t=2,p=1$ip90n1xsUQEay9O8cV4YhQ$iDsJkzgRGFO44Tlu6RRg7NpZFPp4PMMnKhF12B/RZW8'
-
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
-  --local \
-  --persist-to "$state_directory" \
-  --command "
-    INSERT INTO admin_users (username, password_hash, created_at, updated_at)
-    VALUES ('$admin_username', '$admin_password_hash', unixepoch(), unixepoch());
-  " >/dev/null
+admin_token=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA
 
 "${wrangler[@]}" dev \
   --local \
@@ -56,7 +46,7 @@ admin_password_hash='$argon2id$v=19$m=19456,t=2,p=1$ip90n1xsUQEay9O8cV4YhQ$iDsJk
   --inspector-port 0 \
   --var CARRACK_ROOT_KEY_V1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
   --var CARRACK_VFS_MASTER_KEY_V1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
-  --var CARRACK_SESSION_KEY:vfs-management-session-key-0123456789abcdef0123456789abcdef \
+  --var CARRACK_ADMIN_TOKEN:"$admin_token" \
   --show-interactive-dev-session=false >"$server_log" 2>&1 &
 server_pid=$!
 
@@ -76,8 +66,7 @@ json='Content-Type: application/json'
 
 curl --silent --show-error --fail-with-body \
   -c "$cookie_jar" -H "$json" \
-  --data "$(jq -cn --arg username "$admin_username" --arg password "$admin_password" \
-    '{username: $username, password: $password}')" \
+  --data "$(jq -cn --arg password "$admin_token" '{password: $password}')" \
   "$base_url/api/auth/login" >/dev/null
 
 bootstrap_request=$(jq -cn \

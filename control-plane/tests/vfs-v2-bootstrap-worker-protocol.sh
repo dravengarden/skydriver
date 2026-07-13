@@ -37,17 +37,7 @@ wrangler=(
   --local \
   --persist-to "$state_directory" >/dev/null
 
-admin_username=vfs-bootstrap-operator
-admin_password=invalid-login
-admin_password_hash='$argon2id$v=19$m=19456,t=2,p=1$ip90n1xsUQEay9O8cV4YhQ$iDsJkzgRGFO44Tlu6RRg7NpZFPp4PMMnKhF12B/RZW8'
-
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
-  --local \
-  --persist-to "$state_directory" \
-  --command "
-    INSERT INTO admin_users (username, password_hash, created_at, updated_at)
-    VALUES ('$admin_username', '$admin_password_hash', unixepoch(), unixepoch());
-  " >/dev/null
+admin_token=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA
 
 "${wrangler[@]}" dev \
   --local \
@@ -56,7 +46,7 @@ admin_password_hash='$argon2id$v=19$m=19456,t=2,p=1$ip90n1xsUQEay9O8cV4YhQ$iDsJk
   --inspector-port 0 \
   --var CARRACK_ROOT_KEY_V1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
   --var CARRACK_VFS_MASTER_KEY_V1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
-  --var CARRACK_SESSION_KEY:vfs-bootstrap-session-key-0123456789abcdef0123456789abcdef \
+  --var CARRACK_ADMIN_TOKEN:"$admin_token" \
   --show-interactive-dev-session=false >"$server_log" 2>&1 &
 server_pid=$!
 
@@ -95,8 +85,7 @@ unauthenticated_status=$(curl --silent --output /dev/null --write-out '%{http_co
 
 curl --silent --show-error --fail-with-body \
   -c "$cookie_jar" -H "$json" \
-  --data "$(jq -cn --arg username "$admin_username" --arg password "$admin_password" \
-    '{username: $username, password: $password}')" \
+  --data "$(jq -cn --arg password "$admin_token" '{password: $password}')" \
   "$base_url/api/auth/login" >/dev/null
 
 bootstrap_headers="$state_directory/bootstrap-headers.txt"
@@ -119,6 +108,115 @@ token=$(jq -r '.token' <<<"$bootstrapped")
 [[ "$root_directory_id" =~ ^[0-9a-f]{32}$ ]]
 [[ "$token_id" =~ ^[0-9a-f]{32}$ ]]
 [[ "$token" =~ ^[A-Za-z0-9_-]{43}$ ]]
+
+management_snapshot=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" "$base_url/api/admin/snapshot")
+management_cursor=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" "$base_url/api/admin/events/cursor")
+jq -e '.schema == "carrack.management.event-cursor.v1" and (.event_cursor | type == "number")' \
+  <<<"$management_cursor" >/dev/null
+jq -e --argjson cursor "$(jq '.event_cursor' <<<"$management_snapshot")" \
+  '.event_cursor == $cursor' <<<"$management_cursor" >/dev/null
+[[ "$(jq -r '.schema' <<<"$management_snapshot")" == carrack.management.snapshot.v1 ]]
+[[ "$(jq -r '.drivers | length' <<<"$management_snapshot")" == 1 ]]
+[[ "$(jq -r '.drivers[0].id' <<<"$management_snapshot")" == local-main ]]
+[[ "$(jq -r '.drivers[0].config.root' <<<"$management_snapshot")" == "$local_root" ]]
+[[ "$(jq -r '.filesystems[0].root_directory_id' <<<"$management_snapshot")" == "$root_directory_id" ]]
+[[ "$(jq -r '.tokens[0].id' <<<"$management_snapshot")" == "$token_id" ]]
+[[ "$(jq -r '.tokens[0] | has("token")' <<<"$management_snapshot")" == false ]]
+
+cli_management_snapshot=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  go run ./cmd/carrack admin snapshot --control-url "$base_url" --format json)
+[[ "$(jq -r '.schema' <<<"$cli_management_snapshot")" == carrack.management.snapshot.v1 ]]
+[[ "$(jq -r '.drivers[0].id' <<<"$cli_management_snapshot")" == local-main ]]
+
+management_directory=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" "$base_url/api/admin/directories/$root_directory_id")
+[[ "$(jq -r '.schema' <<<"$management_directory")" == carrack.management.directory.v1 ]]
+[[ "$(jq -r '.directory.id' <<<"$management_directory")" == "$root_directory_id" ]]
+[[ "$(jq -r '.placements[0]' <<<"$management_directory")" == local-main ]]
+
+cli_management_directory=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  go run ./cmd/carrack admin directory "$root_directory_id" \
+    --control-url "$base_url" --format json)
+[[ "$(jq -r '.directory.id' <<<"$cli_management_directory")" == "$root_directory_id" ]]
+
+configuration_status=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" "$base_url/api/auth/configuration")
+[[ "$(jq -r '.enabled' <<<"$configuration_status")" == false ]]
+wrong_configuration_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -b "$cookie_jar" -H "$json" \
+  --data '{"password":"wrong"}' "$base_url/api/auth/configuration/enable")
+[[ "$wrong_configuration_status" == 401 ]]
+configuration_enabled=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" -c "$cookie_jar" -H "$json" \
+  --data "$(jq -cn --arg password "$admin_token" '{password: $password}')" \
+  "$base_url/api/auth/configuration/enable")
+[[ "$(jq -r '.enabled' <<<"$configuration_enabled")" == true ]]
+[[ "$(jq -r '.expires_at > 0' <<<"$configuration_enabled")" == true ]]
+
+annotation_validation=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" -H "$json" \
+  --data '{"label":"Release agent","note":"Publishes verified releases.","expected_revision":1}' \
+  "$base_url/api/admin/tokens/$token_id/annotation/validate")
+[[ "$(jq -r '.schema' <<<"$annotation_validation")" == carrack.management.token-annotation-validation.v1 ]]
+[[ "$(jq -r '.label' <<<"$annotation_validation")" == 'Release agent' ]]
+validation_expires_at=$(jq -r '.validation_expires_at' <<<"$annotation_validation")
+validation_digest=$(jq -r '.validation_digest' <<<"$annotation_validation")
+annotation_apply=$(jq -cn \
+  --arg digest "$validation_digest" \
+  --argjson expires_at "$validation_expires_at" \
+  '{
+    label: "Release agent",
+    note: "Publishes verified releases.",
+    expected_revision: 1,
+    validation_expires_at: $expires_at,
+    validation_digest: $digest,
+    idempotency_key: "annotate-release-agent-v1"
+  }')
+annotation_receipt=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" -H "$json" --data "$annotation_apply" \
+  "$base_url/api/admin/tokens/$token_id/annotation/apply")
+[[ "$(jq -r '.schema' <<<"$annotation_receipt")" == carrack.management.token-annotation-receipt.v1 ]]
+[[ "$(jq -r '.final_revision' <<<"$annotation_receipt")" == 2 ]]
+annotation_replay=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" -H "$json" --data "$annotation_apply" \
+  "$base_url/api/admin/tokens/$token_id/annotation/apply")
+[[ "$annotation_replay" == "$annotation_receipt" ]]
+annotated_snapshot=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" "$base_url/api/admin/snapshot")
+[[ "$(jq -r '.tokens[0].label' <<<"$annotated_snapshot")" == 'Release agent' ]]
+[[ "$(jq -r '.tokens[0].note' <<<"$annotated_snapshot")" == 'Publishes verified releases.' ]]
+[[ "$(jq -r '.tokens[0].metadata_revision' <<<"$annotated_snapshot")" == 2 ]]
+[[ "$(jq -r '.event_cursor' <<<"$annotated_snapshot")" -gt "$(jq -r '.event_cursor' <<<"$management_snapshot")" ]]
+
+cli_annotation_check=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  go run ./cmd/carrack admin token annotate "$token_id" \
+    --control-url "$base_url" \
+    --label 'Release automation' \
+    --note 'Used by the verified release pipeline.' \
+    --expected-revision 2 \
+    --check \
+    --format json)
+[[ "$(jq -r '.schema' <<<"$cli_annotation_check")" == carrack.management.token-annotation-validation.v1 ]]
+cli_annotation_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  go run ./cmd/carrack admin token annotate "$token_id" \
+    --control-url "$base_url" \
+    --label 'Release automation' \
+    --note 'Used by the verified release pipeline.' \
+    --expected-revision 2 \
+    --idempotency-key annotate-release-agent-v2 \
+    --format json)
+[[ "$(jq -r '.schema' <<<"$cli_annotation_receipt")" == carrack.management.token-annotation-receipt.v1 ]]
+[[ "$(jq -r '.final_revision' <<<"$cli_annotation_receipt")" == 3 ]]
+
+configuration_disabled=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" -c "$cookie_jar" -X POST "$base_url/api/auth/configuration/disable")
+[[ "$(jq -r '.enabled' <<<"$configuration_disabled")" == false ]]
+disabled_apply_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -b "$cookie_jar" -H "$json" --data "$annotation_apply" \
+  "$base_url/api/admin/tokens/$token_id/annotation/apply")
+[[ "$disabled_apply_status" == 403 ]]
 
 replayed_bootstrap=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" -H "$json" --data "$bootstrap_request" \

@@ -5,55 +5,110 @@ session. Copy `.env.example` to the gitignored `.env`, set mode `0600`, and
 provide `CLOUDFLARE_API_TOKEN` plus `CLOUDFLARE_ACCOUNT_ID`. Entering
 `nix develop` exports those values.
 
-The token needs only the account permissions required by Carrack:
+The day-to-day token needs only the account permissions required by Carrack:
 
 - Workers Scripts: Edit
 - D1: Edit
+- Workers R2 Storage: Edit
 - Account Settings: Read, only when required by Wrangler identity checks
 
-Carrack has one initial D1 database, `carrack-index`. Its public database UUID
-is committed in `control-plane/wrangler.jsonc`; credentials and Worker runtime
-secrets are never committed.
+Creating or changing the committed custom domains is a separate, rare trigger
+operation. It additionally requires `Workers Routes: Edit` for the
+`stormbird.xyz` zone. Do not grant that zone permission to the routine deploy
+token; use a short-lived setup token or the Cloudflare dashboard, then run the
+environment audit.
 
-Carrack also uses the `carrack-manifests` R2 bucket for small portable recovery
-metadata. Create the production and preview buckets once before the first
-deployment:
+## Environment isolation
+
+Carrack has explicit `dev` and `prod` environments. Every remotely usable
+resource is distinct:
+
+| Environment | Worker | Custom domain | D1 | R2 |
+|---|---|---|---|---|
+| `dev` | `carrack-control-plane-dev` | `dev.carrack.stormbird.xyz` | `carrack-index-dev` | `carrack-manifests-dev` |
+| `prod` | `carrack-control-plane-prod` | `carrack.stormbird.xyz` | `carrack-index-prod` | `carrack-manifests-prod` |
+
+The default Wrangler configuration is local-only. It uses a non-routable D1
+sentinel, disables `workers.dev`, and must never be deployed. A remote command
+must always select `--env dev` or `--env prod`. `preview_bucket_name` is not an
+environment boundary and is deliberately unused.
+
+Remote environments follow Stormbird's hostname hierarchy: production uses
+the product hostname and development prefixes that hostname with `dev.`. Both
+`workers.dev` and version preview URLs are disabled. The committed Wrangler
+configuration records the exact custom domain, DNS record, and certificate
+binding, while routine version deployments deliberately leave those stable
+triggers unchanged.
+
+The public UUIDs and bucket names are committed in
+`control-plane/wrangler.jsonc`; credentials and Worker runtime secrets are
+never committed. Run the local invariant check through `just test`. After a
+remote deployment, verify that no other Worker is bound to either environment:
 
 ```bash
-pnpm exec wrangler r2 bucket create carrack-manifests
-pnpm exec wrangler r2 bucket create carrack-manifests-preview
+just audit-cloudflare
 ```
 
-The R2 binding never carries payload extents. SDK clients upload those directly
-to their selected storage drivers.
+Carrack's R2 bindings carry only small portable recovery metadata. Payload
+bytes continue to flow directly between SDK clients and their selected storage
+drivers.
 
-Apply migrations before deploying:
+Create all four storage resources once before the first deployment:
 
 ```bash
-pnpm exec wrangler d1 migrations apply carrack-index \
-  --remote \
-  --config control-plane/wrangler.jsonc
+pnpm exec wrangler d1 create carrack-index-dev
+pnpm exec wrangler d1 create carrack-index-prod
+pnpm exec wrangler r2 bucket create carrack-manifests-dev
+pnpm exec wrangler r2 bucket create carrack-manifests-prod
 ```
 
-Administrator usernames and Argon2id password hashes live in the
-`admin_users` D1 table. Plaintext passwords never enter D1. Keep the generated
-operator password in a gitignored `0600` file on the host that owns the
-account.
-
-Set the session signing key through Wrangler:
+Apply migrations independently before deploying. Never run a remote migration
+without an explicit environment:
 
 ```bash
-pnpm exec wrangler secret put CARRACK_SESSION_KEY \
-  --config control-plane/wrangler.jsonc
+just migrate-dev
+CARRACK_MIGRATE_PROD=1 just migrate-prod
+```
 
+The recipes intentionally use Carrack's import-based migration runner instead
+of `wrangler d1 migrations apply --remote`. Wrangler's statement splitter
+removes the terminal semicolon from SQLite trigger definitions; D1 then rejects
+the incomplete trigger. The Carrack runner imports one migration and its
+`d1_migrations` receipt atomically, and verifies that receipt before advancing.
+
+The operator console has no username or account directory. Each environment
+uses one independent `CARRACK_ADMIN_TOKEN` Worker secret, following Stormbird's
+operator-credential model. A successful login exchanges that credential for a
+random 12-hour HttpOnly browser session. D1 stores only the session's SHA-256
+verifier; logout deletes it and expired rows are purged on the next login.
+
+Set independent operator, archive-root, and VFS-master secrets for each environment:
+
+```bash
+pnpm exec wrangler secret put CARRACK_ADMIN_TOKEN \
+  --env dev \
+  --config control-plane/wrangler.jsonc
 pnpm exec wrangler secret put CARRACK_ROOT_KEY_V1 \
+  --env dev \
+  --config control-plane/wrangler.jsonc
+pnpm exec wrangler secret put CARRACK_VFS_MASTER_KEY_V1 \
+  --env dev \
   --config control-plane/wrangler.jsonc
 
+pnpm exec wrangler secret put CARRACK_ADMIN_TOKEN \
+  --env prod \
+  --config control-plane/wrangler.jsonc
+pnpm exec wrangler secret put CARRACK_ROOT_KEY_V1 \
+  --env prod \
+  --config control-plane/wrangler.jsonc
 pnpm exec wrangler secret put CARRACK_VFS_MASTER_KEY_V1 \
+  --env prod \
   --config control-plane/wrangler.jsonc
 ```
 
-`CARRACK_SESSION_KEY` must be an independently generated high-entropy value.
+`CARRACK_ADMIN_TOKEN` must be the unpadded base64url encoding of exactly 32
+random bytes. It is an operator credential, not a VFS principal or capability
+token, and development and production must never share it.
 `CARRACK_ROOT_KEY_V1` must be the unpadded base64url encoding of exactly 32
 random bytes with a tested offline recovery copy. Add a new versioned binding
 for rotation; never replace an old root while published manifests reference it.
@@ -62,18 +117,39 @@ for rotation; never replace an old root while published manifests reference it.
 directory keys and derives the recoverable one-shot bootstrap token. Preserve
 the version while either V2 envelopes or the bootstrap receipt depend on it;
 see `vfs-bootstrap-v1.md`.
-Account provisioning is an operator action performed after the D1 migration;
-do not commit password hashes as migration seed data.
 
-Build and deploy only after the repository gate passes:
+Build and deploy only through the environment-specific recipes. Production
+requires an additional explicit acknowledgement:
 
 ```bash
-just verify
-pnpm exec wrangler deploy --config control-plane/wrangler.jsonc
+just deploy-dev
+CARRACK_DEPLOY_PROD=1 just deploy-prod
 ```
 
-After deployment, verify `/api/health`, sign in with the preset account, and
-confirm `/api/summary` can read the migrated D1 database.
+Each recipe uploads a tagged Worker version and then moves 100% of that
+environment's traffic to it. It does not rewrite the already-audited custom
+domain, so the routine account token does not need zone-wide route mutation
+permission. Reconcile an intentional route change separately with a suitably
+scoped setup credential.
+
+The stable UI endpoints are:
+
+- `https://dev.carrack.stormbird.xyz`
+- `https://carrack.stormbird.xyz`
+
+The workers.dev subdomain and version preview URLs are disabled for both
+environments. After deployment, verify that `/api/health` reports the expected
+`environment`, sign in with the environment's operator credential, and confirm
+`/api/summary` can read only that environment's D1 database.
+
+Deployment and VFS bootstrap are separate operations. Keep a new environment
+unbootstrapped until its initial payload-driver topology is decided: bootstrap
+is intentionally one-shot. The currently implemented bootstrap creates a
+`local-filesystem/v2` driver and placement, while the compiled Aliyun Drive
+provider still belongs to the archive-oriented V1 path. Before an Aliyun Drive
+V2 canary, implement the complete-object V2 driver plus its registration or a
+driver-neutral bootstrap path, then bootstrap `dev` only. Never use `prod` for
+provider credential or compatibility experiments.
 
 ## Garbage collection
 

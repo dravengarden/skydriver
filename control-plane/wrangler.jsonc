@@ -1,8 +1,10 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "carrack-control-plane",
+  "name": "carrack-control-plane-local",
   "main": "build/worker/shim.mjs",
   "compatibility_date": "2026-07-02",
+  "workers_dev": false,
+  "preview_urls": false,
   "build": {
     "command": "worker-build control-plane --release"
   },
@@ -12,19 +14,79 @@
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"]
   },
+  "vars": {
+    "CARRACK_ENVIRONMENT": "local"
+  },
   "d1_databases": [
     {
       "binding": "CARRACK_INDEX",
-      "database_name": "carrack-index",
-      "database_id": "2ad6b7c9-88a2-4580-ae5a-db87847e7296",
+      "database_name": "carrack-index-local",
+      "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "migrations"
     }
   ],
   "r2_buckets": [
     {
       "binding": "CARRACK_MANIFESTS",
-      "bucket_name": "carrack-manifests",
-      "preview_bucket_name": "carrack-manifests-preview"
+      "bucket_name": "carrack-manifests-local"
     }
-  ]
+  ],
+  "env": {
+    "dev": {
+      "name": "carrack-control-plane-dev",
+      "workers_dev": false,
+      "preview_urls": false,
+      "routes": [
+        {
+          "pattern": "dev.carrack.stormbird.xyz",
+          "custom_domain": true
+        }
+      ],
+      "vars": {
+        "CARRACK_ENVIRONMENT": "dev"
+      },
+      "d1_databases": [
+        {
+          "binding": "CARRACK_INDEX",
+          "database_name": "carrack-index-dev",
+          "database_id": "cd94d428-62d7-4ac7-a634-3d3fe78055da",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "CARRACK_MANIFESTS",
+          "bucket_name": "carrack-manifests-dev"
+        }
+      ]
+    },
+    "prod": {
+      "name": "carrack-control-plane-prod",
+      "workers_dev": false,
+      "preview_urls": false,
+      "routes": [
+        {
+          "pattern": "carrack.stormbird.xyz",
+          "custom_domain": true
+        }
+      ],
+      "vars": {
+        "CARRACK_ENVIRONMENT": "prod"
+      },
+      "d1_databases": [
+        {
+          "binding": "CARRACK_INDEX",
+          "database_name": "carrack-index-prod",
+          "database_id": "6d75fefd-d0dc-4412-aa71-fae3aa847dec",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "CARRACK_MANIFESTS",
+          "bucket_name": "carrack-manifests-prod"
+        }
+      ]
+    }
+  }
 }

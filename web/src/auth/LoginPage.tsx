@@ -3,6 +3,7 @@ import {
     Alert,
     Box,
     Button,
+    Chip,
     CircularProgress,
     Paper,
     Stack,
@@ -10,20 +11,24 @@ import {
     Typography,
 } from "@mui/material";
 import { useState, type FormEvent } from "react";
+import { CarrackMark } from "../brand/CarrackLogo";
+import { OceanBackdrop } from "../brand/OceanBackdrop";
 
 interface LoginPageProps {
+    readonly environment: string;
     readonly pending: boolean;
     readonly error: boolean;
-    readonly onLogin: (username: string, password: string) => void;
+    readonly onLogin: (password: string) => void;
 }
 
-export function LoginPage({ pending, error, onLogin }: LoginPageProps) {
-    const [username, setUsername] = useState("");
+export function LoginPage({ environment, pending, error, onLogin }: LoginPageProps) {
     const [password, setPassword] = useState("");
 
     function submit(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
-        onLogin(username, password);
+        if (password !== "") {
+            onLogin(password);
+        }
     }
 
     return (
@@ -34,61 +39,123 @@ export function LoginPage({ pending, error, onLogin }: LoginPageProps) {
                 display: "grid",
                 placeItems: "center",
                 px: 2,
-                background:
-                    "radial-gradient(circle at 20% 10%, rgba(27, 104, 255, 0.22), transparent 36%), #08111f",
+                py: 4,
+                position: "relative",
+                overflow: "hidden",
             }}
         >
+            <OceanBackdrop />
             <Paper
                 component="form"
                 onSubmit={submit}
                 elevation={0}
-                sx={{ width: "100%", maxWidth: 420, p: { xs: 3, sm: 5 }, border: "1px solid" }}
+                sx={{
+                    width: "100%",
+                    maxWidth: 430,
+                    p: { xs: 3, sm: 4.5 },
+                    position: "relative",
+                    zIndex: 1,
+                    overflow: "hidden",
+                    color: "#071522",
+                    bgcolor: "rgba(250, 252, 253, 0.94)",
+                    border: "1px solid rgba(219, 242, 248, 0.68)",
+                    boxShadow: "0 30px 90px rgba(0, 7, 16, 0.46)",
+                    backdropFilter: "blur(18px) saturate(118%)",
+                }}
             >
                 <Stack spacing={3}>
                     <Box>
-                        <Typography
-                            variant="overline"
-                            color="primary.main"
-                            sx={{ fontWeight: 800 }}
+                        <Stack
+                            direction="row"
+                            sx={{ alignItems: "center", justifyContent: "space-between" }}
                         >
-                            CARRACK
-                        </Typography>
-                        <Typography variant="h4" sx={{ fontWeight: 800 }}>
+                            <Stack direction="row" spacing={1.25} sx={{ alignItems: "center" }}>
+                                <CarrackMark width={42} height={42} title="Carrack" />
+                                <Box>
+                                    <Typography
+                                        variant="overline"
+                                        sx={{
+                                            display: "block",
+                                            color: "#0a3957",
+                                            fontWeight: 900,
+                                            letterSpacing: "0.16em",
+                                            lineHeight: 1.1,
+                                        }}
+                                    >
+                                        CARRACK
+                                    </Typography>
+                                    <Typography
+                                        variant="caption"
+                                        sx={{ color: "#557181", letterSpacing: "0.04em" }}
+                                    >
+                                        VIRTUAL FILE SYSTEM
+                                    </Typography>
+                                </Box>
+                            </Stack>
+                            <Chip
+                                label={environment.toUpperCase()}
+                                color={environment === "prod" ? "error" : "info"}
+                                size="small"
+                                sx={{ fontWeight: 800 }}
+                            />
+                        </Stack>
+                        <Typography
+                            variant="h4"
+                            sx={{ mt: 3, fontWeight: 850, letterSpacing: "-0.035em" }}
+                        >
                             Control plane
                         </Typography>
-                        <Typography color="text.secondary" sx={{ mt: 1 }}>
-                            Sign in with the preset operator account.
+                        <Typography sx={{ mt: 0.75, color: "#536d7b" }}>
+                            Enter this environment's operator credential.
                         </Typography>
                     </Box>
 
-                    {error ? <Alert severity="error">Invalid username or password.</Alert> : null}
+                    {error ? <Alert severity="error">Invalid operator credential.</Alert> : null}
 
                     <TextField
-                        label="Username"
-                        autoComplete="username"
-                        value={username}
-                        onChange={(event) => setUsername(event.target.value)}
-                        required
-                        fullWidth
-                    />
-                    <TextField
-                        label="Password"
+                        label="Operator credential"
                         type="password"
                         autoComplete="current-password"
                         value={password}
                         onChange={(event) => setPassword(event.target.value)}
                         required
                         fullWidth
+                        autoFocus
+                        sx={{
+                            "& .MuiInputLabel-root": { color: "#58717e" },
+                            "& .MuiOutlinedInput-root": {
+                                bgcolor: "rgba(255, 255, 255, 0.72)",
+                                "& fieldset": { borderColor: "rgba(38, 82, 104, 0.27)" },
+                                "&:hover fieldset": { borderColor: "rgba(20, 127, 161, 0.62)" },
+                            },
+                        }}
                     />
                     <Button
                         type="submit"
                         variant="contained"
                         size="large"
-                        disabled={pending}
+                        disabled={pending || password === ""}
                         startIcon={pending ? <CircularProgress size={18} /> : <LockOutlinedIcon />}
+                        sx={{
+                            minHeight: 48,
+                            fontWeight: 850,
+                            letterSpacing: "0.02em",
+                            background: "linear-gradient(110deg, #087fa6, #256cf0)",
+                            boxShadow: "0 10px 24px rgba(14, 104, 181, 0.27)",
+                            "&:hover": {
+                                background: "linear-gradient(110deg, #076f91, #1f5fd6)",
+                                boxShadow: "0 12px 28px rgba(14, 104, 181, 0.36)",
+                            },
+                        }}
                     >
-                        Sign in
+                        Enter control plane
                     </Button>
+                    <Typography
+                        variant="caption"
+                        sx={{ color: "#68808c", textAlign: "center", letterSpacing: "0.02em" }}
+                    >
+                        Environment-scoped access · Revocable session
+                    </Typography>
                 </Stack>
             </Paper>
         </Box>

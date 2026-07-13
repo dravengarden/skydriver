@@ -256,6 +256,18 @@ repair sources, and required manual action.
 - The UI MUST show registered clients, versions, capabilities, health,
   operations, stages, progress, retries, throttling, verification failures,
   current speed, and historical average speeds.
+- The UI MUST expose redacted driver statistics, token scopes and annotations,
+  and a navigable VFS view with file sizes, directory aggregates, placements,
+  integrity roots, and access-policy context.
+- Authenticated UI pages MUST start read-only. Entering a mutation-capable
+  configuration mode MUST require fresh operator reauthentication, have a
+  short absolute lifetime, and be independently revocable.
+- CLI and UI configuration changes MUST use the same strict server-side
+  schemas, complete desired-state validation, optimistic revisions,
+  idempotency identities, redacted audit events, and durable receipts. Client
+  validation MUST NOT replace validation inside the commit transaction.
+- A management-state change made by any UI, CLI, or SDK client MUST become
+  observable to other active UI sessions through a monotonic event cursor.
 - Metrics MUST distinguish wire bytes from uniquely verified useful bytes and
   active throughput from wall-clock throughput.
 - Telemetry ingestion MUST tolerate duplicate, delayed, and reordered samples
@@ -269,6 +281,26 @@ repair sources, and required manual action.
 
 ## Security boundary
 
+- Development and production MUST use distinct Worker names, D1 database
+  UUIDs, R2 bucket names, runtime secrets, and administrator credentials.
+- The operator UI MUST use one environment-scoped credential without username
+  accounts. Browser sessions MUST be random, revocable, time-bounded, and
+  represented in D1 only by a one-way verifier. This operator credential MUST
+  remain separate from VFS principals, ACLs, and attenuated capability tokens.
+- Environment configuration authority MUST NOT imply content plaintext access.
+  Normal agents MUST use the operator credential only through the validated
+  management CLI and use a separate short-lived attenuated VFS token for file
+  operations. The bootstrap all-actions VFS bearer is a recovery authority,
+  not an everyday automation credential.
+- Deployment tooling MUST reject a configuration that overlaps any dev and
+  prod Worker, D1, or R2 identity. The default local configuration MUST NOT be
+  remotely routable.
+- Production MUST use `carrack.stormbird.xyz`; development MUST use
+  `dev.carrack.stormbird.xyz`. Both environments MUST disable workers.dev and
+  version preview URLs.
+- Public health responses and every operator UI surface MUST identify the
+  active environment. Development tokens and provider credentials MUST NOT be
+  accepted by production.
 - V1 MAY trade narrow key isolation for simplicity and throughput because its
   intended archives are not highly confidential.
 - Authentication tokens, provider credentials, and root seeds MUST never be

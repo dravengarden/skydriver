@@ -35,9 +35,7 @@ wrangler=(
 raw_token=0123456789abcdef0123456789abcdef
 token=$(printf '%s' "$raw_token" | base64 -w0 | tr '+/' '-_' | tr -d '=')
 verifier=$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)
-admin_username=worker-e2e-operator
-admin_password=invalid-login
-admin_password_hash='$argon2id$v=19$m=19456,t=2,p=1$ip90n1xsUQEay9O8cV4YhQ$iDsJkzgRGFO44Tlu6RRg7NpZFPp4PMMnKhF12B/RZW8'
+admin_token=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA
 restore_content=$(jq -cn '{
   schema_version: "carrack.manifest.v1",
   namespace_id: "202122232425262728292a2b2c2d2e2f",
@@ -317,8 +315,6 @@ printf '%s' "$compact_source_recovery" >"$state_directory/compact-source-manifes
       '{\"move_grace_seconds\":120,\"gc_minimum_age_seconds\":60,\"gc_grace_seconds\":60,\"inventory_quarantine_seconds\":90}',
       unixepoch(), unixepoch()
     );
-    INSERT INTO admin_users (username, password_hash, created_at, updated_at)
-    VALUES ('$admin_username', '$admin_password_hash', unixepoch(), unixepoch());
     INSERT INTO clients (
       id, name, sdk_version, capabilities_json, labels_json, state, created_at, updated_at
     ) VALUES (
@@ -510,12 +506,12 @@ printf '%s' "$compact_source_recovery" >"$state_directory/compact-source-manifes
     WHERE id = 'compact-object';
   " >/dev/null
 
-"${wrangler[@]}" r2 object put carrack-manifests-preview/restore/manifest.json \
+"${wrangler[@]}" r2 object put carrack-manifests-local/restore/manifest.json \
   --local \
   --persist-to "$state_directory" \
   --file "$state_directory/restore-manifest.json" >/dev/null
 
-"${wrangler[@]}" r2 object put carrack-manifests-preview/compact/source-manifest.json \
+"${wrangler[@]}" r2 object put carrack-manifests-local/compact/source-manifest.json \
   --local \
   --persist-to "$state_directory" \
   --file "$state_directory/compact-source-manifest.json" >/dev/null
@@ -526,7 +522,7 @@ printf '%s' "$compact_source_recovery" >"$state_directory/compact-source-manifes
   --port "$port" \
   --inspector-port 0 \
   --var CARRACK_ROOT_KEY_V1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
-  --var CARRACK_SESSION_KEY:worker-e2e-session-key-0123456789abcdef0123456789abcdef \
+  --var CARRACK_ADMIN_TOKEN:"$admin_token" \
   --show-interactive-dev-session=false >"$server_log" 2>&1 &
 server_pid=$!
 
@@ -559,11 +555,9 @@ unauthenticated_findings_status=$(curl --silent --output /dev/null --write-out '
 login_response=$(curl --silent --show-error --fail-with-body \
   --dump-header "$state_directory/login.headers" \
   -H "$json" \
-  --data "$(jq -cn --arg username "$admin_username" --arg password "$admin_password" \
-    '{username: $username, password: $password}')" \
+  --data "$(jq -cn --arg password "$admin_token" '{password: $password}')" \
   "$base_url/api/auth/login")
-jq -e --arg username "$admin_username" \
-  '.authenticated == true and .username == $username' <<<"$login_response" >/dev/null
+jq -e '.authenticated == true and keys == ["authenticated"]' <<<"$login_response" >/dev/null
 session_cookie=$(awk '
   tolower($1) == "set-cookie:" {
     split($2, parts, ";")
@@ -576,8 +570,8 @@ session="Cookie: $session_cookie"
 
 authenticated_session=$(curl --silent --show-error --fail-with-body \
   -H "$session" "$base_url/api/auth/session")
-jq -e --arg username "$admin_username" \
-  '.authenticated == true and .username == $username' <<<"$authenticated_session" >/dev/null
+jq -e '.authenticated == true and keys == ["authenticated"]' \
+  <<<"$authenticated_session" >/dev/null
 
 restore=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" \
@@ -3352,3 +3346,11 @@ finished_gc_claim=$(curl --silent --show-error --fail-with-body \
   -H "$authorization" -H "$json" --data '{"lease_seconds":60}' \
   "$base_url/api/v1/gc/$gc_id/deletes/claim")
 jq -e '.state == "succeeded" and .task == null' <<<"$finished_gc_claim" >/dev/null
+
+logout_response=$(curl --silent --show-error --fail-with-body \
+  -H "$session" -X POST "$base_url/api/auth/logout")
+jq -e '.authenticated == false and keys == ["authenticated"]' \
+  <<<"$logout_response" >/dev/null
+logged_out_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$session" "$base_url/api/auth/session")
+[[ "$logged_out_status" == 401 ]]

@@ -2,7 +2,22 @@ import * as v from "valibot";
 
 const SessionSchema = v.object({
     authenticated: v.boolean(),
-    username: v.nullable(v.string()),
+});
+
+const ConfigurationSessionSchema = v.object({
+    enabled: v.boolean(),
+    expires_at: v.nullable(v.number()),
+});
+
+const HealthSchema = v.object({
+    service: v.string(),
+    environment: v.string(),
+    transfer_mode: v.string(),
+    mode: v.string(),
+    incarnation: v.string(),
+    revision: v.number(),
+    external_maintenance: v.boolean(),
+    mutations_allowed: v.boolean(),
 });
 
 const SummarySchema = v.object({
@@ -76,15 +91,157 @@ const IntegrityFindingsSchema = v.object({
     findings: v.array(IntegrityFindingSchema),
 });
 
+const DriverViewSchema = v.object({
+    id: v.string(),
+    kind: v.string(),
+    config: v.unknown(),
+    enabled: v.boolean(),
+    revision: v.number(),
+    credential_present: v.boolean(),
+    credential_rotated_at: v.nullable(v.number()),
+    placement_count: v.number(),
+    location_count: v.number(),
+    available_location_count: v.number(),
+    encoded_bytes: v.number(),
+    file_count: v.number(),
+    updated_at: v.number(),
+});
+
+const FilesystemViewSchema = v.object({
+    id: v.string(),
+    name: v.string(),
+    state: v.string(),
+    revision: v.number(),
+    root_directory_id: v.string(),
+    directory_count: v.number(),
+    file_count: v.number(),
+    logical_bytes: v.number(),
+    available_location_count: v.number(),
+    encoded_bytes: v.number(),
+    updated_at: v.number(),
+});
+
+const TokenViewSchema = v.object({
+    id: v.string(),
+    label: v.string(),
+    note: v.string(),
+    metadata_revision: v.number(),
+    principal_id: v.string(),
+    principal_name: v.string(),
+    root_directory_id: v.string(),
+    root_directory_name: v.string(),
+    parent_token_id: v.nullable(v.string()),
+    snapshot_id: v.nullable(v.string()),
+    actions: v.array(v.string()),
+    driver_ids: v.array(v.string()),
+    expires_at: v.number(),
+    sealed_at: v.nullable(v.number()),
+    revoked_at: v.nullable(v.number()),
+    created_at: v.number(),
+    last_used_at: v.nullable(v.number()),
+});
+
+const ManagementSnapshotSchema = v.object({
+    schema: v.literal("carrack.management.snapshot.v1"),
+    observed_at: v.number(),
+    event_cursor: v.number(),
+    drivers: v.array(DriverViewSchema),
+    filesystems: v.array(FilesystemViewSchema),
+    tokens: v.array(TokenViewSchema),
+});
+
+const ManagementEventCursorSchema = v.object({
+    schema: v.literal("carrack.management.event-cursor.v1"),
+    observed_at: v.number(),
+    event_cursor: v.number(),
+});
+
+const ManagementDirectorySchema = v.object({
+    schema: v.literal("carrack.management.directory.v1"),
+    observed_at: v.number(),
+    directory: v.object({
+        id: v.string(),
+        filesystem_id: v.string(),
+        parent_id: v.nullable(v.string()),
+        name: v.string(),
+        data_root: v.string(),
+        crypto_suite: v.string(),
+        active_key_epoch: v.number(),
+        acl_inherits: v.boolean(),
+        revision: v.number(),
+        acl_revision: v.number(),
+        placement_revision: v.number(),
+        child_directory_count: v.number(),
+        recursive_directory_count: v.number(),
+        recursive_file_count: v.number(),
+        recursive_logical_bytes: v.number(),
+    }),
+    breadcrumbs: v.array(v.object({ id: v.string(), name: v.string(), depth: v.number() })),
+    placements: v.array(v.string()),
+    entries: v.array(
+        v.object({
+            name: v.string(),
+            kind: v.string(),
+            file_id: v.nullable(v.string()),
+            version_id: v.nullable(v.string()),
+            child_directory_id: v.nullable(v.string()),
+            size_bytes: v.number(),
+            data_root: v.string(),
+            metadata_root: v.nullable(v.string()),
+            revision: v.number(),
+            updated_at: v.number(),
+            driver_ids: v.array(v.string()),
+        }),
+    ),
+});
+
+const TokenAnnotationValidationSchema = v.object({
+    schema: v.literal("carrack.management.token-annotation-validation.v1"),
+    token_id: v.string(),
+    current_label: v.string(),
+    current_note: v.string(),
+    label: v.string(),
+    note: v.string(),
+    expected_revision: v.number(),
+    validation_expires_at: v.number(),
+    validation_digest: v.string(),
+    warnings: v.array(v.string()),
+});
+
+const TokenAnnotationReceiptSchema = v.object({
+    schema: v.literal("carrack.management.token-annotation-receipt.v1"),
+    operation_id: v.string(),
+    token_id: v.string(),
+    label: v.string(),
+    note: v.string(),
+    final_revision: v.number(),
+    committed_at: v.number(),
+    state: v.literal("committed"),
+});
+
 export type Session = v.InferOutput<typeof SessionSchema>;
+export type ConfigurationSession = v.InferOutput<typeof ConfigurationSessionSchema>;
+export type Health = v.InferOutput<typeof HealthSchema>;
 export type Summary = v.InferOutput<typeof SummarySchema>;
 export type LiveComponent = v.InferOutput<typeof LiveComponentSchema>;
 export type LiveComponents = v.InferOutput<typeof LiveComponentsSchema>;
 export type IntegrityFinding = v.InferOutput<typeof IntegrityFindingSchema>;
 export type IntegrityFindings = v.InferOutput<typeof IntegrityFindingsSchema>;
+export type DriverView = v.InferOutput<typeof DriverViewSchema>;
+export type FilesystemView = v.InferOutput<typeof FilesystemViewSchema>;
+export type TokenView = v.InferOutput<typeof TokenViewSchema>;
+export type ManagementSnapshot = v.InferOutput<typeof ManagementSnapshotSchema>;
+export type ManagementEventCursor = v.InferOutput<typeof ManagementEventCursorSchema>;
+export type ManagementDirectory = v.InferOutput<typeof ManagementDirectorySchema>;
+export type TokenAnnotationValidation = v.InferOutput<typeof TokenAnnotationValidationSchema>;
+export type TokenAnnotationReceipt = v.InferOutput<typeof TokenAnnotationReceiptSchema>;
 
 export function parseSession(input: unknown): Session {
     return v.parse(SessionSchema, input);
+}
+
+export function parseHealth(input: unknown): Health {
+    return v.parse(HealthSchema, input);
 }
 
 export function parseIntegrityFindings(input: unknown): IntegrityFindings {
@@ -105,17 +262,30 @@ async function requestJson<TSchema extends v.BaseSchema<unknown, unknown, v.Base
     return v.parse(schema, body);
 }
 
-export function fetchSession(): Promise<Session> {
-    return requestJson("/api/auth/session", undefined, SessionSchema);
+export async function fetchSession(): Promise<Session> {
+    const response = await fetch("/api/auth/session");
+    if (response.status === 401) {
+        return { authenticated: false };
+    }
+    if (!response.ok) {
+        throw new Error(`Carrack API returned ${String(response.status)}`);
+    }
+
+    const body: unknown = await response.json();
+    return v.parse(SessionSchema, body);
 }
 
-export function login(username: string, password: string): Promise<Session> {
+export function fetchHealth(): Promise<Health> {
+    return requestJson("/api/health", undefined, HealthSchema);
+}
+
+export function login(password: string): Promise<Session> {
     return requestJson(
         "/api/auth/login",
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ username, password }),
+            body: JSON.stringify({ password }),
         },
         SessionSchema,
     );
@@ -123,6 +293,94 @@ export function login(username: string, password: string): Promise<Session> {
 
 export function logout(): Promise<Session> {
     return requestJson("/api/auth/logout", { method: "POST" }, SessionSchema);
+}
+
+export function fetchConfigurationSession(): Promise<ConfigurationSession> {
+    return requestJson("/api/auth/configuration", undefined, ConfigurationSessionSchema);
+}
+
+export function enableConfiguration(password: string): Promise<ConfigurationSession> {
+    return requestJson(
+        "/api/auth/configuration/enable",
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ password }),
+        },
+        ConfigurationSessionSchema,
+    );
+}
+
+export function disableConfiguration(): Promise<ConfigurationSession> {
+    return requestJson(
+        "/api/auth/configuration/disable",
+        { method: "POST" },
+        ConfigurationSessionSchema,
+    );
+}
+
+export function fetchManagementSnapshot(): Promise<ManagementSnapshot> {
+    return requestJson("/api/admin/snapshot", undefined, ManagementSnapshotSchema);
+}
+
+export function fetchManagementEventCursor(): Promise<ManagementEventCursor> {
+    return requestJson("/api/admin/events/cursor", undefined, ManagementEventCursorSchema);
+}
+
+export function fetchManagementDirectory(directoryId: string): Promise<ManagementDirectory> {
+    return requestJson(
+        `/api/admin/directories/${encodeURIComponent(directoryId)}`,
+        undefined,
+        ManagementDirectorySchema,
+    );
+}
+
+export function validateTokenAnnotation(
+    tokenId: string,
+    label: string,
+    note: string,
+    expectedRevision: number,
+): Promise<TokenAnnotationValidation> {
+    return requestJson(
+        `/api/admin/tokens/${encodeURIComponent(tokenId)}/annotation/validate`,
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                label,
+                note,
+                expected_revision: expectedRevision,
+            }),
+        },
+        TokenAnnotationValidationSchema,
+    );
+}
+
+export function applyTokenAnnotation(
+    validation: TokenAnnotationValidation,
+): Promise<TokenAnnotationReceipt> {
+    return requestJson(
+        `/api/admin/tokens/${encodeURIComponent(validation.token_id)}/annotation/apply`,
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                label: validation.label,
+                note: validation.note,
+                expected_revision: validation.expected_revision,
+                validation_expires_at: validation.validation_expires_at,
+                validation_digest: validation.validation_digest,
+                idempotency_key: newIdempotencyKey(),
+            }),
+        },
+        TokenAnnotationReceiptSchema,
+    );
+}
+
+function newIdempotencyKey(): string {
+    const entropy = new Uint8Array(16);
+    crypto.getRandomValues(entropy);
+    return `ui-${Array.from(entropy, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
 export function fetchSummary(): Promise<Summary> {

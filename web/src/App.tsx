@@ -1,6 +1,6 @@
 import { CssBaseline, ThemeProvider, createTheme } from "@mui/material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchSession, login, logout } from "./api/client";
+import { fetchHealth, fetchSession, login, logout } from "./api/client";
 import { LoginPage } from "./auth/LoginPage";
 import { Dashboard } from "./dashboard/Dashboard";
 
@@ -17,15 +17,11 @@ const theme = createTheme({
 
 export function App() {
     const queryClient = useQueryClient();
+    const health = useQuery({ queryKey: ["health"], queryFn: fetchHealth });
     const session = useQuery({ queryKey: ["session"], queryFn: fetchSession });
+    const environment = health.data?.environment ?? "unknown";
     const loginMutation = useMutation({
-        mutationFn: ({
-            username,
-            password,
-        }: {
-            readonly username: string;
-            readonly password: string;
-        }) => login(username, password),
+        mutationFn: login,
         onSuccess: (value) => queryClient.setQueryData(["session"], value),
     });
     const logoutMutation = useMutation({
@@ -39,16 +35,15 @@ export function App() {
     });
 
     let content;
-    if (session.data?.authenticated && session.data.username !== null) {
-        content = (
-            <Dashboard username={session.data.username} onLogout={() => logoutMutation.mutate()} />
-        );
+    if (session.data?.authenticated) {
+        content = <Dashboard environment={environment} onLogout={() => logoutMutation.mutate()} />;
     } else {
         content = (
             <LoginPage
+                environment={environment}
                 pending={loginMutation.isPending}
                 error={loginMutation.isError}
-                onLogin={(username, password) => loginMutation.mutate({ username, password })}
+                onLogin={(password) => loginMutation.mutate(password)}
             />
         );
     }

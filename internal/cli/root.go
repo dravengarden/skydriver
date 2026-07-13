@@ -84,6 +84,7 @@ func newRootCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Comman
 		newGCCommand(ctx, stdout),
 		newQuarantineCommand(ctx, stdout),
 		newVFSCommand(ctx, stdout),
+		newAdminCommand(ctx, stdout),
 	)
 
 	return command

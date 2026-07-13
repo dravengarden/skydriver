@@ -11,11 +11,14 @@ mod integrity;
 mod inventory;
 mod key_grants;
 pub mod keys;
+mod management;
+mod management_configuration;
 mod manifest_archive;
 mod manifests;
 mod move_deletion;
 mod moving;
 mod operations;
+mod operator_sessions;
 pub mod protocol;
 mod publication;
 mod quarantine;
@@ -40,26 +43,16 @@ mod vfs_put_commit;
 mod vfs_token_management;
 mod vfs_tokens;
 
-use argon2::{Argon2, PasswordHash, PasswordVerifier};
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
 use worker::{
     Context, D1Database, D1PreparedStatement, Date, Env, Request, Response, Result, Router, event,
     wasm_bindgen::JsValue,
 };
 
-const SESSION_COOKIE: &str = "carrack_session";
-const SESSION_LIFETIME_SECONDS: u64 = 12 * 60 * 60;
-const MAXIMUM_PASSWORD_BYTES: usize = 1_024;
-const DUMMY_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$ip90n1xsUQEay9O8cV4YhQ$iDsJkzgRGFO44Tlu6RRg7NpZFPp4PMMnKhF12B/RZW8";
-
-type HmacSha256 = Hmac<Sha256>;
-
 #[derive(Serialize)]
 struct HealthResponse {
     service: &'static str,
+    environment: String,
     transfer_mode: &'static str,
     mode: String,
     incarnation: String,
@@ -80,29 +73,6 @@ struct ControlStateRow {
 struct RecoveryTransitionRequest {
     incarnation: String,
     expected_revision: u64,
-}
-
-#[derive(Deserialize)]
-struct LoginRequest {
-    username: String,
-    password: String,
-}
-
-#[derive(Serialize)]
-struct SessionResponse {
-    authenticated: bool,
-    username: Option<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct SessionClaims {
-    subject: String,
-    expires_at: u64,
-}
-
-#[derive(Deserialize)]
-struct AdminCredentialRow {
-    password_hash: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -162,14 +132,31 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
             health(&context.env).await
         })
         .post_async("/api/auth/login", |mut request, context| async move {
-            login(&mut request, &context.env).await
+            operator_sessions::login(&mut request, &context.env).await
         })
-        .get("/api/auth/session", |request, context| {
-            session(&request, &context.env)
+        .get_async("/api/auth/session", |request, context| async move {
+            operator_sessions::status(&request, &context.env).await
         })
-        .post("/api/auth/logout", |_, _| logout())
+        .post_async("/api/auth/logout", |request, context| async move {
+            operator_sessions::logout(&request, &context.env).await
+        })
+        .get_async("/api/auth/configuration", |request, context| async move {
+            operator_sessions::configuration_status(&request, &context.env).await
+        })
+        .post_async(
+            "/api/auth/configuration/enable",
+            |mut request, context| async move {
+                operator_sessions::enable_configuration(&mut request, &context.env).await
+            },
+        )
+        .post_async(
+            "/api/auth/configuration/disable",
+            |request, context| async move {
+                operator_sessions::disable_configuration(&request, &context.env).await
+            },
+        )
         .post_async("/api/clients", |mut request, context| async move {
-            if read_session(&request, &context.env)?.is_none() {
+            if !operator_sessions::authorized(&request, &context.env).await? {
                 return Response::error("authentication required", 401);
             }
 
@@ -185,12 +172,16 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
             if external_maintenance(&context.env) {
                 return Response::error("control-plane mutations are disabled", 409);
             }
-            let Some(session) = read_session(&request, &context.env)? else {
+            if !operator_sessions::authorized(&request, &context.env).await? {
                 return Response::error("operator authentication required", 401);
-            };
+            }
 
-            let response =
-                vfs_bootstrap::bootstrap(&mut request, &context.env, &session.subject).await;
+            let response = vfs_bootstrap::bootstrap(
+                &mut request,
+                &context.env,
+                operator_sessions::OPERATOR_SUBJECT,
+            )
+            .await;
             if let Err(error) = &response {
                 worker::console_error!("VFS bootstrap failed: {error:?}");
             }
@@ -1260,6 +1251,43 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
         .get_async("/api/summary", |request, context| async move {
             summary(&request, &context.env).await
         })
+        .get_async("/api/admin/snapshot", |request, context| async move {
+            management::snapshot(&request, &context.env).await
+        })
+        .get_async("/api/admin/events/cursor", |request, context| async move {
+            management::event_cursor(&request, &context.env).await
+        })
+        .get_async(
+            "/api/admin/directories/:id",
+            |request, context| async move {
+                let directory_id = context.param("id").cloned();
+                management::directory(&request, &context.env, directory_id.as_deref()).await
+            },
+        )
+        .post_async(
+            "/api/admin/tokens/:id/annotation/validate",
+            |mut request, context| async move {
+                let token_id = context.param("id").cloned();
+                management_configuration::validate_token_annotation(
+                    &mut request,
+                    &context.env,
+                    token_id.as_deref(),
+                )
+                .await
+            },
+        )
+        .post_async(
+            "/api/admin/tokens/:id/annotation/apply",
+            |mut request, context| async move {
+                let token_id = context.param("id").cloned();
+                management_configuration::apply_token_annotation(
+                    &mut request,
+                    &context.env,
+                    token_id.as_deref(),
+                )
+                .await
+            },
+        )
         .get_async("/api/components/live", |request, context| async move {
             live_components(&request, &context.env).await
         })
@@ -1301,9 +1329,11 @@ async fn report_progress(
 async fn health(env: &Env) -> Result<Response> {
     let state = load_control_state(env).await?;
     let external_maintenance = external_maintenance(env);
+    let environment = env.var("CARRACK_ENVIRONMENT")?.to_string();
 
     Response::from_json(&HealthResponse {
         service: "carrack-control-plane",
+        environment,
         transfer_mode: "direct",
         mutations_allowed: state.mode == "active" && !external_maintenance,
         mode: state.mode,
@@ -1313,84 +1343,8 @@ async fn health(env: &Env) -> Result<Response> {
     })
 }
 
-async fn login(request: &mut Request, env: &Env) -> Result<Response> {
-    let credentials = request.json::<LoginRequest>().await?;
-    let stored_hash = if valid_username(&credentials.username) {
-        password_hash(env, &credentials.username).await?
-    } else {
-        None
-    };
-    let candidate = if credentials.password.len() <= MAXIMUM_PASSWORD_BYTES {
-        credentials.password.as_str()
-    } else {
-        ""
-    };
-    let verified = verify_password(
-        candidate,
-        stored_hash.as_deref().unwrap_or(DUMMY_PASSWORD_HASH),
-    );
-
-    if stored_hash.is_none() || !verified {
-        return Response::error("invalid credentials", 401);
-    }
-
-    let token = create_session(&credentials.username, env)?;
-    let mut response = Response::from_json(&SessionResponse {
-        authenticated: true,
-        username: Some(credentials.username),
-    })?;
-    response.headers_mut().set(
-        "Set-Cookie",
-        &format!(
-            "{SESSION_COOKIE}={token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age={SESSION_LIFETIME_SECONDS}"
-        ),
-    )?;
-
-    Ok(response)
-}
-
-async fn password_hash(env: &Env, username: &str) -> Result<Option<String>> {
-    let database = env.d1("CARRACK_INDEX")?;
-    let result = database
-        .prepare(
-            "SELECT password_hash FROM admin_users \
-             WHERE username = ?1 AND enabled = 1",
-        )
-        .bind(&[JsValue::from_str(username)])?
-        .first::<AdminCredentialRow>(None)
-        .await?;
-
-    Ok(result.map(|row| row.password_hash))
-}
-
-fn valid_username(username: &str) -> bool {
-    !username.is_empty() && username.len() <= 128
-}
-
-fn session(request: &Request, env: &Env) -> Result<Response> {
-    let claims = read_session(request, env)?;
-
-    Response::from_json(&SessionResponse {
-        authenticated: claims.is_some(),
-        username: claims.map(|value| value.subject),
-    })
-}
-
-fn logout() -> Result<Response> {
-    let mut response = Response::from_json(&SessionResponse {
-        authenticated: false,
-        username: None,
-    })?;
-    response.headers_mut().set(
-        "Set-Cookie",
-        &format!("{SESSION_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0"),
-    )?;
-
-    Ok(response)
-}
-
 async fn summary(request: &Request, env: &Env) -> Result<Response> {
-    if read_session(request, env)?.is_none() {
+    if !operator_sessions::authorized(request, env).await? {
         return Response::error("authentication required", 401);
     }
 
@@ -1413,7 +1367,7 @@ async fn summary(request: &Request, env: &Env) -> Result<Response> {
 }
 
 async fn live_components(request: &Request, env: &Env) -> Result<Response> {
-    if read_session(request, env)?.is_none() {
+    if !operator_sessions::authorized(request, env).await? {
         return Response::error("authentication required", 401);
     }
 
@@ -1472,7 +1426,7 @@ async fn live_components(request: &Request, env: &Env) -> Result<Response> {
 }
 
 async fn begin_recovery(request: &mut Request, env: &Env) -> Result<Response> {
-    if read_session(request, env)?.is_none() {
+    if !operator_sessions::authorized(request, env).await? {
         return Response::error("authentication required", 401);
     }
 
@@ -1584,7 +1538,7 @@ fn recovery_statements(
 }
 
 async fn complete_recovery(request: &mut Request, env: &Env) -> Result<Response> {
-    if read_session(request, env)?.is_none() {
+    if !operator_sessions::authorized(request, env).await? {
         return Response::error("authentication required", 401);
     }
 
@@ -1662,114 +1616,6 @@ fn d1_integer(value: u64) -> Result<String> {
     Ok(value.to_string())
 }
 
-fn verify_password(candidate: &str, configured_hash: &str) -> bool {
-    let Ok(parsed_hash) = PasswordHash::new(configured_hash) else {
-        return false;
-    };
-
-    Argon2::default()
-        .verify_password(candidate.as_bytes(), &parsed_hash)
-        .is_ok()
-}
-
-fn create_session(username: &str, env: &Env) -> Result<String> {
-    let claims = SessionClaims {
-        subject: username.to_owned(),
-        expires_at: current_unix_seconds() + SESSION_LIFETIME_SECONDS,
-    };
-    let payload = serde_json::to_vec(&claims)?;
-    let encoded_payload = URL_SAFE_NO_PAD.encode(payload);
-    let signature = sign(encoded_payload.as_bytes(), env)?;
-
-    Ok(format!(
-        "{encoded_payload}.{}",
-        URL_SAFE_NO_PAD.encode(signature)
-    ))
-}
-
-fn read_session(request: &Request, env: &Env) -> Result<Option<SessionClaims>> {
-    let Some(cookie_header) = request.headers().get("Cookie")? else {
-        return Ok(None);
-    };
-    let Some(token) = cookie_value(&cookie_header, SESSION_COOKIE) else {
-        return Ok(None);
-    };
-    let Some((payload, signature)) = token.split_once('.') else {
-        return Ok(None);
-    };
-    let Ok(decoded_signature) = URL_SAFE_NO_PAD.decode(signature) else {
-        return Ok(None);
-    };
-
-    if !verify_signature(payload.as_bytes(), &decoded_signature, env)? {
-        return Ok(None);
-    }
-
-    let Ok(decoded_payload) = URL_SAFE_NO_PAD.decode(payload) else {
-        return Ok(None);
-    };
-    let Ok(claims) = serde_json::from_slice::<SessionClaims>(&decoded_payload) else {
-        return Ok(None);
-    };
-
-    if claims.expires_at <= current_unix_seconds() {
-        return Ok(None);
-    }
-
-    Ok(Some(claims))
-}
-
-fn cookie_value<'a>(header: &'a str, name: &str) -> Option<&'a str> {
-    header.split(';').find_map(|part| {
-        let (key, value) = part.trim().split_once('=')?;
-        (key == name).then_some(value)
-    })
-}
-
-fn sign(payload: &[u8], env: &Env) -> Result<Vec<u8>> {
-    let key = env.secret("CARRACK_SESSION_KEY")?.to_string();
-    let mut mac = HmacSha256::new_from_slice(key.as_bytes())
-        .map_err(|error| worker::Error::RustError(error.to_string()))?;
-    mac.update(payload);
-
-    Ok(mac.finalize().into_bytes().to_vec())
-}
-
-fn verify_signature(payload: &[u8], signature: &[u8], env: &Env) -> Result<bool> {
-    let key = env.secret("CARRACK_SESSION_KEY")?.to_string();
-    let mut mac = HmacSha256::new_from_slice(key.as_bytes())
-        .map_err(|error| worker::Error::RustError(error.to_string()))?;
-    mac.update(payload);
-
-    Ok(mac.verify_slice(signature).is_ok())
-}
-
 fn current_unix_seconds() -> u64 {
     Date::now().as_millis() / 1_000
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{DUMMY_PASSWORD_HASH, cookie_value, valid_username, verify_password};
-
-    #[test]
-    fn extracts_named_cookie() {
-        assert_eq!(
-            cookie_value("theme=dark; carrack_session=abc.def", "carrack_session"),
-            Some("abc.def")
-        );
-    }
-
-    #[test]
-    fn validates_admin_username_bounds() {
-        assert!(valid_username("draven"));
-        assert!(!valid_username(""));
-        assert!(!valid_username(&"a".repeat(129)));
-    }
-
-    #[test]
-    fn dummy_hash_exercises_argon2_for_unknown_users() {
-        assert!(verify_password("invalid-login", DUMMY_PASSWORD_HASH));
-        assert!(!verify_password("wrong-password", DUMMY_PASSWORD_HASH));
-    }
 }
