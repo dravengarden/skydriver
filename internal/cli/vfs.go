@@ -64,6 +64,7 @@ func newVFSCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
 		newVFSPlacementCommand(ctx, stdout),
 		newVFSTokenCommand(ctx, stdout),
 		newVFSJournalCommand(stdout),
+		newVFSGCCommand(ctx, stdout),
 	)
 
 	return command

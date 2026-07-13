@@ -3,6 +3,7 @@ use worker::{Env, Result, wasm_bindgen::JsValue};
 const DATABASE_BINDING: &str = "CARRACK_INDEX";
 const MAXIMUM_EXPIRED_SESSIONS_PER_RUN: u64 = 500;
 const MAXIMUM_EXPIRED_PUTS_PER_RUN: u64 = 250;
+const VFS_PUT_DELETE_GRACE_SECONDS: u64 = 86_400;
 
 /// Performs bounded metadata hygiene without touching provider objects.
 ///
@@ -53,6 +54,30 @@ pub(crate) async fn run(env: &Env) -> Result<()> {
                      )",
                 )
                 .bind(&[
+                    JsValue::from_str(&now.to_string()),
+                    JsValue::from_str(&MAXIMUM_EXPIRED_PUTS_PER_RUN.to_string()),
+                ])?,
+            database
+                .prepare(
+                    "INSERT INTO vfs_put_delete_tasks (
+                         id, driver_revision, evidence_sha256,
+                         delete_after, created_at, updated_at
+                     )
+                     SELECT intent.id, driver.revision, evidence.commit_sha256,
+                            MAX(intent.expires_at, evidence.verified_at) + ?1, ?2, ?2
+                     FROM vfs_put_intents AS intent
+                     JOIN vfs_put_upload_evidence AS evidence ON evidence.intent_id = intent.id
+                     JOIN driver_instances AS driver ON driver.id = intent.driver_id
+                     WHERE intent.state IN ('expired', 'abandoned')
+                       AND NOT EXISTS (
+                           SELECT 1 FROM vfs_put_receipts WHERE intent_id = intent.id
+                       )
+                     ORDER BY intent.expires_at
+                     LIMIT ?3
+                     ON CONFLICT(id) DO NOTHING",
+                )
+                .bind(&[
+                    JsValue::from_str(&VFS_PUT_DELETE_GRACE_SECONDS.to_string()),
                     JsValue::from_str(&now.to_string()),
                     JsValue::from_str(&MAXIMUM_EXPIRED_PUTS_PER_RUN.to_string()),
                 ])?,

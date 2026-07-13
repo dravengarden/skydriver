@@ -165,6 +165,23 @@ carrack vfs token issue "$root_directory_id" \
 Move the returned bearer directly into its intended secret store, then clear
 the process output. The server stores only its verifier.
 
+Sweep one expired, unreferenced Put object with a token carrying `gc.run` and
+`driver.use` in both its attenuation and inherited ACL:
+
+```bash
+carrack vfs gc \
+  --control-url "$CARRACK_CONTROL_URL" \
+  --limit 1 \
+  --lease-seconds 60 \
+  --format json
+```
+
+The output schema is `carrack.cli.vfs-gc-sweep.v1`. `idle: true` means no
+authorized safe task is currently claimable. The command accepts a maximum
+limit of 100 but each task retains an independent 15-to-300-second claim and
+final revalidation fence. Do not bypass a capability or identity error with a
+provider CLI; use a V2 driver that advertises exact Stat and Delete support.
+
 ## Failure decisions
 
 | Condition | Action |

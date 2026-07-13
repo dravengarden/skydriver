@@ -147,6 +147,11 @@ its current Merkle root, applies the new file entry locally, then recomputes the
 target-to-root chain. A mismatch between stored entries and the current root is
 metadata corruption, not a rebase hint.
 
+The Worker first writes immutable upload evidence in its own short D1
+transaction. The evidence pins the commit digest, encoded object identity, and
+provider identity even if the following optimistic publication loses a race.
+An exact retry reuses it; conflicting evidence is rejected.
+
 One D1 batch then:
 
 1. records the expected root/revision evidence for every ancestor;
@@ -170,11 +175,34 @@ The durable response schema is `carrack.vfs.put-receipt.v1`. Lost-response
 replay with the same commit identity returns the original receipt. Changed
 provider evidence for the same intent returns `409`.
 
+## Expired upload deletion
+
+Metadata hygiene expires an uncommitted intent and plans at most one delete
+task from its immutable upload evidence after an additional one-day grace. A
+janitor token requires both `gc.run` and `driver.use`, the task directory in its
+subtree, an allowed driver, and both inherited ACL grants.
+
+The bounded API is `POST /api/v2/put-deletes/claim`, followed by
+`/:id/driver-grant`, `/:id/revalidate`, and exactly one of `/:id/complete` or
+`/:id/fail`. Claim leases are 15 through 300 seconds. The driver grant pins the
+task's exact driver revision and expires with the shorter token or claim lease.
+It uses schema `carrack.vfs.put-delete-driver-grant.v1` and is never cached.
+
+The Go janitor opens only a compiled registered driver, requires advertised
+Stat and exact Delete support, and compares storage key, encoded length, and
+every recorded native ID, provider version, and ETag. At least one strong
+provider identity must be present. Only then does final revalidation rotate the
+fencing token immediately before `Delete`. Completion accepts `deleted` or
+`already_absent`; failure releases the claim for retry. A stale lease, fence,
+driver revision, new location, publication receipt, or changed evidence makes
+provider deletion impossible.
+
 ## Current implementation boundary
 
 The protocol, D1 invariants, Merkle verification, encrypted and plaintext
 local-filesystem paths, token refresh, grants, create/overwrite flow, exact
-idempotent replay, and ACL-revocation tests are implemented. The Go SDK exposes
+idempotent replay, ACL-revocation tests, and fenced expired-upload cleanup are
+implemented. The Go SDK exposes
 `Put`, `PutFile`, and `PutBytes`; the CLI exposes one-file upload:
 
 ```bash
@@ -229,7 +257,22 @@ Private temporary directories left before atomic journal publication are
 ignored because provider I/O cannot have started yet. Use `--journal-directory`
 when Put used a non-default root.
 
-A dedicated durable receipt-recovery API beyond intent lifetime, remote V2
-drivers, download, directory synchronization, and catalog-prefetch planning
+Run one agent-safe cleanup step with a narrowly scoped janitor token:
+
+```bash
+carrack vfs gc \
+  --control-url https://carrack.example.com \
+  --limit 1 \
+  --format json
+```
+
+The default is one object and JSON output. `--limit` is explicitly bounded to
+100; each object still receives its own claim, Stat, final revalidation, and
+completion. A driver without exact delete support is a hard error with a
+replacement recommendation, never a weaker delete.
+
+A dedicated durable receipt-recovery API beyond intent lifetime, replacement
+and deleted-version reachability, remote V2 drivers, download, directory
+synchronization, and catalog-prefetch planning
 remain later V2 slices. This boundary does not weaken publication checks or
 make the control plane a payload proxy.

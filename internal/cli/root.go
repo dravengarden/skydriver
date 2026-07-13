@@ -153,6 +153,10 @@ func writeValue(writer io.Writer, outputFormat string, value any) error {
 			return writeVFSPutTable(writer, result)
 		}
 
+		if result, ok := value.(vfsGCSweepResult); ok {
+			return writeVFSGCTable(writer, result)
+		}
+
 		if supportsVFSManagementTable(value) {
 			return writeVFSManagementTable(writer, value)
 		}

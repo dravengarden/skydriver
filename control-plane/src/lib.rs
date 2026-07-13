@@ -44,6 +44,7 @@ mod vfs_merkle;
 mod vfs_policy_management;
 mod vfs_put;
 mod vfs_put_commit;
+mod vfs_put_deletion;
 mod vfs_token_management;
 mod vfs_tokens;
 
@@ -401,6 +402,72 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
                 };
 
                 vfs_grants::grant_put_driver(&context.env, &token, intent_id).await
+            },
+        )
+        .post_async("/api/v2/put-deletes/claim", |mut request, context| async move {
+            if external_maintenance(&context.env) {
+                return Response::error("control-plane mutations are disabled", 409);
+            }
+            let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                return Response::error("VFS token authentication required", 401);
+            };
+            vfs_put_deletion::claim(&mut request, &context.env, &token).await
+        })
+        .post_async(
+            "/api/v2/put-deletes/:id/driver-grant",
+            |request, context| async move {
+                let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                    return Response::error("VFS token authentication required", 401);
+                };
+                let Some(task_id) = context.param("id") else {
+                    return Response::error("VFS put-delete task ID is required", 400);
+                };
+                vfs_grants::grant_put_delete_driver(&context.env, &token, task_id).await
+            },
+        )
+        .post_async(
+            "/api/v2/put-deletes/:id/revalidate",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+                let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                    return Response::error("VFS token authentication required", 401);
+                };
+                let Some(task_id) = context.param("id") else {
+                    return Response::error("VFS put-delete task ID is required", 400);
+                };
+                vfs_put_deletion::revalidate(&mut request, &context.env, &token, task_id).await
+            },
+        )
+        .post_async(
+            "/api/v2/put-deletes/:id/complete",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+                let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                    return Response::error("VFS token authentication required", 401);
+                };
+                let Some(task_id) = context.param("id") else {
+                    return Response::error("VFS put-delete task ID is required", 400);
+                };
+                vfs_put_deletion::complete(&mut request, &context.env, &token, task_id).await
+            },
+        )
+        .post_async(
+            "/api/v2/put-deletes/:id/fail",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+                let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                    return Response::error("VFS token authentication required", 401);
+                };
+                let Some(task_id) = context.param("id") else {
+                    return Response::error("VFS put-delete task ID is required", 400);
+                };
+                vfs_put_deletion::fail(&mut request, &context.env, &token, task_id).await
             },
         )
         .post_async(

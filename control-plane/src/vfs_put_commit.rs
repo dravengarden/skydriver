@@ -99,6 +99,11 @@ struct ReceiptRow {
     committed_at: u64,
 }
 
+#[derive(Deserialize)]
+struct UploadEvidenceRow {
+    commit_sha256: String,
+}
+
 #[derive(Serialize)]
 struct CommitResponse {
     schema: &'static str,
@@ -307,6 +312,38 @@ pub(crate) async fn commit(
 
     validate_staged_manifest(env, &intent, &requested.block_manifest_r2_version).await?;
 
+    let evidence_time = current_unix_seconds();
+    let record_error = record_upload_evidence(
+        &database,
+        &intent,
+        token,
+        &requested,
+        &commit_sha256,
+        evidence_time,
+    )
+    .await
+    .err();
+    let evidence = load_upload_evidence(&database, intent_id).await?;
+    if evidence.is_none() {
+        if let Some(error) = record_error {
+            let current = load_intent(&database, intent_id, &token.principal_id).await?;
+            if current.is_none_or(|value| {
+                value.state != "prepared" || value.expires_at <= current_unix_seconds()
+            }) {
+                return Response::error("VFS put intent expired before evidence was recorded", 409);
+            }
+            return Err(error);
+        }
+        return Response::error("VFS upload evidence was not recorded", 409);
+    }
+    let evidence = evidence.expect("checked upload evidence");
+    if evidence.commit_sha256 != commit_sha256 {
+        return Response::error(
+            "VFS put commit identity conflicts with upload evidence",
+            409,
+        );
+    }
+
     for _ in 0..MAXIMUM_COMMIT_REBASE_ATTEMPTS {
         let Some(plan) = plan_directory_roots(&database, &intent).await? else {
             return Response::error("VFS entry precondition changed", 409);
@@ -476,6 +513,52 @@ async fn load_receipt(database: &D1Database, intent_id: &str) -> Result<Option<R
         .bind(&[JsValue::from_str(intent_id)])?
         .first::<ReceiptRow>(None)
         .await
+}
+
+async fn load_upload_evidence(
+    database: &D1Database,
+    intent_id: &str,
+) -> Result<Option<UploadEvidenceRow>> {
+    database
+        .prepare("SELECT commit_sha256 FROM vfs_put_upload_evidence WHERE intent_id = ?1")
+        .bind(&[JsValue::from_str(intent_id)])?
+        .first::<UploadEvidenceRow>(None)
+        .await
+}
+
+async fn record_upload_evidence(
+    database: &D1Database,
+    intent: &PutIntentRow,
+    token: &AuthenticatedVfsToken,
+    requested: &CommitRequest,
+    commit_sha256: &str,
+    verified_at: u64,
+) -> Result<()> {
+    database
+        .prepare(
+            "INSERT INTO vfs_put_upload_evidence (
+                 intent_id, token_id, commit_sha256, block_manifest_r2_version,
+                 encoded_bytes, encoded_sha256, verification_method, native_id,
+                 provider_version, etag, verified_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(intent_id) DO NOTHING",
+        )
+        .bind(&[
+            JsValue::from_str(&intent.id),
+            JsValue::from_str(&token.id),
+            JsValue::from_str(commit_sha256),
+            JsValue::from_str(&requested.block_manifest_r2_version),
+            number_binding(requested.encoded_bytes),
+            JsValue::from_str(&requested.encoded_sha256),
+            JsValue::from_str(requested.verification_method.name()),
+            optional_binding(requested.native_id.as_deref()),
+            optional_binding(requested.provider_version.as_deref()),
+            optional_binding(requested.etag.as_deref()),
+            number_binding(verified_at),
+        ])?
+        .run()
+        .await?;
+    Ok(())
 }
 
 #[allow(

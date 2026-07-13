@@ -320,6 +320,16 @@ INSERT INTO vfs_catalog_mutation_heads (
 SELECT filesystem_id, id, unixepoch() FROM vfs_catalog_revisions
 WHERE mutation_kind = 'put' AND mutation_id = '$intent';
 
+INSERT INTO vfs_put_upload_evidence (
+  intent_id, token_id, commit_sha256, block_manifest_r2_version,
+  encoded_bytes, encoded_sha256, verification_method,
+  native_id, provider_version, etag, verified_at
+) VALUES (
+  '$intent', '$token', '$commit_sha', 'r2-block-version-1',
+  10, '$encoded_sha', 'complete_readback',
+  'native-object-1', 'provider-version-1', 'etag-1', unixepoch()
+);
+
 INSERT INTO vfs_put_receipts (
   intent_id, token_id, commit_sha256, block_manifest_r2_version,
   encoded_bytes, encoded_sha256, verification_method, verified_at,
@@ -351,6 +361,7 @@ JOIN vfs_file_versions AS version ON version.id = '$version'
 JOIN vfs_locations AS location ON location.id = '$location'
 JOIN vfs_directory_entries AS entry
   ON entry.directory_id = '$directory' AND entry.name = 'asset.bin'
+JOIN vfs_put_upload_evidence AS evidence ON evidence.intent_id = intent.id
 JOIN vfs_put_receipts AS receipt ON receipt.intent_id = intent.id
 JOIN vfs_catalog_revisions AS catalog ON catalog.id = receipt.catalog_revision_id
 JOIN vfs_catalog_outbox AS outbox ON outbox.revision_id = catalog.id
@@ -369,6 +380,10 @@ expect_failure \
   "mutation of durable commit receipt"
 
 expect_failure \
+  "UPDATE vfs_put_upload_evidence SET etag = 'changed' WHERE intent_id = '$intent';" \
+  "mutation of immutable upload evidence"
+
+expect_failure \
   "UPDATE vfs_put_directory_updates
    SET new_data_root = '$old_root'
    WHERE intent_id = '$intent' AND ordinal = 1;" \
@@ -383,6 +398,35 @@ expect_failure \
    SET state = 'committed', committed_at = unixepoch(), revision = revision + 1
    WHERE id = '$contender';" \
   "losing contender without matching publication receipt"
+
+execute "
+INSERT INTO vfs_put_upload_evidence (
+  intent_id, token_id, commit_sha256, block_manifest_r2_version,
+  encoded_bytes, encoded_sha256, verification_method,
+  native_id, provider_version, etag, verified_at
+) VALUES (
+  '$contender', '$token',
+  '7777777777777777777777777777777777777777777777777777777777777777',
+  'r2-block-version-contender', 10, '$encoded_sha', 'complete_readback',
+  'native-contender', 'provider-contender', 'etag-contender', unixepoch()
+);
+UPDATE vfs_put_intents
+SET state = 'expired', revision = revision + 1
+WHERE id = '$contender';
+INSERT INTO vfs_put_delete_tasks (
+  id, driver_revision, evidence_sha256, delete_after, created_at, updated_at
+) VALUES (
+  '$contender', 1,
+  '7777777777777777777777777777777777777777777777777777777777777777',
+  unixepoch() - 1, unixepoch(), unixepoch()
+);
+INSERT INTO vfs_put_protocol_assertions
+SELECT COUNT(*) = 1 FROM safe_vfs_put_delete_tasks WHERE id = '$contender';
+"
+
+expect_failure \
+  "UPDATE vfs_put_delete_tasks SET delete_after = unixepoch() + 1 WHERE id = '$contender';" \
+  "mutation of immutable VFS put delete identity"
 
 execute "
 UPDATE vfs_token_verifiers SET revoked_at = unixepoch() WHERE id = '$token';

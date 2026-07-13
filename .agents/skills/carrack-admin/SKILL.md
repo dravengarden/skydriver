@@ -87,6 +87,20 @@ or global settings until the installed CLI exposes their `validate` and
 `apply` commands. Report the missing surface instead of editing D1, calling
 Wrangler D1 directly, or crafting HTTP.
 
+## Sweep abandoned Put objects
+
+Use `carrack vfs gc` only with an explicitly selected environment and an
+attenuated `CARRACK_VFS_TOKEN` carrying `gc.run` plus `driver.use` for the
+intended directory subtree and drivers. Keep the default `--limit 1` for an
+interactive agent action; raise it only after inspecting the environment and
+state the bound before execution.
+
+Treat `idle` as successful convergence. Treat capability, identity, fence, and
+authorization failures as hard stops. Never delete a provider object directly,
+retry through raw HTTP, edit D1, or substitute a different driver. The CLI
+performs the required short claim, pinned grant, exact Stat, final fence
+rotation, idempotent Delete, and completion protocol.
+
 ## Handle races and ambiguous outcomes
 
 - Replay an ambiguous transport outcome only with the byte-identical desired
@@ -96,6 +110,8 @@ Wrangler D1 directly, or crafting HTTP.
 - Treat an invalid or unexpected receipt as failure even when HTTP returned 2xx.
 - Never use GC to resolve a metadata race. GC is for unreachable immutable
   provider objects after grace and reachability checks.
+- Never interpret a janitor failure as permission to remove the object with a
+  provider CLI. Preserve it for a later fenced retry or operator investigation.
 
 ## Finish
 

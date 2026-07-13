@@ -7,12 +7,13 @@ use crate::{
     vfs_envelopes::{
         DirectoryEnvelopeRef, PLAINTEXT_SUITE, open_directory_key, open_driver_credential,
     },
-    vfs_put,
+    vfs_put, vfs_put_deletion,
     vfs_tokens::AuthenticatedVfsToken,
 };
 
 const KEY_GRANT_SCHEMA: &str = "carrack.vfs.directory-key-grant.v1";
 const DRIVER_GRANT_SCHEMA: &str = "carrack.vfs.driver-grant.v1";
+const PUT_DELETE_DRIVER_GRANT_SCHEMA: &str = "carrack.vfs.put-delete-driver-grant.v1";
 
 #[derive(Deserialize)]
 struct PutGrantRow {
@@ -41,6 +42,23 @@ struct PutGrantRow {
     credential_revision: Option<u64>,
 }
 
+#[derive(Deserialize)]
+struct PutDeleteGrantRow {
+    task_id: String,
+    filesystem_id: String,
+    driver_id: String,
+    driver_kind: String,
+    driver_config_json: String,
+    driver_revision: u64,
+    lease_expires_at: u64,
+    credential_id: Option<String>,
+    credential_algorithm: Option<String>,
+    credential_key_version: Option<String>,
+    credential_nonce: Option<Vec<u8>>,
+    credential_ciphertext: Option<Vec<u8>>,
+    credential_revision: Option<u64>,
+}
+
 #[derive(Serialize)]
 struct KeyGrantResponse {
     schema: &'static str,
@@ -57,6 +75,18 @@ struct KeyGrantResponse {
 struct DriverGrantResponse {
     schema: &'static str,
     intent_id: String,
+    driver_id: String,
+    driver_kind: String,
+    driver_revision: u64,
+    config: serde_json::Value,
+    credential: Option<serde_json::Value>,
+    expires_at: u64,
+}
+
+#[derive(Serialize)]
+struct PutDeleteDriverGrantResponse {
+    schema: &'static str,
+    task_id: String,
     driver_id: String,
     driver_kind: String,
     driver_revision: u64,
@@ -178,6 +208,51 @@ pub(crate) async fn grant_put_driver(
     })?)
 }
 
+/// Returns the pinned compiled-driver configuration for a currently fenced
+/// expired-upload deletion. A grant never authorizes a different driver
+/// revision and expires no later than the claim lease.
+pub(crate) async fn grant_put_delete_driver(
+    env: &Env,
+    token: &AuthenticatedVfsToken,
+    task_id: &str,
+) -> Result<Response> {
+    let database = env.d1("CARRACK_INDEX")?;
+    if !vfs_put_deletion::authorized(&database, token, task_id).await? {
+        return Response::error("VFS put-delete driver grant is not authorized", 403);
+    }
+    let Some(context) = load_put_delete_context(&database, token, task_id).await? else {
+        return Response::error("VFS put-delete task has no current safe fence", 409);
+    };
+    let config = serde_json::from_str::<serde_json::Value>(&context.driver_config_json).map_err(
+        |error| {
+            worker::Error::RustError(format!("decode stored VFS driver configuration: {error}"))
+        },
+    )?;
+    let credential = decrypt_put_delete_credential(env, &context)?;
+    record_put_delete_audit(
+        &database,
+        token,
+        &context,
+        serde_json::json!({
+            "credential_present": credential.is_some(),
+            "driver_id": context.driver_id,
+            "driver_revision": context.driver_revision,
+        }),
+    )
+    .await?;
+
+    no_store(Response::from_json(&PutDeleteDriverGrantResponse {
+        schema: PUT_DELETE_DRIVER_GRANT_SCHEMA,
+        task_id: context.task_id,
+        driver_id: context.driver_id,
+        driver_kind: context.driver_kind,
+        driver_revision: context.driver_revision,
+        config,
+        credential,
+        expires_at: context.lease_expires_at.min(token.expires_at),
+    })?)
+}
+
 async fn grant_allowed(
     database: &D1Database,
     token: &AuthenticatedVfsToken,
@@ -237,6 +312,40 @@ fn decrypt_credential(env: &Env, context: &PutGrantRow) -> Result<Option<serde_j
     Ok(Some(decoded?))
 }
 
+fn decrypt_put_delete_credential(
+    env: &Env,
+    context: &PutDeleteGrantRow,
+) -> Result<Option<serde_json::Value>> {
+    let Some(credential_id) = context.credential_id.as_deref() else {
+        return Ok(None);
+    };
+    let (Some(algorithm), Some(version), Some(nonce), Some(ciphertext), Some(revision)) = (
+        context.credential_algorithm.as_deref(),
+        context.credential_key_version.as_deref(),
+        context.credential_nonce.as_deref(),
+        context.credential_ciphertext.as_deref(),
+        context.credential_revision,
+    ) else {
+        return Err(worker::Error::RustError(
+            "VFS driver credential envelope is incomplete".to_owned(),
+        ));
+    };
+    let mut plaintext = open_driver_credential(
+        env,
+        credential_id,
+        revision,
+        algorithm,
+        version,
+        nonce,
+        ciphertext,
+    )?;
+    let decoded = serde_json::from_slice(&plaintext).map_err(|error| {
+        worker::Error::RustError(format!("decode VFS driver credential JSON: {error}"))
+    });
+    plaintext.zeroize();
+    Ok(Some(decoded?))
+}
+
 async fn load_context(database: &D1Database, intent_id: &str) -> Result<Option<PutGrantRow>> {
     database
         .prepare(
@@ -269,6 +378,45 @@ async fn load_context(database: &D1Database, intent_id: &str) -> Result<Option<P
         .await
 }
 
+async fn load_put_delete_context(
+    database: &D1Database,
+    token: &AuthenticatedVfsToken,
+    task_id: &str,
+) -> Result<Option<PutDeleteGrantRow>> {
+    database
+        .prepare(
+            "SELECT task.id AS task_id, intent.filesystem_id,\
+                    intent.driver_id, driver.kind AS driver_kind,\
+                    driver.config_json AS driver_config_json,\
+                    task.driver_revision, task.lease_expires_at,\
+                    credential.id AS credential_id,\
+                    credential.envelope_algorithm AS credential_algorithm,\
+                    credential.key_version AS credential_key_version,\
+                    credential.nonce AS credential_nonce,\
+                    credential.ciphertext AS credential_ciphertext,\
+                    credential.revision AS credential_revision \
+             FROM vfs_put_delete_tasks AS task \
+             JOIN vfs_put_intents AS intent ON intent.id = task.id \
+             JOIN driver_instances AS driver ON driver.id = intent.driver_id \
+             LEFT JOIN credential_envelopes AS credential \
+               ON credential.id = driver.credential_ref \
+             WHERE task.id = ?1 AND task.state = 'claimed' \
+               AND task.owner_token_id = ?2 AND task.lease_expires_at > ?3 \
+               AND task.incarnation = (\
+                   SELECT incarnation FROM control_plane_state WHERE singleton = 1\
+               ) \
+               AND driver.enabled = 1 AND driver.revision = task.driver_revision \
+               AND task.id IN (SELECT id FROM safe_vfs_put_delete_tasks)",
+        )
+        .bind(&[
+            JsValue::from_str(task_id),
+            JsValue::from_str(&token.id),
+            JsValue::from_str(&current_unix_seconds().to_string()),
+        ])?
+        .first::<PutDeleteGrantRow>(None)
+        .await
+}
+
 async fn record_audit(
     database: &D1Database,
     token: &AuthenticatedVfsToken,
@@ -289,6 +437,33 @@ async fn record_audit(
             JsValue::from_str(&token.id),
             JsValue::from_str(event_kind),
             JsValue::from_str(&context.intent_id),
+            JsValue::from_str(&details.to_string()),
+            JsValue::from_str(&current_unix_seconds().to_string()),
+        ])?
+        .run()
+        .await?;
+    Ok(())
+}
+
+async fn record_put_delete_audit(
+    database: &D1Database,
+    token: &AuthenticatedVfsToken,
+    context: &PutDeleteGrantRow,
+    details: serde_json::Value,
+) -> Result<()> {
+    database
+        .prepare(
+            "INSERT INTO vfs_audit_events (\
+                 filesystem_id, principal_id, token_id, event_kind, subject_kind,\
+                 subject_id, details_json, created_at\
+             ) VALUES (?1, ?2, ?3, 'put_delete_driver_granted',\
+                       'put_delete_task', ?4, ?5, ?6)",
+        )
+        .bind(&[
+            JsValue::from_str(&context.filesystem_id),
+            JsValue::from_str(&token.principal_id),
+            JsValue::from_str(&token.id),
+            JsValue::from_str(&context.task_id),
             JsValue::from_str(&details.to_string()),
             JsValue::from_str(&current_unix_seconds().to_string()),
         ])?

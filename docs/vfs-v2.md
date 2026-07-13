@@ -448,6 +448,14 @@ outside D1. Commit reauthorizes the current token and ACL, verifies expected
 entry versions, inserts verified locations, updates entries and affected
 directory roots, and advances the catalog revision in one short transaction.
 
+Before attempting that optimistic publication, Commit durably records an
+immutable upload-evidence row containing the exact encoded hash, size, and
+provider identity. A losing directory race therefore retains enough evidence
+for a later fenced janitor instead of losing provider identity with the failed
+publication transaction. A process failure between provider completion and
+the Commit request remains discoverable through driver inventory and local
+transfer journals.
+
 Disjoint entry changes may merge even when the global root changed. Changes to
 the same entry produce an explicit conflict. A losing upload remains an
 adoptable staging object or a future GC candidate; it never overwrites the
@@ -470,10 +478,24 @@ unreachable location irreversibly to a tombstoned state with a policy-derived
 deadline. A tombstoned location cannot be referenced again; recovery creates a
 new location with a new object name.
 
+For an upload that never published, metadata hygiene changes the intent to
+`expired` and creates at most one delete task from its immutable upload
+evidence. The task pins the driver revision and evidence digest, waits an
+additional one-day grace, and is eligible only while no publication receipt or
+non-deleted location references the provider object. A newly indexed location
+supersedes the task immediately.
+
 After grace, a janitor claims a short fenced task. Immediately before I/O, the
 control plane rechecks the task, incarnation, deadline, immutable locator, and
 provider identity. The Go janitor performs `Stat` and idempotent `Delete`.
 After a lost response it re-observes the exact object; absence is success.
+
+The implemented `carrack vfs gc` path processes at most the explicit bounded
+limit (one by default). Its token must carry `gc.run` and `driver.use` through
+both attenuation and inherited ACL. A short driver grant pins the planned
+revision; final revalidation rotates the fence after Stat and immediately
+before Delete. Missing exact delete support or missing strong provider identity
+is a hard failure, not a best-effort cleanup.
 
 The control plane plans GC but never calls a VFS storage driver. Its R2 binding
 is used only for control metadata such as catalogs and audit recovery, not for
@@ -494,6 +516,7 @@ ordinary VFS file payloads.
    JSON contracts.
 7. Add S3 and R2 drivers, then Google Drive and WebDAV behind the same contract
    tests; keep the existing Aliyun Drive Open adapter in the shared suite.
-8. Add conservative reachability, grace, and fenced janitor GC.
+8. Extend the implemented abandoned-Put grace and fenced janitor to retained
+   snapshots, replaced versions, and deleted entries.
 9. Remove legacy packs, extents, bundles, compaction, and operation protocols
    after V2 parity and migration tests pass.

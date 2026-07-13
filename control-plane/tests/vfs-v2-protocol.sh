@@ -75,6 +75,30 @@ WHERE type = 'index' AND name IN (
   'idx_vfs_snapshots_expiry'
 );
 
+INSERT INTO vfs_v2_protocol_assertions
+SELECT COUNT(*) = 1 FROM sqlite_schema
+WHERE type = 'table' AND name = 'vfs_put_upload_evidence';
+
+INSERT INTO vfs_v2_protocol_assertions
+SELECT COUNT(*) = 3 FROM sqlite_schema
+WHERE type = 'trigger' AND name IN (
+  'validate_vfs_put_upload_evidence_insert',
+  'protect_vfs_put_upload_evidence',
+  'require_vfs_put_receipt_upload_evidence'
+);
+
+INSERT INTO vfs_v2_protocol_assertions
+SELECT COUNT(*) = 1 FROM sqlite_schema
+WHERE type = 'view' AND name = 'safe_vfs_put_delete_tasks';
+
+INSERT INTO vfs_v2_protocol_assertions
+SELECT COUNT(*) = 1 FROM pragma_table_info('vfs_put_delete_tasks')
+WHERE name = 'revalidated_at' AND type = 'INTEGER';
+
+INSERT INTO vfs_v2_protocol_assertions
+SELECT COUNT(*) = 1 FROM sqlite_schema
+WHERE type = 'trigger' AND name = 'validate_vfs_put_delete_revalidation';
+
 INSERT INTO credential_envelopes (
   id, envelope_algorithm, key_version, nonce, ciphertext, created_at, rotated_at
 ) VALUES ('vfs-credential', 'test/v1', '1', X'01', X'02', 1, 1);

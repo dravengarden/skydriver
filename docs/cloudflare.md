@@ -163,7 +163,24 @@ most 500 expired rows from each ephemeral session table and moves at most 250
 expired V2 Put intents from `prepared` to the durable `expired` state. It never
 contacts a driver and never deletes provider objects. The bounds keep one
 maintenance invocation from monopolizing D1; later invocations drain any
-backlog.
+backlog. When an expired intent has immutable upload evidence, the same
+transaction idempotently plans a fenced delete task with an additional one-day
+grace; provider `Stat` and deletion still require an explicitly authorized
+janitor client.
+
+Run that client with an attenuated VFS token carrying `gc.run` and `driver.use`:
+
+```bash
+export CARRACK_VFS_TOKEN="$(read-vfs-janitor-token)"
+carrack vfs gc --control-url https://carrack.example.com --limit 1 --format json
+```
+
+The command obtains a lease-bounded pinned driver grant, compares the exact
+provider identity with immutable upload evidence, rotates the fence after
+`Stat`, and only then calls the compiled driver's exact `Delete`. Keep the
+default single-object bound for agent use. `idle: true` is normal convergence;
+capability and identity errors require investigation, not a provider-side
+manual delete.
 
 Namespace `retention_policy_json` accepts `move_grace_seconds`,
 `gc_minimum_age_seconds`, `gc_grace_seconds`, and

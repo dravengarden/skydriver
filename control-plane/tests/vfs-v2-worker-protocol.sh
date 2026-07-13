@@ -103,6 +103,10 @@ printf '%s' "$manifest_hex" | xxd -r -p >"$state_directory/block-manifest.bin"
       (
         '92000000000000000000000000000002', '$root', '$principal',
         'driver.use', 'storage_operator', '$principal', unixepoch()
+      ),
+      (
+        '92000000000000000000000000000003', '$root', '$principal',
+        'gc.run', 'storage_operator', '$principal', unixepoch()
       );
     INSERT INTO vfs_token_verifiers (
       id, principal_id, root_directory_id, verifier_sha256, expires_at,
@@ -120,7 +124,8 @@ printf '%s' "$manifest_hex" | xxd -r -p >"$state_directory/block-manifest.bin"
       ('$token_id_1', 'content.write'),
       ('$token_id_1', 'driver.use'),
       ('$token_id_2', 'content.write'),
-      ('$token_id_2', 'driver.use');
+      ('$token_id_2', 'driver.use'),
+      ('$token_id_2', 'gc.run');
     INSERT INTO vfs_token_drivers (token_id, driver_id) VALUES
       ('$token_id_1', 'vfs-worker-driver'),
       ('$token_id_2', 'vfs-worker-driver');
@@ -321,11 +326,14 @@ revoked_commit_status=$(curl --silent --output /dev/null --write-out '%{http_cod
     INSERT INTO vfs_worker_assertions
     SELECT intent.state = 'committed'
            AND receipt.token_id = '$token_id_2'
+           AND evidence.token_id = '$token_id_2'
+           AND evidence.commit_sha256 = receipt.commit_sha256
            AND receipt.entry_revision = 1
            AND version.state = 'published'
            AND location.state = 'available'
            AND outbox.state = 'pending'
     FROM vfs_put_intents AS intent
+    JOIN vfs_put_upload_evidence AS evidence ON evidence.intent_id = intent.id
     JOIN vfs_put_receipts AS receipt ON receipt.intent_id = intent.id
     JOIN vfs_file_versions AS version ON version.id = intent.version_id
     JOIN vfs_locations AS location ON location.id = intent.location_id
@@ -335,6 +343,7 @@ revoked_commit_status=$(curl --silent --output /dev/null --write-out '%{http_cod
     INSERT INTO vfs_worker_assertions
     SELECT intent.state = 'committed'
            AND receipt.entry_revision = 2
+           AND evidence.commit_sha256 = receipt.commit_sha256
            AND file.id = '$file_id'
            AND file.current_version_id = '$overwrite_version'
            AND file.revision = 2
@@ -344,6 +353,7 @@ revoked_commit_status=$(curl --silent --output /dev/null --write-out '%{http_cod
            AND head.revision_id = catalog.id
            AND head.revision = 2
     FROM vfs_put_intents AS intent
+    JOIN vfs_put_upload_evidence AS evidence ON evidence.intent_id = intent.id
     JOIN vfs_put_receipts AS receipt ON receipt.intent_id = intent.id
     JOIN vfs_files AS file ON file.id = intent.file_id
     JOIN vfs_directory_entries AS entry
@@ -357,3 +367,161 @@ revoked_commit_status=$(curl --silent --output /dev/null --write-out '%{http_cod
     INSERT INTO vfs_worker_assertions
     SELECT NOT EXISTS (SELECT 1 FROM pragma_foreign_key_check);
   " >/dev/null
+
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local \
+  --persist-to "$state_directory" \
+  --command "INSERT INTO vfs_acl_grants (
+               id, directory_id, principal_id, action, source_role, created_by, created_at
+             ) VALUES (
+               '92000000000000000000000000000009', '$root', '$principal',
+               'content.write', 'editor', '$principal', unixepoch()
+             );" >/dev/null
+
+race_request_a=$(jq \
+  '.entry_name = "race.bin" | .idempotency_key = "worker-put-race-a"' \
+  <<<"$prepare_request")
+race_request_b=$(jq \
+  '.entry_name = "race.bin" | .idempotency_key = "worker-put-race-b"' \
+  <<<"$prepare_request")
+race_prepared_a=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization_2" -H "$json" --data "$race_request_a" \
+  "$base_url/api/v2/puts/prepare")
+race_prepared_b=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization_2" -H "$json" --data "$race_request_b" \
+  "$base_url/api/v2/puts/prepare")
+race_intent_a=$(jq -r '.intent_id' <<<"$race_prepared_a")
+race_intent_b=$(jq -r '.intent_id' <<<"$race_prepared_b")
+race_staged_a=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization_2" -H 'Content-Type: application/octet-stream' \
+  --data-binary "@$state_directory/block-manifest.bin" \
+  "$base_url/api/v2/puts/$race_intent_a/block-manifest")
+race_staged_b=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization_2" -H 'Content-Type: application/octet-stream' \
+  --data-binary "@$state_directory/block-manifest.bin" \
+  "$base_url/api/v2/puts/$race_intent_b/block-manifest")
+race_commit_a=$(jq \
+  --arg version "$(jq -r '.r2_version' <<<"$race_staged_a")" \
+  '.block_manifest_r2_version = $version
+   | .native_id = "native-race-a"
+   | .provider_version = "provider-race-a"
+   | .etag = "etag-race-a"' <<<"$commit_request")
+race_commit_b=$(jq \
+  --arg version "$(jq -r '.r2_version' <<<"$race_staged_b")" \
+  '.block_manifest_r2_version = $version
+   | .native_id = "native-race-b"
+   | .provider_version = "provider-race-b"
+   | .etag = "etag-race-b"' <<<"$commit_request")
+curl --silent --show-error --fail-with-body \
+  -H "$authorization_2" -H "$json" --data "$race_commit_a" \
+  "$base_url/api/v2/puts/$race_intent_a/commit" >/dev/null
+race_conflict_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization_2" -H "$json" --data "$race_commit_b" \
+  "$base_url/api/v2/puts/$race_intent_b/commit")
+[[ "$race_conflict_status" == 409 ]]
+
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local \
+  --persist-to "$state_directory" \
+  --command "INSERT INTO vfs_worker_assertions
+             SELECT intent.state = 'prepared'
+                    AND evidence.native_id = 'native-race-b'
+                    AND evidence.provider_version = 'provider-race-b'
+                    AND evidence.etag = 'etag-race-b'
+                    AND NOT EXISTS (
+                      SELECT 1 FROM vfs_put_receipts WHERE intent_id = intent.id
+                    )
+             FROM vfs_put_intents AS intent
+             JOIN vfs_put_upload_evidence AS evidence ON evidence.intent_id = intent.id
+             WHERE intent.id = '$race_intent_b';" >/dev/null
+
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local \
+  --persist-to "$state_directory" \
+  --command "
+    UPDATE driver_instances SET credential_ref = NULL
+    WHERE id = 'vfs-worker-driver';
+    UPDATE vfs_put_intents
+    SET state = 'expired', revision = revision + 1
+    WHERE id = '$race_intent_b';
+    INSERT INTO vfs_put_delete_tasks (
+      id, driver_revision, evidence_sha256, delete_after, created_at, updated_at
+    )
+    SELECT intent.id, driver.revision, evidence.commit_sha256,
+           unixepoch() - 1, unixepoch(), unixepoch()
+    FROM vfs_put_intents AS intent
+    JOIN vfs_put_upload_evidence AS evidence ON evidence.intent_id = intent.id
+    JOIN driver_instances AS driver ON driver.id = intent.driver_id
+    WHERE intent.id = '$race_intent_b';
+  " >/dev/null
+
+unauthorized_claim=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization_1" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v2/put-deletes/claim")
+[[ "$(jq -r '.state' <<<"$unauthorized_claim")" == idle ]]
+
+claimed=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization_2" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v2/put-deletes/claim")
+[[ "$(jq -r '.state' <<<"$claimed")" == claimed ]]
+[[ "$(jq -r '.task.task_id' <<<"$claimed")" == "$race_intent_b" ]]
+[[ "$(jq -r '.task.schema' <<<"$claimed")" == carrack.vfs.put-delete-task.v1 ]]
+claim_incarnation=$(jq -r '.task.incarnation' <<<"$claimed")
+claim_fence=$(jq -r '.task.fencing_token' <<<"$claimed")
+
+driver_grant=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization_2" -H "$json" --data '{}' \
+  "$base_url/api/v2/put-deletes/$race_intent_b/driver-grant")
+[[ "$(jq -r '.schema' <<<"$driver_grant")" == carrack.vfs.put-delete-driver-grant.v1 ]]
+[[ "$(jq -r '.task_id' <<<"$driver_grant")" == "$race_intent_b" ]]
+[[ "$(jq -r '.driver_revision' <<<"$driver_grant")" == 1 ]]
+
+fail_request=$(jq -cn --arg incarnation "$claim_incarnation" --argjson fence "$claim_fence" \
+  '{incarnation:$incarnation,fencing_token:$fence,error_code:"test_retry"}')
+failed=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization_2" -H "$json" --data "$fail_request" \
+  "$base_url/api/v2/put-deletes/$race_intent_b/fail")
+[[ "$(jq -r '.state' <<<"$failed")" == failed ]]
+
+reclaimed=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization_2" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v2/put-deletes/claim")
+reclaim_incarnation=$(jq -r '.task.incarnation' <<<"$reclaimed")
+reclaim_fence=$(jq -r '.task.fencing_token' <<<"$reclaimed")
+[[ "$reclaim_fence" -gt "$claim_fence" ]]
+
+premature_completion=$(jq -cn \
+  --arg incarnation "$reclaim_incarnation" --argjson fence "$reclaim_fence" \
+  '{incarnation:$incarnation,fencing_token:$fence,outcome:"deleted"}')
+premature_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization_2" -H "$json" --data "$premature_completion" \
+  "$base_url/api/v2/put-deletes/$race_intent_b/complete")
+[[ "$premature_status" == 409 ]]
+
+revalidate_request=$(jq -cn \
+  --arg incarnation "$reclaim_incarnation" --argjson fence "$reclaim_fence" \
+  '{incarnation:$incarnation,fencing_token:$fence,lease_seconds:60}')
+revalidated=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization_2" -H "$json" --data "$revalidate_request" \
+  "$base_url/api/v2/put-deletes/$race_intent_b/revalidate")
+revalidated_fence=$(jq -r '.fencing_token' <<<"$revalidated")
+[[ "$revalidated_fence" -eq $((reclaim_fence + 1)) ]]
+
+stale_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$authorization_2" -H "$json" --data "$premature_completion" \
+  "$base_url/api/v2/put-deletes/$race_intent_b/complete")
+[[ "$stale_status" == 409 ]]
+
+completion_request=$(jq -cn \
+  --arg incarnation "$reclaim_incarnation" --argjson fence "$revalidated_fence" \
+  '{incarnation:$incarnation,fencing_token:$fence,outcome:"deleted"}')
+completed=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization_2" -H "$json" --data "$completion_request" \
+  "$base_url/api/v2/put-deletes/$race_intent_b/complete")
+[[ "$(jq -r '.state' <<<"$completed")" == deleted ]]
+[[ "$(jq -r '.completion_outcome' <<<"$completed")" == deleted ]]
+
+replayed_completion=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization_2" -H "$json" --data "$completion_request" \
+  "$base_url/api/v2/put-deletes/$race_intent_b/complete")
+[[ "$replayed_completion" == "$completed" ]]
