@@ -108,6 +108,10 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
   processes MUST NOT be dependencies of Carrack clients or deployments.
 - Drivers MUST advertise capabilities, size limits, checksum support,
   resumability, safe concurrency, and rate-limit constraints.
+- Hosted access-token credentials MUST expose a non-secret absolute expiry when
+  the provider token carries one. The server MUST reject malformed or expired
+  credentials before persistence, and management clients MUST warn before
+  expiry without ever returning credential material.
 - Provider-object grouping MUST use only whole consecutive extents, respect a
   driver's hard maximum, and emit an exact short tail. Changing provider-object
   policy MUST NOT change bundle, frame, extent, or ciphertext identities.

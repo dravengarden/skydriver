@@ -20,6 +20,7 @@ const CREDENTIAL_KIND: &str = "driver.credential";
 const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.driver-credential.v1\0";
 const ALIYUN_DRIVE_KIND: &str = "aliyundrive-open/v2";
 const MAXIMUM_ACCESS_TOKEN_BYTES: usize = 16 << 10;
+const MAXIMUM_JSON_INTEGER: u64 = (1_u64 << 53) - 1;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -76,6 +77,7 @@ struct ValidationResponse {
     kind: String,
     current_credential_present: bool,
     credential_revision: u64,
+    credential_expires_at: u64,
     expected_revision: u64,
     validation_expires_at: u64,
     validation_digest: String,
@@ -89,6 +91,7 @@ struct ReceiptResponse {
     driver_id: String,
     credential_id: String,
     credential_revision: u64,
+    credential_expires_at: u64,
     final_revision: u64,
     rotated_at: u64,
     state: &'static str,
@@ -106,8 +109,11 @@ pub(crate) async fn validate(
         return Response::error("valid driver ID is required", 400);
     };
     let requested = request.json::<CredentialRequest>().await?;
-    if !valid_credential_request(&requested) {
+    let Some(credential_expires_at) = credential_expiry(&requested) else {
         return Response::error("driver credential is invalid", 400);
+    };
+    if credential_expires_at <= now_seconds() {
+        return Response::error("driver credential is expired", 400);
     }
 
     let database = env.d1(DATABASE_BINDING)?;
@@ -135,6 +141,7 @@ pub(crate) async fn validate(
         kind: driver.kind,
         current_credential_present: driver.credential_id.is_some(),
         credential_revision: driver.credential_revision.unwrap_or(0) + 1,
+        credential_expires_at,
         expected_revision: requested.expected_revision,
         validation_expires_at,
         validation_digest,
@@ -165,11 +172,17 @@ pub(crate) async fn apply(
         credential: requested.credential,
         expected_revision: requested.expected_revision,
     };
-    if !valid_credential_request(&desired) || !valid_string(&requested.idempotency_key, 256) {
+    let Some(credential_expires_at) = credential_expiry(&desired) else {
+        return Response::error("driver credential apply is invalid", 400);
+    };
+    if !valid_string(&requested.idempotency_key, 256) {
         return Response::error("driver credential apply is invalid", 400);
     }
 
     let now = now_seconds();
+    if credential_expires_at <= now {
+        return Response::error("driver credential is expired", 409);
+    }
     if requested.validation_expires_at < now
         || requested.validation_expires_at > now + VALIDATION_LIFETIME_SECONDS
     {
@@ -229,6 +242,7 @@ pub(crate) async fn apply(
         driver_id: driver_id.to_owned(),
         credential_id: credential_id.clone(),
         credential_revision,
+        credential_expires_at,
         final_revision,
         rotated_at: now,
         state: "committed",
@@ -240,14 +254,16 @@ pub(crate) async fn apply(
             .prepare(
                 r"UPDATE credential_envelopes
                  SET envelope_algorithm = ?1, key_version = ?2, nonce = ?3,
-                     ciphertext = ?4, revision = revision + 1, rotated_at = ?5
-                 WHERE id = ?6 AND revision = ?7",
+                     ciphertext = ?4, expires_at = ?5,
+                     revision = revision + 1, rotated_at = ?6
+                 WHERE id = ?7 AND revision = ?8",
             )
             .bind(&[
                 JsValue::from_str(ENVELOPE_ALGORITHM),
                 JsValue::from_str(MASTER_KEY_VERSION),
                 blob_binding(&sealed.nonce),
                 blob_binding(&sealed.ciphertext),
+                JsValue::from_str(&credential_expires_at.to_string()),
                 JsValue::from_str(&now.to_string()),
                 JsValue::from_str(&credential_id),
                 JsValue::from_str(&(credential_revision - 1).to_string()),
@@ -257,8 +273,8 @@ pub(crate) async fn apply(
             .prepare(
                 r"INSERT INTO credential_envelopes (
                      id, envelope_algorithm, key_version, nonce, ciphertext,
-                     revision, created_at, rotated_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?6)",
+                     revision, created_at, rotated_at, expires_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?6, ?7)",
             )
             .bind(&[
                 JsValue::from_str(&credential_id),
@@ -267,6 +283,7 @@ pub(crate) async fn apply(
                 blob_binding(&sealed.nonce),
                 blob_binding(&sealed.ciphertext),
                 JsValue::from_str(&now.to_string()),
+                JsValue::from_str(&credential_expires_at.to_string()),
             ])?
     };
 
@@ -402,15 +419,29 @@ fn replay(
     Ok(response)
 }
 
-fn valid_credential_request(requested: &CredentialRequest) -> bool {
-    requested.expected_revision > 0
-        && !requested.credential.access_token.is_empty()
-        && requested.credential.access_token.len() <= MAXIMUM_ACCESS_TOKEN_BYTES
-        && !requested
-            .credential
-            .access_token
-            .chars()
-            .any(char::is_control)
+fn credential_expiry(requested: &CredentialRequest) -> Option<u64> {
+    let token = &requested.credential.access_token;
+    if requested.expected_revision == 0
+        || token.is_empty()
+        || token.len() > MAXIMUM_ACCESS_TOKEN_BYTES
+        || token.chars().any(char::is_control)
+    {
+        return None;
+    }
+    let mut segments = token.split('.');
+    let header = segments.next()?;
+    let payload = segments.next()?;
+    let signature = segments.next()?;
+    if header.is_empty() || payload.is_empty() || signature.is_empty() || segments.next().is_some()
+    {
+        return None;
+    }
+    let payload = URL_SAFE_NO_PAD.decode(payload).ok()?;
+    serde_json::from_slice::<serde_json::Value>(&payload)
+        .ok()?
+        .get("exp")?
+        .as_u64()
+        .filter(|expires_at| (1..=MAXIMUM_JSON_INTEGER).contains(expires_at))
 }
 
 fn validation_digest(
@@ -488,22 +519,44 @@ fn now_seconds() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{AliyunCredential, CredentialRequest, request_sha256, valid_credential_request};
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+
+    use super::{AliyunCredential, CredentialRequest, credential_expiry, request_sha256};
+
+    fn access_token(expires_at: u64) -> String {
+        let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{expires_at}}}"#));
+        format!("e30.{payload}.c2ln")
+    }
 
     #[test]
-    fn validates_bounded_access_tokens() {
-        assert!(valid_credential_request(&CredentialRequest {
-            credential: AliyunCredential {
-                access_token: "access-token".to_owned(),
-            },
-            expected_revision: 1,
-        }));
-        assert!(!valid_credential_request(&CredentialRequest {
-            credential: AliyunCredential {
-                access_token: "line\nbreak".to_owned(),
-            },
-            expected_revision: 1,
-        }));
+    fn validates_bounded_access_tokens_and_extracts_expiry() {
+        assert_eq!(
+            credential_expiry(&CredentialRequest {
+                credential: AliyunCredential {
+                    access_token: access_token(2_000_000_000),
+                },
+                expected_revision: 1,
+            }),
+            Some(2_000_000_000)
+        );
+        assert_eq!(
+            credential_expiry(&CredentialRequest {
+                credential: AliyunCredential {
+                    access_token: "line\nbreak".to_owned(),
+                },
+                expected_revision: 1,
+            }),
+            None
+        );
+        assert_eq!(
+            credential_expiry(&CredentialRequest {
+                credential: AliyunCredential {
+                    access_token: "e30.e30.".to_owned(),
+                },
+                expected_revision: 1,
+            }),
+            None
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@ set -euo pipefail
 curl() {
   command curl \
     --header "Carrack-Protocol-Epoch: 2" \
-    --header "Carrack-SDK-Version: 0.1.0" \
+    --header "Carrack-SDK-Version: 0.2.0" \
     "$@"
 }
 
@@ -332,7 +332,10 @@ registered_driver_snapshot=$(curl --silent --show-error --fail-with-body \
 [[ "$(jq -r '.drivers[] | select(.id == "aliyun-main") | .credential_present' <<<"$registered_driver_snapshot")" == false ]]
 
 aliyun_credential="$state_directory/aliyun-credential.json"
-jq -cn '{access_token: "protocol-access-token"}' >"$aliyun_credential"
+credential_expires_at=$(( $(date +%s) + 3600 ))
+credential_payload=$(printf '{"exp":%s}' "$credential_expires_at" | base64 -w0 | tr '+/' '-_' | tr -d '=')
+protocol_access_token="e30.${credential_payload}.c2ln"
+jq -cn --arg access_token "$protocol_access_token" '{access_token: $access_token}' >"$aliyun_credential"
 chmod 600 "$aliyun_credential"
 cli_credential_check=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
 	  "$rust_carrackctl" driver credential set aliyun-main \
@@ -343,7 +346,8 @@ cli_credential_check=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
     --format json)
 [[ "$(jq -r '.schema' <<<"$cli_credential_check")" == carrack.management.driver-credential-validation.v1 ]]
 [[ "$(jq -r '.credential_revision' <<<"$cli_credential_check")" == 1 ]]
-[[ "$cli_credential_check" != *protocol-access-token* ]]
+[[ "$(jq -r '.credential_expires_at' <<<"$cli_credential_check")" == "$credential_expires_at" ]]
+[[ "$cli_credential_check" != *"$protocol_access_token"* ]]
 cli_credential_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
 	  "$rust_carrackctl" driver credential set aliyun-main \
     --control-url "$base_url" \
@@ -353,13 +357,15 @@ cli_credential_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
     --format json)
 [[ "$(jq -r '.schema' <<<"$cli_credential_receipt")" == carrack.management.driver-credential-receipt.v1 ]]
 [[ "$(jq -r '.credential_revision' <<<"$cli_credential_receipt")" == 1 ]]
+[[ "$(jq -r '.credential_expires_at' <<<"$cli_credential_receipt")" == "$credential_expires_at" ]]
 [[ "$(jq -r '.final_revision' <<<"$cli_credential_receipt")" == 2 ]]
-[[ "$cli_credential_receipt" != *protocol-access-token* ]]
+[[ "$cli_credential_receipt" != *"$protocol_access_token"* ]]
 credential_driver_snapshot=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" "$base_url/api/admin/snapshot")
 [[ "$(jq -r '.drivers[] | select(.id == "aliyun-main") | .credential_present' <<<"$credential_driver_snapshot")" == true ]]
+[[ "$(jq -r '.drivers[] | select(.id == "aliyun-main") | .credential_expires_at' <<<"$credential_driver_snapshot")" == "$credential_expires_at" ]]
 [[ "$(jq -r '.drivers[] | select(.id == "aliyun-main") | .revision' <<<"$credential_driver_snapshot")" == 2 ]]
-[[ "$credential_driver_snapshot" != *protocol-access-token* ]]
+[[ "$credential_driver_snapshot" != *"$protocol_access_token"* ]]
 
 cli_aliyun_enable_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
 	  "$rust_carrackctl" driver enable aliyun-main \

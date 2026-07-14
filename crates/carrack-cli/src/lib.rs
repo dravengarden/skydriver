@@ -28,6 +28,9 @@ pub enum Error {
     /// Local input could not be read safely.
     #[error("invalid Carrack CLI input: {0}")]
     Input(String),
+    /// A committed receipt did not match the effective state read back from the server.
+    #[error("Carrack management verification failed: {0}")]
+    Verification(String),
 }
 
 /// Selects the public filesystem or management binary identity.
@@ -681,12 +684,25 @@ async fn run_token_command(client: &AdminClient, command: TokenCommand) -> Resul
                 write_json(output, &validation)?;
             } else {
                 let idempotency_key = require_idempotency_key(idempotency_key)?;
-                write_json(
-                    output,
-                    &client
-                        .apply_token_annotation(&validation, &idempotency_key)
-                        .await?,
-                )?;
+                let receipt = client
+                    .apply_token_annotation(&validation, &idempotency_key)
+                    .await?;
+                let snapshot = client.snapshot().await?;
+                let effective = snapshot
+                    .tokens
+                    .iter()
+                    .find(|token| token.id == receipt.token_id);
+                if !effective.is_some_and(|token| {
+                    token.metadata_revision == receipt.final_revision
+                        && token.label == receipt.label
+                        && token.note == receipt.note
+                }) {
+                    return Err(Error::Verification(format!(
+                        "token {} did not match receipt {}",
+                        receipt.token_id, receipt.operation_id
+                    )));
+                }
+                write_json(output, &receipt)?;
             }
         }
     }
@@ -713,12 +729,26 @@ async fn run_driver_command(client: &AdminClient, command: DriverCommand) -> Res
                 write_json(output, &validation)?;
             } else {
                 let idempotency_key = require_idempotency_key(idempotency_key)?;
-                write_json(
-                    output,
-                    &client
-                        .apply_driver_registration(&validation, &idempotency_key)
-                        .await?,
-                )?;
+                let receipt = client
+                    .apply_driver_registration(&validation, &idempotency_key)
+                    .await?;
+                let snapshot = client.snapshot().await?;
+                let effective = snapshot
+                    .drivers
+                    .iter()
+                    .find(|driver| driver.id == receipt.driver_id);
+                if !effective.is_some_and(|driver| {
+                    driver.revision == receipt.final_revision
+                        && driver.kind == receipt.kind
+                        && driver.config == receipt.config
+                        && driver.enabled == receipt.enabled
+                }) {
+                    return Err(Error::Verification(format!(
+                        "driver {} did not match receipt {}",
+                        receipt.driver_id, receipt.operation_id
+                    )));
+                }
+                write_json(output, &receipt)?;
             }
         }
         DriverCommand::Credential { command } => match command {
@@ -743,6 +773,22 @@ async fn run_driver_command(client: &AdminClient, command: DriverCommand) -> Res
                         .apply_driver_credential(&validation, &credential, &idempotency_key)
                         .await?;
                     credential = Value::Null;
+                    let snapshot = client.snapshot().await?;
+                    let effective = snapshot
+                        .drivers
+                        .iter()
+                        .find(|driver| driver.id == receipt.driver_id);
+                    if !effective.is_some_and(|driver| {
+                        driver.revision == receipt.final_revision
+                            && driver.credential_present
+                            && driver.credential_rotated_at == Some(receipt.rotated_at)
+                            && driver.credential_expires_at == Some(receipt.credential_expires_at)
+                    }) {
+                        return Err(Error::Verification(format!(
+                            "driver credential {} did not match receipt {}",
+                            receipt.driver_id, receipt.operation_id
+                        )));
+                    }
                     write_json(output, &receipt)?;
                 }
                 drop(credential);
@@ -764,12 +810,23 @@ async fn run_driver_state(
         write_json(arguments.output, &validation)?;
     } else {
         let idempotency_key = require_idempotency_key(arguments.idempotency_key)?;
-        write_json(
-            arguments.output,
-            &client
-                .apply_driver_state(&validation, &idempotency_key)
-                .await?,
-        )?;
+        let receipt = client
+            .apply_driver_state(&validation, &idempotency_key)
+            .await?;
+        let snapshot = client.snapshot().await?;
+        let effective = snapshot
+            .drivers
+            .iter()
+            .find(|driver| driver.id == receipt.driver_id);
+        if !effective.is_some_and(|driver| {
+            driver.revision == receipt.final_revision && driver.enabled == receipt.enabled
+        }) {
+            return Err(Error::Verification(format!(
+                "driver {} did not match receipt {}",
+                receipt.driver_id, receipt.operation_id
+            )));
+        }
+        write_json(arguments.output, &receipt)?;
     }
     Ok(())
 }
@@ -1101,6 +1158,7 @@ pub fn exit_with_error(error: &Error) -> ! {
         Error::Client(carrack_client::Error::Rejected { status: 409, .. }) => "revision_conflict",
         Error::Client(carrack_client::Error::Rejected { .. }) => "request_rejected",
         Error::Client(carrack_client::Error::Transport(_)) => "control_plane_transport_error",
+        Error::Verification(_) => "management_verification_failed",
         Error::Serialize(_) => "internal_output_error",
         Error::MissingEnvironment(_) => "missing_environment",
     };

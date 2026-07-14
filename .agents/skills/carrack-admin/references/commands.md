@@ -61,7 +61,9 @@ After reviewing the redacted validation, repeat without `--check` and add a
 stable idempotency key. The credential file must be a private regular JSON file
 containing exactly `{ "access_token": "..." }`. Never pass the token in argv,
 print it, or commit the file. Carrack rejects Aliyun refresh tokens until it has
-a durable refresh-token rotation protocol.
+a durable refresh-token rotation protocol. The access token must contain an
+unexpired JWT `exp` claim. Confirm the redacted validation and final snapshot
+report the same `credential_expires_at`; rotate before that server time.
 
 Validate a token annotation without changing state:
 

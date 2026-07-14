@@ -80,8 +80,11 @@ never accepts credentials in the non-secret config. For Aliyun Drive, then run
 JSON file readable only by its owner, and apply the same file before enabling
 the driver. The only accepted Aliyun credential is `access_token`; refresh
 tokens remain unsupported until Carrack can durably CAS a rotated refresh
-token back into its encrypted envelope. Never put a provider secret in argv,
-stdout, a plan, or Git.
+token back into its encrypted envelope. Review `credential_expires_at` during
+validation and in the re-read snapshot. Rotate before expiry; never wait for a
+filesystem operation to discover an expired credential. An interactive OAuth
+broker is an out-of-band operator input, never an automatic Carrack runtime
+dependency. Never put a provider secret in argv, stdout, a plan, or Git.
 
 `carrackctl vfs token issue` may only attenuate the authenticated parent. It
 cannot change principals or widen directory, action, driver, or expiry scope.

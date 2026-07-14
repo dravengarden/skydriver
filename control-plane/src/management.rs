@@ -15,6 +15,7 @@ struct DriverRow {
     revision: u64,
     credential_present: u64,
     credential_rotated_at: Option<u64>,
+    credential_expires_at: Option<u64>,
     placement_count: u64,
     location_count: u64,
     available_location_count: u64,
@@ -32,6 +33,7 @@ struct DriverView {
     revision: u64,
     credential_present: bool,
     credential_rotated_at: Option<u64>,
+    credential_expires_at: Option<u64>,
     placement_count: u64,
     location_count: u64,
     available_location_count: u64,
@@ -224,6 +226,7 @@ pub(crate) async fn snapshot(request: &Request, env: &Env) -> Result<Response> {
             r"SELECT driver.id, driver.kind, driver.config_json, driver.enabled, driver.revision,
                     CASE WHEN driver.credential_ref IS NULL THEN 0 ELSE 1 END AS credential_present,
                     credential.rotated_at AS credential_rotated_at,
+                    credential.expires_at AS credential_expires_at,
                     (SELECT COUNT(*) FROM vfs_directory_drivers AS directory_driver
                      WHERE directory_driver.driver_id = driver.id) AS placement_count,
                     (SELECT COUNT(*) FROM vfs_locations AS location
@@ -257,6 +260,7 @@ pub(crate) async fn snapshot(request: &Request, env: &Env) -> Result<Response> {
             revision: row.revision,
             credential_present: row.credential_present == 1,
             credential_rotated_at: row.credential_rotated_at,
+            credential_expires_at: row.credential_expires_at,
             placement_count: row.placement_count,
             location_count: row.location_count,
             available_location_count: row.available_location_count,

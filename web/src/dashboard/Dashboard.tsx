@@ -79,12 +79,16 @@ export function Dashboard({ environment, onLogout }: DashboardProps) {
     const eventCursor = useQuery({
         queryKey: ["management-event-cursor"],
         queryFn: fetchManagementEventCursor,
-        refetchInterval: 3_000,
+        refetchInterval: () => (document.visibilityState === "visible" ? 15_000 : false),
+        refetchIntervalInBackground: false,
+        refetchOnWindowFocus: true,
     });
     const configuration = useQuery({
         queryKey: ["configuration-session"],
         queryFn: fetchConfigurationSession,
-        refetchInterval: 30_000,
+        refetchInterval: (query) => (query.state.data?.enabled === true ? 30_000 : 120_000),
+        refetchIntervalInBackground: false,
+        refetchOnWindowFocus: true,
     });
     const enableMutation = useMutation({
         mutationFn: enableConfiguration,

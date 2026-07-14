@@ -26,7 +26,7 @@ const (
 	// ProtocolEpoch is the incompatible Carrack wire-protocol generation.
 	ProtocolEpoch = 2
 	// SDKVersion is sent on every request so the server can fail before I/O.
-	SDKVersion = "0.1.0"
+	SDKVersion = "0.2.0"
 )
 
 var (

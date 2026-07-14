@@ -34,9 +34,12 @@ counts, Merkle root, encryption suite, active key epoch, placements, and ACL
 inheritance. Driver and token details link back to the affected collections.
 
 Driver rows show identity, kind, enabled state, revision, capabilities,
-configured non-secret fields, credential presence and rotation age, placement
+configured non-secret fields, credential presence, provider-declared expiry,
+rotation age, placement
 count, complete object count, encoded bytes, integrity state, and last use.
-Provider credentials are never returned. Unsupported acceleration features are
+Provider credentials are never returned. A missing legacy expiry is shown as
+unknown, credentials expiring within 24 hours are warned, and expired
+credentials are shown as errors. Unsupported acceleration features are
 shown as warnings with the correctness-preserving fallback and a recommended
 replacement driver when one exists.
 
@@ -75,6 +78,12 @@ configuration, missing credentials, self-escalating token scopes, stale
 revisions, expired validation digests, and any normalized request different
 from the validated request. Client validation improves UX but never replaces
 server validation.
+
+Aliyun credential validation also requires a canonical three-segment access
+token with a positive, unexpired JWT `exp` claim. The expiry is persisted next
+to the encrypted envelope and returned only as non-secret metadata. Provider
+authorization remains authoritative when Carrack first uses the credential;
+the control plane never treats the unverified JWT claim as proof of access.
 
 ## Configuration resources
 
@@ -151,13 +160,16 @@ validated enablement.
 The CLI treats any local validation, authorization, server validation,
 revision, transport, or receipt mismatch as failure. It verifies every
 response schema, identity, revision, validation digest, and receipt before
-reporting success. More granular stable exit codes remain a future surface.
+reporting success. Configuration mutations also re-read the redacted effective
+snapshot and require it to match the receipt before printing success. More
+granular stable exit codes remain a future surface.
 
 ## Change observation
 
 Every successful mutation appends a redacted VFS audit event in the same D1
 transaction. The event ID is the global management cursor. The UI polls a
-small conditional endpoint while visible and backs off while hidden. When the
+small indexed cursor endpoint every 15 seconds while visible, refreshes on
+window focus, and pauses while hidden. When the
 cursor advances outside the current browser mutation, TanStack Query
 invalidates only affected resources and shows a snackbar naming the source and
 resource when available.

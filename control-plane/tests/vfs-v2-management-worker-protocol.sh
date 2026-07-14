@@ -4,7 +4,7 @@ set -euo pipefail
 curl() {
   command curl \
     --header "Carrack-Protocol-Epoch: 2" \
-    --header "Carrack-SDK-Version: 0.1.0" \
+    --header "Carrack-SDK-Version: 0.2.0" \
     "$@"
 }
 
@@ -70,6 +70,11 @@ done
 
 base_url="http://127.0.0.1:$port"
 json='Content-Type: application/json'
+
+old_admin_sdk=$(command curl --silent --output /dev/null --write-out '%{http_code}' \
+  --header 'Carrack-Protocol-Epoch: 2' --header 'Carrack-SDK-Version: 0.1.0' \
+  "$base_url/api/admin/snapshot")
+[[ "$old_admin_sdk" == 426 ]]
 
 curl --silent --show-error --fail-with-body \
   -c "$cookie_jar" -H "$json" \

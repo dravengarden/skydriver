@@ -99,6 +99,7 @@ const DriverViewSchema = v.object({
     revision: v.number(),
     credential_present: v.boolean(),
     credential_rotated_at: v.nullable(v.number()),
+    credential_expires_at: v.nullable(v.number()),
     placement_count: v.number(),
     location_count: v.number(),
     available_location_count: v.number(),
@@ -274,6 +275,7 @@ const DriverCredentialValidationSchema = v.object({
     kind: v.string(),
     current_credential_present: v.boolean(),
     credential_revision: v.number(),
+    credential_expires_at: v.number(),
     expected_revision: v.number(),
     validation_expires_at: v.number(),
     validation_digest: v.string(),
@@ -286,6 +288,7 @@ const DriverCredentialReceiptSchema = v.object({
     driver_id: v.string(),
     credential_id: v.string(),
     credential_revision: v.number(),
+    credential_expires_at: v.number(),
     final_revision: v.number(),
     rotated_at: v.number(),
     state: v.literal("committed"),
@@ -331,7 +334,10 @@ async function requestJson<TSchema extends v.BaseSchema<unknown, unknown, v.Base
     init: RequestInit | undefined,
     schema: TSchema,
 ): Promise<v.InferOutput<TSchema>> {
-    const response = await fetch(input, init);
+    const headers = new Headers(init?.headers);
+    headers.set("Carrack-Protocol-Epoch", "2");
+    headers.set("Carrack-SDK-Version", "0.2.0");
+    const response = await fetch(input, { ...init, headers });
     if (!response.ok) {
         throw new Error(`Carrack API returned ${response.status}`);
     }
@@ -465,7 +471,10 @@ export function validateDriverState(
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ enabled, expected_revision: expectedRevision }),
+            body: JSON.stringify({
+                enabled,
+                expected_revision: expectedRevision,
+            }),
         },
         DriverStateValidationSchema,
     );

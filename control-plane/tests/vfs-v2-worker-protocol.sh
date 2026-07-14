@@ -4,7 +4,7 @@ set -euo pipefail
 curl() {
   command curl \
     --header "Carrack-Protocol-Epoch: 2" \
-    --header "Carrack-SDK-Version: 0.1.0" \
+    --header "Carrack-SDK-Version: 0.2.0" \
     "$@"
 }
 
@@ -170,7 +170,7 @@ fi
 wasm_sdk_proof=$(command curl --silent --show-error --fail-with-body \
   "http://127.0.0.1:$port/api/acceptance/wasm-sdk")
 [[ "$(jq -r '.schema' <<<"$wasm_sdk_proof")" == carrack.sdk.wasm-acceptance.v1 ]]
-[[ "$(jq -r '.sdk_version' <<<"$wasm_sdk_proof")" == 0.1.0 ]]
+[[ "$(jq -r '.sdk_version' <<<"$wasm_sdk_proof")" == 0.2.0 ]]
 [[ "$(jq -r '.plaintext_merkle_root' <<<"$wasm_sdk_proof")" == \
   d60042cf44d28c3a12f278cffde67620f94f1a3e4c82208102da97b96cd5b4d9 ]]
 [[ "$(jq -r '.decoded_sha256' <<<"$wasm_sdk_proof")" == \
@@ -186,7 +186,7 @@ compatibility=$(command curl --silent --show-error --fail-with-body \
   "$base_url/api/compatibility")
 [[ "$(jq -r '.schema' <<<"$compatibility")" == carrack.protocol-compatibility.v1 ]]
 [[ "$(jq -r '.protocol_epoch' <<<"$compatibility")" == 2 ]]
-[[ "$(jq -r '.minimum_sdk_version' <<<"$compatibility")" == 0.1.0 ]]
+[[ "$(jq -r '.minimum_sdk_version' <<<"$compatibility")" == 0.2.0 ]]
 
 missing_compatibility=$(command curl --silent --show-error \
   --output "$state_directory/upgrade-required.json" --write-out '%{http_code}' \
@@ -196,13 +196,18 @@ jq -e '
   .schema == "carrack.protocol-error.v1" and
   .code == "sdk_upgrade_required" and
   .protocol_epoch == 2 and
-  .minimum_sdk_version == "0.1.0"
+  .minimum_sdk_version == "0.2.0"
 ' "$state_directory/upgrade-required.json" >/dev/null
 
 wrong_epoch=$(command curl --silent --output /dev/null --write-out '%{http_code}' \
   --header 'Carrack-Protocol-Epoch: 1' --header 'Carrack-SDK-Version: 99.0.0' \
   --request POST "$base_url/api/v2/puts/prepare")
 [[ "$wrong_epoch" == 426 ]]
+
+old_sdk=$(command curl --silent --output /dev/null --write-out '%{http_code}' \
+  --header 'Carrack-Protocol-Epoch: 2' --header 'Carrack-SDK-Version: 0.1.0' \
+  --request POST "$base_url/api/v2/puts/prepare")
+[[ "$old_sdk" == 426 ]]
 
 prepare_request=$(jq -cn \
   --arg directory_id "$directory" \

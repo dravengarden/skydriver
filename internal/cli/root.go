@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	developmentVersion           = "0.1.0-dev"
+	developmentVersion           = "0.2.0-dev"
 	versionCommandName           = "version"
 	outputFormatJSON             = "json"
 	outputFormatTable            = "table"

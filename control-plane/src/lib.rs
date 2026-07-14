@@ -140,7 +140,7 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
             .and_then(security_headers);
     }
 
-    if request.path().starts_with("/api/v2/")
+    if (request.path().starts_with("/api/v2/") || request.path().starts_with("/api/admin/"))
         && let Some(response) = protocol_compatibility::enforce(&request)?
     {
         return Ok(response);

@@ -16,7 +16,9 @@ afterEach(() => {
 
 describe("parseSession", () => {
     it("accepts a valid authenticated session", () => {
-        expect(parseSession({ authenticated: true })).toEqual({ authenticated: true });
+        expect(parseSession({ authenticated: true })).toEqual({
+            authenticated: true,
+        });
     });
 
     it("rejects malformed API data", () => {
@@ -37,10 +39,14 @@ describe("operator session", () => {
             .mockResolvedValue(Response.json({ authenticated: true }, { status: 200 }));
         vi.stubGlobal("fetch", fetchMock);
 
-        await expect(login("operator-secret")).resolves.toEqual({ authenticated: true });
+        await expect(login("operator-secret")).resolves.toEqual({
+            authenticated: true,
+        });
         const call = fetchMock.mock.calls[0];
         expect(call?.[0]).toBe("/api/auth/login");
-        expect(JSON.parse(String(call?.[1]?.body))).toEqual({ password: "operator-secret" });
+        expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+            password: "operator-secret",
+        });
     });
 });
 
@@ -108,6 +114,7 @@ describe("driver configuration", () => {
             kind: "aliyundrive-open/v2",
             current_credential_present: false,
             credential_revision: 1,
+            credential_expires_at: 2_000_000_000,
             expected_revision: 1,
             validation_expires_at: 2_000_000_000,
             validation_digest: "signed-secret-bound-digest",
@@ -121,6 +128,9 @@ describe("driver configuration", () => {
         );
         const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
         expect(body.credential).toEqual({ access_token: "private-token" });
+        const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
+        expect(headers.get("Carrack-Protocol-Epoch")).toBe("2");
+        expect(headers.get("Carrack-SDK-Version")).toBe("0.2.0");
         expect(JSON.stringify(validation)).not.toContain("private-token");
     });
 });
@@ -202,7 +212,11 @@ describe("parseIntegrityFindings", () => {
 
     it("rejects an unclassified finding payload", () => {
         expect(() =>
-            parseIntegrityFindings({ observed_at: 10, next_cursor: null, findings: [{}] }),
+            parseIntegrityFindings({
+                observed_at: 10,
+                next_cursor: null,
+                findings: [{}],
+            }),
         ).toThrow();
     });
 });

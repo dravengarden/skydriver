@@ -42,6 +42,51 @@ interface DriversPageProps {
     readonly onRequestConfiguration: () => void;
 }
 
+const CREDENTIAL_EXPIRY_WARNING_SECONDS = 24 * 60 * 60;
+
+function credentialStatus(driver: DriverView, observedAt: number) {
+    if (!driver.credential_present) {
+        return {
+            color: driver.kind === "local-filesystem/v2" ? "default" : "warning",
+            icon: <WarningAmberOutlinedIcon />,
+            label: "No credential",
+        } as const;
+    }
+    if (driver.kind !== "aliyundrive-open/v2") {
+        return {
+            color: "success",
+            icon: <CheckCircleOutlineIcon />,
+            label: "Credential sealed",
+        } as const;
+    }
+    if (driver.credential_expires_at === null) {
+        return {
+            color: "warning",
+            icon: <WarningAmberOutlinedIcon />,
+            label: "Credential expiry unknown",
+        } as const;
+    }
+    if (driver.credential_expires_at <= observedAt) {
+        return {
+            color: "error",
+            icon: <WarningAmberOutlinedIcon />,
+            label: "Credential expired",
+        } as const;
+    }
+    if (driver.credential_expires_at <= observedAt + CREDENTIAL_EXPIRY_WARNING_SECONDS) {
+        return {
+            color: "warning",
+            icon: <WarningAmberOutlinedIcon />,
+            label: `Expires ${formatDate(driver.credential_expires_at)}`,
+        } as const;
+    }
+    return {
+        color: "success",
+        icon: <CheckCircleOutlineIcon />,
+        label: `Sealed · expires ${formatDate(driver.credential_expires_at)}`,
+    } as const;
+}
+
 export function DriversPage({
     management,
     configurationEnabled,
@@ -97,7 +142,8 @@ export function DriversPage({
             if (
                 effective?.revision !== receipt.final_revision ||
                 !effective.credential_present ||
-                effective.credential_rotated_at !== receipt.rotated_at
+                effective.credential_rotated_at !== receipt.rotated_at ||
+                effective.credential_expires_at !== receipt.credential_expires_at
             ) {
                 throw new Error("Committed driver credential did not match the re-read state.");
             }
@@ -212,120 +258,129 @@ export function DriversPage({
                 </Button>
             </Stack>
             <Stack spacing={2}>
-                {management.data.drivers.map((driver) => (
-                    <Paper key={driver.id} variant="outlined" sx={{ p: 3 }}>
-                        <Stack
-                            direction={{ xs: "column", sm: "row" }}
-                            sx={{ justifyContent: "space-between", gap: 2 }}
-                        >
-                            <Box>
-                                <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-                                    <Typography variant="h6" sx={{ fontWeight: 800 }}>
-                                        {driver.id}
+                {management.data.drivers.map((driver) => {
+                    const status = credentialStatus(driver, management.data.observed_at);
+                    return (
+                        <Paper key={driver.id} variant="outlined" sx={{ p: 3 }}>
+                            <Stack
+                                direction={{ xs: "column", lg: "row" }}
+                                sx={{ justifyContent: "space-between", gap: 2 }}
+                            >
+                                <Box>
+                                    <Stack
+                                        direction="row"
+                                        spacing={1}
+                                        sx={{ alignItems: "center" }}
+                                    >
+                                        <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                                            {driver.id}
+                                        </Typography>
+                                        <Chip label={driver.kind} size="small" variant="outlined" />
+                                        <Chip
+                                            label={driver.enabled ? "ENABLED" : "DISABLED"}
+                                            size="small"
+                                            color={driver.enabled ? "success" : "default"}
+                                        />
+                                    </Stack>
+                                    <Typography
+                                        color="text.secondary"
+                                        variant="body2"
+                                        sx={{ mt: 0.5 }}
+                                    >
+                                        Revision {driver.revision.toLocaleString()} · Updated{" "}
+                                        {formatDate(driver.updated_at)}
                                     </Typography>
-                                    <Chip label={driver.kind} size="small" variant="outlined" />
+                                </Box>
+                                <Stack
+                                    direction="row"
+                                    spacing={1}
+                                    useFlexGap
+                                    sx={{ alignItems: "center", flexWrap: "wrap" }}
+                                >
                                     <Chip
-                                        label={driver.enabled ? "ENABLED" : "DISABLED"}
-                                        size="small"
-                                        color={driver.enabled ? "success" : "default"}
-                                    />
-                                </Stack>
-                                <Typography color="text.secondary" variant="body2" sx={{ mt: 0.5 }}>
-                                    Revision {driver.revision.toLocaleString()} · Updated{" "}
-                                    {formatDate(driver.updated_at)}
-                                </Typography>
-                            </Box>
-                            <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-                                {driver.credential_present ? (
-                                    <Chip
-                                        icon={<CheckCircleOutlineIcon />}
-                                        label="Credential sealed"
-                                        color="success"
+                                        icon={status.icon}
+                                        label={status.label}
+                                        color={status.color}
                                         size="small"
                                     />
-                                ) : (
-                                    <Chip
-                                        icon={<WarningAmberOutlinedIcon />}
-                                        label="No credential"
-                                        color={
-                                            driver.kind === "local-filesystem/v2"
-                                                ? "default"
-                                                : "warning"
-                                        }
-                                        size="small"
-                                    />
-                                )}
-                                {driver.kind === "aliyundrive-open/v2" && (
+                                    {driver.kind === "aliyundrive-open/v2" && (
+                                        <Button
+                                            size="small"
+                                            variant="outlined"
+                                            startIcon={<KeyOutlinedIcon />}
+                                            onClick={() => openCredentialChange(driver)}
+                                        >
+                                            {driver.credential_present
+                                                ? "Rotate credential"
+                                                : "Set credential"}
+                                        </Button>
+                                    )}
                                     <Button
                                         size="small"
                                         variant="outlined"
-                                        startIcon={<KeyOutlinedIcon />}
-                                        onClick={() => openCredentialChange(driver)}
+                                        color={driver.enabled ? "warning" : "primary"}
+                                        startIcon={<PowerSettingsNewOutlinedIcon />}
+                                        onClick={() => openStateChange(driver)}
                                     >
-                                        {driver.credential_present
-                                            ? "Rotate credential"
-                                            : "Set credential"}
+                                        {driver.enabled ? "Disable" : "Enable"}
                                     </Button>
-                                )}
-                                <Button
-                                    size="small"
-                                    variant="outlined"
-                                    color={driver.enabled ? "warning" : "primary"}
-                                    startIcon={<PowerSettingsNewOutlinedIcon />}
-                                    onClick={() => openStateChange(driver)}
-                                >
-                                    {driver.enabled ? "Disable" : "Enable"}
-                                </Button>
+                                </Stack>
                             </Stack>
-                        </Stack>
 
-                        <Box
-                            sx={{
-                                display: "grid",
-                                gridTemplateColumns: { xs: "repeat(2, 1fr)", lg: "repeat(4, 1fr)" },
-                                gap: 2,
-                                mt: 3,
-                            }}
-                        >
-                            {[
-                                ["Complete files", driver.file_count.toLocaleString()],
-                                ["Encoded bytes", formatBytes(driver.encoded_bytes)],
-                                [
-                                    "Available locations",
-                                    driver.available_location_count.toLocaleString(),
-                                ],
-                                ["Collection placements", driver.placement_count.toLocaleString()],
-                            ].map(([label, value]) => (
-                                <Box key={label}>
-                                    <Typography color="text.secondary" variant="caption">
-                                        {label}
-                                    </Typography>
-                                    <Typography sx={{ fontWeight: 750 }}>{value}</Typography>
-                                </Box>
-                            ))}
-                        </Box>
-
-                        <Box sx={{ mt: 3 }}>
-                            <Typography color="text.secondary" variant="caption">
-                                Redacted configuration
-                            </Typography>
                             <Box
-                                component="pre"
                                 sx={{
-                                    m: 0,
-                                    mt: 0.75,
-                                    p: 1.5,
-                                    borderRadius: 1.5,
-                                    bgcolor: "#f2f5f8",
-                                    fontSize: 12,
-                                    overflowX: "auto",
+                                    display: "grid",
+                                    gridTemplateColumns: {
+                                        xs: "repeat(2, 1fr)",
+                                        lg: "repeat(4, 1fr)",
+                                    },
+                                    gap: 2,
+                                    mt: 3,
                                 }}
                             >
-                                {JSON.stringify(driver.config, null, 2)}
+                                {[
+                                    ["Complete files", driver.file_count.toLocaleString()],
+                                    ["Encoded bytes", formatBytes(driver.encoded_bytes)],
+                                    [
+                                        "Available locations",
+                                        driver.available_location_count.toLocaleString(),
+                                    ],
+                                    [
+                                        "Collection placements",
+                                        driver.placement_count.toLocaleString(),
+                                    ],
+                                ].map(([label, value]) => (
+                                    <Box key={label}>
+                                        <Typography color="text.secondary" variant="caption">
+                                            {label}
+                                        </Typography>
+                                        <Typography sx={{ fontWeight: 750 }}>{value}</Typography>
+                                    </Box>
+                                ))}
                             </Box>
-                        </Box>
-                    </Paper>
-                ))}
+
+                            <Box sx={{ mt: 3 }}>
+                                <Typography color="text.secondary" variant="caption">
+                                    Redacted configuration
+                                </Typography>
+                                <Box
+                                    component="pre"
+                                    sx={{
+                                        m: 0,
+                                        mt: 0.75,
+                                        p: 1.5,
+                                        borderRadius: 1.5,
+                                        bgcolor: "#f2f5f8",
+                                        fontSize: 12,
+                                        overflowX: "auto",
+                                    }}
+                                >
+                                    {JSON.stringify(driver.config, null, 2)}
+                                </Box>
+                            </Box>
+                        </Paper>
+                    );
+                })}
                 {management.data.drivers.length === 0 && (
                     <Paper variant="outlined" sx={{ p: 4 }}>
                         <Typography sx={{ fontWeight: 700 }}>No registered drivers</Typography>
@@ -375,7 +430,13 @@ export function DriversPage({
                             </Typography>
                             <Box
                                 component="pre"
-                                sx={{ m: 0, mt: 2, p: 1.5, bgcolor: "#f2f5f8", overflowX: "auto" }}
+                                sx={{
+                                    m: 0,
+                                    mt: 2,
+                                    p: 1.5,
+                                    bgcolor: "#f2f5f8",
+                                    overflowX: "auto",
+                                }}
                             >
                                 {JSON.stringify(registrationValidation.config, null, 2)}
                             </Box>
@@ -556,7 +617,8 @@ export function DriversPage({
                             <Typography color="text.secondary" variant="body2">
                                 Driver revision {String(credentialValidation.expected_revision)} →{" "}
                                 {String(credentialValidation.expected_revision + 1)} · credential
-                                revision {String(credentialValidation.credential_revision)}
+                                revision {String(credentialValidation.credential_revision)} ·
+                                expires {formatDate(credentialValidation.credential_expires_at)}
                             </Typography>
                             {credentialValidation.warnings.map((warning) => (
                                 <Alert key={warning} severity="warning" sx={{ mt: 2 }}>
