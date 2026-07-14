@@ -267,6 +267,8 @@ enum DriverCredentialCommand {
         #[arg(long)]
         credential_file: std::path::PathBuf,
         #[arg(long)]
+        authorization_label: String,
+        #[arg(long)]
         expected_revision: u64,
         #[arg(long)]
         idempotency_key: Option<String>,
@@ -755,6 +757,7 @@ async fn run_driver_command(client: &AdminClient, command: DriverCommand) -> Res
             DriverCredentialCommand::Set {
                 driver_id,
                 credential_file,
+                authorization_label,
                 expected_revision,
                 idempotency_key,
                 check,
@@ -762,7 +765,12 @@ async fn run_driver_command(client: &AdminClient, command: DriverCommand) -> Res
             } => {
                 let mut credential = read_json_object(&credential_file, true)?;
                 let validation = client
-                    .validate_driver_credential(&driver_id, &credential, expected_revision)
+                    .validate_driver_credential(
+                        &driver_id,
+                        &credential,
+                        expected_revision,
+                        &authorization_label,
+                    )
                     .await?;
                 if check {
                     credential = Value::Null;

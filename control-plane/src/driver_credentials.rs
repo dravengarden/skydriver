@@ -387,6 +387,10 @@ async fn exchange_openlist(
     })
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "credential, profile health, refresh fence, and audit advance in one D1 batch"
+)]
 async fn commit_refresh(
     database: &D1Database,
     task: &RefreshTask,
@@ -421,6 +425,19 @@ async fn commit_refresh(
                     JsValue::from_str(&task.credential_id),
                     integer(task.observed_credential_revision),
                     integer(task.fencing_token),
+                ])?,
+            database
+                .prepare(
+                    "UPDATE driver_authorizations
+                     SET refresh_health = 'healthy', last_succeeded_at = ?1,
+                         refresh_token_expires_at = ?2, last_error_code = NULL,
+                         revision = revision + 1, updated_at = ?1
+                     WHERE credential_id = ?3 AND state = 'active'",
+                )
+                .bind(&[
+                    integer(now),
+                    integer(refresh_token_expires_at),
+                    JsValue::from_str(&task.credential_id),
                 ])?,
             database
                 .prepare(
@@ -496,29 +513,48 @@ async fn fail_refresh(
 ) -> Result<()> {
     let retry_at = now + retry_delay(task.attempt_count, task.fencing_token);
     database
-        .prepare(
-            "UPDATE driver_credential_refreshes
+        .batch(vec![
+            database
+                .prepare(
+                    "UPDATE driver_credential_refreshes
              SET state = ?1, lease_expires_at = NULL, retry_at = ?2,
                  last_error_code = ?3, updated_at = ?4
              WHERE credential_id = ?5 AND state = 'claimed' AND fencing_token = ?6",
-        )
-        .bind(&[
-            JsValue::from_str(if reauthenticate {
-                "reauth_required"
-            } else {
-                "retry"
-            }),
-            if reauthenticate {
-                JsValue::NULL
-            } else {
-                integer(retry_at)
-            },
-            JsValue::from_str(code),
-            integer(now),
-            JsValue::from_str(&task.credential_id),
-            integer(task.fencing_token),
-        ])?
-        .run()
+                )
+                .bind(&[
+                    JsValue::from_str(if reauthenticate {
+                        "reauth_required"
+                    } else {
+                        "retry"
+                    }),
+                    if reauthenticate {
+                        JsValue::NULL
+                    } else {
+                        integer(retry_at)
+                    },
+                    JsValue::from_str(code),
+                    integer(now),
+                    JsValue::from_str(&task.credential_id),
+                    integer(task.fencing_token),
+                ])?,
+            database
+                .prepare(
+                    "UPDATE driver_authorizations
+             SET refresh_health = ?1, last_error_code = ?2,
+                 revision = revision + 1, updated_at = ?3
+             WHERE credential_id = ?4 AND state = 'active'",
+                )
+                .bind(&[
+                    JsValue::from_str(if reauthenticate {
+                        "reauth_required"
+                    } else {
+                        "retry"
+                    }),
+                    JsValue::from_str(code),
+                    integer(now),
+                    JsValue::from_str(&task.credential_id),
+                ])?,
+        ])
         .await?;
     Ok(())
 }

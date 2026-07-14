@@ -344,6 +344,7 @@ cli_credential_check=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
 	  "$rust_carrackctl" driver credential set aliyun-main \
     --control-url "$base_url" \
     --credential-file "$aliyun_credential" \
+    --authorization-label "Protocol authorization" \
     --expected-revision 1 \
     --check \
     --format json)

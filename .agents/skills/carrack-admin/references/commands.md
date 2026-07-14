@@ -53,6 +53,7 @@ chmod 600 "$credential_file"
 carrackctl driver credential set "$driver_id" \
   --control-url "$CARRACK_CONTROL_URL" \
   --credential-file "$credential_file" \
+  --authorization-label "$authorization_label" \
   --expected-revision "$driver_revision" \
   --check --format json
 ```
