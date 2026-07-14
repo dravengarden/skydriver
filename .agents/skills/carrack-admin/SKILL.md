@@ -78,8 +78,7 @@ apply. Registration is typed, creates revision 1 in the disabled state, and
 never accepts credentials in the non-secret config. For Aliyun Drive, then run
 `carrackctl driver credential set` with `--check`, using a private regular
 JSON file readable only by its owner, and apply the same file before enabling
-the driver. Provide a non-secret `--authorization-label` on both passes.
-Aliyun authorization input contains only `refresh_token` and
+the driver. Aliyun authorization input contains only `refresh_token` and
 `refresh_issuer` set to `openlist-online/v1`. Carrack verifies the refresh
 authority with the provider, generates access tokens internally, encrypts the
 complete internal bundle, and projects only access grants to filesystem SDKs.
@@ -87,9 +86,6 @@ Review `credential_refresh_state`, `credential_refresh_last_succeeded_at`, and
 `credential_refresh_token_expires_at` in the re-read snapshot. A
 `reauth_required` state requires a new OAuth refresh token through this same
 validated command. Never put a provider secret in argv, stdout, a plan, or Git.
-Each successful apply creates a distinct encrypted profile, makes it the sole
-active authorization for that driver, and retains the previous profile as
-standby. Only the active profile is renewed automatically.
 
 `carrackctl vfs token issue` may only attenuate the authenticated parent. It
 cannot change principals or widen directory, action, driver, or expiry scope.

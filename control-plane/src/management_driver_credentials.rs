@@ -29,7 +29,6 @@ type HmacSha256 = Hmac<Sha256>;
 struct CredentialRequest {
     credential: RefreshAuthorization,
     expected_revision: u64,
-    authorization_label: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -47,8 +46,6 @@ struct ApplyRequest {
     validation_expires_at: u64,
     validation_digest: String,
     idempotency_key: String,
-    authorization_id: String,
-    authorization_label: String,
 }
 
 #[derive(Deserialize)]
@@ -56,6 +53,7 @@ struct DriverRow {
     kind: String,
     config_json: String,
     credential_id: Option<String>,
+    credential_revision: Option<u64>,
     revision: u64,
 }
 
@@ -82,8 +80,6 @@ struct ValidationResponse {
     kind: String,
     current_credential_present: bool,
     credential_revision: u64,
-    authorization_id: String,
-    authorization_label: String,
     refresh_token_expires_at: u64,
     expected_revision: u64,
     validation_expires_at: u64,
@@ -98,8 +94,6 @@ struct ReceiptResponse {
     driver_id: String,
     credential_id: String,
     credential_revision: u64,
-    authorization_id: String,
-    authorization_label: String,
     credential_expires_at: u64,
     refresh_token_expires_at: u64,
     final_revision: u64,
@@ -119,9 +113,6 @@ pub(crate) async fn validate(
         return Response::error("valid driver ID is required", 400);
     };
     let requested = request.json::<CredentialRequest>().await?;
-    if !valid_string(&requested.authorization_label, 128) {
-        return Response::error("valid authorization label is required", 400);
-    }
     let Some(refresh_claims) =
         driver_credentials::refresh_claims(&requested.credential.refresh_token)
     else {
@@ -152,22 +143,13 @@ pub(crate) async fn validate(
     }
 
     let validation_expires_at = now_seconds() + VALIDATION_LIFETIME_SECONDS;
-    let authorization_id = vfs_identifiers::new_uuid_v7_hex()?;
-    let validation_digest = validation_digest(
-        env,
-        driver_id,
-        &requested,
-        &authorization_id,
-        validation_expires_at,
-    )?;
+    let validation_digest = validation_digest(env, driver_id, &requested, validation_expires_at)?;
     no_store_json(&ValidationResponse {
         schema: "carrack.management.driver-credential-validation.v1",
         driver_id: driver_id.to_owned(),
         kind: driver.kind,
         current_credential_present: driver.credential_id.is_some(),
-        credential_revision: 1,
-        authorization_id,
-        authorization_label: requested.authorization_label,
+        credential_revision: driver.credential_revision.unwrap_or(0) + 1,
         refresh_token_expires_at: refresh_claims.exp,
         expected_revision: requested.expected_revision,
         validation_expires_at,
@@ -198,13 +180,7 @@ pub(crate) async fn apply(
     let desired = CredentialRequest {
         credential: requested.credential,
         expected_revision: requested.expected_revision,
-        authorization_label: requested.authorization_label.clone(),
     };
-    if !valid_authorization_id(&requested.authorization_id)
-        || !valid_string(&desired.authorization_label, 128)
-    {
-        return Response::error("driver authorization apply is invalid", 400);
-    }
     let Some(refresh_claims) =
         driver_credentials::refresh_claims(&desired.credential.refresh_token)
     else {
@@ -226,13 +202,8 @@ pub(crate) async fn apply(
     {
         return Response::error("validation expired", 409);
     }
-    let expected_digest = validation_digest(
-        env,
-        driver_id,
-        &desired,
-        &requested.authorization_id,
-        requested.validation_expires_at,
-    )?;
+    let expected_digest =
+        validation_digest(env, driver_id, &desired, requested.validation_expires_at)?;
     if !constant_time_equal(&requested.validation_digest, &expected_digest) {
         return Response::error("validation digest does not match credential", 409);
     }
@@ -320,8 +291,11 @@ pub(crate) async fn apply(
             worker::Error::RustError("provider refresh token has no expiry".to_owned())
         })?;
 
-    let credential_id = vfs_identifiers::new_uuid_v7_hex()?;
-    let credential_revision = 1;
+    let credential_id = match driver.credential_id {
+        Some(value) => value,
+        None => vfs_identifiers::new_uuid_v7_hex()?,
+    };
+    let credential_revision = driver.credential_revision.unwrap_or(0) + 1;
     let final_revision = driver.revision + 1;
     let mut plaintext = serde_json::to_vec(&credential).map_err(|error| json_error(&error))?;
     let sealed = seal_driver_credential(env, &credential_id, credential_revision, &plaintext);
@@ -334,8 +308,6 @@ pub(crate) async fn apply(
         driver_id: driver_id.to_owned(),
         credential_id: credential_id.clone(),
         credential_revision,
-        authorization_id: requested.authorization_id.clone(),
-        authorization_label: desired.authorization_label.clone(),
         credential_expires_at,
         refresh_token_expires_at,
         final_revision,
@@ -344,22 +316,43 @@ pub(crate) async fn apply(
     };
     let result_json = serde_json::to_string(&receipt).map_err(|error| json_error(&error))?;
 
-    let credential_statement = database
-        .prepare(
-            r"INSERT INTO credential_envelopes (
-                 id, envelope_algorithm, key_version, nonce, ciphertext,
-                 revision, created_at, rotated_at, expires_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?6, ?7)",
-        )
-        .bind(&[
-            JsValue::from_str(&credential_id),
-            JsValue::from_str(ENVELOPE_ALGORITHM),
-            JsValue::from_str(MASTER_KEY_VERSION),
-            blob_binding(&sealed.nonce),
-            blob_binding(&sealed.ciphertext),
-            JsValue::from_str(&now.to_string()),
-            JsValue::from_str(&credential_expires_at.to_string()),
-        ])?;
+    let credential_statement = if driver.credential_revision.is_some() {
+        database
+            .prepare(
+                r"UPDATE credential_envelopes
+                 SET envelope_algorithm = ?1, key_version = ?2, nonce = ?3,
+                     ciphertext = ?4, expires_at = ?5,
+                     revision = revision + 1, rotated_at = ?6
+                 WHERE id = ?7 AND revision = ?8",
+            )
+            .bind(&[
+                JsValue::from_str(ENVELOPE_ALGORITHM),
+                JsValue::from_str(MASTER_KEY_VERSION),
+                blob_binding(&sealed.nonce),
+                blob_binding(&sealed.ciphertext),
+                JsValue::from_str(&credential_expires_at.to_string()),
+                JsValue::from_str(&now.to_string()),
+                JsValue::from_str(&credential_id),
+                JsValue::from_str(&(credential_revision - 1).to_string()),
+            ])?
+    } else {
+        database
+            .prepare(
+                r"INSERT INTO credential_envelopes (
+                     id, envelope_algorithm, key_version, nonce, ciphertext,
+                     revision, created_at, rotated_at, expires_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?6, ?7)",
+            )
+            .bind(&[
+                JsValue::from_str(&credential_id),
+                JsValue::from_str(ENVELOPE_ALGORITHM),
+                JsValue::from_str(MASTER_KEY_VERSION),
+                blob_binding(&sealed.nonce),
+                blob_binding(&sealed.ciphertext),
+                JsValue::from_str(&now.to_string()),
+                JsValue::from_str(&credential_expires_at.to_string()),
+            ])?
+    };
 
     let refresh_statement = if let Some(issuer) = credential.managed_issuer() {
         database
@@ -398,20 +391,6 @@ pub(crate) async fn apply(
 
     let mutation = database
         .batch(vec![
-            database
-                .prepare(
-                    "UPDATE driver_authorizations
-                     SET state = 'standby', retired_at = NULL,
-                         revision = revision + 1, updated_at = ?1
-                     WHERE driver_id = ?2 AND state = 'active'",
-                )
-                .bind(&[
-                    JsValue::from_str(&now.to_string()),
-                    JsValue::from_str(driver_id),
-                ])?,
-            database
-                .prepare("DELETE FROM driver_credential_refreshes WHERE driver_id = ?1")
-                .bind(&[JsValue::from_str(driver_id)])?,
             credential_statement,
             database
                 .prepare(
@@ -424,22 +403,6 @@ pub(crate) async fn apply(
                     JsValue::from_str(&now.to_string()),
                     JsValue::from_str(driver_id),
                     JsValue::from_str(&driver.revision.to_string()),
-                ])?,
-            database
-                .prepare(
-                    r"INSERT INTO driver_authorizations (
-                         id, driver_id, label, state, credential_id,
-                         activated_at, refresh_health, last_succeeded_at,
-                         refresh_token_expires_at, created_at, updated_at
-                     ) VALUES (?1, ?2, ?3, 'active', ?4, ?5, 'healthy', ?5, ?6, ?5, ?5)",
-                )
-                .bind(&[
-                    JsValue::from_str(&requested.authorization_id),
-                    JsValue::from_str(driver_id),
-                    JsValue::from_str(&desired.authorization_label),
-                    JsValue::from_str(&credential_id),
-                    JsValue::from_str(&now.to_string()),
-                    JsValue::from_str(&refresh_token_expires_at.to_string()),
                 ])?,
             refresh_statement,
             database
@@ -588,6 +551,7 @@ async fn load_driver(database: &worker::D1Database, driver_id: &str) -> Result<O
         .prepare(
             r"SELECT driver.kind, driver.config_json,
                     credential.id AS credential_id,
+                    credential.revision AS credential_revision,
                     driver.revision
              FROM driver_instances AS driver
              LEFT JOIN credential_envelopes AS credential ON credential.id = driver.credential_ref
@@ -642,7 +606,6 @@ fn validation_digest(
     env: &Env,
     driver_id: &str,
     requested: &CredentialRequest,
-    authorization_id: &str,
     expires_at: u64,
 ) -> Result<String> {
     let secret = env.secret(ADMIN_TOKEN_BINDING)?.to_string();
@@ -652,8 +615,6 @@ fn validation_digest(
     mac.update(driver_id.as_bytes());
     mac.update(&[0]);
     mac.update(&serde_json::to_vec(requested).map_err(|error| json_error(&error))?);
-    mac.update(&[0]);
-    mac.update(authorization_id.as_bytes());
     mac.update(&expires_at.to_be_bytes());
     Ok(URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
 }
@@ -673,10 +634,6 @@ fn valid_string(value: &str, maximum_bytes: usize) -> bool {
         && value.len() <= maximum_bytes
         && value.trim() == value
         && !value.chars().any(char::is_control)
-}
-
-fn valid_authorization_id(value: &str) -> bool {
-    value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn constant_time_equal(left: &str, right: &str) -> bool {

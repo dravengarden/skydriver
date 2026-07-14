@@ -114,8 +114,6 @@ describe("driver configuration", () => {
             kind: "aliyundrive-open/v2",
             current_credential_present: false,
             credential_revision: 1,
-            authorization_id: "019abcdef0123456789abcdef0123456",
-            authorization_label: "Personal dev",
             refresh_token_expires_at: 2_000_000_000,
             expected_revision: 1,
             validation_expires_at: 2_000_000_000,
@@ -126,14 +124,13 @@ describe("driver configuration", () => {
         vi.stubGlobal("fetch", fetchMock);
 
         await expect(
-            validateDriverCredential("aliyun-main", "refresh-private", 1, "Personal dev"),
+            validateDriverCredential("aliyun-main", "refresh-private", 1),
         ).resolves.toEqual(validation);
         const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
         expect(body.credential).toEqual({
             refresh_token: "refresh-private",
             refresh_issuer: "openlist-online/v1",
         });
-        expect(body.authorization_label).toBe("Personal dev");
         const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
         expect(headers.get("Carrack-Protocol-Epoch")).toBe("2");
         expect(headers.get("Carrack-SDK-Version")).toBe("0.3.0");
@@ -150,9 +147,9 @@ describe("driver configuration", () => {
                 ),
         );
 
-        await expect(
-            validateDriverCredential("aliyun-main", "refresh-private", 1, "Personal dev"),
-        ).rejects.toThrow("Carrack API returned 400: refresh token was rejected by the provider");
+        await expect(validateDriverCredential("aliyun-main", "refresh-private", 1)).rejects.toThrow(
+            "Carrack API returned 400: refresh token was rejected by the provider",
+        );
     });
 });
 

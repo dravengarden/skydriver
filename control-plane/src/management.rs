@@ -53,22 +53,6 @@ struct DriverView {
 }
 
 #[derive(Deserialize, Serialize)]
-struct DriverAuthorizationView {
-    id: String,
-    driver_id: String,
-    label: String,
-    state: String,
-    revision: u64,
-    refresh_health: String,
-    last_succeeded_at: Option<u64>,
-    refresh_token_expires_at: Option<u64>,
-    last_error_code: Option<String>,
-    activated_at: Option<u64>,
-    created_at: u64,
-    updated_at: u64,
-}
-
-#[derive(Deserialize, Serialize)]
 struct FilesystemView {
     id: String,
     name: String,
@@ -143,7 +127,6 @@ struct SnapshotResponse {
     observed_at: u64,
     event_cursor: u64,
     drivers: Vec<DriverView>,
-    authorizations: Vec<DriverAuthorizationView>,
     filesystems: Vec<FilesystemView>,
     tokens: Vec<TokenView>,
 }
@@ -318,18 +301,6 @@ pub(crate) async fn snapshot(request: &Request, env: &Env) -> Result<Response> {
             updated_at: row.updated_at,
         })
         .collect();
-    let authorizations = database
-        .prepare(
-            "SELECT id, driver_id, label, state, revision, refresh_health,
-                    last_succeeded_at, refresh_token_expires_at, last_error_code,
-                    activated_at, created_at, updated_at
-             FROM driver_authorizations
-             ORDER BY driver_id, CASE state WHEN 'active' THEN 0 ELSE 1 END,
-                      updated_at DESC, id",
-        )
-        .all()
-        .await?
-        .results::<DriverAuthorizationView>()?;
 
     let filesystems = database
         .prepare(
@@ -426,7 +397,6 @@ pub(crate) async fn snapshot(request: &Request, env: &Env) -> Result<Response> {
         observed_at: now_seconds(),
         event_cursor: cursor,
         drivers,
-        authorizations,
         filesystems,
         tokens,
     })

@@ -84,25 +84,6 @@ pub struct ManagementDriver {
     pub updated_at: u64,
 }
 
-/// One non-secret provider authorization profile.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-#[allow(missing_docs, reason = "wire fields retain the server schema names")]
-pub struct ManagementDriverAuthorization {
-    pub id: String,
-    pub driver_id: String,
-    pub label: String,
-    pub state: String,
-    pub revision: u64,
-    pub refresh_health: String,
-    pub last_succeeded_at: Option<u64>,
-    pub refresh_token_expires_at: Option<u64>,
-    pub last_error_code: Option<String>,
-    pub activated_at: Option<u64>,
-    pub created_at: u64,
-    pub updated_at: u64,
-}
-
 /// One filesystem and recursive storage summary.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -163,7 +144,6 @@ pub struct ManagementSnapshot {
     pub observed_at: u64,
     pub event_cursor: u64,
     pub drivers: Vec<ManagementDriver>,
-    pub authorizations: Vec<ManagementDriverAuthorization>,
     pub filesystems: Vec<ManagementFilesystem>,
     pub tokens: Vec<ManagementToken>,
 }
@@ -371,8 +351,6 @@ pub struct DriverCredentialValidation {
     pub kind: String,
     pub current_credential_present: bool,
     pub credential_revision: u64,
-    pub authorization_id: String,
-    pub authorization_label: String,
     pub refresh_token_expires_at: u64,
     pub expected_revision: u64,
     pub validation_expires_at: u64,
@@ -393,8 +371,6 @@ pub struct DriverCredentialReceipt {
     pub driver_id: String,
     pub credential_id: String,
     pub credential_revision: u64,
-    pub authorization_id: String,
-    pub authorization_label: String,
     pub credential_expires_at: u64,
     pub refresh_token_expires_at: u64,
     pub final_revision: u64,
@@ -733,13 +709,11 @@ impl AdminClient {
         driver_id: &str,
         credential: &Value,
         expected_revision: u64,
-        authorization_label: &str,
     ) -> Result<DriverCredentialValidation, Error> {
         #[derive(Serialize)]
         struct Request<'a> {
             credential: &'a Value,
             expected_revision: u64,
-            authorization_label: &'a str,
         }
         let response: DriverCredentialValidation = self
             .post_authenticated(
@@ -747,14 +721,12 @@ impl AdminClient {
                 &Request {
                     credential,
                     expected_revision,
-                    authorization_label,
                 },
             )
             .await?;
         if response.schema != DRIVER_CREDENTIAL_VALIDATION_SCHEMA
             || response.driver_id != driver_id
             || response.expected_revision != expected_revision
-            || response.authorization_label != authorization_label
             || response.refresh_token_expires_at == 0
             || !valid_validation(&response.validation_digest, response.validation_expires_at)
         {
@@ -783,8 +755,6 @@ impl AdminClient {
             validation_expires_at: u64,
             validation_digest: &'a str,
             idempotency_key: &'a str,
-            authorization_id: &'a str,
-            authorization_label: &'a str,
         }
         let response: DriverCredentialReceipt = self
             .post_configured(
@@ -798,16 +768,12 @@ impl AdminClient {
                     validation_expires_at: validation.validation_expires_at,
                     validation_digest: &validation.validation_digest,
                     idempotency_key,
-                    authorization_id: &validation.authorization_id,
-                    authorization_label: &validation.authorization_label,
                 },
             )
             .await?;
         if response.schema != DRIVER_CREDENTIAL_RECEIPT_SCHEMA
             || response.driver_id != validation.driver_id
             || response.credential_revision != validation.credential_revision
-            || response.authorization_id != validation.authorization_id
-            || response.authorization_label != validation.authorization_label
             || response.refresh_token_expires_at == 0
             || response.final_revision != validation.expected_revision + 1
             || response.state != "committed"

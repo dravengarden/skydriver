@@ -142,7 +142,6 @@ export function DriversPage({
     const [validation, setValidation] = useState<DriverStateValidation | null>(null);
     const [credentialTarget, setCredentialTarget] = useState<DriverView | null>(null);
     const [refreshToken, setRefreshToken] = useState("");
-    const [authorizationLabel, setAuthorizationLabel] = useState("");
     const [clipboardError, setClipboardError] = useState(false);
     const [credentialValidation, setCredentialValidation] =
         useState<DriverCredentialValidation | null>(null);
@@ -175,7 +174,7 @@ export function DriversPage({
     });
     const credentialValidationMutation = useMutation({
         mutationFn: (driver: DriverView) =>
-            validateDriverCredential(driver.id, refreshToken, driver.revision, authorizationLabel),
+            validateDriverCredential(driver.id, refreshToken, driver.revision),
         onSuccess: setCredentialValidation,
     });
     const credentialApplyMutation = useMutation({
@@ -250,7 +249,6 @@ export function DriversPage({
     function closeCredentialDialog() {
         setCredentialTarget(null);
         setRefreshToken("");
-        setAuthorizationLabel("");
         setClipboardError(false);
         setCredentialValidation(null);
         credentialValidationMutation.reset();
@@ -264,7 +262,6 @@ export function DriversPage({
         }
         setCredentialTarget(driver);
         setRefreshToken("");
-        setAuthorizationLabel("");
         setClipboardError(false);
         setCredentialValidation(null);
         credentialValidationMutation.reset();
@@ -469,71 +466,6 @@ export function DriversPage({
                                         </Typography>
                                     </Box>
                                 </Box>
-                            )}
-
-                            {driver.kind === "aliyundrive-open/v2" && (
-                                <Stack spacing={1.5} sx={{ mt: 2 }}>
-                                    <Typography color="text.secondary" variant="caption">
-                                        AUTHORIZATION PROFILES
-                                    </Typography>
-                                    {management.data.authorizations
-                                        .filter((profile) => profile.driver_id === driver.id)
-                                        .map((profile) => (
-                                            <Paper
-                                                key={profile.id}
-                                                variant="outlined"
-                                                sx={{ p: 1.5 }}
-                                            >
-                                                <Stack
-                                                    direction={{ xs: "column", sm: "row" }}
-                                                    sx={{ justifyContent: "space-between", gap: 2 }}
-                                                >
-                                                    <Box>
-                                                        <Typography sx={{ fontWeight: 750 }}>
-                                                            {profile.label}
-                                                        </Typography>
-                                                        <Typography
-                                                            color="text.secondary"
-                                                            variant="body2"
-                                                        >
-                                                            Last refresh{" "}
-                                                            {profile.last_succeeded_at === null
-                                                                ? "not recorded"
-                                                                : formatDate(
-                                                                      profile.last_succeeded_at,
-                                                                  )}{" "}
-                                                            · expires{" "}
-                                                            {profile.refresh_token_expires_at ===
-                                                            null
-                                                                ? "unknown"
-                                                                : formatDate(
-                                                                      profile.refresh_token_expires_at,
-                                                                  )}
-                                                        </Typography>
-                                                    </Box>
-                                                    <Stack direction="row" spacing={1}>
-                                                        <Chip
-                                                            size="small"
-                                                            label={profile.state.toUpperCase()}
-                                                            color={
-                                                                profile.state === "active"
-                                                                    ? "success"
-                                                                    : "default"
-                                                            }
-                                                        />
-                                                        <Chip
-                                                            size="small"
-                                                            label={profile.refresh_health.replaceAll(
-                                                                "_",
-                                                                " ",
-                                                            )}
-                                                            variant="outlined"
-                                                        />
-                                                    </Stack>
-                                                </Stack>
-                                            </Paper>
-                                        ))}
-                                </Stack>
                             )}
 
                             <Box sx={{ mt: 3 }}>
@@ -775,22 +707,12 @@ export function DriversPage({
                     <TextField
                         autoFocus
                         fullWidth
-                        label="Authorization label"
-                        placeholder="Personal account · dev"
-                        value={authorizationLabel}
-                        disabled={credentialValidation !== null}
-                        onChange={(event) => setAuthorizationLabel(event.target.value)}
-                        helperText="A non-secret name used to distinguish multiple authorizations."
-                    />
-                    <TextField
-                        fullWidth
                         label="Aliyun Drive refresh token"
                         type="text"
                         autoComplete="off"
                         value={redactSecret(refreshToken)}
                         disabled={credentialValidation !== null}
                         slotProps={{ htmlInput: { readOnly: true } }}
-                        sx={{ mt: 2 }}
                         helperText={
                             refreshToken.length === 0
                                 ? "Paste from the clipboard; the full token is never rendered."
@@ -839,8 +761,7 @@ export function DriversPage({
                                 Driver revision {String(credentialValidation.expected_revision)} →{" "}
                                 {String(credentialValidation.expected_revision + 1)} · credential
                                 revision {String(credentialValidation.credential_revision)} ·
-                                profile {credentialValidation.authorization_label} · refresh
-                                authority expires{" "}
+                                refresh authority expires{" "}
                                 {formatDate(credentialValidation.refresh_token_expires_at)}
                             </Typography>
                             {credentialValidation.warnings.map((warning) => (
@@ -863,7 +784,6 @@ export function DriversPage({
                             variant="contained"
                             disabled={
                                 credentialTarget === null ||
-                                authorizationLabel.trim().length === 0 ||
                                 refreshToken.length === 0 ||
                                 credentialValidationMutation.isPending
                             }

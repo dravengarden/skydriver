@@ -113,21 +113,6 @@ const DriverViewSchema = v.object({
     updated_at: v.number(),
 });
 
-const DriverAuthorizationViewSchema = v.object({
-    id: v.string(),
-    driver_id: v.string(),
-    label: v.string(),
-    state: v.string(),
-    revision: v.number(),
-    refresh_health: v.string(),
-    last_succeeded_at: v.nullable(v.number()),
-    refresh_token_expires_at: v.nullable(v.number()),
-    last_error_code: v.nullable(v.string()),
-    activated_at: v.nullable(v.number()),
-    created_at: v.number(),
-    updated_at: v.number(),
-});
-
 const FilesystemViewSchema = v.object({
     id: v.string(),
     name: v.string(),
@@ -167,7 +152,6 @@ const ManagementSnapshotSchema = v.object({
     observed_at: v.number(),
     event_cursor: v.number(),
     drivers: v.array(DriverViewSchema),
-    authorizations: v.array(DriverAuthorizationViewSchema),
     filesystems: v.array(FilesystemViewSchema),
     tokens: v.array(TokenViewSchema),
 });
@@ -296,8 +280,6 @@ const DriverCredentialValidationSchema = v.object({
     kind: v.string(),
     current_credential_present: v.boolean(),
     credential_revision: v.number(),
-    authorization_id: v.string(),
-    authorization_label: v.string(),
     refresh_token_expires_at: v.number(),
     expected_revision: v.number(),
     validation_expires_at: v.number(),
@@ -311,8 +293,6 @@ const DriverCredentialReceiptSchema = v.object({
     driver_id: v.string(),
     credential_id: v.string(),
     credential_revision: v.number(),
-    authorization_id: v.string(),
-    authorization_label: v.string(),
     credential_expires_at: v.number(),
     refresh_token_expires_at: v.number(),
     final_revision: v.number(),
@@ -578,7 +558,6 @@ export function validateDriverCredential(
     driverId: string,
     refreshToken: string,
     expectedRevision: number,
-    authorizationLabel: string,
 ): Promise<DriverCredentialValidation> {
     return requestJson(
         `/api/admin/drivers/${encodeURIComponent(driverId)}/credential/validate`,
@@ -591,7 +570,6 @@ export function validateDriverCredential(
                     refresh_issuer: "openlist-online/v1",
                 },
                 expected_revision: expectedRevision,
-                authorization_label: authorizationLabel,
             }),
         },
         DriverCredentialValidationSchema,
@@ -616,8 +594,6 @@ export function applyDriverCredential(
                 validation_expires_at: validation.validation_expires_at,
                 validation_digest: validation.validation_digest,
                 idempotency_key: newIdempotencyKey(),
-                authorization_id: validation.authorization_id,
-                authorization_label: validation.authorization_label,
             }),
         },
         DriverCredentialReceiptSchema,

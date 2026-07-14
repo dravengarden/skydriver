@@ -526,12 +526,6 @@ token twice. The control plane derives and stores access tokens internally.
 Ordinary `carrack` commands and SDK methods contain no renewal API or
 token-lifecycle state.
 
-An environment may retain multiple encrypted authorization profiles for a
-driver, but a partial unique index permits exactly one `active` profile. Adding
-a verified profile atomically demotes the previous profile to `standby` and
-rewires the driver credential reference. Only the active profile has a refresh
-lease; standby profiles never perform background rotation.
-
 ### Distributed rate coordination
 
 Local driver limiters are insufficient when many SDK instances share one cloud
