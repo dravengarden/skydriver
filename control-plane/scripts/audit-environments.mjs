@@ -26,8 +26,8 @@ async function api(path) {
 }
 
 function singleBinding(environment, key, binding) {
-    const values = environment[key];
-    if (!Array.isArray(values) || values.length !== 1 || values[0].binding !== binding) {
+    const values = environment[key]?.filter((value) => value.binding === binding);
+    if (!Array.isArray(values) || values.length !== 1) {
         throw new Error(`${environment.name} has an invalid ${binding} binding`);
     }
     return values[0];
@@ -38,6 +38,7 @@ const expected = Object.fromEntries(
         const environment = config.env[name];
         const database = singleBinding(environment, "d1_databases", "CARRACK_INDEX");
         const bucket = singleBinding(environment, "r2_buckets", "CARRACK_MANIFESTS");
+        const payload = singleBinding(environment, "r2_buckets", "CARRACK_PAYLOAD");
         return [
             name,
             {
@@ -46,6 +47,7 @@ const expected = Object.fromEntries(
                 databaseId: database.database_id,
                 databaseName: database.database_name,
                 bucketName: bucket.bucket_name,
+                payloadBucketName: payload.bucket_name,
                 hostname: environment.routes?.[0]?.pattern,
             },
         ];
@@ -66,6 +68,9 @@ for (const environment of Object.values(expected)) {
     }
     if (!r2.buckets.some(({ name }) => name === environment.bucketName)) {
         throw new Error(`${environment.name} R2 bucket is missing`);
+    }
+    if (!r2.buckets.some(({ name }) => name === environment.payloadBucketName)) {
+        throw new Error(`${environment.name} payload R2 bucket is missing`);
     }
     if (!scripts.some(({ id }) => id === environment.worker)) {
         throw new Error(`${environment.name} Worker is missing`);
@@ -93,7 +98,11 @@ for (const { id: script } of scripts) {
             ({ type, bucket_name: bucketName }) =>
                 type === "r2_bucket" && bucketName === environment.bucketName,
         );
-        if ((ownsDatabase || ownsBucket) && script !== environment.worker) {
+        const ownsPayloadBucket = settings.bindings.some(
+            ({ type, bucket_name: bucketName }) =>
+                type === "r2_bucket" && bucketName === environment.payloadBucketName,
+        );
+        if ((ownsDatabase || ownsBucket || ownsPayloadBucket) && script !== environment.worker) {
             throw new Error(`${script} overlaps ${environment.name} Carrack resources`);
         }
     }

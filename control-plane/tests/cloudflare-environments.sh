@@ -28,8 +28,8 @@ function fail(message) {
 }
 
 function requireSingleBinding(environment, key, binding) {
-    const values = environment[key];
-    if (!Array.isArray(values) || values.length !== 1 || values[0].binding !== binding) {
+    const values = environment[key]?.filter((value) => value.binding === binding);
+    if (!Array.isArray(values) || values.length !== 1) {
         fail(`${environment.name} must define exactly one ${binding} binding`);
     }
     return values[0];
@@ -47,18 +47,21 @@ if (localDatabase.database_id !== "00000000-0000-0000-0000-000000000000") {
     fail("the default Worker must use the non-routable local D1 sentinel");
 }
 requireSingleBinding(config, "r2_buckets", "CARRACK_MANIFESTS");
+requireSingleBinding(config, "r2_buckets", "CARRACK_PAYLOAD");
 
 const expected = {
     dev: {
         worker: "carrack-control-plane-dev",
         database: "carrack-index-dev",
         bucket: "carrack-manifests-dev",
+        payload: "carrack-payload-dev",
         hostname: "dev.carrack.stormbird.xyz",
     },
     prod: {
         worker: "carrack-control-plane-prod",
         database: "carrack-index-prod",
         bucket: "carrack-manifests-prod",
+        payload: "carrack-payload-prod",
         hostname: "carrack.stormbird.xyz",
     },
 };
@@ -94,6 +97,7 @@ for (const [name, wanted] of Object.entries(expected)) {
 
     const database = requireSingleBinding(environment, "d1_databases", "CARRACK_INDEX");
     const bucket = requireSingleBinding(environment, "r2_buckets", "CARRACK_MANIFESTS");
+    const payload = requireSingleBinding(environment, "r2_buckets", "CARRACK_PAYLOAD");
     if (database.database_name !== wanted.database) {
         fail(`${name} D1 must be named ${wanted.database}`);
     }
@@ -103,10 +107,19 @@ for (const [name, wanted] of Object.entries(expected)) {
     if (bucket.bucket_name !== wanted.bucket) {
         fail(`${name} R2 bucket must be named ${wanted.bucket}`);
     }
+    if (payload.bucket_name !== wanted.payload) {
+        fail(`${name} payload R2 bucket must be named ${wanted.payload}`);
+    }
     if ("preview_bucket_name" in bucket) {
         fail(`${name} must not overload preview_bucket_name as an environment`);
     }
-    identities.push(environment.name, database.database_id, bucket.bucket_name, wanted.hostname);
+    identities.push(
+        environment.name,
+        database.database_id,
+        bucket.bucket_name,
+        payload.bucket_name,
+        wanted.hostname,
+    );
 }
 
 if (new Set(identities).size !== identities.length) {

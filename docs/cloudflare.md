@@ -23,10 +23,10 @@ environment audit.
 Carrack has explicit `dev` and `prod` environments. Every remotely usable
 resource is distinct:
 
-| Environment | Worker | Custom domain | D1 | R2 |
-|---|---|---|---|---|
-| `dev` | `carrack-control-plane-dev` | `dev.carrack.stormbird.xyz` | `carrack-index-dev` | `carrack-manifests-dev` |
-| `prod` | `carrack-control-plane-prod` | `carrack.stormbird.xyz` | `carrack-index-prod` | `carrack-manifests-prod` |
+| Environment | Worker | Custom domain | D1 | Metadata R2 | Default payload R2 |
+|---|---|---|---|---|---|
+| `dev` | `carrack-control-plane-dev` | `dev.carrack.stormbird.xyz` | `carrack-index-dev` | `carrack-manifests-dev` | `carrack-payload-dev` |
+| `prod` | `carrack-control-plane-prod` | `carrack.stormbird.xyz` | `carrack-index-prod` | `carrack-manifests-prod` | `carrack-payload-prod` |
 
 The default Wrangler configuration is local-only. It uses a non-routable D1
 sentinel, disables `workers.dev`, and must never be deployed. A remote command
@@ -52,9 +52,10 @@ remote deployment, verify that no other Worker is bound to either environment:
 just audit-cloudflare
 ```
 
-Carrack's R2 bindings carry only small portable recovery metadata. Payload
-bytes continue to flow directly between SDK clients and their selected storage
-drivers.
+`CARRACK_MANIFESTS` carries only small portable recovery metadata.
+`CARRACK_PAYLOAD` gives server-side lifecycle and reconciliation code access to
+the environment's built-in payload bucket. Payload bytes still flow directly
+between SDK clients and storage; the Worker never relays file bodies.
 
 Create all four storage resources once before the first deployment:
 
@@ -63,6 +64,8 @@ pnpm exec wrangler d1 create carrack-index-dev
 pnpm exec wrangler d1 create carrack-index-prod
 pnpm exec wrangler r2 bucket create carrack-manifests-dev
 pnpm exec wrangler r2 bucket create carrack-manifests-prod
+pnpm exec wrangler r2 bucket create carrack-payload-dev
+pnpm exec wrangler r2 bucket create carrack-payload-prod
 ```
 
 Apply migrations independently before deploying. Never run a remote migration

@@ -29,6 +29,10 @@
     {
       "binding": "CARRACK_MANIFESTS",
       "bucket_name": "carrack-manifests-local"
+    },
+    {
+      "binding": "CARRACK_PAYLOAD",
+      "bucket_name": "carrack-payload-local"
     }
   ],
   "env": {
@@ -60,6 +64,10 @@
         {
           "binding": "CARRACK_MANIFESTS",
           "bucket_name": "carrack-manifests-dev"
+        },
+        {
+          "binding": "CARRACK_PAYLOAD",
+          "bucket_name": "carrack-payload-dev"
         }
       ]
     },
@@ -91,6 +99,10 @@
         {
           "binding": "CARRACK_MANIFESTS",
           "bucket_name": "carrack-manifests-prod"
+        },
+        {
+          "binding": "CARRACK_PAYLOAD",
+          "bucket_name": "carrack-payload-prod"
         }
       ]
     }

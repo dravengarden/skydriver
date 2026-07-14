@@ -358,7 +358,9 @@ repair sources, and required manual action.
 ## Security boundary
 
 - Development and production MUST use distinct Worker names, D1 database
-  UUIDs, R2 bucket names, runtime secrets, and administrator credentials.
+  UUIDs, metadata and payload R2 bucket names, driver identities, runtime
+  secrets, and administrator credentials. Sharing a Cloudflare account MUST
+  NOT permit a credential or binding from one environment to access the other.
 - The operator UI MUST use one environment-scoped credential without username
   accounts. Browser sessions MUST be random, revocable, time-bounded, and
   represented in D1 only by a one-way verifier. This operator credential MUST
