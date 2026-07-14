@@ -26,6 +26,11 @@ struct DriverRow {
     available_location_count: u64,
     encoded_bytes: u64,
     file_count: u64,
+    quota_revision: u64,
+    max_physical_bytes: Option<u64>,
+    max_object_count: Option<u64>,
+    reserved_physical_bytes: u64,
+    reserved_object_count: u64,
     updated_at: u64,
 }
 
@@ -49,6 +54,11 @@ struct DriverView {
     available_location_count: u64,
     encoded_bytes: u64,
     file_count: u64,
+    quota_revision: u64,
+    max_physical_bytes: Option<u64>,
+    max_object_count: Option<u64>,
+    reserved_physical_bytes: u64,
+    reserved_object_count: u64,
     updated_at: u64,
 }
 
@@ -148,6 +158,10 @@ struct DirectoryRow {
     recursive_directory_count: u64,
     recursive_file_count: u64,
     recursive_logical_bytes: u64,
+    quota_revision: u64,
+    max_file_bytes: Option<u64>,
+    max_logical_bytes: Option<u64>,
+    max_file_count: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -167,6 +181,10 @@ struct DirectoryView {
     recursive_directory_count: u64,
     recursive_file_count: u64,
     recursive_logical_bytes: u64,
+    quota_revision: u64,
+    max_file_bytes: Option<u64>,
+    max_logical_bytes: Option<u64>,
+    max_file_count: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -267,11 +285,26 @@ pub(crate) async fn snapshot(request: &Request, env: &Env) -> Result<Response> {
                      JOIN vfs_file_versions AS version ON version.id = location.version_id
                      WHERE location.driver_id = driver.id AND location.state = 'available')
                         AS file_count,
+                    quota.revision AS quota_revision,
+                    quota.max_physical_bytes, quota.max_object_count,
+                    COALESCE((SELECT SUM(CASE
+                        WHEN intent.crypto_suite = 'plaintext/v1' THEN intent.plaintext_bytes
+                        ELSE intent.plaintext_bytes + 16 * CASE
+                            WHEN intent.plaintext_bytes = 0 THEN 0
+                            ELSE 1 + (intent.plaintext_bytes - 1) / intent.encryption_frame_bytes
+                        END END)
+                     FROM vfs_put_intents AS intent
+                     WHERE intent.driver_id = driver.id AND intent.state = 'prepared'
+                       AND intent.expires_at > unixepoch()), 0) AS reserved_physical_bytes,
+                    (SELECT COUNT(*) FROM vfs_put_intents AS intent
+                     WHERE intent.driver_id = driver.id AND intent.state = 'prepared'
+                       AND intent.expires_at > unixepoch()) AS reserved_object_count,
                     driver.updated_at
              FROM driver_instances AS driver
              LEFT JOIN credential_envelopes AS credential ON credential.id = driver.credential_ref
              LEFT JOIN driver_credential_refreshes AS refresh
                ON refresh.credential_id = credential.id
+             JOIN driver_quota_policies AS quota ON quota.driver_id = driver.id
              ORDER BY driver.id",
         )
         .all()
@@ -298,6 +331,11 @@ pub(crate) async fn snapshot(request: &Request, env: &Env) -> Result<Response> {
             available_location_count: row.available_location_count,
             encoded_bytes: row.encoded_bytes,
             file_count: row.file_count,
+            quota_revision: row.quota_revision,
+            max_physical_bytes: row.max_physical_bytes,
+            max_object_count: row.max_object_count,
+            reserved_physical_bytes: row.reserved_physical_bytes,
+            reserved_object_count: row.reserved_object_count,
             updated_at: row.updated_at,
         })
         .collect();
@@ -450,6 +488,8 @@ pub(crate) async fn directory(
                     directory.data_root, directory.crypto_suite, directory.active_key_epoch,
                     directory.acl_inherits, directory.revision, directory.acl_revision,
                     directory.placement_revision,
+                    quota.revision AS quota_revision, quota.max_file_bytes,
+                    quota.max_logical_bytes, quota.max_file_count,
                     (SELECT COUNT(*) FROM vfs_directories AS child
                      WHERE child.parent_id = directory.id AND child.state = 'active')
                         AS child_directory_count,
@@ -460,7 +500,9 @@ pub(crate) async fn directory(
                     COALESCE((SELECT SUM(entry.size_bytes) FROM vfs_directory_entries AS entry
                               WHERE entry.directory_id IN (SELECT id FROM descendants)
                                 AND entry.kind = 'file'), 0) AS recursive_logical_bytes
-             FROM vfs_directories AS directory WHERE directory.id = ?1 AND directory.state = 'active'",
+             FROM vfs_directories AS directory
+             JOIN vfs_directory_quota_policies AS quota ON quota.directory_id = directory.id
+             WHERE directory.id = ?1 AND directory.state = 'active'",
         )
         .bind(&binding)?
         .first::<DirectoryRow>(None)
@@ -557,6 +599,10 @@ pub(crate) async fn directory(
             recursive_directory_count: row.recursive_directory_count,
             recursive_file_count: row.recursive_file_count,
             recursive_logical_bytes: row.recursive_logical_bytes,
+            quota_revision: row.quota_revision,
+            max_file_bytes: row.max_file_bytes,
+            max_logical_bytes: row.max_logical_bytes,
+            max_file_count: row.max_file_count,
         },
         breadcrumbs,
         placements,

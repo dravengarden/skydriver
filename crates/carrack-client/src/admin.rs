@@ -22,6 +22,8 @@ const DRIVER_REGISTRATION_RECEIPT_SCHEMA: &str =
 const DRIVER_CREDENTIAL_VALIDATION_SCHEMA: &str =
     "carrack.management.driver-credential-validation.v1";
 const DRIVER_CREDENTIAL_RECEIPT_SCHEMA: &str = "carrack.management.driver-credential-receipt.v1";
+const QUOTA_VALIDATION_SCHEMA: &str = "carrack.management.quota-validation.v1";
+const QUOTA_RECEIPT_SCHEMA: &str = "carrack.management.quota-receipt.v1";
 
 /// Environment-scoped break-glass credential used only to mint short sessions.
 #[derive(Zeroize, ZeroizeOnDrop)]
@@ -81,6 +83,11 @@ pub struct ManagementDriver {
     pub available_location_count: u64,
     pub encoded_bytes: u64,
     pub file_count: u64,
+    pub quota_revision: u64,
+    pub max_physical_bytes: Option<u64>,
+    pub max_object_count: Option<u64>,
+    pub reserved_physical_bytes: u64,
+    pub reserved_object_count: u64,
     pub updated_at: u64,
 }
 
@@ -171,6 +178,63 @@ pub struct ManagementDirectoryIdentity {
     pub recursive_directory_count: u64,
     pub recursive_file_count: u64,
     pub recursive_logical_bytes: u64,
+    pub quota_revision: u64,
+    pub max_file_bytes: Option<u64>,
+    pub max_logical_bytes: Option<u64>,
+    pub max_file_count: Option<u64>,
+}
+
+/// Hard quota limits; fields outside the selected scope must be absent.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(
+    missing_docs,
+    reason = "wire fields retain the documented server schema names"
+)]
+pub struct QuotaLimits {
+    pub max_file_bytes: Option<u64>,
+    pub max_logical_bytes: Option<u64>,
+    pub max_file_count: Option<u64>,
+    pub max_physical_bytes: Option<u64>,
+    pub max_object_count: Option<u64>,
+}
+
+/// Server-bound quota mutation validation.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(
+    missing_docs,
+    reason = "wire fields retain the documented server schema names"
+)]
+pub struct QuotaValidation {
+    pub schema: String,
+    pub scope: String,
+    pub resource_id: String,
+    pub current_limits: QuotaLimits,
+    pub limits: QuotaLimits,
+    pub expected_revision: u64,
+    pub validation_expires_at: u64,
+    pub validation_digest: String,
+    pub warnings: Vec<String>,
+}
+
+/// Durable quota mutation receipt.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(
+    missing_docs,
+    reason = "wire fields retain the documented server schema names"
+)]
+pub struct QuotaReceipt {
+    pub schema: String,
+    pub operation_id: String,
+    pub scope: String,
+    pub resource_id: String,
+    #[serde(flatten)]
+    pub limits: QuotaLimits,
+    pub final_revision: u64,
+    pub committed_at: u64,
+    pub state: String,
 }
 
 /// One root-to-current path component.
@@ -781,6 +845,89 @@ impl AdminClient {
             return Err(Error::InvalidResponse(
                 "invalid driver credential receipt".to_owned(),
             ));
+        }
+        Ok(response)
+    }
+
+    /// Validates one complete hard-quota policy for a directory or driver.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on invalid scope, limits, revision, or server response.
+    pub async fn validate_quota(
+        &self,
+        scope: &str,
+        resource_id: &str,
+        limits: &QuotaLimits,
+        expected_revision: u64,
+    ) -> Result<QuotaValidation, Error> {
+        #[derive(Serialize)]
+        struct Request<'a> {
+            limits: &'a QuotaLimits,
+            expected_revision: u64,
+        }
+        let response: QuotaValidation = self
+            .post_authenticated(
+                &format!("api/admin/quotas/{scope}/{resource_id}/validate"),
+                &Request {
+                    limits,
+                    expected_revision,
+                },
+            )
+            .await?;
+        if response.schema != QUOTA_VALIDATION_SCHEMA
+            || response.scope != scope
+            || response.resource_id != resource_id
+            || response.expected_revision != expected_revision
+            || !valid_validation(&response.validation_digest, response.validation_expires_at)
+        {
+            return Err(Error::InvalidResponse(
+                "invalid quota validation".to_owned(),
+            ));
+        }
+        Ok(response)
+    }
+
+    /// Applies one exact server-validated hard-quota policy.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed when reauthentication, CAS, validation binding, or commit fails.
+    pub async fn apply_quota(
+        &self,
+        validation: &QuotaValidation,
+        idempotency_key: &str,
+    ) -> Result<QuotaReceipt, Error> {
+        #[derive(Serialize)]
+        struct Request<'a> {
+            limits: &'a QuotaLimits,
+            expected_revision: u64,
+            validation_expires_at: u64,
+            validation_digest: &'a str,
+            idempotency_key: &'a str,
+        }
+        let response: QuotaReceipt = self
+            .post_configured(
+                &format!(
+                    "api/admin/quotas/{}/{}/apply",
+                    validation.scope, validation.resource_id
+                ),
+                &Request {
+                    limits: &validation.limits,
+                    expected_revision: validation.expected_revision,
+                    validation_expires_at: validation.validation_expires_at,
+                    validation_digest: &validation.validation_digest,
+                    idempotency_key,
+                },
+            )
+            .await?;
+        if response.schema != QUOTA_RECEIPT_SCHEMA
+            || response.scope != validation.scope
+            || response.resource_id != validation.resource_id
+            || response.final_revision != validation.expected_revision + 1
+            || response.state != "committed"
+        {
+            return Err(Error::InvalidResponse("invalid quota receipt".to_owned()));
         }
         Ok(response)
     }

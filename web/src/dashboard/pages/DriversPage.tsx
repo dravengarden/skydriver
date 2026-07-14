@@ -2,6 +2,7 @@ import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutlineOutlin
 import AddOutlinedIcon from "@mui/icons-material/AddOutlined";
 import KeyOutlinedIcon from "@mui/icons-material/KeyOutlined";
 import PowerSettingsNewOutlinedIcon from "@mui/icons-material/PowerSettingsNewOutlined";
+import TuneOutlinedIcon from "@mui/icons-material/TuneOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import {
     Alert,
@@ -35,6 +36,7 @@ import {
     type ManagementSnapshot,
 } from "../../api/client";
 import { ErrorState, LoadingState, PageHeading, formatBytes, formatDate } from "./shared";
+import { QuotaDialog } from "./QuotaDialog";
 
 interface DriversPageProps {
     readonly management: UseQueryResult<ManagementSnapshot>;
@@ -141,6 +143,7 @@ export function DriversPage({
     const [selected, setSelected] = useState<DriverView | null>(null);
     const [validation, setValidation] = useState<DriverStateValidation | null>(null);
     const [credentialTarget, setCredentialTarget] = useState<DriverView | null>(null);
+    const [quotaTarget, setQuotaTarget] = useState<DriverView | null>(null);
     const [refreshToken, setRefreshToken] = useState("");
     const [clipboardError, setClipboardError] = useState(false);
     const [credentialValidation, setCredentialValidation] =
@@ -380,6 +383,14 @@ export function DriversPage({
                                     <Button
                                         size="small"
                                         variant="outlined"
+                                        startIcon={<TuneOutlinedIcon />}
+                                        onClick={() => setQuotaTarget(driver)}
+                                    >
+                                        Limits
+                                    </Button>
+                                    <Button
+                                        size="small"
+                                        variant="outlined"
                                         color={driver.enabled ? "warning" : "primary"}
                                         startIcon={<PowerSettingsNewOutlinedIcon />}
                                         onClick={() => openStateChange(driver)}
@@ -410,6 +421,16 @@ export function DriversPage({
                                     [
                                         "Collection placements",
                                         driver.placement_count.toLocaleString(),
+                                    ],
+                                    [
+                                        "Physical limit",
+                                        driver.max_physical_bytes === null
+                                            ? "Unlimited"
+                                            : formatBytes(driver.max_physical_bytes),
+                                    ],
+                                    [
+                                        "Reserved",
+                                        `${formatBytes(driver.reserved_physical_bytes)} · ${driver.reserved_object_count.toLocaleString()} objects`,
                                     ],
                                 ].map(([label, value]) => (
                                     <Box key={label}>
@@ -806,6 +827,25 @@ export function DriversPage({
                     )}
                 </DialogActions>
             </Dialog>
+            {quotaTarget !== null && (
+                <QuotaDialog
+                    open
+                    scope="driver"
+                    resourceId={quotaTarget.id}
+                    resourceName={quotaTarget.id}
+                    revision={quotaTarget.quota_revision}
+                    limits={{
+                        max_file_bytes: null,
+                        max_logical_bytes: null,
+                        max_file_count: null,
+                        max_physical_bytes: quotaTarget.max_physical_bytes,
+                        max_object_count: quotaTarget.max_object_count,
+                    }}
+                    configurationEnabled={configurationEnabled}
+                    onRequestConfiguration={onRequestConfiguration}
+                    onClose={() => setQuotaTarget(null)}
+                />
+            )}
         </>
     );
 }

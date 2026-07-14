@@ -1,5 +1,6 @@
 import DescriptionOutlinedIcon from "@mui/icons-material/DescriptionOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
+import TuneOutlinedIcon from "@mui/icons-material/TuneOutlined";
 import { Box, Breadcrumbs, Button, Chip, Link, Paper, Stack, Typography } from "@mui/material";
 import { useQuery } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
@@ -7,9 +8,19 @@ import { useEffect, useState } from "react";
 import { fetchManagementDirectory } from "../../api/client";
 import type { ManagementSnapshot } from "../../api/client";
 import { ErrorState, LoadingState, PageHeading, formatBytes, formatDate } from "./shared";
+import { QuotaDialog } from "./QuotaDialog";
 
-export function FilesPage({ management }: { management: UseQueryResult<ManagementSnapshot> }) {
+export function FilesPage({
+    management,
+    configurationEnabled,
+    onRequestConfiguration,
+}: {
+    management: UseQueryResult<ManagementSnapshot>;
+    configurationEnabled: boolean;
+    onRequestConfiguration: () => void;
+}) {
     const [directoryId, setDirectoryId] = useState<string | null>(null);
+    const [quotaOpen, setQuotaOpen] = useState(false);
     const firstRoot = management.data?.filesystems[0]?.root_directory_id;
     useEffect(() => {
         if (directoryId === null && firstRoot !== undefined) {
@@ -75,6 +86,19 @@ export function FilesPage({ management }: { management: UseQueryResult<Managemen
                                 </Link>
                             ))}
                         </Breadcrumbs>
+                        <Stack direction="row" sx={{ justifyContent: "space-between", mb: 2 }}>
+                            <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                                {directory.data.breadcrumbs.at(-1)?.name ?? "Directory"}
+                            </Typography>
+                            <Button
+                                size="small"
+                                variant="outlined"
+                                startIcon={<TuneOutlinedIcon />}
+                                onClick={() => setQuotaOpen(true)}
+                            >
+                                Limits
+                            </Button>
+                        </Stack>
                         <Box
                             sx={{
                                 display: "grid",
@@ -104,6 +128,12 @@ export function FilesPage({ management }: { management: UseQueryResult<Managemen
                                     directory.data.directory.acl_inherits
                                         ? "Inherited"
                                         : "Boundary",
+                                ],
+                                [
+                                    "Logical limit",
+                                    directory.data.directory.max_logical_bytes === null
+                                        ? "Inherited / unlimited"
+                                        : formatBytes(directory.data.directory.max_logical_bytes),
                                 ],
                             ].map(([label, value]) => (
                                 <Box key={label}>
@@ -227,6 +257,23 @@ export function FilesPage({ management }: { management: UseQueryResult<Managemen
                             </Box>
                         )}
                     </Paper>
+                    <QuotaDialog
+                        open={quotaOpen}
+                        scope="directory"
+                        resourceId={directory.data.directory.id}
+                        resourceName={directory.data.breadcrumbs.at(-1)?.name ?? "Directory"}
+                        revision={directory.data.directory.quota_revision}
+                        limits={{
+                            max_file_bytes: directory.data.directory.max_file_bytes,
+                            max_logical_bytes: directory.data.directory.max_logical_bytes,
+                            max_file_count: directory.data.directory.max_file_count,
+                            max_physical_bytes: null,
+                            max_object_count: null,
+                        }}
+                        configurationEnabled={configurationEnabled}
+                        onRequestConfiguration={onRequestConfiguration}
+                        onClose={() => setQuotaOpen(false)}
+                    />
                 </>
             )}
         </>

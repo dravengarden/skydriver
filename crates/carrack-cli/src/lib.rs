@@ -2,7 +2,7 @@
 
 use carrack_client::{
     AdminClient, Client, EntryKind, GetOptions, OperatorCredential, Placement,
-    ProtocolCompatibility, PutOptions, SyncOptions, VfsClient, VfsToken,
+    ProtocolCompatibility, PutOptions, QuotaLimits, SyncOptions, VfsClient, VfsToken,
 };
 use clap::{Parser, Subcommand, ValueEnum, error::ErrorKind};
 use serde::Serialize;
@@ -100,10 +100,58 @@ enum ManagementCommand {
         #[command(subcommand)]
         command: DriverCommand,
     },
+    /// Validate or replace one directory or driver hard-quota policy.
+    Quota {
+        #[command(subcommand)]
+        command: QuotaCommand,
+    },
     /// Manage VFS ACLs, placements, and scoped access tokens with a root VFS token.
     Vfs {
         #[command(subcommand)]
         command: VfsManagementCommand,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum QuotaScope {
+    Directory,
+    Driver,
+}
+
+impl QuotaScope {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Directory => "directory",
+            Self::Driver => "driver",
+        }
+    }
+}
+
+#[derive(Debug, Subcommand)]
+enum QuotaCommand {
+    /// Replace the complete hard-limit policy; omit a limit to leave it unlimited.
+    Set {
+        #[arg(value_enum)]
+        scope: QuotaScope,
+        resource_id: String,
+        #[arg(long)]
+        max_file_bytes: Option<u64>,
+        #[arg(long)]
+        max_logical_bytes: Option<u64>,
+        #[arg(long)]
+        max_file_count: Option<u64>,
+        #[arg(long)]
+        max_physical_bytes: Option<u64>,
+        #[arg(long)]
+        max_object_count: Option<u64>,
+        #[arg(long)]
+        expected_revision: u64,
+        #[arg(long)]
+        idempotency_key: Option<String>,
+        #[arg(long)]
+        check: bool,
+        #[arg(long = "format", value_enum, default_value_t = Output::Json)]
+        output: Output,
     },
 }
 
@@ -536,10 +584,73 @@ async fn run_management() -> Result<(), Error> {
             client.check_compatibility().await?;
             run_driver_command(&client, command).await?;
         }
+        ManagementCommand::Quota { command } => {
+            let client = admin_client(arguments.control_url)?;
+            client.check_compatibility().await?;
+            run_quota_command(&client, command).await?;
+        }
         ManagementCommand::Vfs { command } => {
             let client = vfs_client(arguments.control_url)?;
             client.check_compatibility().await?;
             run_vfs_management_command(&client, command).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn run_quota_command(client: &AdminClient, command: QuotaCommand) -> Result<(), Error> {
+    match command {
+        QuotaCommand::Set {
+            scope,
+            resource_id,
+            max_file_bytes,
+            max_logical_bytes,
+            max_file_count,
+            max_physical_bytes,
+            max_object_count,
+            expected_revision,
+            idempotency_key,
+            check,
+            output,
+        } => {
+            let limits = QuotaLimits {
+                max_file_bytes,
+                max_logical_bytes,
+                max_file_count,
+                max_physical_bytes,
+                max_object_count,
+            };
+            let validation = client
+                .validate_quota(scope.as_str(), &resource_id, &limits, expected_revision)
+                .await?;
+            if check {
+                write_json(output, &validation)?;
+                return Ok(());
+            }
+            let idempotency_key = require_idempotency_key(idempotency_key)?;
+            let receipt = client.apply_quota(&validation, &idempotency_key).await?;
+            let snapshot = client.snapshot().await?;
+            let matches = if matches!(scope, QuotaScope::Driver) {
+                snapshot.drivers.iter().any(|driver| {
+                    driver.id == resource_id
+                        && driver.quota_revision == receipt.final_revision
+                        && driver.max_physical_bytes == receipt.limits.max_physical_bytes
+                        && driver.max_object_count == receipt.limits.max_object_count
+                })
+            } else {
+                let directory = client.directory(&resource_id).await?;
+                directory.directory.quota_revision == receipt.final_revision
+                    && directory.directory.max_file_bytes == receipt.limits.max_file_bytes
+                    && directory.directory.max_logical_bytes == receipt.limits.max_logical_bytes
+                    && directory.directory.max_file_count == receipt.limits.max_file_count
+            };
+            if !matches {
+                return Err(Error::Verification(format!(
+                    "quota {} did not match receipt {}",
+                    resource_id, receipt.operation_id
+                )));
+            }
+            write_json(output, &receipt)?;
         }
     }
     Ok(())

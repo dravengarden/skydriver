@@ -110,6 +110,11 @@ const DriverViewSchema = v.object({
     available_location_count: v.number(),
     encoded_bytes: v.number(),
     file_count: v.number(),
+    quota_revision: v.number(),
+    max_physical_bytes: v.nullable(v.number()),
+    max_object_count: v.nullable(v.number()),
+    reserved_physical_bytes: v.number(),
+    reserved_object_count: v.number(),
     updated_at: v.number(),
 });
 
@@ -181,6 +186,10 @@ const ManagementDirectorySchema = v.object({
         recursive_directory_count: v.number(),
         recursive_file_count: v.number(),
         recursive_logical_bytes: v.number(),
+        quota_revision: v.number(),
+        max_file_bytes: v.nullable(v.number()),
+        max_logical_bytes: v.nullable(v.number()),
+        max_file_count: v.nullable(v.number()),
     }),
     breadcrumbs: v.array(v.object({ id: v.string(), name: v.string(), depth: v.number() })),
     placements: v.array(v.string()),
@@ -300,6 +309,37 @@ const DriverCredentialReceiptSchema = v.object({
     state: v.literal("committed"),
 });
 
+const QuotaLimitsSchema = v.object({
+    max_file_bytes: v.nullable(v.number()),
+    max_logical_bytes: v.nullable(v.number()),
+    max_file_count: v.nullable(v.number()),
+    max_physical_bytes: v.nullable(v.number()),
+    max_object_count: v.nullable(v.number()),
+});
+
+const QuotaValidationSchema = v.object({
+    schema: v.literal("carrack.management.quota-validation.v1"),
+    scope: v.picklist(["directory", "driver"]),
+    resource_id: v.string(),
+    current_limits: QuotaLimitsSchema,
+    limits: QuotaLimitsSchema,
+    expected_revision: v.number(),
+    validation_expires_at: v.number(),
+    validation_digest: v.string(),
+    warnings: v.array(v.string()),
+});
+
+const QuotaReceiptSchema = v.object({
+    schema: v.literal("carrack.management.quota-receipt.v1"),
+    operation_id: v.string(),
+    scope: v.picklist(["directory", "driver"]),
+    resource_id: v.string(),
+    ...QuotaLimitsSchema.entries,
+    final_revision: v.number(),
+    committed_at: v.number(),
+    state: v.literal("committed"),
+});
+
 export type Session = v.InferOutput<typeof SessionSchema>;
 export type ConfigurationSession = v.InferOutput<typeof ConfigurationSessionSchema>;
 export type Health = v.InferOutput<typeof HealthSchema>;
@@ -322,6 +362,9 @@ export type DriverRegistrationValidation = v.InferOutput<typeof DriverRegistrati
 export type DriverRegistrationReceipt = v.InferOutput<typeof DriverRegistrationReceiptSchema>;
 export type DriverCredentialValidation = v.InferOutput<typeof DriverCredentialValidationSchema>;
 export type DriverCredentialReceipt = v.InferOutput<typeof DriverCredentialReceiptSchema>;
+export type QuotaLimits = v.InferOutput<typeof QuotaLimitsSchema>;
+export type QuotaValidation = v.InferOutput<typeof QuotaValidationSchema>;
+export type QuotaReceipt = v.InferOutput<typeof QuotaReceiptSchema>;
 
 export function parseSession(input: unknown): Session {
     return v.parse(SessionSchema, input);
@@ -597,6 +640,41 @@ export function applyDriverCredential(
             }),
         },
         DriverCredentialReceiptSchema,
+    );
+}
+
+export function validateQuota(
+    scope: "directory" | "driver",
+    resourceId: string,
+    limits: QuotaLimits,
+    expectedRevision: number,
+): Promise<QuotaValidation> {
+    return requestJson(
+        `/api/admin/quotas/${scope}/${encodeURIComponent(resourceId)}/validate`,
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ limits, expected_revision: expectedRevision }),
+        },
+        QuotaValidationSchema,
+    );
+}
+
+export function applyQuota(validation: QuotaValidation): Promise<QuotaReceipt> {
+    return requestJson(
+        `/api/admin/quotas/${validation.scope}/${encodeURIComponent(validation.resource_id)}/apply`,
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                limits: validation.limits,
+                expected_revision: validation.expected_revision,
+                validation_expires_at: validation.validation_expires_at,
+                validation_digest: validation.validation_digest,
+                idempotency_key: newIdempotencyKey(),
+            }),
+        },
+        QuotaReceiptSchema,
     );
 }
 

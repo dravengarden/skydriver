@@ -33,8 +33,8 @@ pub use admin::{
     AdminClient, DriverCredentialReceipt, DriverCredentialValidation, DriverRegistrationReceipt,
     DriverRegistrationValidation, DriverStateReceipt, DriverStateValidation, ManagementBreadcrumb,
     ManagementDirectory, ManagementDirectoryEntry, ManagementDirectoryIdentity, ManagementDriver,
-    ManagementFilesystem, ManagementSnapshot, ManagementToken, OperatorCredential,
-    TokenAnnotationReceipt, TokenAnnotationValidation,
+    ManagementFilesystem, ManagementSnapshot, ManagementToken, OperatorCredential, QuotaLimits,
+    QuotaReceipt, QuotaValidation, TokenAnnotationReceipt, TokenAnnotationValidation,
 };
 
 pub use download::{GetOptions, GetResult};

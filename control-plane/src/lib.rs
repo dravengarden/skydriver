@@ -18,6 +18,7 @@ mod management_configuration;
 mod management_driver_configuration;
 mod management_driver_credentials;
 mod management_driver_registration;
+mod management_quotas;
 mod manifest_archive;
 mod manifests;
 mod move_deletion;
@@ -1434,6 +1435,37 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
             |request, context| async move {
                 let directory_id = context.param("id").cloned();
                 management::directory(&request, &context.env, directory_id.as_deref()).await
+            },
+        )
+        .post_async(
+            "/api/admin/quotas/:scope/:id/validate",
+            |mut request, context| async move {
+                let scope = context.param("scope").cloned();
+                let resource_id = context.param("id").cloned();
+                management_quotas::validate(
+                    &mut request,
+                    &context.env,
+                    scope.as_deref(),
+                    resource_id.as_deref(),
+                )
+                .await
+            },
+        )
+        .post_async(
+            "/api/admin/quotas/:scope/:id/apply",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+                let scope = context.param("scope").cloned();
+                let resource_id = context.param("id").cloned();
+                management_quotas::apply(
+                    &mut request,
+                    &context.env,
+                    scope.as_deref(),
+                    resource_id.as_deref(),
+                )
+                .await
             },
         )
         .post_async(

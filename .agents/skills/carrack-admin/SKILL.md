@@ -47,7 +47,8 @@ or handling a failure.
 ## Apply supported changes
 
 For token annotation, typed driver registration, write-only driver credential,
-driver state, ACL, placement, child-token issue, and child-token revocation:
+driver state, directory or driver quota, ACL, placement, child-token issue,
+and child-token revocation:
 
 1. Read current state and its exact revision.
 2. Build the complete desired replacement locally.
@@ -64,6 +65,12 @@ For a token label or operator note, run `carrackctl token annotate` with
 expiry, and warnings. Then repeat the same desired state without `--check`.
 The CLI enables a short configuration session, applies the signed validation,
 and verifies the receipt against a fresh management snapshot.
+
+For quota changes, use `carrackctl quota set directory|driver --check` first.
+Treat omitted limits as an intentional unlimited value because quota updates
+replace the complete policy. Directory limits cover the complete subtree
+across placements; driver limits cover non-deleted physical objects and live
+put reservations. Never lower a limit expecting Carrack to delete data.
 
 For driver enable or disable, run `carrackctl driver enable|disable` with
 `--check` first. Review the exact revision, placement and available-location

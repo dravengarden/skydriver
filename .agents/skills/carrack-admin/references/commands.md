@@ -4,7 +4,7 @@
 
 | Surface | Environment variable | Authority |
 |---|---|---|
-| `carrackctl snapshot`, `directory`, `driver`, `token annotate` | `CARRACK_OPERATOR_CREDENTIAL` | Redacted environment management |
+| `carrackctl snapshot`, `directory`, `driver`, `quota`, `token annotate` | `CARRACK_OPERATOR_CREDENTIAL` | Redacted environment management |
 | `carrackctl vfs acl`, `vfs placement`, `vfs token` | `CARRACK_VFS_TOKEN` | Explicit token actions and directory scope |
 
 Both credentials are canonical unpadded base64url values encoding 32 bytes.
@@ -24,6 +24,31 @@ token metadata. It never contains provider credentials, token bearers, token
 verifiers, directory keys, or plaintext file bytes.
 
 ## Existing mutation commands
+
+Replace one complete hard-quota policy. Omitted limits mean unlimited; first
+use `--check`, then repeat with a stable idempotency key:
+
+```bash
+carrackctl quota set directory "$directory_id" \
+  --control-url "$CARRACK_CONTROL_URL" \
+  --max-logical-bytes 107374182400 \
+  --max-file-count 100000 \
+  --max-file-bytes 10737418240 \
+  --expected-revision "$quota_revision" \
+  --check --format json
+
+carrackctl quota set driver "$driver_id" \
+  --control-url "$CARRACK_CONTROL_URL" \
+  --max-physical-bytes 1099511627776 \
+  --max-object-count 1000000 \
+  --expected-revision "$quota_revision" \
+  --idempotency-key "$idempotency_key" --format json
+```
+
+Directory limits cover the complete subtree across drivers. Driver limits
+cover retained physical objects plus live put reservations. Lowering a limit
+never deletes data. The control plane rejects new reservations until effective
+usage is below every applicable hard limit.
 
 Register a typed driver in the disabled state. Validate first:
 

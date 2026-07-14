@@ -135,6 +135,17 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 - A driver MUST distinguish transient, throttled, authorization, quota,
   not-found, integrity, and permanent errors when its provider exposes enough
   evidence to do so.
+- A directory hard quota MUST cover its complete active subtree regardless of
+  physical driver placement. A put MUST satisfy the file-size, logical-byte,
+  and file-count limits of every ancestor policy.
+- A driver hard quota MUST count every non-deleted physical object plus active
+  upload reservations, including encryption overhead and objects retained for
+  recovery or garbage collection.
+- Put preparation MUST reserve quota atomically in D1. Commit converts the
+  reservation to durable usage; abandon or expiry releases it without client
+  or SDK involvement. Quota checks MUST NOT use a check-then-upload race.
+- Lowering a hard limit below current usage MUST NOT delete or hide data. It
+  MUST reject new positive reservations until usage returns below the limit.
 - A provider-wide outage or authorization failure MUST NOT cause all of its
   locations to be immediately classified as missing.
 - One `404`, stale inventory response, expired signed URL, or timed-out request

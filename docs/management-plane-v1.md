@@ -133,6 +133,8 @@ carrackctl driver register <driver-id>
 carrackctl driver credential set <driver-id>
 carrackctl driver enable <driver-id>
 carrackctl driver disable <driver-id>
+carrackctl quota set directory <directory-id>
+carrackctl quota set driver <driver-id>
 ```
 
 Mutation commands accept explicit desired-state flags. Server validation
@@ -142,6 +144,13 @@ exact observed revision, and an idempotency key. `--check` performs client and
 server validation without applying. `--format json` emits stable schemas and
 no decorative text; warnings go to structured output, not ad-hoc stderr
 strings.
+
+Quota replacement uses the same validate/apply protocol. Directory policies
+set nullable `max_file_bytes`, `max_logical_bytes`, and `max_file_count` fields;
+driver policies set nullable `max_physical_bytes` and `max_object_count` fields.
+Null means unlimited. UI and CLI display the independent quota revision and
+must re-read the committed policy after apply. Put intents are the server-owned
+reservations, so filesystem clients never implement quota accounting or GC.
 
 Driver registration and enablement are fail-closed by kind. Registration
 normalizes a typed non-secret configuration and creates a disabled revision-1
