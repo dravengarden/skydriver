@@ -38,6 +38,7 @@ struct DriverRow {
     kind: String,
     config_json: String,
     credential_present: u64,
+    credential_refresh_state: Option<String>,
     enabled: u64,
     revision: u64,
     placement_count: u64,
@@ -271,13 +272,17 @@ async fn load_driver(database: &worker::D1Database, driver_id: &str) -> Result<O
             r"SELECT driver.kind, driver.config_json,
                     CASE WHEN driver.credential_ref IS NULL THEN 0 ELSE 1 END
                         AS credential_present,
+                    refresh.state AS credential_refresh_state,
                     driver.enabled, driver.revision,
                     (SELECT COUNT(*) FROM vfs_directory_drivers AS placement
                      WHERE placement.driver_id = driver.id) AS placement_count,
                     (SELECT COUNT(*) FROM vfs_locations AS location
                      WHERE location.driver_id = driver.id AND location.state = 'available')
                         AS available_location_count
-             FROM driver_instances AS driver WHERE driver.id = ?1",
+             FROM driver_instances AS driver
+             LEFT JOIN driver_credential_refreshes AS refresh
+               ON refresh.credential_id = driver.credential_ref
+             WHERE driver.id = ?1",
         )
         .bind(&[JsValue::from_str(driver_id)])?
         .first::<DriverRow>(None)
@@ -342,11 +347,14 @@ fn state_warnings(driver: &DriverRow, enabled: bool) -> Vec<String> {
 }
 
 fn valid_driver_configuration(driver: &DriverRow) -> bool {
-    management_driver_registration::valid_stored_configuration(
+    let structurally_valid = management_driver_registration::valid_stored_configuration(
         &driver.kind,
         &driver.config_json,
         driver.credential_present == 1,
-    )
+    );
+    structurally_valid
+        && (driver.kind != "aliyundrive-open/v2"
+            || driver.credential_refresh_state.as_deref() == Some("ready"))
 }
 
 fn valid_string(value: &str, maximum_bytes: usize) -> bool {
@@ -434,6 +442,7 @@ mod tests {
             kind: "local-filesystem/v2".to_owned(),
             config_json: config_json.to_owned(),
             credential_present: 0,
+            credential_refresh_state: None,
             enabled: 0,
             revision: 1,
             placement_count: 0,
@@ -458,5 +467,14 @@ mod tests {
         let mut unknown = local_driver(r#"{"root":"/srv/carrack"}"#);
         unknown.kind = "unknown/v1".to_owned();
         assert!(!valid_driver_configuration(&unknown));
+
+        let mut aliyun = local_driver(
+            r#"{"api_base_url":"https://openapi.alipan.com","drive_type":"resource","root_folder_id":"root","upload_part_bytes":20971520}"#,
+        );
+        aliyun.kind = "aliyundrive-open/v2".to_owned();
+        aliyun.credential_present = 1;
+        assert!(!valid_driver_configuration(&aliyun));
+        aliyun.credential_refresh_state = Some("ready".to_owned());
+        assert!(valid_driver_configuration(&aliyun));
     }
 }

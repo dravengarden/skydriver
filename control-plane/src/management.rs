@@ -237,10 +237,20 @@ pub(crate) async fn snapshot(request: &Request, env: &Env) -> Result<Response> {
                     CASE WHEN driver.credential_ref IS NULL THEN 0 ELSE 1 END AS credential_present,
                     credential.rotated_at AS credential_rotated_at,
                     credential.expires_at AS credential_expires_at,
-                    refresh.state AS credential_refresh_state,
+                    CASE
+                      WHEN driver.kind = 'aliyundrive-open/v2'
+                       AND credential.id IS NOT NULL AND refresh.credential_id IS NULL
+                      THEN 'reauth_required'
+                      ELSE refresh.state
+                    END AS credential_refresh_state,
                     refresh.refresh_after AS credential_refresh_after,
                     refresh.last_succeeded_at AS credential_refresh_last_succeeded_at,
-                    refresh.last_error_code AS credential_refresh_last_error_code,
+                    CASE
+                      WHEN driver.kind = 'aliyundrive-open/v2'
+                       AND credential.id IS NOT NULL AND refresh.credential_id IS NULL
+                      THEN 'refresh_token_missing'
+                      ELSE refresh.last_error_code
+                    END AS credential_refresh_last_error_code,
                     refresh.refresh_token_expires_at AS credential_refresh_token_expires_at,
                     (SELECT COUNT(*) FROM vfs_directory_drivers AS directory_driver
                      WHERE directory_driver.driver_id = driver.id) AS placement_count,
