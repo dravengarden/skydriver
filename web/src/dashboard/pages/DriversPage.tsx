@@ -73,34 +73,41 @@ function credentialStatus(driver: DriverView, observedAt: number) {
             label: "Renewal retry scheduled",
         } as const;
     }
-    if (driver.credential_expires_at === null) {
+    if (driver.credential_refresh_state === "claimed") {
+        return {
+            color: "info",
+            icon: <CheckCircleOutlineIcon />,
+            label: "Renewing",
+        } as const;
+    }
+    if (driver.credential_refresh_token_expires_at === null) {
         return {
             color: "warning",
             icon: <WarningAmberOutlinedIcon />,
-            label: "Credential expiry unknown",
+            label: "Refresh expiry unknown",
         } as const;
     }
-    if (driver.credential_expires_at <= observedAt) {
+    if (driver.credential_refresh_token_expires_at <= observedAt) {
         return {
             color: "error",
             icon: <WarningAmberOutlinedIcon />,
-            label: "Credential expired",
+            label: "Refresh authority expired",
         } as const;
     }
-    if (driver.credential_expires_at <= observedAt + CREDENTIAL_EXPIRY_WARNING_SECONDS) {
+    if (
+        driver.credential_refresh_token_expires_at <=
+        observedAt + CREDENTIAL_EXPIRY_WARNING_SECONDS
+    ) {
         return {
             color: "warning",
             icon: <WarningAmberOutlinedIcon />,
-            label: `Expires ${formatDate(driver.credential_expires_at)}`,
+            label: `Refresh expires ${formatDate(driver.credential_refresh_token_expires_at)}`,
         } as const;
     }
     return {
         color: "success",
         icon: <CheckCircleOutlineIcon />,
-        label:
-            driver.credential_refresh_state === null
-                ? `Manual · expires ${formatDate(driver.credential_expires_at)}`
-                : `Auto-renew · expires ${formatDate(driver.credential_expires_at)}`,
+        label: "Refresh authority healthy",
     } as const;
 }
 
@@ -113,7 +120,6 @@ export function DriversPage({
     const [selected, setSelected] = useState<DriverView | null>(null);
     const [validation, setValidation] = useState<DriverStateValidation | null>(null);
     const [credentialTarget, setCredentialTarget] = useState<DriverView | null>(null);
-    const [accessToken, setAccessToken] = useState("");
     const [refreshToken, setRefreshToken] = useState("");
     const [credentialValidation, setCredentialValidation] =
         useState<DriverCredentialValidation | null>(null);
@@ -146,12 +152,12 @@ export function DriversPage({
     });
     const credentialValidationMutation = useMutation({
         mutationFn: (driver: DriverView) =>
-            validateDriverCredential(driver.id, accessToken, refreshToken, driver.revision),
+            validateDriverCredential(driver.id, refreshToken, driver.revision),
         onSuccess: setCredentialValidation,
     });
     const credentialApplyMutation = useMutation({
         mutationFn: async (desired: DriverCredentialValidation) => {
-            const receipt = await applyDriverCredential(desired, accessToken, refreshToken);
+            const receipt = await applyDriverCredential(desired, refreshToken);
             const refreshed = await queryClient.fetchQuery({
                 queryKey: ["management-snapshot"],
                 queryFn: fetchManagementSnapshot,
@@ -161,7 +167,8 @@ export function DriversPage({
                 effective?.revision !== receipt.final_revision ||
                 !effective.credential_present ||
                 effective.credential_rotated_at !== receipt.rotated_at ||
-                effective.credential_expires_at !== receipt.credential_expires_at
+                effective.credential_expires_at !== receipt.credential_expires_at ||
+                effective.credential_refresh_token_expires_at !== receipt.refresh_token_expires_at
             ) {
                 throw new Error("Committed driver credential did not match the re-read state.");
             }
@@ -219,7 +226,6 @@ export function DriversPage({
 
     function closeCredentialDialog() {
         setCredentialTarget(null);
-        setAccessToken("");
         setRefreshToken("");
         setCredentialValidation(null);
         credentialValidationMutation.reset();
@@ -232,7 +238,6 @@ export function DriversPage({
             return;
         }
         setCredentialTarget(driver);
-        setAccessToken("");
         setRefreshToken("");
         setCredentialValidation(null);
         credentialValidationMutation.reset();
@@ -331,8 +336,8 @@ export function DriversPage({
                                             onClick={() => openCredentialChange(driver)}
                                         >
                                             {driver.credential_present
-                                                ? "Rotate credential"
-                                                : "Set credential"}
+                                                ? "Replace authorization"
+                                                : "Connect authorization"}
                                         </Button>
                                     )}
                                     <Button
@@ -378,6 +383,53 @@ export function DriversPage({
                                     </Box>
                                 ))}
                             </Box>
+
+                            {driver.kind === "aliyundrive-open/v2" && (
+                                <Box
+                                    sx={{
+                                        display: "grid",
+                                        gridTemplateColumns: { xs: "1fr", sm: "repeat(3, 1fr)" },
+                                        gap: 2,
+                                        mt: 3,
+                                        p: 2,
+                                        borderRadius: 1.5,
+                                        bgcolor: "#f2f8f7",
+                                    }}
+                                >
+                                    <Box>
+                                        <Typography color="text.secondary" variant="caption">
+                                            REFRESH HEALTH
+                                        </Typography>
+                                        <Typography sx={{ fontWeight: 750 }}>
+                                            {status.label}
+                                        </Typography>
+                                    </Box>
+                                    <Box>
+                                        <Typography color="text.secondary" variant="caption">
+                                            LAST SUCCESSFUL REFRESH
+                                        </Typography>
+                                        <Typography sx={{ fontWeight: 750 }}>
+                                            {driver.credential_refresh_last_succeeded_at === null
+                                                ? "Not yet refreshed"
+                                                : formatDate(
+                                                      driver.credential_refresh_last_succeeded_at,
+                                                  )}
+                                        </Typography>
+                                    </Box>
+                                    <Box>
+                                        <Typography color="text.secondary" variant="caption">
+                                            REFRESH AUTHORITY EXPIRES
+                                        </Typography>
+                                        <Typography sx={{ fontWeight: 750 }}>
+                                            {driver.credential_refresh_token_expires_at === null
+                                                ? "Unknown"
+                                                : formatDate(
+                                                      driver.credential_refresh_token_expires_at,
+                                                  )}
+                                        </Typography>
+                                    </Box>
+                                </Box>
+                            )}
 
                             <Box sx={{ mt: 3 }}>
                                 <Typography color="text.secondary" variant="caption">
@@ -601,12 +653,14 @@ export function DriversPage({
                 maxWidth="sm"
             >
                 <DialogTitle>
-                    {credentialTarget?.credential_present ? "Rotate credential" : "Set credential"}
+                    {credentialTarget?.credential_present
+                        ? "Replace refresh authorization"
+                        : "Connect refresh authorization"}
                 </DialogTitle>
                 <DialogContent>
                     <Alert severity="warning" sx={{ mb: 2 }}>
-                        Both tokens are write-only. Carrack keeps refresh authority in the control
-                        plane; filesystem SDKs receive only short-lived access tokens.
+                        Enter only the refresh token obtained from OAuth. Carrack verifies it with
+                        the provider, encrypts it, and owns access-token generation and renewal.
                     </Alert>
                     <Typography sx={{ fontWeight: 800 }}>{credentialTarget?.id}</Typography>
                     <Typography color="text.secondary" variant="body2" sx={{ mb: 2 }}>
@@ -616,23 +670,13 @@ export function DriversPage({
                     <TextField
                         autoFocus
                         fullWidth
-                        label="Aliyun Drive access token"
-                        type="password"
-                        autoComplete="new-password"
-                        value={accessToken}
-                        disabled={credentialValidation !== null}
-                        onChange={(event) => setAccessToken(event.target.value)}
-                    />
-                    <TextField
-                        fullWidth
                         label="Aliyun Drive refresh token"
                         type="password"
                         autoComplete="new-password"
                         value={refreshToken}
                         disabled={credentialValidation !== null}
                         onChange={(event) => setRefreshToken(event.target.value)}
-                        sx={{ mt: 2 }}
-                        helperText="Obtained once through OpenList OAuth; control plane renews it thereafter."
+                        helperText="Obtained once through OpenList OAuth. Access tokens and keepalive are internal."
                     />
                     {(credentialValidationMutation.isError || credentialApplyMutation.isError) && (
                         <Alert severity="error" sx={{ mt: 2 }}>
@@ -649,7 +693,8 @@ export function DriversPage({
                                 Driver revision {String(credentialValidation.expected_revision)} →{" "}
                                 {String(credentialValidation.expected_revision + 1)} · credential
                                 revision {String(credentialValidation.credential_revision)} ·
-                                expires {formatDate(credentialValidation.credential_expires_at)}
+                                refresh authority expires{" "}
+                                {formatDate(credentialValidation.refresh_token_expires_at)}
                             </Typography>
                             {credentialValidation.warnings.map((warning) => (
                                 <Alert key={warning} severity="warning" sx={{ mt: 2 }}>
@@ -671,7 +716,6 @@ export function DriversPage({
                             variant="contained"
                             disabled={
                                 credentialTarget === null ||
-                                accessToken.length === 0 ||
                                 refreshToken.length === 0 ||
                                 credentialValidationMutation.isPending
                             }
@@ -680,7 +724,7 @@ export function DriversPage({
                                 credentialValidationMutation.mutate(credentialTarget)
                             }
                         >
-                            Validate credential
+                            Validate authorization
                         </Button>
                     ) : (
                         <Button
@@ -689,7 +733,7 @@ export function DriversPage({
                             disabled={credentialApplyMutation.isPending}
                             onClick={() => credentialApplyMutation.mutate(credentialValidation)}
                         >
-                            Encrypt and apply
+                            Connect and verify
                         </Button>
                     )}
                 </DialogActions>

@@ -104,6 +104,7 @@ const DriverViewSchema = v.object({
     credential_refresh_after: v.nullable(v.number()),
     credential_refresh_last_succeeded_at: v.nullable(v.number()),
     credential_refresh_last_error_code: v.nullable(v.string()),
+    credential_refresh_token_expires_at: v.nullable(v.number()),
     placement_count: v.number(),
     location_count: v.number(),
     available_location_count: v.number(),
@@ -279,7 +280,7 @@ const DriverCredentialValidationSchema = v.object({
     kind: v.string(),
     current_credential_present: v.boolean(),
     credential_revision: v.number(),
-    credential_expires_at: v.number(),
+    refresh_token_expires_at: v.number(),
     expected_revision: v.number(),
     validation_expires_at: v.number(),
     validation_digest: v.string(),
@@ -293,6 +294,7 @@ const DriverCredentialReceiptSchema = v.object({
     credential_id: v.string(),
     credential_revision: v.number(),
     credential_expires_at: v.number(),
+    refresh_token_expires_at: v.number(),
     final_revision: v.number(),
     rotated_at: v.number(),
     state: v.literal("committed"),
@@ -541,7 +543,6 @@ export function applyDriverRegistration(
 
 export function validateDriverCredential(
     driverId: string,
-    accessToken: string,
     refreshToken: string,
     expectedRevision: number,
 ): Promise<DriverCredentialValidation> {
@@ -552,7 +553,6 @@ export function validateDriverCredential(
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 credential: {
-                    access_token: accessToken,
                     refresh_token: refreshToken,
                     refresh_issuer: "openlist-online/v1",
                 },
@@ -565,7 +565,6 @@ export function validateDriverCredential(
 
 export function applyDriverCredential(
     validation: DriverCredentialValidation,
-    accessToken: string,
     refreshToken: string,
 ): Promise<DriverCredentialReceipt> {
     return requestJson(
@@ -575,7 +574,6 @@ export function applyDriverCredential(
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 credential: {
-                    access_token: accessToken,
                     refresh_token: refreshToken,
                     refresh_issuer: "openlist-online/v1",
                 },

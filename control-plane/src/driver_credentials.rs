@@ -44,23 +44,6 @@ impl AliyunCredential {
         }
     }
 
-    pub(crate) fn has_refresh_fields(&self) -> bool {
-        self.refresh_token.is_some() || self.refresh_issuer.is_some()
-    }
-
-    pub(crate) fn valid_refresh_identity(&self) -> bool {
-        if !self.has_refresh_fields() {
-            return true;
-        }
-        let (Some(access), Some(refresh)) = (
-            jwt_claims(&self.access_token),
-            self.refresh_token.as_deref().and_then(jwt_claims),
-        ) else {
-            return false;
-        };
-        self.managed_issuer().is_some() && access.sub == refresh.sub && access.aud == refresh.aud
-    }
-
     pub(crate) fn access_expiry(&self) -> Option<u64> {
         jwt_claims(&self.access_token).map(|claims| claims.exp)
     }
@@ -126,15 +109,31 @@ struct RefreshCommitRow {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct JwtClaims {
-    sub: String,
-    aud: String,
-    exp: u64,
+pub(crate) struct JwtClaims {
+    pub(crate) sub: String,
+    pub(crate) aud: String,
+    pub(crate) exp: u64,
 }
 
-enum RefreshFailure {
+pub(crate) enum RefreshFailure {
     Retry(&'static str),
     Reauthenticate(&'static str),
+}
+
+pub(crate) fn refresh_claims(token: &str) -> Option<JwtClaims> {
+    jwt_claims(token)
+}
+
+pub(crate) async fn authorize_refresh_token(
+    refresh_token: &str,
+    issuer: &str,
+) -> std::result::Result<AliyunCredential, RefreshFailure> {
+    if issuer != OPENLIST_ONLINE_ISSUER {
+        return Err(RefreshFailure::Reauthenticate("refresh_issuer_invalid"));
+    }
+    let old_refresh =
+        jwt_claims(refresh_token).ok_or(RefreshFailure::Reauthenticate("refresh_token_invalid"))?;
+    exchange_openlist(refresh_token, &old_refresh, None).await
 }
 
 /// Runs a bounded proactive renewal pass. Provider failures are persisted as
@@ -235,6 +234,16 @@ async fn refresh_one(
             let expires_at = credential.access_expiry().ok_or_else(|| {
                 worker::Error::RustError("renewed Aliyun access token has no expiry".to_owned())
             })?;
+            let refresh_token_expires_at = credential
+                .refresh_token
+                .as_deref()
+                .and_then(jwt_claims)
+                .map(|claims| claims.exp)
+                .ok_or_else(|| {
+                    worker::Error::RustError(
+                        "renewed Aliyun refresh token has no expiry".to_owned(),
+                    )
+                })?;
             let mut plaintext = serde_json::to_vec(&credential)
                 .map_err(|error| worker::Error::RustError(error.to_string()))?;
             let next_revision = task.observed_credential_revision + 1;
@@ -243,7 +252,15 @@ async fn refresh_one(
             plaintext.zeroize();
             credential.access_token.zeroize();
             let sealed = sealed?;
-            commit_refresh(database, &task, &sealed, expires_at, now).await?;
+            commit_refresh(
+                database,
+                &task,
+                &sealed,
+                expires_at,
+                refresh_token_expires_at,
+                now,
+            )
+            .await?;
         }
         Err(RefreshFailure::Retry(code)) => fail_refresh(database, &task, now, code, false).await?,
         Err(RefreshFailure::Reauthenticate(code)) => {
@@ -306,6 +323,17 @@ async fn renew(
         .ok_or(RefreshFailure::Reauthenticate("access_token_invalid"))?;
     let old_refresh =
         jwt_claims(refresh_token).ok_or(RefreshFailure::Reauthenticate("refresh_token_invalid"))?;
+    let mut refreshed = exchange_openlist(refresh_token, &old_refresh, Some(&old_access)).await?;
+    current.access_token = std::mem::take(&mut refreshed.access_token);
+    current.refresh_token = refreshed.refresh_token.take();
+    Ok(current)
+}
+
+async fn exchange_openlist(
+    refresh_token: &str,
+    old_refresh: &JwtClaims,
+    old_access: Option<&JwtClaims>,
+) -> std::result::Result<AliyunCredential, RefreshFailure> {
     let url = format!(
         "{OPENLIST_RENEW_ENDPOINT}?refresh_ui={refresh_token}&server_use=true&driver_txt=alicloud_qr"
     );
@@ -343,17 +371,20 @@ async fn renew(
         .ok_or(RefreshFailure::Reauthenticate("refreshed_access_invalid"))?;
     let new_refresh = jwt_claims(&refreshed.refresh_token)
         .ok_or(RefreshFailure::Reauthenticate("refreshed_refresh_invalid"))?;
-    if old_access.sub != new_access.sub
-        || old_access.aud != new_access.aud
+    if old_access.is_some_and(|old| old.sub != new_access.sub || old.aud != new_access.aud)
+        || old_refresh.sub != new_access.sub
+        || old_refresh.aud != new_access.aud
         || old_refresh.sub != new_refresh.sub
         || old_refresh.aud != new_refresh.aud
         || new_access.exp <= now_seconds() + MINIMUM_GRANT_LIFETIME_SECONDS
     {
         return Err(RefreshFailure::Reauthenticate("refresh_identity_mismatch"));
     }
-    current.access_token = refreshed.access_token;
-    current.refresh_token = Some(refreshed.refresh_token);
-    Ok(current)
+    Ok(AliyunCredential {
+        access_token: refreshed.access_token,
+        refresh_token: Some(refreshed.refresh_token),
+        refresh_issuer: Some(OPENLIST_ONLINE_ISSUER.to_owned()),
+    })
 }
 
 async fn commit_refresh(
@@ -361,6 +392,7 @@ async fn commit_refresh(
     task: &RefreshTask,
     sealed: &crate::vfs_envelopes::SealedEnvelope,
     expires_at: u64,
+    refresh_token_expires_at: u64,
     now: u64,
 ) -> Result<()> {
     let next_revision = task.observed_credential_revision + 1;
@@ -394,19 +426,21 @@ async fn commit_refresh(
                 .prepare(
                     "UPDATE driver_credential_refreshes
                      SET observed_credential_revision = ?1, state = 'ready',
-                         lease_expires_at = NULL, refresh_after = ?2, retry_at = NULL,
+                         lease_expires_at = NULL, refresh_after = ?2,
+                         refresh_token_expires_at = ?3, retry_at = NULL,
                          attempt_count = 0, last_error_code = NULL,
-                         last_succeeded_at = ?3, updated_at = ?3
-                     WHERE credential_id = ?4 AND state = 'claimed' AND fencing_token = ?5
-                       AND lease_expires_at > ?3
+                         last_succeeded_at = ?4, updated_at = ?4
+                     WHERE credential_id = ?5 AND state = 'claimed' AND fencing_token = ?6
+                       AND lease_expires_at > ?4
                        AND EXISTS (
                            SELECT 1 FROM credential_envelopes AS credential
-                           WHERE credential.id = ?4 AND credential.revision = ?1
+                           WHERE credential.id = ?5 AND credential.revision = ?1
                        )",
                 )
                 .bind(&[
                     integer(next_revision),
                     integer(refresh_after(expires_at, now)),
+                    integer(refresh_token_expires_at),
                     integer(now),
                     JsValue::from_str(&task.credential_id),
                     integer(task.fencing_token),

@@ -20,6 +20,7 @@ struct DriverRow {
     credential_refresh_after: Option<u64>,
     credential_refresh_last_succeeded_at: Option<u64>,
     credential_refresh_last_error_code: Option<String>,
+    credential_refresh_token_expires_at: Option<u64>,
     placement_count: u64,
     location_count: u64,
     available_location_count: u64,
@@ -42,6 +43,7 @@ struct DriverView {
     credential_refresh_after: Option<u64>,
     credential_refresh_last_succeeded_at: Option<u64>,
     credential_refresh_last_error_code: Option<String>,
+    credential_refresh_token_expires_at: Option<u64>,
     placement_count: u64,
     location_count: u64,
     available_location_count: u64,
@@ -239,6 +241,7 @@ pub(crate) async fn snapshot(request: &Request, env: &Env) -> Result<Response> {
                     refresh.refresh_after AS credential_refresh_after,
                     refresh.last_succeeded_at AS credential_refresh_last_succeeded_at,
                     refresh.last_error_code AS credential_refresh_last_error_code,
+                    refresh.refresh_token_expires_at AS credential_refresh_token_expires_at,
                     (SELECT COUNT(*) FROM vfs_directory_drivers AS directory_driver
                      WHERE directory_driver.driver_id = driver.id) AS placement_count,
                     (SELECT COUNT(*) FROM vfs_locations AS location
@@ -279,6 +282,7 @@ pub(crate) async fn snapshot(request: &Request, env: &Env) -> Result<Response> {
             credential_refresh_after: row.credential_refresh_after,
             credential_refresh_last_succeeded_at: row.credential_refresh_last_succeeded_at,
             credential_refresh_last_error_code: row.credential_refresh_last_error_code,
+            credential_refresh_token_expires_at: row.credential_refresh_token_expires_at,
             placement_count: row.placement_count,
             location_count: row.location_count,
             available_location_count: row.available_location_count,

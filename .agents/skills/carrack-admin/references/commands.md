@@ -59,13 +59,14 @@ carrackctl driver credential set "$driver_id" \
 
 After reviewing the redacted validation, repeat without `--check` and add a
 stable idempotency key. The credential file must be a private regular JSON file
-containing exactly `{ "access_token": "...", "refresh_token": "...",
-"refresh_issuer": "openlist-online/v1" }`. Never pass either token in argv,
-print it, or commit the file. Both tokens must be JWT-shaped and the access
-token must contain an unexpired `exp` claim. Confirm the redacted validation
-and final snapshot report the same `credential_expires_at`, a `ready` refresh
-state, and a future `credential_refresh_after`. Thereafter Cron owns renewal;
-only repeat this command if the server reports `reauth_required`.
+containing exactly `{ "refresh_token": "...", "refresh_issuer":
+"openlist-online/v1" }`. Never pass the token in argv, print it, or commit the
+file. The refresh token must be JWT-shaped and contain an unexpired `exp`
+claim. Apply exchanges and validates it with the provider before committing.
+Confirm the final snapshot reports a `ready` refresh state, a last successful
+refresh time, and `credential_refresh_token_expires_at`. Thereafter the control
+plane owns all access-token generation and renewal; only repeat this command if
+the server reports `reauth_required`.
 
 Validate a token annotation without changing state:
 

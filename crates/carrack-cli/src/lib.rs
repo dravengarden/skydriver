@@ -783,6 +783,8 @@ async fn run_driver_command(client: &AdminClient, command: DriverCommand) -> Res
                             && driver.credential_present
                             && driver.credential_rotated_at == Some(receipt.rotated_at)
                             && driver.credential_expires_at == Some(receipt.credential_expires_at)
+                            && driver.credential_refresh_token_expires_at
+                                == Some(receipt.refresh_token_expires_at)
                     }) {
                         return Err(Error::Verification(format!(
                             "driver credential {} did not match receipt {}",

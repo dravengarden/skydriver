@@ -75,6 +75,7 @@ pub struct ManagementDriver {
     pub credential_refresh_after: Option<u64>,
     pub credential_refresh_last_succeeded_at: Option<u64>,
     pub credential_refresh_last_error_code: Option<String>,
+    pub credential_refresh_token_expires_at: Option<u64>,
     pub placement_count: u64,
     pub location_count: u64,
     pub available_location_count: u64,
@@ -350,7 +351,7 @@ pub struct DriverCredentialValidation {
     pub kind: String,
     pub current_credential_present: bool,
     pub credential_revision: u64,
-    pub credential_expires_at: u64,
+    pub refresh_token_expires_at: u64,
     pub expected_revision: u64,
     pub validation_expires_at: u64,
     pub validation_digest: String,
@@ -371,6 +372,7 @@ pub struct DriverCredentialReceipt {
     pub credential_id: String,
     pub credential_revision: u64,
     pub credential_expires_at: u64,
+    pub refresh_token_expires_at: u64,
     pub final_revision: u64,
     pub rotated_at: u64,
     pub state: String,
@@ -725,7 +727,7 @@ impl AdminClient {
         if response.schema != DRIVER_CREDENTIAL_VALIDATION_SCHEMA
             || response.driver_id != driver_id
             || response.expected_revision != expected_revision
-            || response.credential_expires_at == 0
+            || response.refresh_token_expires_at == 0
             || !valid_validation(&response.validation_digest, response.validation_expires_at)
         {
             return Err(Error::InvalidResponse(
@@ -772,7 +774,7 @@ impl AdminClient {
         if response.schema != DRIVER_CREDENTIAL_RECEIPT_SCHEMA
             || response.driver_id != validation.driver_id
             || response.credential_revision != validation.credential_revision
-            || response.credential_expires_at != validation.credential_expires_at
+            || response.refresh_token_expires_at == 0
             || response.final_revision != validation.expected_revision + 1
             || response.state != "committed"
         {

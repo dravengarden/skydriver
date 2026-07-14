@@ -8,7 +8,7 @@ use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
 
 use crate::{
-    driver_credentials::{self, AliyunCredential},
+    driver_credentials::{self, RefreshFailure},
     management_driver_registration, operator_sessions,
     vfs_envelopes::{ENVELOPE_ALGORITHM, MASTER_KEY_VERSION, blob_binding, seal_driver_credential},
     vfs_identifiers,
@@ -20,21 +20,27 @@ const VALIDATION_LIFETIME_SECONDS: u64 = 5 * 60;
 const CREDENTIAL_KIND: &str = "driver.credential";
 const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.driver-credential.v1\0";
 const ALIYUN_DRIVE_KIND: &str = "aliyundrive-open/v2";
-const MAXIMUM_JSON_INTEGER: u64 = (1_u64 << 53) - 1;
 
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CredentialRequest {
-    credential: AliyunCredential,
+    credential: RefreshAuthorization,
     expected_revision: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RefreshAuthorization {
+    refresh_token: String,
+    refresh_issuer: String,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ApplyRequest {
-    credential: AliyunCredential,
+    credential: RefreshAuthorization,
     expected_revision: u64,
     validation_expires_at: u64,
     validation_digest: String,
@@ -65,7 +71,7 @@ struct ValidationResponse {
     kind: String,
     current_credential_present: bool,
     credential_revision: u64,
-    credential_expires_at: u64,
+    refresh_token_expires_at: u64,
     expected_revision: u64,
     validation_expires_at: u64,
     validation_digest: String,
@@ -80,6 +86,7 @@ struct ReceiptResponse {
     credential_id: String,
     credential_revision: u64,
     credential_expires_at: u64,
+    refresh_token_expires_at: u64,
     final_revision: u64,
     rotated_at: u64,
     state: &'static str,
@@ -97,14 +104,16 @@ pub(crate) async fn validate(
         return Response::error("valid driver ID is required", 400);
     };
     let requested = request.json::<CredentialRequest>().await?;
-    let Some(credential_expires_at) = credential_expiry(&requested) else {
-        return Response::error("driver credential is invalid", 400);
+    let Some(refresh_claims) =
+        driver_credentials::refresh_claims(&requested.credential.refresh_token)
+    else {
+        return Response::error("refresh token is invalid", 400);
     };
-    if !requested.credential.valid_refresh_identity() {
-        return Response::error("driver credential refresh configuration is invalid", 400);
+    if requested.credential.refresh_issuer != driver_credentials::OPENLIST_ONLINE_ISSUER {
+        return Response::error("refresh token issuer is unsupported", 400);
     }
-    if credential_expires_at <= now_seconds() {
-        return Response::error("driver credential is expired", 400);
+    if refresh_claims.exp <= now_seconds() {
+        return Response::error("refresh token is expired", 400);
     }
 
     let database = env.d1(DATABASE_BINDING)?;
@@ -132,21 +141,14 @@ pub(crate) async fn validate(
         kind: driver.kind,
         current_credential_present: driver.credential_id.is_some(),
         credential_revision: driver.credential_revision.unwrap_or(0) + 1,
-        credential_expires_at,
+        refresh_token_expires_at: refresh_claims.exp,
         expected_revision: requested.expected_revision,
         validation_expires_at,
         validation_digest,
-        warnings: if requested.credential.managed_issuer().is_some() {
-            vec![
-                "The credential is write-only; refresh authority remains encrypted in the control plane.",
-                "Filesystem SDKs receive only access tokens and never receive refresh tokens.",
-            ]
-        } else {
-            vec![
-                "This access-only credential cannot be renewed by the control plane.",
-                "Import a refresh_token and refresh_issuer before the access token expires.",
-            ]
-        },
+        warnings: vec![
+            "The refresh token is write-only and remains encrypted in the control plane.",
+            "Applying this validation exchanges and verifies the token with the provider.",
+        ],
     })
 }
 
@@ -170,19 +172,21 @@ pub(crate) async fn apply(
         credential: requested.credential,
         expected_revision: requested.expected_revision,
     };
-    let Some(credential_expires_at) = credential_expiry(&desired) else {
-        return Response::error("driver credential apply is invalid", 400);
+    let Some(refresh_claims) =
+        driver_credentials::refresh_claims(&desired.credential.refresh_token)
+    else {
+        return Response::error("refresh token is invalid", 400);
     };
-    if !desired.credential.valid_refresh_identity() {
-        return Response::error("driver credential refresh configuration is invalid", 400);
+    if desired.credential.refresh_issuer != driver_credentials::OPENLIST_ONLINE_ISSUER {
+        return Response::error("refresh token issuer is unsupported", 400);
     }
     if !valid_string(&requested.idempotency_key, 256) {
         return Response::error("driver credential apply is invalid", 400);
     }
 
     let now = now_seconds();
-    if credential_expires_at <= now {
-        return Response::error("driver credential is expired", 409);
+    if refresh_claims.exp <= now {
+        return Response::error("refresh token is expired", 409);
     }
     if requested.validation_expires_at < now
         || requested.validation_expires_at > now + VALIDATION_LIFETIME_SECONDS
@@ -225,14 +229,39 @@ pub(crate) async fn apply(
         return Response::error("driver kind does not accept this credential", 409);
     }
 
+    let credential = match driver_credentials::authorize_refresh_token(
+        &desired.credential.refresh_token,
+        &desired.credential.refresh_issuer,
+    )
+    .await
+    {
+        Ok(credential) => credential,
+        Err(RefreshFailure::Reauthenticate(_)) => {
+            return Response::error("refresh token was rejected by the provider", 400);
+        }
+        Err(RefreshFailure::Retry(_)) => {
+            return Response::error("provider authorization is temporarily unavailable", 503);
+        }
+    };
+    let credential_expires_at = credential.access_expiry().ok_or_else(|| {
+        worker::Error::RustError("provider access token has no expiry".to_owned())
+    })?;
+    let refresh_token_expires_at = credential
+        .refresh_token
+        .as_deref()
+        .and_then(driver_credentials::refresh_claims)
+        .map(|claims| claims.exp)
+        .ok_or_else(|| {
+            worker::Error::RustError("provider refresh token has no expiry".to_owned())
+        })?;
+
     let credential_id = match driver.credential_id {
         Some(value) => value,
         None => vfs_identifiers::new_uuid_v7_hex()?,
     };
     let credential_revision = driver.credential_revision.unwrap_or(0) + 1;
     let final_revision = driver.revision + 1;
-    let mut plaintext =
-        serde_json::to_vec(&desired.credential).map_err(|error| json_error(&error))?;
+    let mut plaintext = serde_json::to_vec(&credential).map_err(|error| json_error(&error))?;
     let sealed = seal_driver_credential(env, &credential_id, credential_revision, &plaintext);
     plaintext.zeroize();
     let sealed = sealed?;
@@ -244,6 +273,7 @@ pub(crate) async fn apply(
         credential_id: credential_id.clone(),
         credential_revision,
         credential_expires_at,
+        refresh_token_expires_at,
         final_revision,
         rotated_at: now,
         state: "committed",
@@ -288,18 +318,21 @@ pub(crate) async fn apply(
             ])?
     };
 
-    let refresh_statement = if let Some(issuer) = desired.credential.managed_issuer() {
+    let refresh_statement = if let Some(issuer) = credential.managed_issuer() {
         database
             .prepare(
                 r"INSERT INTO driver_credential_refreshes (
                      credential_id, driver_id, issuer, observed_credential_revision,
-                     refresh_after, created_at, updated_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+                     refresh_after, refresh_token_expires_at, last_succeeded_at,
+                     created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?7)
                  ON CONFLICT(credential_id) DO UPDATE SET
                      driver_id = excluded.driver_id, issuer = excluded.issuer,
                      observed_credential_revision = excluded.observed_credential_revision,
                      state = 'ready', lease_expires_at = NULL,
-                     refresh_after = excluded.refresh_after, retry_at = NULL,
+                     refresh_after = excluded.refresh_after,
+                     refresh_token_expires_at = excluded.refresh_token_expires_at,
+                     last_succeeded_at = excluded.last_succeeded_at, retry_at = NULL,
                      attempt_count = 0, last_error_code = NULL,
                      updated_at = excluded.updated_at",
             )
@@ -311,6 +344,7 @@ pub(crate) async fn apply(
                 JsValue::from_str(
                     &driver_credentials::refresh_after(credential_expires_at, now).to_string(),
                 ),
+                JsValue::from_str(&refresh_token_expires_at.to_string()),
                 JsValue::from_str(&now.to_string()),
             ])?
     } else {
@@ -452,31 +486,6 @@ fn replay(
     Ok(response)
 }
 
-fn credential_expiry(requested: &CredentialRequest) -> Option<u64> {
-    let token = &requested.credential.access_token;
-    if requested.expected_revision == 0
-        || token.is_empty()
-        || token.len() > (16 << 10)
-        || token.chars().any(char::is_control)
-    {
-        return None;
-    }
-    let mut segments = token.split('.');
-    let header = segments.next()?;
-    let payload = segments.next()?;
-    let signature = segments.next()?;
-    if header.is_empty() || payload.is_empty() || signature.is_empty() || segments.next().is_some()
-    {
-        return None;
-    }
-    let payload = URL_SAFE_NO_PAD.decode(payload).ok()?;
-    serde_json::from_slice::<serde_json::Value>(&payload)
-        .ok()?
-        .get("exp")?
-        .as_u64()
-        .filter(|expires_at| (1..=MAXIMUM_JSON_INTEGER).contains(expires_at))
-}
-
 fn validation_digest(
     env: &Env,
     driver_id: &str,
@@ -552,51 +561,7 @@ fn now_seconds() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-
-    use super::{AliyunCredential, CredentialRequest, credential_expiry, request_sha256};
-
-    fn access_token(expires_at: u64) -> String {
-        let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{expires_at}}}"#));
-        format!("e30.{payload}.c2ln")
-    }
-
-    #[test]
-    fn validates_bounded_access_tokens_and_extracts_expiry() {
-        assert_eq!(
-            credential_expiry(&CredentialRequest {
-                credential: AliyunCredential {
-                    access_token: access_token(2_000_000_000),
-                    refresh_token: None,
-                    refresh_issuer: None,
-                },
-                expected_revision: 1,
-            }),
-            Some(2_000_000_000)
-        );
-        assert_eq!(
-            credential_expiry(&CredentialRequest {
-                credential: AliyunCredential {
-                    access_token: "line\nbreak".to_owned(),
-                    refresh_token: None,
-                    refresh_issuer: None,
-                },
-                expected_revision: 1,
-            }),
-            None
-        );
-        assert_eq!(
-            credential_expiry(&CredentialRequest {
-                credential: AliyunCredential {
-                    access_token: "e30.e30.".to_owned(),
-                    refresh_token: None,
-                    refresh_issuer: None,
-                },
-                expected_revision: 1,
-            }),
-            None
-        );
-    }
+    use super::request_sha256;
 
     #[test]
     fn durable_request_identity_uses_server_digest_not_plaintext() {

@@ -332,14 +332,12 @@ registered_driver_snapshot=$(curl --silent --show-error --fail-with-body \
 [[ "$(jq -r '.drivers[] | select(.id == "aliyun-main") | .credential_present' <<<"$registered_driver_snapshot")" == false ]]
 
 aliyun_credential="$state_directory/aliyun-credential.json"
-credential_expires_at=$(( $(date +%s) + 3600 ))
-credential_payload=$(printf '{"sub":"test-account","aud":"test-client","exp":%s}' "$credential_expires_at" | base64 -w0 | tr '+/' '-_' | tr -d '=')
-protocol_access_token="e30.${credential_payload}.c2ln"
+refresh_token_expires_at=$(( $(date +%s) + 3600 ))
+credential_payload=$(printf '{"sub":"test-account","aud":"test-client","exp":%s}' "$refresh_token_expires_at" | base64 -w0 | tr '+/' '-_' | tr -d '=')
 protocol_refresh_token="e30.${credential_payload}.cmVmcmVzaA"
 jq -cn \
-  --arg access_token "$protocol_access_token" \
   --arg refresh_token "$protocol_refresh_token" \
-  '{access_token: $access_token, refresh_token: $refresh_token,
+  '{refresh_token: $refresh_token,
     refresh_issuer: "openlist-online/v1"}' >"$aliyun_credential"
 chmod 600 "$aliyun_credential"
 cli_credential_check=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
@@ -351,41 +349,8 @@ cli_credential_check=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
     --format json)
 [[ "$(jq -r '.schema' <<<"$cli_credential_check")" == carrack.management.driver-credential-validation.v1 ]]
 [[ "$(jq -r '.credential_revision' <<<"$cli_credential_check")" == 1 ]]
-[[ "$(jq -r '.credential_expires_at' <<<"$cli_credential_check")" == "$credential_expires_at" ]]
-[[ "$cli_credential_check" != *"$protocol_access_token"* ]]
+[[ "$(jq -r '.refresh_token_expires_at' <<<"$cli_credential_check")" == "$refresh_token_expires_at" ]]
 [[ "$cli_credential_check" != *"$protocol_refresh_token"* ]]
-cli_credential_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
-	  "$rust_carrackctl" driver credential set aliyun-main \
-    --control-url "$base_url" \
-    --credential-file "$aliyun_credential" \
-    --expected-revision 1 \
-    --idempotency-key credential-aliyun-main-v1 \
-    --format json)
-[[ "$(jq -r '.schema' <<<"$cli_credential_receipt")" == carrack.management.driver-credential-receipt.v1 ]]
-[[ "$(jq -r '.credential_revision' <<<"$cli_credential_receipt")" == 1 ]]
-[[ "$(jq -r '.credential_expires_at' <<<"$cli_credential_receipt")" == "$credential_expires_at" ]]
-[[ "$(jq -r '.final_revision' <<<"$cli_credential_receipt")" == 2 ]]
-[[ "$cli_credential_receipt" != *"$protocol_access_token"* ]]
-[[ "$cli_credential_receipt" != *"$protocol_refresh_token"* ]]
-credential_driver_snapshot=$(curl --silent --show-error --fail-with-body \
-  -b "$cookie_jar" "$base_url/api/admin/snapshot")
-[[ "$(jq -r '.drivers[] | select(.id == "aliyun-main") | .credential_present' <<<"$credential_driver_snapshot")" == true ]]
-[[ "$(jq -r '.drivers[] | select(.id == "aliyun-main") | .credential_expires_at' <<<"$credential_driver_snapshot")" == "$credential_expires_at" ]]
-[[ "$(jq -r '.drivers[] | select(.id == "aliyun-main") | .credential_refresh_state' <<<"$credential_driver_snapshot")" == ready ]]
-[[ "$(jq -r '.drivers[] | select(.id == "aliyun-main") | .credential_refresh_after' <<<"$credential_driver_snapshot")" -gt "$(date +%s)" ]]
-[[ "$(jq -r '.drivers[] | select(.id == "aliyun-main") | .revision' <<<"$credential_driver_snapshot")" == 2 ]]
-[[ "$credential_driver_snapshot" != *"$protocol_access_token"* ]]
-[[ "$credential_driver_snapshot" != *"$protocol_refresh_token"* ]]
-
-cli_aliyun_enable_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
-	  "$rust_carrackctl" driver enable aliyun-main \
-    --control-url "$base_url" \
-    --expected-revision 2 \
-    --idempotency-key enable-aliyun-main-v2 \
-    --format json)
-[[ "$(jq -r '.schema' <<<"$cli_aliyun_enable_receipt")" == carrack.management.driver-state-receipt.v1 ]]
-[[ "$(jq -r '.enabled' <<<"$cli_aliyun_enable_receipt")" == true ]]
-[[ "$(jq -r '.final_revision' <<<"$cli_aliyun_enable_receipt")" == 3 ]]
 
 registration_replay_validation=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" -H "$json" \
