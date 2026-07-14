@@ -58,6 +58,13 @@ function credentialError(error: unknown): string {
     return "The server rejected the authorization or its committed state could not be verified. No token was exposed.";
 }
 
+function redactSecret(value: string): string {
+    if (value.length <= 16) {
+        return "•".repeat(value.length);
+    }
+    return `${value.slice(0, 8)}${"•".repeat(12)}${value.slice(-8)}`;
+}
+
 function credentialStatus(driver: DriverView, observedAt: number) {
     if (!driver.credential_present) {
         return {
@@ -136,6 +143,7 @@ export function DriversPage({
     const [credentialTarget, setCredentialTarget] = useState<DriverView | null>(null);
     const [refreshToken, setRefreshToken] = useState("");
     const [authorizationLabel, setAuthorizationLabel] = useState("");
+    const [clipboardError, setClipboardError] = useState(false);
     const [credentialValidation, setCredentialValidation] =
         useState<DriverCredentialValidation | null>(null);
     const [registrationOpen, setRegistrationOpen] = useState(false);
@@ -243,6 +251,7 @@ export function DriversPage({
         setCredentialTarget(null);
         setRefreshToken("");
         setAuthorizationLabel("");
+        setClipboardError(false);
         setCredentialValidation(null);
         credentialValidationMutation.reset();
         credentialApplyMutation.reset();
@@ -256,9 +265,23 @@ export function DriversPage({
         setCredentialTarget(driver);
         setRefreshToken("");
         setAuthorizationLabel("");
+        setClipboardError(false);
         setCredentialValidation(null);
         credentialValidationMutation.reset();
         credentialApplyMutation.reset();
+    }
+
+    async function pasteRefreshToken() {
+        try {
+            const value = (await navigator.clipboard.readText()).trim();
+            if (value.length === 0) {
+                throw new Error("clipboard is empty");
+            }
+            setRefreshToken(value);
+            setClipboardError(false);
+        } catch {
+            setClipboardError(true);
+        }
     }
 
     function closeRegistrationDialog() {
@@ -560,15 +583,6 @@ export function DriversPage({
                     <TextField
                         autoFocus
                         fullWidth
-                        label="Authorization label"
-                        placeholder="Personal account · dev"
-                        value={authorizationLabel}
-                        disabled={credentialValidation !== null}
-                        onChange={(event) => setAuthorizationLabel(event.target.value)}
-                        helperText="A non-secret name used to distinguish multiple authorizations."
-                    />
-                    <TextField
-                        fullWidth
                         label="Driver ID"
                         placeholder="aliyun-main"
                         value={registrationId}
@@ -761,15 +775,54 @@ export function DriversPage({
                     <TextField
                         autoFocus
                         fullWidth
-                        label="Aliyun Drive refresh token"
-                        type="password"
-                        autoComplete="new-password"
-                        value={refreshToken}
+                        label="Authorization label"
+                        placeholder="Personal account · dev"
+                        value={authorizationLabel}
                         disabled={credentialValidation !== null}
-                        onChange={(event) => setRefreshToken(event.target.value)}
-                        sx={{ mt: 2 }}
-                        helperText="Obtained once through OpenList OAuth. Access tokens and keepalive are internal."
+                        onChange={(event) => setAuthorizationLabel(event.target.value)}
+                        helperText="A non-secret name used to distinguish multiple authorizations."
                     />
+                    <TextField
+                        fullWidth
+                        label="Aliyun Drive refresh token"
+                        type="text"
+                        autoComplete="off"
+                        value={redactSecret(refreshToken)}
+                        disabled={credentialValidation !== null}
+                        slotProps={{ htmlInput: { readOnly: true } }}
+                        sx={{ mt: 2 }}
+                        helperText={
+                            refreshToken.length === 0
+                                ? "Paste from the clipboard; the full token is never rendered."
+                                : `Captured ${String(refreshToken.length)} characters; only its prefix and suffix are shown.`
+                        }
+                    />
+                    <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+                        <Button
+                            size="small"
+                            variant="outlined"
+                            disabled={credentialValidation !== null}
+                            onClick={() => void pasteRefreshToken()}
+                        >
+                            Paste token
+                        </Button>
+                        <Button
+                            size="small"
+                            disabled={refreshToken.length === 0 || credentialValidation !== null}
+                            onClick={() => {
+                                setRefreshToken("");
+                                setClipboardError(false);
+                            }}
+                        >
+                            Clear
+                        </Button>
+                    </Stack>
+                    {clipboardError && (
+                        <Alert severity="warning" sx={{ mt: 1 }}>
+                            Clipboard access was denied. Allow clipboard access for this site and
+                            try again.
+                        </Alert>
+                    )}
                     {(credentialValidationMutation.isError || credentialApplyMutation.isError) && (
                         <Alert severity="error" sx={{ mt: 2 }}>
                             {credentialError(
