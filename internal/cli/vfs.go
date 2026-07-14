@@ -59,12 +59,8 @@ func newVFSCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
 	command.AddCommand(
 		newVFSPutCommand(ctx, stdout),
 		newVFSDirectoryCommand(ctx, stdout),
-		newVFSACLCommand(ctx, stdout),
 		newVFSCatalogCommand(ctx, stdout),
-		newVFSPlacementCommand(ctx, stdout),
-		newVFSTokenCommand(ctx, stdout),
 		newVFSJournalCommand(stdout),
-		newVFSGCCommand(ctx, stdout),
 	)
 
 	return command
@@ -159,6 +155,10 @@ func executeVFSPut(
 		return sdk.VFSPutResult{}, err
 	}
 	defer control.Clear()
+
+	if _, compatibilityErr := control.CheckCompatibility(ctx); compatibilityErr != nil {
+		return sdk.VFSPutResult{}, fmt.Errorf("check Carrack protocol compatibility: %w", compatibilityErr)
+	}
 
 	registry := driver.NewRegistry()
 	if registerErr := registry.Register(driverlocalfs.Kind, driverlocalfs.Factory); registerErr != nil {

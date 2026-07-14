@@ -50,7 +50,7 @@
               set -a
               . ./.env
               set +a
-              echo "carrack: loaded operator credentials from .env"
+              echo "carrack: loaded Cloudflare deployment credentials from .env"
             fi
             echo "carrack dev shell — $(go version | cut -d' ' -f3) · $(rustc --version | cut -d' ' -f2) · pnpm $(pnpm --version)"
           '';

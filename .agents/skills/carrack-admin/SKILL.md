@@ -5,9 +5,10 @@ description: Inspect Carrack drivers, virtual filesystems, collections, files, t
 
 # Carrack Admin
 
-Use `carrack admin` and `carrack vfs`; do not reconstruct management HTTP
-requests. Treat CLI response validation and server validation as mandatory
-parts of the protocol.
+Use `carrackctl`; do not reconstruct management HTTP requests. Treat local
+schema checks, server validation, compatibility fail-fast, and receipt
+verification as mandatory parts of the protocol. The public `carrack` binary
+is only for filesystem data operations.
 
 ## Inspect first
 
@@ -15,17 +16,18 @@ parts of the protocol.
 2. Read the redacted management snapshot as JSON:
 
    ```bash
-   carrack admin snapshot --control-url "$CARRACK_CONTROL_URL" --format json
+   carrackctl snapshot --control-url "$CARRACK_CONTROL_URL" --format json
    ```
 
 3. Inspect each affected collection before deciding on a change:
 
    ```bash
-   carrack admin directory "$directory_id" \
+   carrackctl directory "$directory_id" \
      --control-url "$CARRACK_CONTROL_URL" --format json
    ```
 
-4. Read the exact ACL or placement revision before a supported policy mutation.
+4. Read the exact ACL or placement revision with `carrackctl vfs acl show`
+   or `carrackctl vfs placement show` before a policy mutation.
 5. State the intended complete desired state and affected resource IDs.
 
 Read [references/commands.md](references/commands.md) when selecting a command
@@ -45,7 +47,7 @@ or handling a failure.
 ## Apply supported changes
 
 For token annotation, typed driver registration, write-only driver credential,
-driver state, ACL, and placement changes:
+driver state, ACL, placement, child-token issue, and child-token revocation:
 
 1. Read current state and its exact revision.
 2. Build the complete desired replacement locally.
@@ -55,16 +57,15 @@ driver state, ACL, and placement changes:
 5. Submit the exact observed revision.
 6. Verify the returned schema, resource identity, final revision, policy, and
    durable state.
-7. Re-read effective state with `carrack admin` or the matching `carrack vfs`
-   read command.
+7. Re-read effective state with the matching `carrackctl` read command.
 
-For a token label or operator note, run `carrack admin token annotate` with
+For a token label or operator note, run `carrackctl token annotate` with
 `--check` first. Review the normalized label, note, exact metadata revision,
 expiry, and warnings. Then repeat the same desired state without `--check`.
 The CLI enables a short configuration session, applies the signed validation,
 and verifies the receipt against a fresh management snapshot.
 
-For driver enable or disable, run `carrack admin driver enable|disable` with
+For driver enable or disable, run `carrackctl driver enable|disable` with
 `--check` first. Review the exact revision, placement and available-location
 counts, and every server warning. Then repeat with the same desired state and a
 stable idempotency key. Enabling a local-filesystem driver additionally probes
@@ -72,34 +73,24 @@ the configured root from the agent host before server validation. A successful
 apply is not complete until the CLI re-reads the management snapshot and
 matches the receipt.
 
-Register a driver with `carrack admin driver register` and `--check` before
+Register a driver with `carrackctl driver register` and `--check` before
 apply. Registration is typed, creates revision 1 in the disabled state, and
 never accepts credentials in the non-secret config. For Aliyun Drive, then run
-`carrack admin driver credential set` with `--check`, using a private regular
+`carrackctl driver credential set` with `--check`, using a private regular
 JSON file readable only by its owner, and apply the same file before enabling
 the driver. The only accepted Aliyun credential is `access_token`; refresh
 tokens remain unsupported until Carrack can durably CAS a rotated refresh
 token back into its encrypted envelope. Never put a provider secret in argv,
 stdout, a plan, or Git.
 
-Do not claim support for principal management, groups, token authority changes,
-or global settings until the installed CLI exposes their `validate` and
-`apply` commands. Report the missing surface instead of editing D1, calling
-Wrangler D1 directly, or crafting HTTP.
+`carrackctl vfs token issue` may only attenuate the authenticated parent. It
+cannot change principals or widen directory, action, driver, or expiry scope.
+Capture its one-time bearer directly into the approved secret store and redact
+command output from logs. Use `carrackctl vfs token revoke` for revocation.
 
-## Sweep abandoned Put objects
-
-Use `carrack vfs gc` only with an explicitly selected environment and an
-attenuated `CARRACK_VFS_TOKEN` carrying `gc.run` plus `driver.use` for the
-intended directory subtree and drivers. Keep the default `--limit 1` for an
-interactive agent action; raise it only after inspecting the environment and
-state the bound before execution.
-
-Treat `idle` as successful convergence. Treat capability, identity, fence, and
-authorization failures as hard stops. Never delete a provider object directly,
-retry through raw HTTP, edit D1, or substitute a different driver. The CLI
-performs the required short claim, pinned grant, exact Stat, final fence
-rotation, idempotent Delete, and completion protocol.
+Do not claim support for principal or group lifecycle or global settings until
+the installed CLI exposes their validated commands. Report the missing surface
+instead of editing D1, calling Wrangler D1 directly, or crafting HTTP.
 
 ## Handle races and ambiguous outcomes
 
@@ -108,10 +99,10 @@ rotation, idempotent Delete, and completion protocol.
 - On `409`, re-read state. Do not retry with the old revision or silently merge
   policy. Make a new decision and use a new idempotency key.
 - Treat an invalid or unexpected receipt as failure even when HTTP returned 2xx.
-- Never use GC to resolve a metadata race. GC is for unreachable immutable
-  provider objects after grace and reachability checks.
-- Never interpret a janitor failure as permission to remove the object with a
-  provider CLI. Preserve it for a later fenced retry or operator investigation.
+- Garbage collection is entirely server-internal. Never enumerate candidates,
+  claim cleanup work, request provider delete credentials, or delete a hosted
+  provider object with either CLI. Preserve suspicious objects for control-
+  plane reconciliation or operator investigation.
 
 ## Finish
 

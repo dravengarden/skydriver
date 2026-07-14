@@ -127,10 +127,11 @@ DriverRef
   proxy_policy   direct or an external HTTP/HTTPS/SOCKS5 proxy URL
 ```
 
-The Go SDK owns a registry mapping `kind` to a typed factory. Adding R2 or
-Google Drive registers another factory without changing transfer state
-machines. Wire configuration is opaque JSON at the control-plane boundary but
-is decoded into a strict driver-owned Go struct before use.
+The Rust control plane owns a registry mapping `kind` to a typed hosted-driver
+factory. Adding R2 or Google Drive registers another server-side adapter
+without changing the filesystem client. Wire configuration is decoded into a
+strict driver-owned Rust type before use; clients receive only bounded,
+validated direct-transfer plans.
 
 Drivers advertise capabilities rather than forcing the SDK to guess:
 
@@ -144,8 +145,9 @@ Drivers advertise capabilities rather than forcing the SDK to guess:
 - safe concurrency and per-operation request limits;
 - checksum algorithms exposed by the provider.
 
-The initial registry contains `aliyundrive-open/v1`, the read-only native
-`public-http/v1`, and the native read/write `local-filesystem/v1`. Public HTTP
+The migration registry contains `aliyundrive-open/v1` and the read-only native
+`public-http/v1`. Local filesystems remain external client sources and
+destinations rather than hosted VFS backends. Public HTTP
 accepts only operator-configured HTTPS or loopback origins, same-origin
 redirects, canonical relative keys, and exact range responses. The local
 driver confines canonical keys beneath an existing root, derives identity from
@@ -156,15 +158,14 @@ match the request. Token-expiry errors invalidate and retry once; throttling,
 authorization loss, and quota errors remain visible to the caller. S3, R2, and
 Google Drive drivers are added behind the same contract.
 
-Driver implementations follow a value-based split:
+Driver implementations follow a strict ownership split:
 
-- S3-compatible storage, R2, public HTTP, and local filesystems use native Go
-  implementations and mature Go SDKs. They do not route through OpenList.
-- Consumer cloud drives may reuse selected OpenList driver and OAuth work when
-  that materially reduces provider-specific maintenance.
-- OpenList-derived code is adapted behind Carrack's typed factory contract in
-  the SDK process. Carrack does not require or communicate through a persistent
-  OpenList HTTP/WebDAV server.
+- Hosted S3-compatible storage, R2, public HTTP, and cloud drives use native
+  Rust control-plane adapters.
+- Consumer cloud-drive adapters may use a pinned OpenList implementation as a
+  behavioral reference for endpoints, renewal, limits, and error mapping.
+- Carrack does not import, embed, launch, or communicate through OpenList. The
+  generic Rust client never contains hosted-provider lifecycle policy.
 
 ## Operation protocols
 
@@ -373,15 +374,15 @@ releases the client lease. Exact destination and tombstone requests remain
 replayable after a lost response.
 
 The transfer client boundary ends at `source_delete_pending`. It makes the
-source unreachable to new restores but does not delete provider bytes. An
-explicitly authorized janitor creates one task per distinct provider object,
-not per location range. A task is eligible only when every D1 location sharing
+source unreachable to new restores but does not delete provider bytes. The
+control plane creates one lifecycle task per distinct provider object, not per
+location range. A task is eligible only when every D1 location sharing
 that `(driver, storage key)` belongs to the same Move and is tombstoned past
 grace. Claiming checks the current recovery head, active restore leases, all
 shared ranges, replica policy for every affected extent, client role,
 incarnation, and a short task fence.
 
-Immediately before provider I/O the janitor revalidates the task, repeating
+Immediately before provider I/O the server lifecycle executor revalidates the task, repeating
 all checks and rotating its fencing token. It then calls the driver's
 idempotent `Delete` and commits the exact fenced task. Completion marks every
 range in the object deleted; the last task advances the operation through the
@@ -897,9 +898,9 @@ The finding is resolved and an audit event retains the exact task identity and
 outcome. Automatic scheduling remains disabled.
 
 Cloudflare Cron Triggers run bounded metadata hygiene for expired sessions and
-Put intents. They do not contact providers. Destructive GC mark/sweep,
-expired-lease recovery, and reconciliation planning remain explicit operator
-workflows until their production gates pass. D1 Time Travel is a control-plane
+Put intents and drive bounded server-internal lifecycle work. Destructive GC
+mark/sweep, expired-lease recovery, and reconciliation remain fail-closed until
+their hosted-driver production gates pass. D1 Time Travel is a control-plane
 recovery mechanism, not a substitute for payload replicas.
 
 ## Disaster recovery and stale clients
@@ -920,10 +921,10 @@ distinct states. Only the last state is permanent data loss, and cleanup still
 requires operator acknowledgement, tombstoning, grace, and a final fenced
 recheck.
 
-Physical deletion is preferably executed by explicitly authorized janitor
-clients. Normal clients may request move or GC work, but a janitor revalidates
-incarnation, fencing, reachability, read leases, and replica policy immediately
-before each provider delete.
+Physical deletion is executed only by the control plane's typed hosted-driver
+lifecycle adapter. It revalidates incarnation, fencing, reachability, read
+leases, and replica policy immediately before each provider delete. Normal
+clients cannot request, claim, or observe GC work.
 
 ## Proxy transport
 
@@ -935,9 +936,9 @@ Supported policy shapes are:
 - `direct`;
 - an external `http`, `https`, `socks5`, or `socks5h` endpoint.
 
-Carrack uses Go's standard `net/http.Transport` for both HTTP CONNECT and
-SOCKS5. The CLI inherits `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`; embedded
-SDK callers may inject an equivalent `http.Client`. Carrack does not embed,
+Carrack uses the native Rust HTTP stack for HTTP CONNECT and SOCKS5. The CLI
+inherits `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`; embedded SDK callers may
+inject an equivalent transport. Carrack does not embed,
 download, configure, supervise, or launch sing-box or any other proxy daemon.
 When an outbound protocol such as VLESS is required, an independently operated
 sing-box service exposes a local HTTP or SOCKS endpoint and remains outside the

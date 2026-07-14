@@ -61,6 +61,19 @@ func Run(ctx context.Context, arguments []string, stdout, stderr io.Writer) erro
 	return nil
 }
 
+// RunControl executes the non-interactive Carrack management CLI used by
+// operators and AI agents. It intentionally excludes file payload commands.
+func RunControl(ctx context.Context, arguments []string, stdout, stderr io.Writer) error {
+	command := newControlRootCommand(ctx, stdout, stderr)
+	command.SetArgs(arguments)
+
+	if err := command.ExecuteContext(ctx); err != nil {
+		return fmt.Errorf("execute carrackctl: %w", err)
+	}
+
+	return nil
+}
+
 func newRootCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	command := &cobra.Command{
 		Use:           "carrack",
@@ -84,7 +97,28 @@ func newRootCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Comman
 		newGCCommand(ctx, stdout),
 		newQuarantineCommand(ctx, stdout),
 		newVFSCommand(ctx, stdout),
-		newAdminCommand(ctx, stdout),
+	)
+
+	return command
+}
+
+func newControlRootCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
+	command := &cobra.Command{
+		Use:           "carrackctl",
+		Short:         "Inspect and safely configure the Carrack control plane",
+		SilenceErrors: true,
+		SilenceUsage:  true,
+	}
+	command.SetOut(stdout)
+	command.SetErr(stderr)
+	command.AddCommand(
+		newVersionCommand(stdout),
+		newAdminSnapshotCommand(ctx, stdout),
+		newAdminDirectoryCommand(ctx, stdout),
+		newAdminDriverCommand(ctx, stdout),
+		newAdminTokenCommand(ctx, stdout),
+		newVFSACLCommand(ctx, stdout),
+		newVFSPlacementCommand(ctx, stdout),
 	)
 
 	return command
@@ -151,10 +185,6 @@ func writeValue(writer io.Writer, outputFormat string, value any) error {
 	case outputFormatTable:
 		if result, ok := value.(sdk.VFSPutResult); ok {
 			return writeVFSPutTable(writer, result)
-		}
-
-		if result, ok := value.(vfsGCSweepResult); ok {
-			return writeVFSGCTable(writer, result)
 		}
 
 		if supportsVFSManagementTable(value) {

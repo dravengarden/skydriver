@@ -105,6 +105,15 @@ func (client *VFSControlClient) Clear() {
 	client.control.token.Clear()
 }
 
+// CheckCompatibility performs the mandatory preflight before a transfer pipeline.
+func (client *VFSControlClient) CheckCompatibility(ctx context.Context) (ProtocolCompatibility, error) {
+	if client == nil || client.control == nil {
+		return ProtocolCompatibility{}, fmt.Errorf("%w: VFS control client is not initialized", ErrInvalidControlPlane)
+	}
+
+	return client.control.CheckCompatibility(ctx)
+}
+
 // PrepareVFSPutRequest fixes one plaintext identity and optimistic VFS entry precondition.
 type PrepareVFSPutRequest struct {
 	DirectoryID            string  `json:"directory_id"`

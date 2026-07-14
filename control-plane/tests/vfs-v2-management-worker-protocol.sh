@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+curl() {
+  command curl \
+    --header "Carrack-Protocol-Epoch: 2" \
+    --header "Carrack-SDK-Version: 0.1.0" \
+    "$@"
+}
+
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 state_directory=$(mktemp -d)
 server_log="$state_directory/wrangler.log"
@@ -87,6 +94,11 @@ principal_id=$(jq -r '.principal_id' <<<"$bootstrapped")
 root_directory_id=$(jq -r '.root_directory_id' <<<"$bootstrapped")
 root_token=$(jq -r '.token' <<<"$bootstrapped")
 root_authorization="Authorization: Bearer $root_token"
+
+vfs_session=$(curl --silent --show-error --fail-with-body \
+  -H "$root_authorization" "$base_url/api/v2/session")
+[[ "$(jq -r '.schema' <<<"$vfs_session")" == carrack.vfs.session.v1 ]]
+[[ "$(jq -r '.root_directory_id' <<<"$vfs_session")" == "$root_directory_id" ]]
 expires_at=$(($(date +%s) + 3600))
 
 unauthenticated_list_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
@@ -300,73 +312,64 @@ grandchild=$(curl --silent --show-error --fail-with-body \
   "$base_url/api/v2/tokens")
 grandchild_token=$(jq -r '.token' <<<"$grandchild")
 
-cli_binary="$state_directory/carrack"
-go -C "$repository_root" build -o "$cli_binary" ./cmd/carrack
+rust_target="$state_directory/rust-target"
+cargo build --quiet --manifest-path "$repository_root/Cargo.toml" \
+  --target-dir "$rust_target" -p carrack-cli --bin carrack --bin carrackctl
+cli_binary="$rust_target/debug/carrack"
+control_binary="$rust_target/debug/carrackctl"
 cli_mkdir=$(env CARRACK_VFS_TOKEN="$root_token" \
-  "$cli_binary" vfs directory create "$created_directory_id" artifacts \
+  "$cli_binary" mkdir /releases/artifacts \
   --control-url "$base_url" \
   --idempotency-key cli-mkdir-artifacts-v1 \
   --format json)
-[[ "$(jq -r '.parent_directory_id' <<<"$cli_mkdir")" == "$created_directory_id" ]]
-[[ "$(jq -r '.name' <<<"$cli_mkdir")" == artifacts ]]
+[[ "$(jq -r '.schema' <<<"$cli_mkdir")" == carrack.fs-mkdir.v1 ]]
 cli_directory_id=$(jq -r '.directory_id' <<<"$cli_mkdir")
 
-cli_catalog_cache="$state_directory/catalog-cache"
-cli_catalog_first=$(env CARRACK_VFS_TOKEN="$root_token" \
-  "$cli_binary" vfs catalog sync "$root_directory_id" \
-  --control-url "$base_url" \
-  --cache-directory "$cli_catalog_cache" \
-  --page-size 1 \
-  --max-concurrency 2 \
-  --format json)
-[[ "$(jq -r '.schema' <<<"$cli_catalog_first")" == carrack.vfs.catalog-sync.v1 ]]
-[[ "$(jq -r '.directories' <<<"$cli_catalog_first")" == 3 ]]
-[[ "$(jq -r '.entries' <<<"$cli_catalog_first")" == 2 ]]
-[[ "$(jq -r '.fetched_nodes' <<<"$cli_catalog_first")" == 3 ]]
-[[ "$(jq -r '.reused_nodes' <<<"$cli_catalog_first")" == 0 ]]
-
-cli_catalog_second=$(env CARRACK_VFS_TOKEN="$root_token" \
-  "$cli_binary" vfs catalog sync "$root_directory_id" \
-  --control-url "$base_url" \
-  --cache-directory "$cli_catalog_cache" \
-  --page-size 1 \
-  --max-concurrency 2 \
-  --format json)
-[[ "$(jq -r '.fetched_nodes' <<<"$cli_catalog_second")" == 0 ]]
-[[ "$(jq -r '.reused_nodes' <<<"$cli_catalog_second")" == 3 ]]
+rust_list=$(env CARRACK_VFS_TOKEN="$root_token" CARRACK_CONTROL_URL="$base_url" \
+  "$cli_binary" list /)
+[[ "$(jq -r '.schema' <<<"$rust_list")" == carrack.fs-list.v1 ]]
+[[ "$(jq -r '.entries | length' <<<"$rust_list")" == 1 ]]
+rust_mkdir=$(env CARRACK_VFS_TOKEN="$root_token" CARRACK_CONTROL_URL="$base_url" \
+  "$cli_binary" mkdir /rust-native --idempotency-key rust-native-mkdir-v1)
+[[ "$(jq -r '.schema' <<<"$rust_mkdir")" == carrack.fs-mkdir.v1 ]]
+[[ "$(jq -r '.state' <<<"$rust_mkdir")" == committed ]]
+rust_stat=$(env CARRACK_VFS_TOKEN="$root_token" CARRACK_CONTROL_URL="$base_url" \
+  "$cli_binary" stat /rust-native)
+[[ "$(jq -r '.kind' <<<"$rust_stat")" == directory ]]
 
 cli_acl=$(env CARRACK_VFS_TOKEN="$root_token" \
-  "$cli_binary" vfs acl show "$cli_directory_id" \
+	  "$control_binary" vfs acl show /releases/artifacts \
   --control-url "$base_url" --format json)
 [[ "$(jq -r '.schema' <<<"$cli_acl")" == carrack.vfs.acl.v1 ]]
 cli_acl_revision=$(jq -r '.acl_revision' <<<"$cli_acl")
 cli_acl_replaced=$(env CARRACK_VFS_TOKEN="$root_token" \
-  "$cli_binary" vfs acl replace "$cli_directory_id" "$principal_id" \
+	  "$control_binary" vfs acl replace /releases/artifacts \
   --control-url "$base_url" \
-  --role viewer \
-  --expected-acl-revision "$cli_acl_revision" \
+  --principal-id "$principal_id" \
+  --action directory.list,content.read \
+  --expected-revision "$cli_acl_revision" \
   --idempotency-key cli-acl-viewer-v1 \
   --format json)
 [[ "$(jq -r '.kind' <<<"$cli_acl_replaced")" == acl.replace ]]
 [[ "$(jq -c '.policy.actions' <<<"$cli_acl_replaced")" == '["content.read","directory.list"]' ]]
 
 cli_placements=$(env CARRACK_VFS_TOKEN="$root_token" \
-  "$cli_binary" vfs placement list "$cli_directory_id" \
+	  "$control_binary" vfs placement show /releases/artifacts \
   --control-url "$base_url" --format json)
 [[ "$(jq -r '.schema' <<<"$cli_placements")" == carrack.vfs.placements.v1 ]]
 cli_placement_revision=$(jq -r '.placement_revision' <<<"$cli_placements")
 cli_placement_replaced=$(env CARRACK_VFS_TOKEN="$root_token" \
-  "$cli_binary" vfs placement replace "$cli_directory_id" \
+	  "$control_binary" vfs placement replace /releases/artifacts \
   --control-url "$base_url" \
-  --placement local-main=0 \
-  --expected-placement-revision "$cli_placement_revision" \
+  --placement local-main:0 \
+  --expected-revision "$cli_placement_revision" \
   --idempotency-key cli-placement-local-v1 \
   --format json)
 [[ "$(jq -r '.kind' <<<"$cli_placement_replaced")" == placement.replace ]]
 [[ "$(jq -r '.policy.placements[0].driver_id' <<<"$cli_placement_replaced")" == local-main ]]
 
 cli_issue=$(env CARRACK_VFS_TOKEN="$root_token" \
-  "$cli_binary" vfs token issue "$root_directory_id" \
+	  "$control_binary" vfs token issue / \
   --control-url "$base_url" \
   --action directory.list \
   --driver-id local-main \
@@ -378,12 +381,11 @@ cli_token_id=$(jq -r '.token_id' <<<"$cli_issue")
 cli_token=$(jq -r '.token' <<<"$cli_issue")
 
 cli_page=$(env CARRACK_VFS_TOKEN="$cli_token" \
-  "$cli_binary" vfs directory list "$root_directory_id" \
-  --control-url "$base_url" --limit 10 --format json)
-[[ "$(jq -r '.directory.id' <<<"$cli_page")" == "$root_directory_id" ]]
+  "$cli_binary" list / --control-url "$base_url" --format json)
+[[ "$(jq -r '.schema' <<<"$cli_page")" == carrack.fs-list.v1 ]]
 
 cli_revoked=$(env CARRACK_VFS_TOKEN="$root_token" \
-  "$cli_binary" vfs token revoke "$cli_token_id" \
+	  "$control_binary" vfs token revoke "$cli_token_id" \
   --control-url "$base_url" \
   --idempotency-key cli-reader-revoke-v1 \
   --format json)
@@ -462,8 +464,8 @@ child_verifier=$(printf '%s' "$child_token" | sha256sum | cut -d' ' -f1)
        AND (SELECT COUNT(*) FROM vfs_token_revoke_receipts) = 3
        AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'token_issued') = 4
        AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'token_revoked') = 3
-       AND (SELECT COUNT(*) FROM vfs_directory_create_receipts) = 2
-       AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'directory_created') = 2
+       AND (SELECT COUNT(*) FROM vfs_directory_create_receipts) = 3
+       AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'directory_created') = 3
        AND (SELECT COUNT(*) FROM vfs_policy_mutation_receipts) = 4
        AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'acl.replace') = 2
        AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'placement.replace') = 2

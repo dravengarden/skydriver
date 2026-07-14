@@ -1,6 +1,6 @@
 # OpenList alignment
 
-Carrack's Aliyun Drive provider is a narrow, provider-interface adaptation of
+Carrack's compatibility Go Aliyun Drive provider is a narrow adaptation of
 the current OpenList `aliyundrive_open` driver. Carrack cannot import that
 driver directly because its callable model, stream, and driver contracts are
 Go `internal` packages.
@@ -25,6 +25,8 @@ The intentionally retained behaviours are:
   authorization loss, and quota errors remain caller-visible;
 - no internal-upload hostname rewrite outside Beijing ECS.
 
-Upstream changes must be reviewed rather than copied mechanically. Carrack's
+This code is migration evidence, not a dependency of the Rust CLI or future
+server-side driver. Upstream changes must be reviewed rather than copied
+mechanically. Carrack's
 content-addressed object keys, bounded-memory streaming, credential storage,
 and idempotency rules remain Carrack-owned.

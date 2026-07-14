@@ -135,19 +135,6 @@ func newVFSDirectoryListCommand(ctx context.Context, stdout io.Writer) *cobra.Co
 	return command
 }
 
-func newVFSTokenCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
-	command := &cobra.Command{
-		Use:   vfsTokenCommandName,
-		Short: "Issue and revoke attenuated VFS tokens",
-	}
-	command.AddCommand(
-		newVFSTokenIssueCommand(ctx, stdout),
-		newVFSTokenRevokeCommand(ctx, stdout),
-	)
-
-	return command
-}
-
 func newVFSTokenIssueCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
 	var flags vfsTokenIssueFlags
 

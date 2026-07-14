@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+curl() {
+  command curl \
+    --header "Carrack-Protocol-Epoch: 2" \
+    --header "Carrack-SDK-Version: 0.1.0" \
+    "$@"
+}
+
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 state_directory=$(mktemp -d)
 server_log="$state_directory/wrangler.log"
@@ -160,10 +167,42 @@ if ! curl --silent --fail "http://127.0.0.1:$port/api/health" >/dev/null; then
   exit 1
 fi
 
+wasm_sdk_proof=$(command curl --silent --show-error --fail-with-body \
+  "http://127.0.0.1:$port/api/acceptance/wasm-sdk")
+[[ "$(jq -r '.schema' <<<"$wasm_sdk_proof")" == carrack.sdk.wasm-acceptance.v1 ]]
+[[ "$(jq -r '.sdk_version' <<<"$wasm_sdk_proof")" == 0.1.0 ]]
+[[ "$(jq -r '.plaintext_merkle_root' <<<"$wasm_sdk_proof")" == \
+  d60042cf44d28c3a12f278cffde67620f94f1a3e4c82208102da97b96cd5b4d9 ]]
+[[ "$(jq -r '.decoded_sha256' <<<"$wasm_sdk_proof")" == \
+  ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad ]]
+[[ "$(jq -r '.round_trip_verified' <<<"$wasm_sdk_proof")" == true ]]
+
 base_url="http://127.0.0.1:$port"
 authorization_1="Authorization: Bearer $token_1"
 authorization_2="Authorization: Bearer $token_2"
 json='Content-Type: application/json'
+
+compatibility=$(command curl --silent --show-error --fail-with-body \
+  "$base_url/api/compatibility")
+[[ "$(jq -r '.schema' <<<"$compatibility")" == carrack.protocol-compatibility.v1 ]]
+[[ "$(jq -r '.protocol_epoch' <<<"$compatibility")" == 2 ]]
+[[ "$(jq -r '.minimum_sdk_version' <<<"$compatibility")" == 0.1.0 ]]
+
+missing_compatibility=$(command curl --silent --show-error \
+  --output "$state_directory/upgrade-required.json" --write-out '%{http_code}' \
+  --request POST "$base_url/api/v2/puts/prepare")
+[[ "$missing_compatibility" == 426 ]]
+jq -e '
+  .schema == "carrack.protocol-error.v1" and
+  .code == "sdk_upgrade_required" and
+  .protocol_epoch == 2 and
+  .minimum_sdk_version == "0.1.0"
+' "$state_directory/upgrade-required.json" >/dev/null
+
+wrong_epoch=$(command curl --silent --output /dev/null --write-out '%{http_code}' \
+  --header 'Carrack-Protocol-Epoch: 1' --header 'Carrack-SDK-Version: 99.0.0' \
+  --request POST "$base_url/api/v2/puts/prepare")
+[[ "$wrong_epoch" == 426 ]]
 
 prepare_request=$(jq -cn \
   --arg directory_id "$directory" \

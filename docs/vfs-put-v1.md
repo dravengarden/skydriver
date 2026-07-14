@@ -188,8 +188,8 @@ The bounded API is `POST /api/v2/put-deletes/claim`, followed by
 task's exact driver revision and expires with the shorter token or claim lease.
 It uses schema `carrack.vfs.put-delete-driver-grant.v1` and is never cached.
 
-The Go janitor opens only a compiled registered driver, requires advertised
-Stat and exact Delete support, and compares storage key, encoded length, and
+The server lifecycle executor opens only a compiled registered driver,
+requires advertised Stat and exact Delete support, and compares storage key, encoded length, and
 every recorded native ID, provider version, and ETag. At least one strong
 provider identity must be present. Only then does final revalidation rotate the
 fencing token immediately before `Delete`. Completion accepts `deleted` or
@@ -199,11 +199,11 @@ provider deletion impossible.
 
 ## Current implementation boundary
 
-The protocol, D1 invariants, Merkle verification, encrypted and plaintext
+The compatibility Go protocol, D1 invariants, Merkle verification, encrypted and plaintext
 local-filesystem paths, token refresh, grants, create/overwrite flow, exact
 idempotent replay, ACL-revocation tests, and fenced expired-upload cleanup are
-implemented. The Go SDK exposes
-`Put`, `PutFile`, and `PutBytes`; the CLI exposes one-file upload:
+implemented. The Go SDK exposes `Put`, `PutFile`, and `PutBytes`; its legacy CLI
+exposes one-file upload while the Rust `carrack put` facade is migrated:
 
 ```bash
 export CARRACK_VFS_TOKEN='<bootstrap or attenuated token>'
@@ -257,19 +257,11 @@ Private temporary directories left before atomic journal publication are
 ignored because provider I/O cannot have started yet. Use `--journal-directory`
 when Put used a non-default root.
 
-Run one agent-safe cleanup step with a narrowly scoped janitor token:
-
-```bash
-carrack vfs gc \
-  --control-url https://carrack.example.com \
-  --limit 1 \
-  --format json
-```
-
-The default is one object and JSON output. `--limit` is explicitly bounded to
-100; each object still receives its own claim, Stat, final revalidation, and
-completion. A driver without exact delete support is a hard error with a
-replacement recommendation, never a weaker delete.
+Cleanup is not exposed through the filesystem CLI or SDK. Expired upload
+evidence remains durable until the control plane's bounded lifecycle executor
+can perform exact Stat, final reachability revalidation, fenced idempotent
+Delete, and completion through a capable hosted-driver adapter. Missing exact
+delete support is a hard stop, never a weaker client-side delete.
 
 A dedicated durable receipt-recovery API beyond intent lifetime, replacement
 and deleted-version reachability, remote V2 drivers, download, directory

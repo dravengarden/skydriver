@@ -1,662 +1,147 @@
 # Carrack
 
-Carrack is a business-neutral virtual filesystem and data transport system. VFS
-V2 stores every immutable file version as one complete provider object; it does
-not split, merge, pack, or stripe file data. Files in one virtual directory may
-live on different drivers while retaining one authenticated directory tree.
+Carrack is a complete-object virtual filesystem. A file remains one complete
+object in exactly the same byte order at its storage driver; Carrack never
+splits, packs, merges, or stripes user files. Different files in one virtual
+directory may live on different drivers while the directory remains one
+authenticated Merkle tree.
 
-Carrack V2 has three implementation surfaces: a Rust Cloudflare control plane,
-a Go CLI and SDK, and compiled Go storage drivers. The client performs every
-payload transfer directly against a selected driver. The control plane manages
-opaque identities, roots, permissions, token attenuation, sealed directory-key
-epochs, driver grants, optimistic publication, and GC metadata. It never relays
-payload bytes or accesses a configured storage driver.
+The canonical implementation has three surfaces:
 
-Application-specific ingestion and interpretation belong in separate consumer
-projects. R2, Aliyun Drive, Google Drive, public HTTP/S3, local filesystems, and
-future drivers use the same complete-object VFS contract. External source
-discovery and source-specific synchronization remain caller-owned.
+- the Rust Cloudflare control plane owns metadata, permissions, key envelopes,
+  driver configuration, optimistic publication, read leases, retention, and
+  physical garbage collection;
+- the Rust `carrack` binary and `carrack-client` crate expose filesystem-like
+  list, stat, mkdir, put, get, remove, and rename operations; and
+- the Rust `carrackctl` binary exposes every supported UI/operator mutation as
+  strict JSON-first commands for humans and AI agents.
 
-## VFS V2 available now
+Payload bytes move directly between the Rust client and the selected driver.
+They never transit the Worker. OpenList is not linked, launched, or called; it
+may be inspected only as provider-behavior reference material.
 
-The first end-to-end V2 path bootstraps an encrypted or explicit plaintext root
-and uploads one local file, stdin stream, or SDK byte sequence through the
-`local-filesystem/v2` driver. Upload computes the plaintext Merkle identity,
-encrypts into independently authenticated frames by default, verifies the exact
-complete provider object, and publishes file and directory roots with an
-optimistic D1 transaction.
+## Correctness model
 
-```bash
-export CARRACK_VFS_TOKEN='<bootstrap or attenuated token>'
+- Plaintext files have a SHA-256 Merkle root and fixed verification blocks.
+- Directories have canonical ordered Merkle roots.
+- Encryption is on by default. A directory key epoch and immutable file ID
+  derive the file key; provider names are opaque random storage keys.
+- Upload publishes only after complete provider readback and encoded checksum
+  verification.
+- Download verifies exact ranges, encoded SHA-256, authenticated encryption
+  frames, plaintext size, and plaintext Merkle root before success.
+- Namespace mutations use optimistic revisions and durable idempotency
+  receipts. Rename/move changes metadata only and never copies payload bytes.
+- Direct reads hold durable leases. Server GC cannot delete a location with an
+  active lease and must repeat reachability, identity, driver-revision, grace,
+  and fencing checks immediately around provider deletion.
+- Native clients and the Cloudflare Worker share the filesystem-independent
+  `carrack-sdk-core`. The verification gate compiles it for
+  `wasm32-unknown-unknown` and executes its Merkle and authenticated-encryption
+  round trip inside the Worker runtime.
 
-carrack vfs put ./release.tar.zst release.tar.zst \
-  --control-url https://carrack.example.com \
-  --directory-id <directory-id> \
-  --preferred-driver-id local-main \
-  --idempotency-key release-2026-07-13 \
-  --format json
-```
+## Native filesystem CLI
 
-Pass `-` as the local filename to spool stdin privately. The SDK exposes `Put`,
-`PutFile`, and `PutBytes`. A failed transfer or lost commit response reports its
-durable journal ID; pass it back with `--resume-journal-id` to resume the exact
-immutable plan. After a hard exit, `carrack vfs journal list --format json`
-discovers validated local candidates without a control token. See [the V2
-design](docs/vfs-v2.md), [bootstrap
-protocol](docs/vfs-bootstrap-v1.md), and [Put protocol](docs/vfs-put-v1.md).
-
-The archive-oriented V1 implementation remains in the repository during the
-V2 migration. Its packs, extents, compaction, and operation APIs are not part of
-the V2 model.
-
-## Legacy V1 layout
-
-- `archive`: configurable physical layout and the canonical gapless small-file
-  bundle format. Configured sizes are targets and never add zero padding.
-- `cryptostream`: provider-free HKDF and framed AES-GCM implementation.
-- `manifest`: versioned, content-addressed archive manifests.
-- `provider`: storage provider boundaries.
-- `transfer`: crypto-free opaque ciphertext extent fetching and verification.
-- `sdk`: embeddable transfer planning API used by Lightsail and local agents.
-- `cmd/carrack`: operator CLI.
-- `control-plane`: Cloudflare Worker and D1 migrations.
-- `web`: Carrack control console.
-- `schemas`: shared manifest, recovery, bundle, and bundle-plan schemas.
-- `docs/requirements.md`: normative product, concurrency, recovery, and safety
-  requirements.
-- `docs/bundle-format.md`: exact zero-padding bundle wire contract.
-- `docs/architecture.md`: correctness, concurrency, key, and GC protocol.
-
-## Provider status
-
-The Go SDK includes an Aliyun Drive provider for the official Open API. It
-supports OpenList-compatible OAuth renewal without running an OpenList server,
-automatic folder creation, bounded-memory multipart uploads, metadata lookup,
-and exact range downloads. A download is accepted only when `206`,
-`Content-Range`, the resolved object size, and any declared `Content-Length`
-prove the requested bytes; partial bodies remain read errors. The provider
-deliberately keeps uploads sequential and applies the same conservative
-per-operation request limits as OpenList.
-
-Providers are selected through an immutable runtime registry of versioned,
-compiled factories. A control-plane `DriverSpec` carries a kind, strict
-non-secret JSON configuration, and an optional encrypted credential reference.
-The compiled kinds are `aliyundrive-open/v1`, `public-http/v1`, and
-`local-filesystem/v1`; unsupported kinds and unknown config fields are rejected
-before provider access.
-
-The read-only native `public-http/v1` driver supports public HTTPS archives and
-loopback test servers. It requires canonical relative keys, same-origin
-redirects, identity encoding, and an exact `206 Content-Range`; whole-object or
-ambiguous range responses are rejected. Restore may open both Aliyun and public
-HTTP drivers and follows each extent's ordered replica locations for fallback.
-
-The native `local-filesystem/v1` driver confines canonical keys beneath one
-existing root with Go's traversal-resistant rooted filesystem API. It provides
-content-derived object identity and exact range reads. Writes stream into a
-private temporary file, verify the declared length and SHA-256, sync it, and
-atomically publish without replacing an existing object. A retry succeeds only
-when the existing object has identical bytes.
-
-OpenList cannot be consumed as a normal Go SDK because its public driver
-packages expose contracts from Go `internal` packages. Carrack therefore owns
-a narrow adapter aligned to a recorded OpenList commit; see
-`provider/aliyundrive/UPSTREAM.md`.
-
-Credentials are runtime dependencies. Callers may use a fixed access token or
-the OpenList-compatible refresh-token source. A rotated refresh token must be
-persisted through the supplied callback before the new access token is used.
-Neither tokens nor download URLs belong in manifests, D1, logs, or Git.
-
-Carrack does not embed or manage sing-box. Its HTTP clients use Go's standard
-transport and can connect directly or through an external HTTP/HTTPS/SOCKS5
-proxy. The CLI honors the standard proxy environment variables; for example:
+Both endpoint and bearer come from environment variables so secrets do not
+enter argv:
 
 ```bash
-HTTPS_PROXY=http://127.0.0.1:8080 carrack restore ...
-HTTPS_PROXY=socks5h://127.0.0.1:1080 carrack restore ...
+export CARRACK_CONTROL_URL=https://dev.carrack.stormbird.xyz
+export CARRACK_VFS_TOKEN='...'
+
+carrack list /
+carrack mkdir /releases --idempotency-key release-dir-v1
+carrack put ./app.tar.zst /releases/app.tar.zst \
+  --idempotency-key app-2026-07-14
+carrack get /releases/app.tar.zst ./app.tar.zst
+carrack sync /releases ./local-releases \
+  --maximum-concurrency 4 --maximum-file-concurrency 4
+carrack rename /releases/app.tar.zst /releases/latest.tar.zst \
+  --idempotency-key latest-2026-07-14
+carrack remove /releases/latest.tar.zst \
+  --idempotency-key remove-latest-2026-07-14
 ```
 
-Use `NO_PROXY` for direct destinations. If VLESS or another outbound protocol
-is needed, run sing-box as a separate service and point Carrack at the service's
-HTTP or SOCKS listener. Proxy URLs and credentials never belong in manifests or
-control-plane metadata.
+`sync` fetches the complete directory catalog before payload work, verifies
+unchanged local files from the prior authenticated version/block metadata, and
+downloads only changed or corrupted files. Changed files run concurrently and
+each retains its own resumable range pipeline. Untracked local files are
+preserved.
 
-The V1 default layout uses 64 MiB physical blocks, 8 MiB crypto frames, and
-8 GiB target logical packs. A physical block is Carrack's independently
-verified leaf, not a provider multipart-upload part. Drivers choose their own
-part size and concurrency. All layout values are policy defaults rather than
-protocol constants.
+Multipart journals, resume, range scheduling, encryption, checksums, and GC
+are internal. Transfer bounds tune the pipeline; they do not alter identity.
 
-The initial crypto suite is `carrack-aes128gcm-hkdfsha256-v1`. Root-to-epoch
-derivation matches across Go and Rust through a shared golden vector; pack keys
-and authenticated frames are implemented only in the provider-free Go crypto
-layer. The transfer layer sees opaque SHA-256-addressed ciphertext extents,
-supports replica fallback and bounded concurrent batches, and has no crypto
-dependency. Integration tests compose the layers without merging them.
+## Management CLI for agents
 
-Batch downloads coalesce only adjacent primary ranges from the same provider
-object, up to an independent memory bound. One exact provider read still
-produces separately owned and separately hashed extent buffers. A failed or
-corrupt coalesced read falls back to the normal ordered multi-replica path, so
-the optimization cannot weaken correctness or change ciphertext identity.
+`CARRACK_OPERATOR_CREDENTIAL` authorizes redacted UI-equivalent environment
+management. `CARRACK_VFS_TOKEN` separately authorizes scoped ACL, placement,
+and child-token operations.
 
-The restore SDK pins one portable recovery manifest, verifies each downloaded
-ciphertext extent, authenticates every encrypted frame, and verifies the final
-plaintext identity before atomically publishing a local file. Interrupted
-restores retain a key-free journal and staging file; resume rehashes every
-claimed local plaintext span before skipping its network transfer.
-The control-plane restore protocol pins the immutable version before transfer,
-renews an operation-scoped read lease, and releases it only after the SDK's
-verified manifest and plaintext identities are committed as succeeded.
-Portable recovery metadata is fetched from R2 only under that lease and is
-validated again before the client receives it; archive payload remains direct.
-The controlled restore SDK composes manifest pinning, read-lease renewal,
-metadata fetch, local restore, and fenced completion. A renewal failure cancels
-in-flight provider reads and prevents local publication.
-Terminal authenticated-decryption or plaintext-identity failures close the
-operation and release its lease immediately; transient provider failures keep
-the key-free local resume state and are not reported as permanent corruption.
-Each verified extent emits cumulative wire-read, useful-verified, active-time,
-and replica-retry counters through the same fenced, reorder-safe telemetry
-protocol used by imports. Telemetry failure does not invalidate restored data;
-the CLI surfaces an explicit warning after retrying the latest sample.
+```bash
+carrackctl snapshot
+carrackctl directory <directory-id>
+carrackctl driver register aliyun-main \
+  --kind aliyundrive-open/v2 --config-file ./aliyun-config.json --check
+carrackctl vfs acl show /releases
+carrackctl vfs placement show /releases
+carrackctl vfs token issue /releases \
+  --action directory.list,content.read \
+  --expires-at <unix-seconds> --idempotency-key release-reader-v1
+```
 
-The import path persists every random pack ID before transfer, then encrypts
-whole frame spans into bounded 64 MiB staging extents. Consecutive extents are
-coalesced into exact-length, content-addressed provider objects under the
-driver's preferred and maximum sizes; locations retain each internal range.
-Every provider object is independently read back before it enters the portable
-manifest. The SDK writes a destination sidecar and submits the identical
-metadata to the Worker, which validates it again and stores it in a
-recovery-SHA-addressed R2 archive. Replaying the same persisted plan produces
-byte-identical ciphertext and safely converges with an earlier interrupted
-upload. The control client exposes idempotent operation creation, renewable
-fenced claims, monotonic progress reporting, recovery staging, and atomic
-import publication; provider payload bytes still never enter the Worker.
+Configuration commands validate locally and on the server. Mutations require
+an exact expected revision and stable idempotency key, return a durable receipt,
+and fail closed on ambiguous or incompatible responses. Provider credentials
+are accepted only from owner-private JSON files and are never returned by the
+control plane.
 
-The provider-neutral replication SDK supplies the data path for copy and
-repair. It reads each immutable ciphertext extent through ordered replica
-fallback, verifies its SHA-256, groups only complete extents into bounded
-content-addressed destination objects, and independently reads every object
-back before returning a new location. Only after all payload groups verify does
-it write an immutable recovery sidecar addressed by both the logical manifest
-and complete recovery-document SHA-256. Replaying the same copy converges on
-the same objects and does not duplicate locations. The controlled copy SDK pins
-the current recovery revision, renews a write lease during provider I/O, and
-cancels in-flight reads if renewal fails. The Worker accepts only an updated
-recovery document that preserves the exact content manifest, retains every
-source location, and covers every extent on the requested destination. It then
-publishes the new locations and recovery head in one fenced revision CAS.
-Concurrent losers remain unreachable staging, and an exact request can be
-replayed after lease release. Copy never deletes a source; the later move saga
-remains a separate operation. Controlled Repair is the narrower,
-location-preserving path for objects proven missing: the Worker pins the exact
-location revisions and complete provider-object identities, while the SDK
-reconstructs every object from separately available, SHA-256-verified ranges.
-After independent destination readback, one fenced D1 batch moves only those
-locations through `verified` to `available`, resolves matching findings, and
-closes the operation without changing the recovery revision. A changed
-provider version or any corrupt range in the target object requires relocation
-through Copy instead of an unsafe overwrite. The controlled move SDK pins every
-available location on one source driver, publishes and verifies a complete
-destination replica first, then publishes a second recovery revision that
-removes exactly those pinned sources. The same live write fence protects both
-revisions. D1 changes the removed locations to `tombstoned` and records a
-policy-derived grace deadline, while the operation remains
-`source_delete_pending` for an explicit janitor. Provider deletion is
-intentionally not performed by the move client. An authorized `MoveJanitor`
-later claims object-grouped delete
-tasks, repeats active-read, reachability, replica-policy, incarnation, and
-fence checks immediately before I/O, calls an idempotent driver deleter, and
-only then advances D1 through `deleting` to `succeeded`. Lost completion
-responses converge from the retained task record. The local filesystem driver
-implements both delete and bounded inventory capabilities; other drivers
-remain unavailable to those paths until they advertise and implement the same
-contracts.
+See [.agents/skills/carrack-admin/SKILL.md](.agents/skills/carrack-admin/SKILL.md)
+for the AI operating procedure and
+[.agents/skills/carrack-admin/references/commands.md](.agents/skills/carrack-admin/references/commands.md)
+for the complete command contract.
 
-Carrack prefers native drivers where Go already has a mature protocol or SDK:
-S3-compatible storage, R2, public HTTP, and local filesystems do not pass
-through OpenList. OpenList-derived adapters are reserved for long-tail consumer
-cloud drives where its provider compatibility and OAuth work provide real
-value. They still implement the same Carrack registry contract and do not
-require an OpenList server.
+## Drivers
+
+The current native V2 adapters are:
+
+| Driver | Complete upload | Exact range download | Resume/concurrency | Server delete | Notes |
+|---|---:|---:|---:|---:|---|
+| `local-filesystem/v2` | yes | yes | yes | retained/blocked | Cloudflare cannot safely reach an agent-local path; use a hosted driver for automatic physical cleanup |
+| `aliyundrive-open/v2` | yes | yes | journaled, upload concurrency 1 | yes | access-token credential; native Open API; no OpenList runtime |
+
+Unsupported capabilities fail closed or return an explicit warning with the
+safe replacement. Additional S3/R2, Google Drive, and WebDAV adapters must use
+the same complete-object contract; WebDAV implementations without reliable
+range/multipart semantics may degrade with a warning but may not weaken hash
+verification.
+
+## Environments
+
+| Environment | UI/API | D1 | R2 |
+|---|---|---|---|
+| development | `https://dev.carrack.stormbird.xyz` | `carrack-index-dev` | `carrack-manifests-dev` |
+| production | `https://carrack.stormbird.xyz` | `carrack-index-prod` | `carrack-manifests-prod` |
+
+Both custom domains disable `workers.dev`. Environment resource identifiers,
+deployment checks, and operator bootstrap are documented in
+[docs/cloudflare.md](docs/cloudflare.md).
 
 ## Development
 
 ```bash
-cp .env.example .env
-chmod 600 .env
 nix develop
 just verify
 ```
 
-Cloudflare operator authentication, D1 migrations, runtime secrets, and deploy
-commands are documented in `docs/cloudflare.md`.
-
-The local filesystem Import path encrypts one plaintext source into a distinct
-archive root and publishes it under an `importer` or `administrator` token:
-
-```bash
-export CARRACK_CONTROL_TOKEN="$(read-importer-token)"
-
-carrack import run \
-  --control-url https://carrack.example.com \
-  --namespace 202122232425262728292a2b2c2d2e2f \
-  --object-id object-1 \
-  --source-local-driver-id local-source \
-  --source-local-root /srv/carrack/plaintext \
-  --source-key dataset.bin \
-  --destination-local-driver-id local-archive \
-  --destination-local-root /srv/carrack/archive \
-  --destination-prefix imported \
-  --staging-directory /var/tmp/carrack \
-  --plan-file /var/lib/carrack/plans/object-1.json
-```
-
-Source and destination driver IDs and canonical roots must differ. Operation
-creation pins the namespace's active root version and key epoch, and the
-fenced key grant supplies only that context. The command hashes the current
-source identity into its idempotency key, atomically persists every random pack
-ID before payload I/O, renews the write lease throughout encryption and
-readback, and publishes only after the payload, destination sidecar, and R2
-recovery copy verify. The plan contains no key material and must be reused for
-a retry. `--expected-object-revision` defaults to `1` for a new object and must
-be set to the current revision for a later generation.
-If publication committed but its response was lost, an exact retry returns the
-committed manifest with `already_published: true` without another key grant,
-encryption pass, or destination write.
-
-The restore CLI opens any configured compiled driver and accepts secrets only
-through process environment variables:
-
-```bash
-export CARRACK_CONTROL_TOKEN="$(read-control-token)"
-export CARRACK_ALIYUN_ACCESS_TOKEN="$(read-aliyun-access-token)"
-
-carrack restore ./restored.bin \
-  --control-url https://carrack.example.com \
-  --namespace 202122232425262728292a2b2c2d2e2f \
-  --manifest <manifest-sha256> \
-  --driver-id aliyun-main
-```
-
-An optional public replica can participate in the same restore:
-
-```bash
-carrack restore ./restored.bin \
-  --control-url https://carrack.example.com \
-  --namespace 202122232425262728292a2b2c2d2e2f \
-  --manifest <manifest-sha256> \
-  --driver-id aliyun-main \
-  --public-http-driver-id public-mirror \
-  --public-http-base-url https://archives.example.com/carrack
-```
-
-A local archive replica can be used alone or alongside either remote driver:
-
-```bash
-carrack restore ./restored.bin \
-  --control-url https://carrack.example.com \
-  --namespace 202122232425262728292a2b2c2d2e2f \
-  --manifest <manifest-sha256> \
-  --local-driver-id local-mirror \
-  --local-root /srv/carrack/archive
-```
-
-Driver IDs must match the manifest locations. The local root must already
-exist; Carrack creates only object-key subdirectories beneath it.
-
-An operator can independently scrub every complete ciphertext extent on one
-local driver from a portable recovery sidecar, without a control-plane token or
-decryption key:
-
-```bash
-carrack verify ./recovery.json \
-  --local-driver-id local-mirror \
-  --local-root /srv/carrack/archive \
-  --format json
-```
-
-Verification streams each selected location through SHA-256 with constant
-memory and does not stop after another replica succeeds. Its stable evidence
-distinguishes verified bytes, proven missing objects, corrupt length or digest,
-and unavailable drivers or inconclusive provider failures. A single pass does
-not declare permanent data loss; reconciliation and repair remain separate
-control-plane operations.
-
-An administrator can run the same local scrub as a fenced control-plane
-operation. The command renews its lease during provider reads and commits the
-complete evidence set, location state changes, and integrity findings in one
-idempotent D1 transaction:
-
-```bash
-export CARRACK_CONTROL_TOKEN="$(read-administrator-token)"
-
-carrack verify run \
-  --control-url https://carrack.example.com \
-  --namespace 202122232425262728292a2b2c2d2e2f \
-  --manifest <manifest-sha256> \
-  --local-driver-id local-mirror \
-  --local-root /srv/carrack/archive \
-  --idempotency-key local-mirror-scrub-2026-07-12
-```
-
-The idempotency key names one audit attempt. Retrying that attempt reuses its
-pinned recovery revision; a later scheduled scrub must use a new key.
-
-Metadata reconciliation is a separate administrator operation. It compares a
-validated R2 recovery document with the complete D1 location snapshot under one
-renewable fence and records `unindexed`, `orphan`, and `degraded` findings
-without contacting providers or editing the manifest:
-
-```bash
-carrack reconcile run \
-  --control-url https://carrack.example.com \
-  --namespace 202122232425262728292a2b2c2d2e2f \
-  --manifest <manifest-sha256> \
-  --idempotency-key metadata-reconcile-2026-07-12
-```
-
-The Worker recomputes the submitted report before committing it. Exact retries
-must retain the original lease, incarnation, fence, manifest, and evidence;
-changed identities or reports are rejected. A retry after completion returns
-the committed report digest and counts from the operation receipt without
-fetching the snapshot again. Resolved discrepancies close only findings with
-the same condition and subject identity.
-
-Provider inventory is the provider-to-D1 half of reconciliation. The initial
-operator path inventories one Carrack-owned local filesystem prefix in bounded
-pages under a renewable fence:
-
-```bash
-carrack reconcile inventory \
-  --control-url https://carrack.example.com \
-  --namespace 202122232425262728292a2b2c2d2e2f \
-  --local-driver-id local-archive \
-  --local-root /srv/carrack/archive \
-  --prefix archive \
-  --idempotency-key local-archive-inventory-2026-07-12
-```
-
-The registered driver ID and local root must describe the same provider scope.
-Each page contains at most 64 objects, exact page retries are harmless, and the
-normalized cursor is the page's final strictly increasing storage key. The SDK
-and Worker reject duplicate or regressed pages before the Worker commits
-classifications from the complete cursor chain and report digest. Objects
-already referenced by a location or durable recovery sidecar are known. Other
-discovered objects enter the quarantine ledger and open `quarantined` findings.
-Indexed objects absent from the report open `missing` findings for later
-verification; a stale scan or one inventory response does not change location
-state. A later full scan converges. Inventory never adopts an object, edits a
-manifest, or deletes provider bytes.
-
-After the initial `inventory_quarantine_seconds` expires, an administrator may
-record a completed ownership and recovery review for one exact quarantine
-revision. The integrity console shows the required revision:
-
-```bash
-carrack quarantine acknowledge \
-  --control-url https://carrack.example.com \
-  --namespace 202122232425262728292a2b2c2d2e2f \
-  --driver-id local-archive \
-  --storage-key archive/objects/<orphan-key> \
-  --expected-revision <quarantine-revision> \
-  --reason "checked recovery catalog and provider ownership records" \
-  --idempotency-key acknowledge-orphan-2026-07-12
-```
-
-Acknowledgement does not authorize provider I/O. A separate exact-revision
-tombstone starts a second policy-derived grace period:
-
-```bash
-carrack quarantine tombstone \
-  --control-url https://carrack.example.com \
-  --namespace 202122232425262728292a2b2c2d2e2f \
-  --driver-id local-archive \
-  --storage-key archive/objects/<orphan-key> \
-  --expected-revision <acknowledged-revision> \
-  --reason "approved cleanup after another grace and final provider recheck" \
-  --idempotency-key tombstone-orphan-2026-07-12
-```
-
-Both transitions are administrator-only `gc` operations protected by a write
-lease, fencing token, provider identity, and quarantine revision CAS. A later
-retry with the same idempotency key returns the durable completion without
-another claim; a recovery-invalidated action returns an explicit terminal
-error. Completion replay is accepted only with the original lease,
-incarnation, and fencing token. A deterministic matrix interrupts before and
-after create, claim, and completion for both acknowledge and tombstone actions.
-A later inventory preserves acknowledgement or tombstone state when identity is
-unchanged, resets review if identity changes, and resolves cleanup intent if a
-D1 location or recovery sidecar appears. Driver revision is part of that
-identity: changing the registered provider configuration restarts review.
-Reference writes are synchronous safety barriers: making a location non-deleted
-or a recovery sidecar non-missing resolves the finding, supersedes even an
-already claimed delete task, and invalidates its fence before provider I/O.
-
-Tombstoning atomically creates one provider-neutral delete task, but the task is
-not claimable until `delete_after`. After that deadline, a `janitor` or
-`administrator` token can run the local-filesystem adapter with the tombstone
-operation ID printed by the preceding command:
-
-```bash
-export CARRACK_CONTROL_TOKEN="$(read-janitor-token)"
-
-carrack quarantine sweep <tombstone-operation-id> \
-  --control-url https://carrack.example.com \
-  --local-driver-id local-archive \
-  --local-root /srv/carrack/archive
-```
-
-The SDK first calls provider `Stat` and requires the exact storage key, driver
-revision, optional provider version and ETag, and size pinned by inventory. It
-then rotates the task fence while D1 repeats grace, reachability, sidecar,
-driver, client-role, and incarnation checks immediately before provider I/O.
-Identity mismatch fails without deleting. A proven absent object completes as
-`already_absent`, so a lost provider response converges without repeating an
-assumed side effect. Successful completion changes the ledger to `deleted`,
-resolves the active finding, and records an audit event. Scheduling remains
-disabled; every sweep is explicit.
-
-A relay can repair provider objects that verification has proven missing while
-another exact replica remains available. This local-filesystem path preserves
-the original storage keys and recovery revision:
-
-```bash
-export CARRACK_CONTROL_TOKEN="$(read-relay-token)"
-
-carrack repair run \
-  --control-url https://carrack.example.com \
-  --namespace 202122232425262728292a2b2c2d2e2f \
-  --manifest <manifest-sha256> \
-  --source-local-driver-id local-source \
-  --source-local-root /srv/carrack/source \
-  --destination-local-driver-id local-mirror \
-  --destination-local-root /srv/carrack/mirror \
-  --idempotency-key local-mirror-repair-2026-07-12 \
-  --staging-directory /var/tmp/carrack
-```
-
-The operation repairs only the target locations pinned when that idempotency
-key was created. Newly missing locations require a new operation. Every range
-in a target object must have a different, currently available source; corrupt
-target objects and providers that cannot reproduce the pinned version identity
-are rejected for relocation through Copy.
-
-An administrator or relay can compact a current multi-pack generation into a
-smaller immutable replacement. The initial CLI path decrypts from one local
-archive root into an explicit local workspace and re-encrypts to a distinct
-local archive root:
-
-```bash
-carrack compact run \
-  --control-url https://carrack.example.com \
-  --namespace 202122232425262728292a2b2c2d2e2f \
-  --manifest <source-manifest-sha256> \
-  --source-local-driver-id local-source \
-  --source-local-root /srv/carrack/source \
-  --destination-local-driver-id local-compacted \
-  --destination-local-root /srv/carrack/compacted \
-  --destination-prefix compacted \
-  --idempotency-key compact-object-2026-07-12 \
-  --staging-directory /var/tmp/carrack
-```
-
-Creation pins the current source generation, recovery revision, object
-revision, both source and target crypto contexts, and destination. Every new
-pack ID is persisted before encryption. Publication is accepted only when the
-replacement preserves the complete plaintext identity, uses fewer packs,
-shares no pack ID with the source, and still wins the pinned object-revision
-CAS. The target becomes current and the source becomes `retired` in the same D1
-batch; source payload remains available for active readers and later GC.
-Compaction may leave its plaintext workspace file after an interruption so an
-exact retry can converge. A successful publication removes that plaintext file
-and retains only the non-secret plan. Treat the staging directory as sensitive
-until the command succeeds or the operator explicitly cleans up a failed run.
-
-An administrator can explicitly mark provider payload that is no longer
-reachable from any published generation. Retention and grace are namespace
-policy, not command-line overrides:
-
-```json
-{
-  "move_grace_seconds": 86400,
-  "gc_minimum_age_seconds": 604800,
-  "gc_grace_seconds": 86400,
-  "inventory_quarantine_seconds": 86400
-}
-```
-
-```bash
-export CARRACK_CONTROL_TOKEN="$(read-administrator-token)"
-
-carrack gc mark \
-  --control-url https://carrack.example.com \
-  --namespace 202122232425262728292a2b2c2d2e2f \
-  --idempotency-key weekly-gc-2026-07-12
-```
-
-The mark transaction considers only complete provider objects whose indexed
-ranges are all old enough and unreachable. Published versions, durable
-recovery sidecars, Move sources, and versions protected by a current read or
-write lease are excluded. Marking writes D1 tombstones and a future grace
-deadline; it never performs provider I/O. Exact retries retain the original
-lease, incarnation, and fence and return the durable mark receipt without
-another claim. Empty epochs succeed with zero candidates; a recovery-invalidated
-epoch returns an explicit terminal error.
-
-After the reported grace deadline, a `janitor` or `administrator` token can
-sweep one local filesystem driver:
-
-```bash
-export CARRACK_CONTROL_TOKEN="$(read-janitor-token)"
-
-carrack gc sweep <gc-operation-id> \
-  --control-url https://carrack.example.com \
-  --local-driver-id local-archive \
-  --local-root /srv/carrack/archive
-```
-
-Every object task repeats reachability and active-lease checks when claimed and
-again immediately before the driver's idempotent delete. A failed delete stays
-retryable; a lost completion response converges from the durable task. The
-current CLI is an explicit operator workflow. Automatic Cron scheduling remains
-disabled behind the production verification gate.
-
-The local filesystem Copy path creates and publishes a verified destination
-replica while retaining every source location:
-
-```bash
-export CARRACK_CONTROL_TOKEN="$(read-relay-token)"
-
-carrack copy run \
-  --control-url https://carrack.example.com \
-  --namespace 202122232425262728292a2b2c2d2e2f \
-  --manifest <manifest-sha256> \
-  --source-local-driver-id local-source \
-  --source-local-root /srv/carrack/source \
-  --destination-local-driver-id local-destination \
-  --destination-local-root /srv/carrack/destination \
-  --destination-prefix copied \
-  --staging-directory /var/tmp/carrack
-```
-
-Source and destination driver IDs and canonical roots must differ. The command
-derives a stable idempotency key from the complete Copy identity, renews its
-write fence during direct provider I/O, and exits only after the destination
-objects, recovery sidecar, and recovery head have been verified and published.
-It never tombstones or physically deletes the source, so no janitor sweep is
-required.
-
-The local filesystem Move path uses the same verified replication protocol.
-A `relay` or `administrator` token continues through source tombstoning after
-destination publication, but does not physically delete the source:
-
-```bash
-export CARRACK_CONTROL_TOKEN="$(read-relay-token)"
-
-carrack move run \
-  --control-url https://carrack.example.com \
-  --namespace 202122232425262728292a2b2c2d2e2f \
-  --manifest <manifest-sha256> \
-  --source-local-driver-id local-source \
-  --source-local-root /srv/carrack/source \
-  --destination-local-driver-id local-destination \
-  --destination-local-root /srv/carrack/destination \
-  --destination-prefix moved \
-  --staging-directory /var/tmp/carrack
-```
-
-The command derives a separate stable idempotency key from the complete Move
-identity and prints the operation ID and grace deadline required by the later
-janitor handoff.
-
-After a Move reaches `source_delete_pending` and its grace deadline passes, an
-explicit janitor token can sweep a local filesystem source:
-
-```bash
-export CARRACK_CONTROL_TOKEN="$(read-janitor-token)"
-
-carrack move sweep <move-operation-id> \
-  --control-url https://carrack.example.com \
-  --local-driver-id local-source \
-  --local-root /srv/carrack/archive
-```
-
-The token must have the namespace `janitor` or `administrator` role. The
-command cannot choose arbitrary keys: it deletes only object tasks returned
-and revalidated by the control plane. Driver IDs and the root must match the
-source configuration used by the operation.
-
-The control token is an unpadded base64url encoding of exactly 32 bytes. Under
-the active read fence, the Worker derives the manifest's epoch key from its
-versioned root secret, audits the grant without key material, and returns it to
-the SDK over HTTPS. `CARRACK_EPOCH_KEY` remains an optional 32-byte base64url
-override for offline recovery and controlled testing. The access-token form
-above is caller-managed and never persisted.
-
-For renewable credentials, initialize an encrypted compare-and-swap store once:
-
-```bash
-unset CARRACK_ALIYUN_ACCESS_TOKEN
-export CARRACK_CREDENTIAL_KEY="$(read-credential-key)"
-export CARRACK_ALIYUN_REFRESH_TOKEN="$(read-aliyun-refresh-token)"
-
-carrack restore ./restored.bin \
-  --control-url https://carrack.example.com \
-  --namespace 202122232425262728292a2b2c2d2e2f \
-  --manifest <manifest-sha256> \
-  --driver-id aliyun-main \
-  --credential-store ~/.local/state/carrack/aliyun-main.json
-```
-
-The credential key is a non-zero, unpadded base64url encoding of exactly 32
-bytes and must come from a separate secret store. Carrack writes the encrypted
-credential file with mode `0600`, binds its identity and revision into AES-GCM
-authenticated data, and atomically persists every rotated refresh token. After
-initialization, unset `CARRACK_ALIYUN_REFRESH_TOKEN`; subsequent restores load
-and update the encrypted file using only `CARRACK_CREDENTIAL_KEY`.
-
-This repository is private. Credentials belong in runtime secret stores, never
-in tracked files.
+The full gate runs formatting, strict Rust/Go/web lint, race tests, Rust tests,
+real local Worker+D1 protocol tests, UI tests, and dev/prod dry-run builds.
+The retained Go packages are a compatibility and conformance oracle only; the
+repository no longer builds public Go CLI binaries.
+
+Key specifications:
+
+- [requirements](docs/requirements.md)
+- [VFS V2 protocol](docs/vfs-v2.md)
+- [management plane](docs/management-plane-v1.md)
+- [Cloudflare environments](docs/cloudflare.md)
+- [Rust client boundary](docs/rust-client-migration.md)

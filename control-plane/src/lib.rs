@@ -24,6 +24,7 @@ mod moving;
 mod operations;
 mod operator_sessions;
 pub mod protocol;
+mod protocol_compatibility;
 mod publication;
 mod quarantine;
 mod quarantine_deletion;
@@ -37,14 +38,17 @@ mod vfs_authorization;
 mod vfs_bootstrap;
 mod vfs_directories;
 mod vfs_directory_management;
+mod vfs_download;
 mod vfs_envelopes;
 mod vfs_grants;
 mod vfs_identifiers;
 mod vfs_merkle;
+mod vfs_namespace_mutation;
 mod vfs_policy_management;
 mod vfs_put;
 mod vfs_put_commit;
 mod vfs_put_deletion;
+mod vfs_server_lifecycle;
 mod vfs_token_management;
 mod vfs_tokens;
 
@@ -136,7 +140,15 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
             .and_then(security_headers);
     }
 
+    if request.path().starts_with("/api/v2/")
+        && let Some(response) = protocol_compatibility::enforce(&request)?
+    {
+        return Ok(response);
+    }
+
     Router::new()
+        .get("/api/compatibility", |_, _| protocol_compatibility::describe())
+        .get("/api/acceptance/wasm-sdk", |_, _| wasm_sdk_acceptance())
         .get_async("/api/health", |_, context| async move {
             health(&context.env).await
         })
@@ -196,6 +208,12 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
             }
             response
         })
+        .get_async("/api/v2/session", |request, context| async move {
+            let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                return Response::error("VFS token authentication required", 401);
+            };
+            vfs_tokens::session(&token)
+        })
         .get_async(
             "/api/v2/directories/:id/entries",
             |request, context| async move {
@@ -207,6 +225,30 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
                 };
 
                 vfs_directories::list(&request, &context.env, &token, directory_id).await
+            },
+        )
+        .get_async(
+            "/api/v2/versions/:id/download",
+            |request, context| async move {
+                let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                    return Response::error("VFS token authentication required", 401);
+                };
+                let Some(version_id) = context.param("id") else {
+                    return Response::error("VFS version ID is required", 400);
+                };
+                vfs_download::plan(&context.env, &token, version_id).await
+            },
+        )
+        .post_async(
+            "/api/v2/read-leases/:id/complete",
+            |request, context| async move {
+                let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                    return Response::error("VFS token authentication required", 401);
+                };
+                let Some(lease_id) = context.param("id") else {
+                    return Response::error("VFS read lease ID is required", 400);
+                };
+                vfs_download::complete(&context.env, &token, lease_id).await
             },
         )
         .post_async(
@@ -231,6 +273,60 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
                 .await
             },
         )
+        .post_async(
+            "/api/v2/directories/:id/remove",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+                let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                    return Response::error("VFS token authentication required", 401);
+                };
+                let Some(directory_id) = context.param("id") else {
+                    return Response::error("VFS directory ID is required", 400);
+                };
+                vfs_namespace_mutation::remove(
+                    &mut request,
+                    &context.env,
+                    &token,
+                    directory_id,
+                )
+                .await
+            },
+        )
+        .post_async(
+            "/api/v2/directories/:id/rename",
+            |mut request, context| async move {
+                if external_maintenance(&context.env) {
+                    return Response::error("control-plane mutations are disabled", 409);
+                }
+                let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                    return Response::error("VFS token authentication required", 401);
+                };
+                let Some(source_directory_id) = context.param("id") else {
+                    return Response::error("VFS source directory ID is required", 400);
+                };
+                vfs_namespace_mutation::rename(
+                    &mut request,
+                    &context.env,
+                    &token,
+                    source_directory_id,
+                )
+                .await
+            },
+        )
+        .get_async("/api/v2/remove-receipts", |request, context| async move {
+            let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                return Response::error("VFS token authentication required", 401);
+            };
+            vfs_namespace_mutation::remove_receipt(&request, &context.env, &token).await
+        })
+        .get_async("/api/v2/rename-receipts", |request, context| async move {
+            let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                return Response::error("VFS token authentication required", 401);
+            };
+            vfs_namespace_mutation::rename_receipt(&request, &context.env, &token).await
+        })
         .get_async(
             "/api/v2/directories/:id/acl",
             |request, context| async move {
@@ -1441,6 +1537,12 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
         .run(request, env)
         .await
         .and_then(security_headers)
+}
+
+fn wasm_sdk_acceptance() -> Result<Response> {
+    let proof = carrack_sdk_core::wasm_acceptance_proof(b"abc")
+        .map_err(|error| worker::Error::RustError(error.to_string()))?;
+    Response::from_json(&proof)
 }
 
 /// Runs bounded, idempotent D1 hygiene from the environment's Cron Trigger.

@@ -1,9 +1,13 @@
 use worker::{Env, Result, wasm_bindgen::JsValue};
 
+use crate::vfs_server_lifecycle;
+
 const DATABASE_BINDING: &str = "CARRACK_INDEX";
 const MAXIMUM_EXPIRED_SESSIONS_PER_RUN: u64 = 500;
 const MAXIMUM_EXPIRED_PUTS_PER_RUN: u64 = 250;
+const MAXIMUM_EXPIRED_READ_LEASES_PER_RUN: u64 = 1_000;
 const VFS_PUT_DELETE_GRACE_SECONDS: u64 = 86_400;
+const READ_LEASE_EVIDENCE_SECONDS: u64 = 7 * 86_400;
 
 /// Performs bounded metadata hygiene without touching provider objects.
 ///
@@ -81,8 +85,23 @@ pub(crate) async fn run(env: &Env) -> Result<()> {
                     JsValue::from_str(&now.to_string()),
                     JsValue::from_str(&MAXIMUM_EXPIRED_PUTS_PER_RUN.to_string()),
                 ])?,
+            database
+                .prepare(
+                    "DELETE FROM vfs_read_leases
+                     WHERE id IN (
+                         SELECT id FROM vfs_read_leases
+                         WHERE COALESCE(completed_at, expires_at) <= ?1
+                         ORDER BY COALESCE(completed_at, expires_at), id LIMIT ?2
+                     )",
+                )
+                .bind(&[
+                    JsValue::from_str(&now.saturating_sub(READ_LEASE_EVIDENCE_SECONDS).to_string()),
+                    JsValue::from_str(&MAXIMUM_EXPIRED_READ_LEASES_PER_RUN.to_string()),
+                ])?,
         ])
         .await?;
+
+    vfs_server_lifecycle::run(env, now).await?;
 
     Ok(())
 }

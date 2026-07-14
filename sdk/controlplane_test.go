@@ -25,6 +25,11 @@ func TestControlClientAuthenticatesWithoutLeakingTokenToHealth(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
 
+		if request.Header.Get("Carrack-Protocol-Epoch") != "2" ||
+			request.Header.Get("Carrack-Sdk-Version") != sdk.SDKVersion {
+			t.Error("request omitted Carrack compatibility headers")
+		}
+
 		switch request.URL.Path {
 		case "/api/health":
 			if request.Header.Get("Authorization") != "" {
@@ -65,6 +70,38 @@ func TestControlClientAuthenticatesWithoutLeakingTokenToHealth(t *testing.T) {
 
 	if session.ID != "client-1" || session.Name != "hawk" {
 		t.Fatalf("unexpected client session: %+v", session)
+	}
+}
+
+func TestControlClientFailsFastOnIncompatibleProtocol(t *testing.T) {
+	t.Parallel()
+
+	token, _ := testClientToken(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+
+		if request.URL.Path == "/api/compatibility" {
+			_, _ = response.Write([]byte(`{"schema":"carrack.protocol-compatibility.v1","protocol_epoch":3,"minimum_sdk_version":"2.0.0","server_version":"2.0.0","enforcement":"required","upgrade_command":"upgrade carrack"}`))
+			return
+		}
+
+		response.WriteHeader(http.StatusUpgradeRequired)
+		_, _ = response.Write([]byte(`{"schema":"carrack.protocol-error.v1","code":"sdk_upgrade_required","message":"incompatible","protocol_epoch":3,"minimum_sdk_version":"2.0.0","server_version":"2.0.0","upgrade_command":"upgrade carrack"}`))
+	}))
+	defer server.Close()
+
+	client, err := sdk.NewControlClient(server.URL, token, server.Client())
+	if err != nil {
+		t.Fatalf("construct control client: %v", err)
+	}
+
+	if _, err := client.CheckCompatibility(context.Background()); !errors.Is(err, sdk.ErrUpgradeRequired) {
+		t.Fatalf("expected preflight upgrade failure, got %v", err)
+	}
+
+	if _, err := client.Session(context.Background()); !errors.Is(err, sdk.ErrUpgradeRequired) {
+		t.Fatalf("expected HTTP 426 upgrade failure, got %v", err)
 	}
 }
 

@@ -143,7 +143,7 @@ struct FileStateRow {
     state: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct DirectoryRow {
     id: String,
     filesystem_id: String,
@@ -853,6 +853,335 @@ pub(crate) async fn plan_new_child_directory_roots(
     }
 }
 
+/// Plans removal of one exact entry and propagation of every ancestor root.
+/// The optimistic revisions are consumed in the same D1 batch as the removal.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the removal planner verifies the target and complete ancestor chain in one walk"
+)]
+pub(crate) async fn plan_entry_removal_roots(
+    database: &D1Database,
+    filesystem_id: &str,
+    directory_id: &str,
+    entry_name_to_remove: &str,
+    expected_entry_revision: u64,
+) -> Result<Option<RootPlan>> {
+    let mut visited = BTreeSet::new();
+    let mut directories = Vec::new();
+    let mut links = Vec::new();
+    let mut current_id = directory_id.to_owned();
+    let mut target_name = entry_name_to_remove.to_owned();
+    let mut target_child_id: Option<String> = None;
+    let mut replacement_root: Option<String> = None;
+
+    loop {
+        if directories.len() >= MAXIMUM_DIRECTORY_DEPTH || !visited.insert(current_id.clone()) {
+            return Err(worker::Error::RustError(
+                "VFS directory ancestry is cyclic or too deep".to_owned(),
+            ));
+        }
+        let Some(directory) = load_directory(database, &current_id).await? else {
+            return Ok(None);
+        };
+        if directory.filesystem_id != filesystem_id || directory.state != "active" {
+            return Ok(None);
+        }
+        let stored = load_directory_entries(database, &current_id).await?;
+        let current_entries = stored
+            .iter()
+            .map(|entry| entry.entry.clone())
+            .collect::<Vec<_>>();
+        let current_root = lowercase_hex(&directory_root(&current_entries).map_err(|error| {
+            worker::Error::RustError(format!("verify current VFS directory root: {error:?}"))
+        })?)?;
+        if current_root != directory.data_root {
+            return Err(worker::Error::RustError(format!(
+                "VFS directory {} root does not match its entries",
+                directory.id
+            )));
+        }
+
+        let mut entries = Vec::with_capacity(stored.len());
+        let mut matched = None;
+        for candidate in stored {
+            if entry_name(&candidate.entry) == target_name {
+                if matched.replace(candidate).is_some() {
+                    return Err(worker::Error::RustError(
+                        "VFS directory contains duplicate canonical entries".to_owned(),
+                    ));
+                }
+            } else {
+                entries.push(candidate.entry);
+            }
+        }
+        let Some(existing) = matched else {
+            return Ok(None);
+        };
+        if let Some(new_child_root) = replacement_root.as_ref() {
+            let Some(child_id) = target_child_id.as_ref() else {
+                return Err(worker::Error::RustError(
+                    "VFS removal planner omitted its ancestor child identity".to_owned(),
+                ));
+            };
+            if !matches!(
+                &existing.entry,
+                DirectoryEntry::Directory { stable_id, .. }
+                    if *stable_id == decode_identifier(child_id)?
+            ) {
+                return Ok(None);
+            }
+            links.push(LinkUpdate {
+                parent_directory_id: directory.id.clone(),
+                child_directory_id: child_id.clone(),
+                name: target_name.clone(),
+                expected_revision: existing.revision,
+                new_child_root: new_child_root.clone(),
+            });
+            entries.push(DirectoryEntry::Directory {
+                name: target_name.clone(),
+                stable_id: decode_identifier(child_id)?,
+                data_root: decode_digest(new_child_root)?,
+            });
+        } else if existing.revision != expected_entry_revision {
+            return Ok(None);
+        }
+
+        let new_root = lowercase_hex(&directory_root(&entries).map_err(|error| {
+            worker::Error::RustError(format!("compute VFS removal root: {error:?}"))
+        })?)?;
+        if new_root == directory.data_root {
+            return Err(worker::Error::RustError(
+                "VFS removal did not change its directory root".to_owned(),
+            ));
+        }
+        directories.push(DirectoryUpdate {
+            directory_id: directory.id.clone(),
+            expected_revision: directory.revision,
+            expected_root: directory.data_root,
+            new_root: new_root.clone(),
+        });
+        let Some(parent_id) = directory.parent_id else {
+            return Ok(Some(RootPlan {
+                directories,
+                links,
+                root: new_root,
+            }));
+        };
+        target_child_id = Some(directory.id);
+        target_name = directory.name;
+        replacement_root = Some(new_root);
+        current_id = parent_id;
+    }
+}
+
+/// Plans an atomic same-filesystem rename or move across two ancestor branches.
+/// Both branches are verified against their stored Merkle roots and merged at
+/// the lowest common ancestor before one optimistic D1 batch consumes the plan.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the two-branch planner must merge direct edits and ancestor link replacements"
+)]
+pub(crate) async fn plan_entry_rename_roots(
+    database: &D1Database,
+    filesystem_id: &str,
+    source_directory_id: &str,
+    source_name: &str,
+    expected_source_revision: u64,
+    destination_directory_id: &str,
+    destination_name: &str,
+) -> Result<Option<RootPlan>> {
+    let source_chain = load_ancestor_chain(database, filesystem_id, source_directory_id).await?;
+    let destination_chain =
+        load_ancestor_chain(database, filesystem_id, destination_directory_id).await?;
+    if source_chain.is_empty() || destination_chain.is_empty() {
+        return Ok(None);
+    }
+    let mut rows = std::collections::BTreeMap::new();
+    let mut depths = std::collections::BTreeMap::new();
+    for chain in [&source_chain, &destination_chain] {
+        let chain_depth = chain.len();
+        for (index, row) in chain.iter().enumerate() {
+            rows.entry(row.id.clone()).or_insert_with(|| row.clone());
+            depths
+                .entry(row.id.clone())
+                .and_modify(|depth: &mut usize| *depth = (*depth).max(chain_depth - index - 1))
+                .or_insert(chain_depth - index - 1);
+        }
+    }
+    let mut stored_by_directory = std::collections::BTreeMap::new();
+    for (id, row) in &rows {
+        let stored = load_directory_entries(database, id).await?;
+        let current = stored
+            .iter()
+            .map(|entry| entry.entry.clone())
+            .collect::<Vec<_>>();
+        let current_root = lowercase_hex(&directory_root(&current).map_err(|error| {
+            worker::Error::RustError(format!("verify current VFS directory root: {error:?}"))
+        })?)?;
+        if current_root != row.data_root {
+            return Err(worker::Error::RustError(format!(
+                "VFS directory {} root does not match its entries",
+                row.id
+            )));
+        }
+        stored_by_directory.insert(id.clone(), stored);
+    }
+    let source_stored = stored_by_directory
+        .get(source_directory_id)
+        .and_then(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry_name(&entry.entry) == source_name)
+        })
+        .filter(|entry| entry.revision == expected_source_revision)
+        .ok_or_else(|| worker::Error::RustError("VFS rename source changed".to_owned()))?;
+    if stored_by_directory
+        .get(destination_directory_id)
+        .is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| entry_name(&entry.entry) == destination_name)
+        })
+    {
+        return Ok(None);
+    }
+    if let DirectoryEntry::Directory { stable_id, .. } = &source_stored.entry {
+        let moved_id = lowercase_hex(stable_id)?;
+        if destination_chain.iter().any(|row| row.id == moved_id) {
+            return Ok(None);
+        }
+    }
+    let moved_entry = renamed_entry(&source_stored.entry, destination_name);
+    let mut ordered = rows.keys().cloned().collect::<Vec<_>>();
+    ordered.sort_by(|left, right| {
+        depths
+            .get(right)
+            .cmp(&depths.get(left))
+            .then_with(|| left.cmp(right))
+    });
+    let mut new_roots = std::collections::BTreeMap::<String, String>::new();
+    let mut directories = Vec::new();
+    let mut links = Vec::new();
+    for id in ordered {
+        let row = rows.get(&id).ok_or_else(|| {
+            worker::Error::RustError("VFS rename planner omitted a directory".to_owned())
+        })?;
+        let stored = stored_by_directory.get(&id).ok_or_else(|| {
+            worker::Error::RustError("VFS rename planner omitted directory entries".to_owned())
+        })?;
+        let mut entries = Vec::with_capacity(stored.len() + 1);
+        for candidate in stored {
+            if id == source_directory_id && entry_name(&candidate.entry) == source_name {
+                continue;
+            }
+            let mut entry = candidate.entry.clone();
+            if let DirectoryEntry::Directory {
+                name,
+                stable_id,
+                data_root,
+            } = &mut entry
+            {
+                let child_id = lowercase_hex(stable_id)?;
+                if let Some(root) = new_roots.get(&child_id) {
+                    *data_root = decode_digest(root)?;
+                    links.push(LinkUpdate {
+                        parent_directory_id: id.clone(),
+                        child_directory_id: child_id,
+                        name: name.clone(),
+                        expected_revision: candidate.revision,
+                        new_child_root: root.clone(),
+                    });
+                }
+            }
+            entries.push(entry);
+        }
+        if id == destination_directory_id {
+            entries.push(moved_entry.clone());
+        }
+        let new_root = lowercase_hex(&directory_root(&entries).map_err(|error| {
+            worker::Error::RustError(format!("compute VFS rename root: {error:?}"))
+        })?)?;
+        if new_root != row.data_root {
+            directories.push(DirectoryUpdate {
+                directory_id: id.clone(),
+                expected_revision: row.revision,
+                expected_root: row.data_root.clone(),
+                new_root: new_root.clone(),
+            });
+            new_roots.insert(id, new_root);
+        }
+    }
+    let root = source_chain
+        .last()
+        .and_then(|row| new_roots.get(&row.id))
+        .cloned()
+        .ok_or_else(|| worker::Error::RustError("VFS rename did not change its root".to_owned()))?;
+    Ok(Some(RootPlan {
+        directories,
+        links,
+        root,
+    }))
+}
+
+async fn load_ancestor_chain(
+    database: &D1Database,
+    filesystem_id: &str,
+    directory_id: &str,
+) -> Result<Vec<DirectoryRow>> {
+    let mut chain = Vec::new();
+    let mut current = directory_id.to_owned();
+    let mut visited = BTreeSet::new();
+    loop {
+        if chain.len() >= MAXIMUM_DIRECTORY_DEPTH || !visited.insert(current.clone()) {
+            return Err(worker::Error::RustError(
+                "VFS directory ancestry is cyclic or too deep".to_owned(),
+            ));
+        }
+        let Some(row) = load_directory(database, &current).await? else {
+            return Ok(Vec::new());
+        };
+        if row.filesystem_id != filesystem_id || row.state != "active" {
+            return Ok(Vec::new());
+        }
+        let parent = row.parent_id.clone();
+        chain.push(row);
+        let Some(parent) = parent else {
+            return Ok(chain);
+        };
+        current = parent;
+    }
+}
+
+fn renamed_entry(entry: &DirectoryEntry, name: &str) -> DirectoryEntry {
+    match entry {
+        DirectoryEntry::File {
+            stable_id,
+            version_id,
+            size_bytes,
+            data_root,
+            metadata_root,
+            ..
+        } => DirectoryEntry::File {
+            name: name.to_owned(),
+            stable_id: *stable_id,
+            version_id: *version_id,
+            size_bytes: *size_bytes,
+            data_root: *data_root,
+            metadata_root: *metadata_root,
+        },
+        DirectoryEntry::Directory {
+            stable_id,
+            data_root,
+            ..
+        } => DirectoryEntry::Directory {
+            name: name.to_owned(),
+            stable_id: *stable_id,
+            data_root: *data_root,
+        },
+    }
+}
+
 fn target_entry_matches(intent: &PutIntentRow, entry: Option<&StoredEntry>) -> bool {
     if intent.expected_entry_revision == 0 {
         return entry.is_none();
@@ -1013,6 +1342,19 @@ fn commit_statements(
                 number_binding(intent.encryption_frame_bytes),
                 number_binding(requested.encoded_bytes),
                 JsValue::from_str(&requested.encoded_sha256),
+                number_binding(now),
+            ])?,
+    );
+    statements.push(
+        database
+            .prepare(
+                "INSERT INTO vfs_version_origins (
+                     version_id, directory_id, created_at
+                 ) VALUES (?1, ?2, ?3)",
+            )
+            .bind(&[
+                JsValue::from_str(&intent.version_id),
+                JsValue::from_str(&intent.directory_id),
                 number_binding(now),
             ])?,
     );

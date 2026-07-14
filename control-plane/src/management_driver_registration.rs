@@ -337,7 +337,9 @@ fn registration_warnings(kind: &str) -> Vec<String> {
         return vec![
             "The driver is registered disabled and requires a write-only access-token credential before enablement."
                 .to_owned(),
-            "Aliyun Drive resumable upload, delete, and inventory acceleration are unavailable; correctness-preserving complete upload and readback remain available."
+            "Aliyun Drive uses native complete-object multipart upload and exact range readback; upload concurrency is intentionally one until provider canaries justify more."
+                .to_owned(),
+            "Physical deletion is delayed and performed only by the control plane after reachability, grace, read-lease, identity, and driver-revision fences; accelerated inventory is unavailable."
                 .to_owned(),
         ];
     }

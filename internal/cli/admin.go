@@ -79,21 +79,6 @@ type adminDriverCredentialFlags struct {
 	check            bool
 }
 
-func newAdminCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
-	command := &cobra.Command{
-		Use:   "admin",
-		Short: "Inspect and safely configure the Carrack management plane",
-	}
-	command.AddCommand(
-		newAdminSnapshotCommand(ctx, stdout),
-		newAdminDirectoryCommand(ctx, stdout),
-		newAdminDriverCommand(ctx, stdout),
-		newAdminTokenCommand(ctx, stdout),
-	)
-
-	return command
-}
-
 func newAdminDriverCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
 	command := &cobra.Command{Use: "driver", Short: "Validate and apply driver configuration state"}
 	command.AddCommand(
@@ -201,7 +186,11 @@ func newAdminTokenCommand(ctx context.Context, stdout io.Writer) *cobra.Command 
 		Use:   "token",
 		Short: "Validate and apply token management metadata",
 	}
-	command.AddCommand(newAdminTokenAnnotateCommand(ctx, stdout))
+	command.AddCommand(
+		newAdminTokenAnnotateCommand(ctx, stdout),
+		newVFSTokenIssueCommand(ctx, stdout),
+		newVFSTokenRevokeCommand(ctx, stdout),
+	)
 
 	return command
 }

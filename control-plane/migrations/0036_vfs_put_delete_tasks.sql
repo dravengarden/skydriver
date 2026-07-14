@@ -1,7 +1,8 @@
 PRAGMA foreign_keys = ON;
 
 -- One expired or abandoned complete-object upload maps to one fenced delete
--- task. Provider I/O remains client-side; D1 only owns eligibility and fences.
+-- task. Migration 0040 moves hosted provider I/O to server cron while keeping
+-- this immutable evidence and state machine for compatible databases.
 CREATE TABLE vfs_put_delete_tasks (
     id TEXT PRIMARY KEY REFERENCES vfs_put_intents(id) ON DELETE CASCADE,
     driver_revision INTEGER NOT NULL CHECK (driver_revision > 0),

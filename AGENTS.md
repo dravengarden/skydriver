@@ -6,8 +6,11 @@ ingestion schedules, trading semantics, or other consumer-specific behavior.
 
 ## Architecture
 
-- `cmd/carrack/`, `archive/`, `manifest/`, `provider/`, `sdk/`: Go client SDK
-  and its CLI surface. Provider packages implement pluggable storage drivers.
+- `crates/carrack-client/`, `crates/carrack-cli/`: canonical Rust client core
+  and the `carrack`/`carrackctl` binaries.
+- `cmd/`, `archive/`, `manifest/`, `provider/`, `sdk/`: compatibility Go
+  implementation retained while commands migrate behind language-neutral
+  contracts. It must not gain new provider lifecycle policy.
 - `control-plane/`: Rust Cloudflare Worker for auth, index, jobs, and status.
 - `web/`: strict TypeScript SPA using React, TanStack, and MUI.
 - `schemas/`: language-neutral wire contracts.
@@ -16,8 +19,8 @@ V1 supports direct transfer only. Data bytes flow between a Carrack agent and
 storage providers. The Worker is a control plane and must never relay object or
 block payloads.
 
-The control plane and client SDK are the only product components. Long-running
-CLI/agent processes are SDK consumers, not a third architectural component.
+The control plane and client SDK are the only product components. CLI and
+agent processes are SDK consumers, not a third architectural component.
 
 ## Rules
 

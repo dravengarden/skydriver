@@ -92,6 +92,10 @@ func executeVFSCatalogSync(
 	}
 	defer control.Clear()
 
+	if _, compatibilityErr := control.CheckCompatibility(ctx); compatibilityErr != nil {
+		return sdk.VFSCatalogSyncResult{}, fmt.Errorf("check Carrack protocol compatibility: %w", compatibilityErr)
+	}
+
 	result, err := control.SyncCatalog(ctx, rootDirectoryID, store, sdk.VFSCatalogSyncOptions{
 		PageSize:       flags.pageSize,
 		MaxConcurrency: flags.maxConcurrency,

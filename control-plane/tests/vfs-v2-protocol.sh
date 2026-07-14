@@ -48,7 +48,10 @@ group_b=40000000000000000000000000000002
 grant_a=50000000000000000000000000000001
 file_a=60000000000000000000000000000001
 version_a=70000000000000000000000000000001
+version_b=70000000000000000000000000000002
 location_a=80000000000000000000000000000001
+location_b=80000000000000000000000000000002
+snapshot_a=a0000000000000000000000000000001
 parent_token=90000000000000000000000000000001
 child_token=90000000000000000000000000000002
 
@@ -61,7 +64,7 @@ INSERT INTO vfs_v2_protocol_assertions
 SELECT COUNT(*) = 12 FROM vfs_actions;
 
 INSERT INTO vfs_v2_protocol_assertions
-SELECT COUNT(*) = 10 FROM sqlite_schema
+SELECT COUNT(*) = 17 FROM sqlite_schema
 WHERE type = 'index' AND name IN (
   'idx_vfs_directories_active_parent',
   'idx_vfs_files_active_filesystem',
@@ -72,7 +75,14 @@ WHERE type = 'index' AND name IN (
   'idx_vfs_token_verifiers_created',
   'idx_admin_configuration_sessions_expires_at',
   'idx_vfs_catalog_outbox_claimable',
-  'idx_vfs_snapshots_expiry'
+  'idx_vfs_snapshots_expiry',
+  'idx_vfs_snapshot_versions_version',
+  'idx_vfs_token_verifiers_snapshot_expiry',
+  'idx_vfs_channels_snapshot',
+  'idx_vfs_files_current_version',
+  'idx_vfs_directory_entries_file_version',
+  'idx_vfs_versions_published_at',
+  'idx_vfs_version_origins_directory'
 );
 
 INSERT INTO vfs_v2_protocol_assertions
@@ -98,6 +108,22 @@ WHERE name = 'revalidated_at' AND type = 'INTEGER';
 INSERT INTO vfs_v2_protocol_assertions
 SELECT COUNT(*) = 1 FROM sqlite_schema
 WHERE type = 'trigger' AND name = 'validate_vfs_put_delete_revalidation';
+
+INSERT INTO vfs_v2_protocol_assertions
+SELECT COUNT(*) = 3 FROM sqlite_schema
+WHERE type = 'view' AND name IN (
+  'vfs_gc_blocked_filesystems',
+  'vfs_reachable_versions',
+  'safe_unreachable_vfs_locations'
+);
+
+INSERT INTO vfs_v2_protocol_assertions
+SELECT COUNT(*) = 3 FROM sqlite_schema
+WHERE type = 'trigger' AND name IN (
+  'validate_vfs_version_origin_insert',
+  'protect_vfs_version_origin_update',
+  'require_vfs_version_origin_for_publication'
+);
 
 INSERT INTO credential_envelopes (
   id, envelope_algorithm, key_version, nonce, ciphertext, created_at, rotated_at
@@ -295,6 +321,9 @@ INSERT INTO vfs_locations (
   '3333333333333333333333333333333333333333333333333333333333333333',
   4, 4
 );
+
+INSERT INTO vfs_version_origins (version_id, directory_id, created_at)
+VALUES ('$version_a', '$child_a', 4);
 
 UPDATE vfs_file_versions SET state = 'verified' WHERE id = '$version_a';
 "
@@ -548,6 +577,146 @@ expect_failure \
    SET sealed_at = 20
    WHERE id = '90000000000000000000000000000008';" \
   "token for a disabled principal"
+
+execute "
+INSERT INTO vfs_file_versions (
+  id, file_id, plaintext_bytes, verification_block_bytes,
+  verification_block_count, file_root, block_manifest_sha256,
+  block_manifest_bytes, block_manifest_r2_key, block_manifest_r2_version,
+  crypto_suite, key_epoch, encryption_frame_bytes, encoded_bytes,
+  encoded_sha256, created_at
+) VALUES (
+  '$version_b', '$file_a', 10, 4, 3,
+  '9111111111111111111111111111111111111111111111111111111111111111',
+  '9222222222222222222222222222222222222222222222222222222222222222',
+  128, 'vfs/manifests/92', 'r2-version-92', 'plaintext/v1', 1, 4, 10,
+  '9333333333333333333333333333333333333333333333333333333333333333',
+  unixepoch()
+);
+INSERT INTO vfs_locations (
+  id, version_id, driver_id, storage_key, native_id, provider_version, etag,
+  size_bytes, object_sha256, created_at, updated_at
+) VALUES (
+  '$location_b', '$version_b', 'vfs-driver-1', 'objects/v2/00/object-b',
+  'native-b', 'provider-b', 'etag-b', 10,
+  '9333333333333333333333333333333333333333333333333333333333333333',
+  unixepoch(), unixepoch()
+);
+INSERT INTO vfs_version_origins (version_id, directory_id, created_at)
+VALUES ('$version_b', '$child_a', unixepoch());
+UPDATE vfs_file_versions SET state = 'verified' WHERE id = '$version_b';
+UPDATE vfs_locations
+SET state = 'verified', verified_at = unixepoch(), revision = revision + 1,
+    updated_at = unixepoch()
+WHERE id = '$location_b';
+UPDATE vfs_locations
+SET state = 'available', revision = revision + 1, updated_at = unixepoch()
+WHERE id = '$location_b';
+UPDATE vfs_file_versions
+SET state = 'published', published_at = unixepoch()
+WHERE id = '$version_b';
+
+INSERT INTO vfs_v2_protocol_assertions
+SELECT COUNT(*) = 1 FROM safe_unreachable_vfs_locations
+WHERE id = '$location_b';
+
+INSERT INTO vfs_catalog_revisions (
+  filesystem_id, root_data_root, created_at
+) VALUES (
+  '$filesystem_a',
+  'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  unixepoch()
+);
+INSERT INTO vfs_snapshots (
+  id, filesystem_id, directory_id, data_root, catalog_revision_id,
+  manifest_r2_key, manifest_sha256, created_by, created_at
+) VALUES (
+  '$snapshot_a', '$filesystem_a', '$root_a',
+  'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  last_insert_rowid(), 'vfs/snapshots/a',
+  '9444444444444444444444444444444444444444444444444444444444444444',
+  '$principal_active', unixepoch()
+);
+
+INSERT INTO vfs_v2_protocol_assertions
+SELECT COUNT(*) = 1 FROM vfs_gc_blocked_filesystems
+WHERE filesystem_id = '$filesystem_a';
+INSERT INTO vfs_v2_protocol_assertions
+SELECT COUNT(*) = 0 FROM safe_unreachable_vfs_locations
+WHERE id = '$location_b';
+
+INSERT INTO vfs_snapshot_versions (snapshot_id, version_id, created_at)
+VALUES ('$snapshot_a', '$version_b', unixepoch());
+"
+
+expect_failure \
+  "INSERT INTO vfs_snapshot_reachability_seals (
+     snapshot_id, version_count, versions_sha256, sealed_at
+   ) VALUES (
+     '$snapshot_a', 2,
+     '9555555555555555555555555555555555555555555555555555555555555555',
+     unixepoch()
+   );" \
+  "snapshot reachability seal with the wrong version count"
+
+execute "
+INSERT INTO vfs_snapshot_reachability_seals (
+  snapshot_id, version_count, versions_sha256, sealed_at
+) VALUES (
+  '$snapshot_a', 1,
+  '9555555555555555555555555555555555555555555555555555555555555555',
+  unixepoch()
+);
+INSERT INTO vfs_v2_protocol_assertions
+SELECT COUNT(*) = 0 FROM vfs_gc_blocked_filesystems
+WHERE filesystem_id = '$filesystem_a';
+INSERT INTO vfs_v2_protocol_assertions
+SELECT COUNT(*) = 1 FROM vfs_reachable_versions WHERE version_id = '$version_b';
+INSERT INTO vfs_v2_protocol_assertions
+SELECT COUNT(*) = 0 FROM safe_unreachable_vfs_locations
+WHERE id = '$location_b';
+UPDATE vfs_snapshots SET state = 'expired' WHERE id = '$snapshot_a';
+INSERT INTO vfs_v2_protocol_assertions
+SELECT COUNT(*) = 1 FROM safe_unreachable_vfs_locations
+WHERE id = '$location_b';
+
+INSERT INTO vfs_token_verifiers (
+  id, principal_id, root_directory_id, verifier_sha256, snapshot_id,
+  expires_at, issued_by, created_at
+) VALUES (
+  '90000000000000000000000000000009', '$principal_active', '$root_a',
+  '8999999999999999999999999999999999999999999999999999999999999999',
+  '$snapshot_a', unixepoch() + 3600, '$principal_active', unixepoch()
+);
+INSERT INTO vfs_token_actions (token_id, action)
+VALUES ('90000000000000000000000000000009', 'content.read');
+UPDATE vfs_token_verifiers SET sealed_at = unixepoch()
+WHERE id = '90000000000000000000000000000009';
+INSERT INTO vfs_v2_protocol_assertions
+SELECT COUNT(*) = 0 FROM safe_unreachable_vfs_locations
+WHERE id = '$location_b';
+UPDATE vfs_token_verifiers SET revoked_at = unixepoch()
+WHERE id = '90000000000000000000000000000009';
+INSERT INTO vfs_v2_protocol_assertions
+SELECT COUNT(*) = 0 FROM safe_unreachable_vfs_locations
+WHERE id = '$location_b';
+DELETE FROM vfs_token_verifiers
+WHERE id = '90000000000000000000000000000009';
+INSERT INTO vfs_v2_protocol_assertions
+SELECT COUNT(*) = 1 FROM safe_unreachable_vfs_locations
+WHERE id = '$location_b';
+"
+
+expect_failure \
+  "INSERT INTO vfs_snapshot_versions (snapshot_id, version_id, created_at)
+   VALUES ('$snapshot_a', '$version_a', unixepoch());" \
+  "version insertion after snapshot reachability was sealed"
+
+expect_failure \
+  "UPDATE vfs_version_origins
+   SET directory_id = '$root_a'
+   WHERE version_id = '$version_b';" \
+  "mutation of immutable VFS version origin"
 
 execute "
 INSERT INTO vfs_v2_protocol_assertions

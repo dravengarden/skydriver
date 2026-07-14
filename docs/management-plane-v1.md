@@ -5,7 +5,7 @@
 The management plane gives humans and agents one complete, auditable view of
 Carrack without putting payload bytes, plaintext directory keys, bearer
 secrets, or provider credentials in the browser or Worker responses. The Web
-UI and `carrack admin` CLI are two clients of the same server-side read models,
+UI and `carrackctl` are two clients of the same server-side read models,
 validation rules, optimistic revisions, and mutation receipts.
 
 The management plane is not a second authorization system. VFS tokens continue
@@ -105,25 +105,25 @@ The bootstrap VFS token remains a recovery and authority anchor because VFS
 attenuation is rooted in its immutable parent chain. Normal automation must
 use short-lived child tokens with exact directory, action, driver, and expiry
 scope. The bootstrap bearer should be kept offline after provisioning. A Hawk
-agent that needs configuration authority uses `carrack admin`; an agent that
+agent that needs configuration authority uses `carrackctl`; an agent that
 needs file access receives a separate attenuated VFS token. Combining these
 credentials is an explicit exceptional workflow.
 
 ## Agent-safe CLI
 
-`carrack admin` is non-interactive and JSON-first. Every command accepts
+`carrackctl` is non-interactive and JSON-first. Every command accepts
 `--control-url`; credentials are read from `CARRACK_OPERATOR_CREDENTIAL` or a
 private file descriptor, never a command-line flag. The implemented operator
 commands are:
 
 ```text
-carrack admin snapshot
-carrack admin directory <directory-id>
-carrack admin token annotate <token-id>
-carrack admin driver register <driver-id>
-carrack admin driver credential set <driver-id>
-carrack admin driver enable <driver-id>
-carrack admin driver disable <driver-id>
+carrackctl snapshot
+carrackctl directory <directory-id>
+carrackctl token annotate <token-id>
+carrackctl driver register <driver-id>
+carrackctl driver credential set <driver-id>
+carrackctl driver enable <driver-id>
+carrackctl driver disable <driver-id>
 ```
 
 Mutation commands accept explicit desired-state flags. Server validation
@@ -162,7 +162,7 @@ cursor advances outside the current browser mutation, TanStack Query
 invalidates only affected resources and shows a snackbar naming the source and
 resource when available.
 
-`carrack admin watch` uses the same cursor and returns bounded event pages. V1
+`carrackctl watch` will use the same cursor and return bounded event pages. V1
 does not require WebSockets or a Durable Object. The cursor protocol can later
 back an SSE or WebSocket transport without changing event identity.
 

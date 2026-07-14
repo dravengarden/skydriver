@@ -4,8 +4,8 @@
 
 | Surface | Environment variable | Authority |
 |---|---|---|
-| `carrack admin` | `CARRACK_OPERATOR_CREDENTIAL` | Redacted environment management |
-| `carrack vfs` | `CARRACK_VFS_TOKEN` | Explicit token actions and directory scope |
+| `carrackctl snapshot`, `directory`, `driver`, `token annotate` | `CARRACK_OPERATOR_CREDENTIAL` | Redacted environment management |
+| `carrackctl vfs acl`, `vfs placement`, `vfs token` | `CARRACK_VFS_TOKEN` | Explicit token actions and directory scope |
 
 Both credentials are canonical unpadded base64url values encoding 32 bytes.
 Keep them out of argv and output.
@@ -13,10 +13,10 @@ Keep them out of argv and output.
 ## Read commands
 
 ```bash
-carrack admin snapshot --control-url "$CARRACK_CONTROL_URL" --format json
-carrack admin directory "$directory_id" --control-url "$CARRACK_CONTROL_URL" --format json
-carrack vfs acl show "$directory_id" --control-url "$CARRACK_CONTROL_URL" --format json
-carrack vfs placement list "$directory_id" --control-url "$CARRACK_CONTROL_URL" --format json
+carrackctl snapshot --control-url "$CARRACK_CONTROL_URL" --format json
+carrackctl directory "$directory_id" --control-url "$CARRACK_CONTROL_URL" --format json
+carrackctl vfs acl show /collection --control-url "$CARRACK_CONTROL_URL" --format json
+carrackctl vfs placement show /collection --control-url "$CARRACK_CONTROL_URL" --format json
 ```
 
 The admin snapshot contains only redacted driver configuration and non-secret
@@ -28,7 +28,7 @@ verifiers, directory keys, or plaintext file bytes.
 Register a typed driver in the disabled state. Validate first:
 
 ```bash
-carrack admin driver register "$driver_id" \
+carrackctl driver register "$driver_id" \
   --control-url "$CARRACK_CONTROL_URL" \
   --kind aliyundrive-open/v2 \
   --config-file "$config_file" \
@@ -39,7 +39,7 @@ Apply the same config with a stable idempotency key. The resulting driver is
 revision 1 and disabled:
 
 ```bash
-carrack admin driver register "$driver_id" \
+carrackctl driver register "$driver_id" \
   --control-url "$CARRACK_CONTROL_URL" \
   --kind aliyundrive-open/v2 \
   --config-file "$config_file" \
@@ -50,7 +50,7 @@ Set or rotate its write-only credential before enabling it:
 
 ```bash
 chmod 600 "$credential_file"
-carrack admin driver credential set "$driver_id" \
+carrackctl driver credential set "$driver_id" \
   --control-url "$CARRACK_CONTROL_URL" \
   --credential-file "$credential_file" \
   --expected-revision "$driver_revision" \
@@ -66,7 +66,7 @@ a durable refresh-token rotation protocol.
 Validate a token annotation without changing state:
 
 ```bash
-carrack admin token annotate "$token_id" \
+carrackctl token annotate "$token_id" \
   --control-url "$CARRACK_CONTROL_URL" \
   --label "$label" \
   --note "$note" \
@@ -78,7 +78,7 @@ carrack admin token annotate "$token_id" \
 After reviewing the server-normalized desired state, apply the same input:
 
 ```bash
-carrack admin token annotate "$token_id" \
+carrackctl token annotate "$token_id" \
   --control-url "$CARRACK_CONTROL_URL" \
   --label "$label" \
   --note "$note" \
@@ -95,7 +95,7 @@ or expiry.
 Validate a driver state transition without changing state:
 
 ```bash
-carrack admin driver disable "$driver_id" \
+carrackctl driver disable "$driver_id" \
   --control-url "$CARRACK_CONTROL_URL" \
   --expected-revision "$driver_revision" \
   --check \
@@ -106,7 +106,7 @@ Review the returned placement count, available-location count, expiry, and all
 warnings. Apply the exact transition with a stable idempotency key:
 
 ```bash
-carrack admin driver disable "$driver_id" \
+carrackctl driver disable "$driver_id" \
   --control-url "$CARRACK_CONTROL_URL" \
   --expected-revision "$driver_revision" \
   --idempotency-key "$idempotency_key" \
@@ -123,25 +123,25 @@ enabled again.
 Replace one principal's direct ACL grants:
 
 ```bash
-carrack vfs acl replace "$directory_id" "$principal_id" \
+carrackctl vfs acl replace /collection \
   --control-url "$CARRACK_CONTROL_URL" \
-  --role viewer \
-  --expected-acl-revision "$acl_revision" \
+  --principal-id "$principal_id" \
+  --action directory.list,content.read \
+  --expected-revision "$acl_revision" \
   --idempotency-key "$idempotency_key" \
   --format json
 ```
 
-Use repeated `--action` instead of `--role` for explicit actions. Use `--clear`
-to remove all direct grants. Exactly one mode is required.
+Actions are a comma-separated complete replacement. Omit `--action` to clear
+that principal's direct grants.
 
 Replace the complete placement set:
 
 ```bash
-carrack vfs placement replace "$directory_id" \
+carrackctl vfs placement replace /collection \
   --control-url "$CARRACK_CONTROL_URL" \
-  --placement local-main=0 \
-  --placement archive-backup=10 \
-  --expected-placement-revision "$placement_revision" \
+  --placement local-main:0,archive-backup:10 \
+  --expected-revision "$placement_revision" \
   --idempotency-key "$idempotency_key" \
   --format json
 ```
@@ -152,10 +152,9 @@ registered. The token must have unscoped `driver.manage` authority.
 Issue an attenuated child token:
 
 ```bash
-carrack vfs token issue "$root_directory_id" \
+carrackctl vfs token issue /collection \
   --control-url "$CARRACK_CONTROL_URL" \
-  --action directory.list \
-  --action content.read \
+  --action directory.list,content.read \
   --driver-id local-main \
   --expires-at "$expires_at" \
   --idempotency-key "$idempotency_key" \
@@ -165,22 +164,17 @@ carrack vfs token issue "$root_directory_id" \
 Move the returned bearer directly into its intended secret store, then clear
 the process output. The server stores only its verifier.
 
-Sweep one expired, unreferenced Put object with a token carrying `gc.run` and
-`driver.use` in both its attenuation and inherited ACL:
+Revoke it with:
 
 ```bash
-carrack vfs gc \
+carrackctl vfs token revoke "$token_id" \
   --control-url "$CARRACK_CONTROL_URL" \
-  --limit 1 \
-  --lease-seconds 60 \
-  --format json
+  --idempotency-key "$idempotency_key" --format json
 ```
 
-The output schema is `carrack.cli.vfs-gc-sweep.v1`. `idle: true` means no
-authorized safe task is currently claimable. The command accepts a maximum
-limit of 100 but each task retains an independent 15-to-300-second claim and
-final revalidation fence. Do not bypass a capability or identity error with a
-provider CLI; use a V2 driver that advertises exact Stat and Delete support.
+Garbage collection has no CLI command. It is scheduled, fenced, revalidated,
+and executed by the control plane. A missing cleanup surface is intentional;
+never substitute direct D1, raw provider HTTP, OpenList, or a provider CLI.
 
 ## Failure decisions
 

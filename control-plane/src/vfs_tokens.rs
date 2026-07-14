@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use worker::{Env, Request, Result, wasm_bindgen::JsValue};
+use worker::{Env, Request, Response, Result, wasm_bindgen::JsValue};
 
 const TOKEN_BYTES: usize = 32;
 
@@ -16,7 +16,17 @@ const TOKEN_BYTES: usize = 32;
 pub(crate) struct AuthenticatedVfsToken {
     pub(crate) id: String,
     pub(crate) principal_id: String,
+    pub(crate) root_directory_id: String,
     pub(crate) expires_at: u64,
+}
+
+#[derive(Serialize)]
+struct VfsSessionResponse<'a> {
+    schema: &'static str,
+    token_id: &'a str,
+    principal_id: &'a str,
+    root_directory_id: &'a str,
+    expires_at: u64,
 }
 
 /// Authenticates a VFS bearer token without authorizing an operation.
@@ -48,7 +58,7 @@ pub(crate) async fn authenticate(
                  FROM vfs_token_verifiers AS parent
                  JOIN token_chain AS child ON child.parent_token_id = parent.id
              )
-             SELECT token.id, token.principal_id, token.expires_at
+             SELECT token.id, token.principal_id, token.root_directory_id, token.expires_at
              FROM vfs_token_verifiers AS token
              JOIN vfs_principals AS principal ON principal.id = token.principal_id
              WHERE token.verifier_algorithm = 'sha256/v1'
@@ -71,6 +81,22 @@ pub(crate) async fn authenticate(
         .await?;
 
     Ok(authenticated)
+}
+
+/// Returns the non-secret root identity needed by a filesystem client to
+/// resolve user-facing paths. Authority is still checked on every directory.
+pub(crate) fn session(token: &AuthenticatedVfsToken) -> Result<Response> {
+    let mut response = Response::from_json(&VfsSessionResponse {
+        schema: "carrack.vfs.session.v1",
+        token_id: &token.id,
+        principal_id: &token.principal_id,
+        root_directory_id: &token.root_directory_id,
+        expires_at: token.expires_at,
+    })?;
+    response
+        .headers_mut()
+        .set("Cache-Control", "no-store, max-age=0")?;
+    Ok(response)
 }
 
 fn bearer_token(request: &Request) -> Result<Option<String>> {

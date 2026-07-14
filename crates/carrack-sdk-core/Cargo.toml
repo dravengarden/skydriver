@@ -1,0 +1,18 @@
+[package]
+name = "carrack-sdk-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aes-gcm = { version = "0.10.3", default-features = false, features = ["aes", "alloc"] }
+hex = "0.4.3"
+hkdf = "0.12.4"
+serde = { version = "1.0.228", features = ["derive"] }
+sha2 = "0.10.9"
+thiserror = "2.0.17"
+zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
+
+[lints]
+workspace = true

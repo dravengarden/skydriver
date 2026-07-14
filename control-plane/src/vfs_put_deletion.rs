@@ -101,6 +101,7 @@ pub(crate) async fn claim(
                  attempt_count = attempt_count + 1, last_error_code = NULL,
                  claimed_at = ?3, revalidated_at = NULL, updated_at = ?3
              WHERE id = ?4
+               AND server_blocked_at IS NULL
                AND (state IN ('pending', 'failed')
                     OR (state = 'claimed' AND (
                         lease_expires_at <= ?3
@@ -326,6 +327,7 @@ async fn load_candidate(
                  JOIN vfs_put_intents AS intent ON intent.id = task.id
                  JOIN vfs_directories AS directory ON directory.id = intent.directory_id
                  WHERE task.id IN (SELECT id FROM safe_vfs_put_delete_tasks)
+                   AND task.server_blocked_at IS NULL
                  UNION ALL
                  SELECT child.task_id, parent.id, parent.parent_id, parent.acl_inherits
                  FROM vfs_directories AS parent
@@ -336,6 +338,7 @@ async fn load_candidate(
              FROM vfs_put_delete_tasks AS task
              JOIN vfs_put_intents AS intent ON intent.id = task.id
              WHERE task.id IN (SELECT id FROM safe_vfs_put_delete_tasks)
+               AND task.server_blocked_at IS NULL
                AND intent.directory_id IN (SELECT id FROM descendants)
                AND NOT EXISTS (
                    SELECT action FROM (SELECT 'gc.run' AS action UNION ALL SELECT 'driver.use')

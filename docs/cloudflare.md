@@ -131,6 +131,31 @@ just deploy-dev
 CARRACK_DEPLOY_PROD=1 just deploy-prod
 ```
 
+The verification gate also compiles `carrack-sdk-core` for
+`wasm32-unknown-unknown`. The deployed Worker exposes the credential-free
+`GET /api/acceptance/wasm-sdk` proof: it computes the canonical file Merkle
+root, encrypts a deterministic payload into authenticated frames, decrypts it,
+and reports both encoded and decoded SHA-256 identities. Deployment acceptance
+must call this endpoint and require `round_trip_verified: true`; a native-only
+SDK test is insufficient.
+
+Real Aliyun Drive acceptance is intentionally separate from the hermetic gate.
+It requires an explicitly scoped dev VFS token and driver ID, writes one random
+encrypted object, verifies concurrent exact-range download and interrupted
+resume, then logically removes the test file:
+
+```bash
+export CARRACK_CONTROL_URL=https://dev.carrack.stormbird.xyz
+export CARRACK_VFS_TOKEN='<short-lived dev acceptance token>'
+export CARRACK_ALIYUN_DRIVER_ID='<enabled dev Aliyun driver>'
+CARRACK_ALIYUN_LIVE_TEST=1 tests/aliyun-live.sh
+```
+
+The script never prints credentials, provider locators, or signed URLs. Its
+remove verifies namespace deletion; physical deletion remains subject to the
+normal server grace and scheduled GC rather than weakening production safety
+for a test.
+
 Each recipe uploads a tagged Worker version and then moves 100% of that
 environment's traffic to it. It does not rewrite the already-audited custom
 domain, so the routine account token does not need zone-wide route mutation
@@ -158,29 +183,19 @@ provider credential or compatibility experiments.
 
 ## Garbage collection
 
-The Worker Cron Trigger performs metadata hygiene only. Each run deletes at
+The Worker Cron Trigger performs bounded metadata hygiene and schedules
+server-internal lifecycle work. Each run deletes at
 most 500 expired rows from each ephemeral session table and moves at most 250
-expired V2 Put intents from `prepared` to the durable `expired` state. It never
-contacts a driver and never deletes provider objects. The bounds keep one
+expired V2 Put intents from `prepared` to the durable `expired` state. The
+bounds keep one
 maintenance invocation from monopolizing D1; later invocations drain any
 backlog. When an expired intent has immutable upload evidence, the same
 transaction idempotently plans a fenced delete task with an additional one-day
-grace; provider `Stat` and deletion still require an explicitly authorized
-janitor client.
-
-Run that client with an attenuated VFS token carrying `gc.run` and `driver.use`:
-
-```bash
-export CARRACK_VFS_TOKEN="$(read-vfs-janitor-token)"
-carrack vfs gc --control-url https://carrack.example.com --limit 1 --format json
-```
-
-The command obtains a lease-bounded pinned driver grant, compares the exact
-provider identity with immutable upload evidence, rotates the fence after
-`Stat`, and only then calls the compiled driver's exact `Delete`. Keep the
-default single-object bound for agent use. `idle: true` is normal convergence;
-capability and identity errors require investigation, not a provider-side
-manual delete.
+grace. Provider `Stat` and deletion are server-internal and run only through a
+typed hosted-driver adapter after final reachability and fence validation.
+There is no client or operator GC command. A driver without stable identity,
+exact Stat, and idempotent Delete retains its candidates for later retry;
+capability and identity errors require investigation, not manual deletion.
 
 Namespace `retention_policy_json` accepts `move_grace_seconds`,
 `gc_minimum_age_seconds`, `gc_grace_seconds`, and
@@ -215,6 +230,13 @@ session expiry. `control-plane/tests/vfs-v2-protocol.sh` fails if a required
 index disappears. Use `EXPLAIN QUERY PLAN` when adding or changing a query;
 avoid an index that has no concrete read or maintenance path because every
 index also adds storage and write work.
+
+VFS snapshot reachability adds two bounded reverse indexes: version-to-snapshot
+for candidate subtraction, and snapshot-to-token-expiry for protective token
+checks. A retained, channel-addressed, or unexpired-token snapshot without a
+valid local reachability seal blocks GC for its filesystem. D1 therefore never
+fetches snapshot manifests from R2 inside a mark or delete fence and never
+treats missing materialization as an empty snapshot.
 
 After applying an index-changing migration to one environment, run
 `PRAGMA optimize;` against that same environment so SQLite can refresh planner

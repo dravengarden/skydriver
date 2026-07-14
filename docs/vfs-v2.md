@@ -2,49 +2,48 @@
 
 ## Status
 
-This document records the accepted V2 product direction. New V2 code follows
-this document while the archive-oriented V1 implementation remains in the
-repository for migration. V2 deliberately removes V1 packs, bundles, extents,
-leaf merging, and compaction instead of adapting them into the filesystem.
-
-The transition is complete only after `requirements.md` and `architecture.md`
-have been replaced with the V2 baseline and the legacy packages have been
-removed. Until then, V1 correctness fixes and V2 implementation changes must
-remain isolated from one another.
+This document records the implemented V2 product boundary. The public client,
+SDK, and management binaries are Rust and use complete provider objects. The
+archive-oriented Go packages remain temporarily as compatibility and
+conformance oracles; they are not an installation surface and must not acquire
+new product behavior. V2 removes V1 packs, bundles, extents, leaf merging, and
+compaction instead of adapting them into the filesystem.
 
 The current implemented V2 slice includes:
 
-- the complete-object driver contract, capability warnings, local filesystem
-  and Aliyun Drive Open drivers, durable transfer journal, and Go/Rust Merkle
-  formats;
+- the complete-object driver contract, capability warnings, native Rust local
+  filesystem and Aliyun Drive Open drivers, durable private transfer journals,
+  and shared Go/Rust Merkle conformance vectors;
 - D1 identities, entries, versions, locations, roots, ACLs, attenuated tokens,
   optimistic Put intents and receipts, and catalog mutation/outbox records;
 - one-shot encrypted or plaintext bootstrap, sealed directory-key epochs, and
   reauthorized short-lived key and driver grants;
 - framed AES-256-GCM complete-file transforms with per-version HKDF keys; and
-- SDK `Put`, `PutFile`, and `PutBytes` plus `carrack vfs put`, exercised against
-  the real local Worker and `local-filesystem/v2` driver; and
+- Rust file and byte Put, resumable ranged Get, incremental directory Sync,
+  Remove, and metadata-only Rename/Move, exercised against the real local
+  Worker and `local-filesystem/v2` driver; and
 - revision-consistent directory reads, Merkle-linked child creation,
   attenuated token lifecycle, direct ACL replacement, and placement replace-all
   through the Worker, Go SDK, and CLI; and
-- a private local namespace catalog keyed by directory ID and Merkle root, with
-  bounded concurrent prefetch, durable verified nodes, subtree reuse, and final
-  live-root revalidation.
+- a private local namespace and transfer catalog keyed by authenticated roots,
+  bounded concurrent prefetch, durable verified nodes and range journals,
+  subtree reuse, and final live-root revalidation; and
+- durable read leases, reachability marking, tombstone grace, server-owned
+  fenced GC, idempotent Aliyun deletion, and conservative retention for
+  drivers the Worker cannot reach.
 
-The next slices add immutable file-version and location records to the local
-catalog, safe R2 checkpoint/delta materialization, and local transfer planning;
-then Get, Push, and Pull; remaining remote V2 drivers; V2 reachability/GC; and
-final legacy removal. The archive-oriented CLI and packages below the V2 boundary remain
-available only for migration and existing V1 workflows.
+Remaining expansion work is explicit: R2 checkpoint/delta acceleration,
+additional hosted drivers, durable Aliyun refresh-token rotation, and final
+removal of the compatibility-only Go archive surface. None changes the public
+complete-object filesystem contract.
 
 ## Product boundary
 
-Carrack maintains a virtual filesystem with three implementation surfaces:
+Carrack maintains a virtual filesystem with two product components:
 
-1. A Rust control plane on Cloudflare with a React 19 operator UI.
-2. A Go CLI and SDK used by people, automation, and AI skills.
-3. Compiled Go storage drivers for S3, R2, Google Drive, Aliyun Drive,
-   WebDAV, and local filesystems.
+1. A Rust control plane on Cloudflare with a React 19 operator UI and typed
+   hosted-driver lifecycle adapters.
+2. A canonical Rust client core used by the filesystem and management CLIs.
 
 The CLI and SDK operate only between bytes or a local filesystem and the
 Carrack VFS. External sources such as an unrelated S3 bucket, database, HTTP
@@ -52,9 +51,10 @@ service, or generated stream remain caller-owned. A caller may expose such a
 source as bytes, a replayable reader, or a range source without adding source
 semantics to Carrack.
 
-Payload bytes flow directly between the Go client and a storage driver. The
-control plane never relays VFS file payloads and never implements provider data
-operations.
+Payload bytes flow directly between the Rust client and a provider endpoint
+described by a bounded server plan. The control plane never relays VFS file
+payloads, but it owns provider control operations such as exact Stat, multipart
+abort, credential refresh, and Delete.
 
 ## Core invariants
 
@@ -76,8 +76,8 @@ operations.
    versions, and short optimistic transactions.
 9. Correctness never degrades. A missing acceleration capability may reduce
    performance or restart scope only after an explicit warning.
-10. Deletion is delayed, fenced, auditable, and performed by an authorized Go
-    janitor rather than by the control plane.
+10. Deletion is delayed, fenced, auditable, and performed only by the control
+    plane's typed hosted-driver lifecycle executor.
 
 ## Logical model
 
@@ -212,13 +212,15 @@ the checkpoint or missing deltas directly, verifies the chain and final root,
 and updates a local SQLite catalog. It then computes the complete transfer plan
 locally. No per-file control-plane request is required on the payload hot path.
 
-The implemented first slice uses the directory Merkle graph directly: private
-local nodes are addressed by `(directory_id, data_root)`, missing directories
-are assembled from revision-pinned pages with bounded cross-directory
-concurrency, and the live root is revalidated after the recursive closure.
-Unchanged subtrees require no control-plane read. Immutable version/location
-records, a query index, and R2 checkpoint/delta publication remain pending;
-`vfs-catalog-v1.md` fixes the current protocol and its exact boundary.
+The implemented client uses the directory Merkle graph directly: private local
+state is rooted in the authenticated directory snapshot, missing directories
+are assembled from revision-pinned pages before payload scheduling, and the
+live root is revalidated after the recursive closure. It then persists the
+immutable file-version, verification-block, and completed-range state needed
+for local incremental planning. Unchanged verified files require no provider
+read. R2 checkpoint/delta publication remains an optional metadata-plane
+acceleration; `vfs-catalog-v1.md` fixes the current protocol and its exact
+boundary.
 
 Checkpoints optimize full sequential catalog transfer. Delta segments optimize
 incremental synchronization. A content-addressed Merkle B-tree may be added
@@ -478,6 +480,29 @@ unreachable location irreversibly to a tombstoned state with a policy-derived
 deadline. A tombstoned location cannot be referenced again; recovery creates a
 new location with a new object name.
 
+Snapshot reachability is materialized in D1 as an immutable version set plus a
+seal containing its canonical set digest and exact count. Retention, channel
+pointers, and unexpired sealed snapshot tokens make that set protective. Token
+revocation does not shorten the original protection deadline because a direct
+read capability may already be in client memory. If any protective snapshot
+lacks a seal or its materialized count differs, GC fails closed for the whole
+filesystem. This covers snapshots created before the reachability migration,
+partial publication, corruption, and manual database damage.
+
+The read-only `safe_unreachable_vfs_locations` view subtracts current file
+versions, live directory entries, and valid protective snapshot sets from
+published available locations. It also requires an enabled driver and at least
+one strong provider identity. The view is candidate evidence only: it does not
+tombstone metadata, apply retention age, or authorize provider deletion.
+Its `published_at` column lets the bounded mark query apply policy age while
+using the partial published-version index before probing locations.
+
+Every published version also records its immutable origin directory in the
+same D1 publication batch. This survives entry replacement or deletion and is
+the subtree boundary for future `gc.run` authorization. Migration backfill
+accepts only versions with an exact committed Put receipt; a historical version
+without a proven origin is absent from the candidate view and cannot be GCed.
+
 For an upload that never published, metadata hygiene changes the intent to
 `expired` and creates at most one delete task from its immutable upload
 evidence. The task pins the driver revision and evidence digest, waits an
@@ -485,21 +510,23 @@ additional one-day grace, and is eligible only while no publication receipt or
 non-deleted location references the provider object. A newly indexed location
 supersedes the task immediately.
 
-After grace, a janitor claims a short fenced task. Immediately before I/O, the
-control plane rechecks the task, incarnation, deadline, immutable locator, and
-provider identity. The Go janitor performs `Stat` and idempotent `Delete`.
-After a lost response it re-observes the exact object; absence is success.
+After grace, control-plane cron claims a short fenced task. Immediately before
+I/O, it rechecks the task, deadline, immutable locator, active direct-read
+leases, driver revision, and provider identity. Its hosted driver adapter
+performs idempotent `Delete`; after a lost response, provider absence is
+success.
 
-The implemented `carrack vfs gc` path processes at most the explicit bounded
-limit (one by default). Its token must carry `gc.run` and `driver.use` through
-both attenuation and inherited ACL. A short driver grant pins the planned
-revision; final revalidation rotates the fence after Stat and immediately
-before Delete. Missing exact delete support or missing strong provider identity
-is a hard failure, not a best-effort cleanup.
+The compatibility Go janitor protocol remains only as migration evidence and
+is not a public CLI or native SDK operation. Filesystem clients cannot
+enumerate, authorize, or execute cleanup. The control plane owns bounded
+selection, exact reachability revalidation, driver capability checks, fencing,
+provider deletion, and idempotent completion. Aliyun has a native hosted
+lifecycle adapter. Agent-local paths are not reachable by Cloudflare, so their
+tasks become durably server-blocked and remain tombstoned; use S3, R2, or
+Aliyun when automatic physical cleanup is required.
 
-The control plane plans GC but never calls a VFS storage driver. Its R2 binding
-is used only for control metadata such as catalogs and audit recovery, not for
-ordinary VFS file payloads.
+The control plane's R2 binding is used for control metadata such as catalogs
+and audit recovery, not for ordinary VFS file payloads.
 
 ## Initial implementation order
 
@@ -516,7 +543,7 @@ ordinary VFS file payloads.
    JSON contracts.
 7. Add S3 and R2 drivers, then Google Drive and WebDAV behind the same contract
    tests; keep the existing Aliyun Drive Open adapter in the shared suite.
-8. Extend the implemented abandoned-Put grace and fenced janitor to retained
-   snapshots, replaced versions, and deleted entries.
+8. Build the location mark/task protocol on the implemented fail-closed
+   snapshot reachability and abandoned-Put janitor foundations.
 9. Remove legacy packs, extents, bundles, compaction, and operation protocols
    after V2 parity and migration tests pass.

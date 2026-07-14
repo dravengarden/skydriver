@@ -4,7 +4,8 @@
 
 This document defines the implemented live VFS directory, token, ACL, and
 placement-management API. The Cloudflare Worker is the transaction authority;
-the Go SDK and `carrack vfs` CLI expose the same operations.
+the compatibility Go SDK and `carrackctl` expose the same management
+operations while they migrate to the canonical Rust client.
 
 Management requests never carry or relay file payload bytes, provider
 credentials, plaintext directory secrets, or provider-object locators. Payload
@@ -14,15 +15,15 @@ The currently implemented management surface is:
 
 | Surface | Worker | Go SDK | CLI |
 |---|---:|---:|---:|
-| Revision-consistent directory listing | Yes | `ListDirectory` | `vfs directory list` |
-| Empty child-directory creation | Yes | `CreateDirectory` | `vfs directory create` |
-| Attenuated child-token issue | Yes | `IssueToken` | `vfs token issue` |
-| Same-principal token revocation | Yes | `RevokeToken` | `vfs token revoke` |
-| Direct ACL inspection and principal replacement | Yes | `ACL`, `ReplaceACL` | `vfs acl show`, `vfs acl replace` |
-| Placement inspection and replace-all | Yes | `Placements`, `ReplacePlacements` | `vfs placement list`, `vfs placement replace` |
-| Recursive verified namespace prefetch | Existing directory pages | `SyncCatalog` | `vfs catalog sync` |
+| Revision-consistent directory listing | Yes | `ListDirectory` | `carrack list` migration pending |
+| Empty child-directory creation | Yes | `CreateDirectory` | `carrack mkdir` migration pending |
+| Attenuated child-token issue | Yes | `IssueToken` | `carrackctl token issue` |
+| Same-principal token revocation | Yes | `RevokeToken` | `carrackctl token revoke` |
+| Direct ACL inspection and principal replacement | Yes | `ACL`, `ReplaceACL` | `carrackctl acl show`, `carrackctl acl replace` |
+| Placement inspection and replace-all | Yes | `Placements`, `ReplacePlacements` | `carrackctl placement list`, `carrackctl placement replace` |
+| Recursive verified namespace prefetch | Existing directory pages | `SyncCatalog` | Hidden filesystem cache |
 | Group membership management | No | No | No |
-| Typed driver registration or credential rotation | Operator API | `AdminClient` | `admin driver register`, `admin driver credential set` |
+| Typed driver registration or credential rotation | Operator API | `AdminClient` | `carrackctl driver register`, `carrackctl driver credential set` |
 | Snapshot-pinned metadata reads | No | No | No |
 
 These operator-authorized driver mutations are deliberately outside the VFS
@@ -193,16 +194,16 @@ insert several rows.
 CLI examples:
 
 ```bash
-carrack vfs acl show "$directory_id" \
+carrackctl acl show "$directory_id" \
   --control-url "$control_url" --format json
 
-carrack vfs acl replace "$directory_id" "$principal_id" \
+carrackctl acl replace "$directory_id" "$principal_id" \
   --control-url "$control_url" \
   --role viewer \
   --expected-acl-revision "$acl_revision" \
   --idempotency-key reader-viewer-v1
 
-carrack vfs acl replace "$directory_id" "$principal_id" \
+carrackctl acl replace "$directory_id" "$principal_id" \
   --control-url "$control_url" \
   --clear \
   --expected-acl-revision "$acl_revision" \
@@ -239,10 +240,10 @@ must each be unique; smaller priorities are preferred. The exact current
 CLI examples:
 
 ```bash
-carrack vfs placement list "$directory_id" \
+carrackctl placement list "$directory_id" \
   --control-url "$control_url" --format json
 
-carrack vfs placement replace "$directory_id" \
+carrackctl placement replace "$directory_id" \
   --control-url "$control_url" \
   --placement local-main=0 \
   --placement archive-backup=10 \
@@ -278,4 +279,5 @@ Callers handle races as follows:
 
 GC is not part of these metadata races. Placement replacement does not delete
 existing complete file locations. Later reachability analysis and the fenced
-janitor handle abandoned or unreachable provider objects after a grace period.
+server-side lifecycle executor handles abandoned or unreachable provider
+objects after a grace period.

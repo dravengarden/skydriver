@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/dravengarden/carrack/manifest"
@@ -21,6 +22,11 @@ import (
 const (
 	clientTokenBytes        = 32
 	maximumControlBodyBytes = 64 << 20
+
+	// ProtocolEpoch is the incompatible Carrack wire-protocol generation.
+	ProtocolEpoch = 2
+	// SDKVersion is sent on every request so the server can fail before I/O.
+	SDKVersion = "0.1.0"
 )
 
 var (
@@ -28,7 +34,43 @@ var (
 	ErrInvalidControlPlane = errors.New("invalid Carrack control-plane configuration")
 	// ErrControlPlaneResponse indicates a rejected or malformed API response.
 	ErrControlPlaneResponse = errors.New("invalid Carrack control-plane response")
+	// ErrUpgradeRequired indicates that the server rejected this protocol or SDK version.
+	ErrUpgradeRequired = errors.New("carrack SDK upgrade required")
 )
+
+// UpgradeRequiredError is the machine-readable HTTP 426 compatibility failure.
+type UpgradeRequiredError struct {
+	Code              string `json:"code"`
+	Message           string `json:"message"`
+	ProtocolEpoch     uint64 `json:"protocol_epoch"`
+	MinimumSDKVersion string `json:"minimum_sdk_version"`
+	ServerVersion     string `json:"server_version"`
+	UpgradeCommand    string `json:"upgrade_command"`
+	Schema            string `json:"schema"`
+}
+
+func (failure UpgradeRequiredError) Error() string {
+	return fmt.Sprintf(
+		"%v: protocol epoch %d requires SDK %s or newer (%s)",
+		ErrUpgradeRequired,
+		failure.ProtocolEpoch,
+		failure.MinimumSDKVersion,
+		failure.UpgradeCommand,
+	)
+}
+
+// Unwrap supports errors.Is(err, ErrUpgradeRequired).
+func (UpgradeRequiredError) Unwrap() error { return ErrUpgradeRequired }
+
+// ProtocolCompatibility is the public fail-fast contract for this server.
+type ProtocolCompatibility struct {
+	Schema            string `json:"schema"`
+	ProtocolEpoch     uint64 `json:"protocol_epoch"`
+	MinimumSDKVersion string `json:"minimum_sdk_version"`
+	ServerVersion     string `json:"server_version"`
+	Enforcement       string `json:"enforcement"`
+	UpgradeCommand    string `json:"upgrade_command"`
+}
 
 // ClientToken is a random 256-bit SDK authentication token.
 type ClientToken [clientTokenBytes]byte
@@ -129,6 +171,33 @@ func (client *ControlClient) Health(ctx context.Context) (ControlHealth, error) 
 	var response ControlHealth
 	if err := client.request(ctx, http.MethodGet, "/api/health", "", "", nil, &response); err != nil {
 		return ControlHealth{}, err
+	}
+
+	return response, nil
+}
+
+// CheckCompatibility fails before callers perform metadata mutations or provider I/O.
+func (client *ControlClient) CheckCompatibility(ctx context.Context) (ProtocolCompatibility, error) {
+	var response ProtocolCompatibility
+	if err := client.request(ctx, http.MethodGet, "/api/compatibility", "", "", nil, &response); err != nil {
+		return ProtocolCompatibility{}, err
+	}
+
+	if response.Schema != "carrack.protocol-compatibility.v1" ||
+		response.ProtocolEpoch != ProtocolEpoch ||
+		response.Enforcement != "required" ||
+		!versionAtLeast(SDKVersion, response.MinimumSDKVersion) ||
+		!validControlString(response.ServerVersion, 128) ||
+		!validControlString(response.UpgradeCommand, 512) {
+		return ProtocolCompatibility{}, UpgradeRequiredError{
+			Code:              "sdk_upgrade_required",
+			Message:           "Carrack protocol or SDK version is incompatible",
+			ProtocolEpoch:     response.ProtocolEpoch,
+			MinimumSDKVersion: response.MinimumSDKVersion,
+			ServerVersion:     response.ServerVersion,
+			UpgradeCommand:    response.UpgradeCommand,
+			Schema:            "carrack.protocol-error.v1",
+		}
 	}
 
 	return response, nil
@@ -287,6 +356,8 @@ func (client *ControlClient) requestWithQuery(
 	}
 
 	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Carrack-Protocol-Epoch", strconv.FormatUint(ProtocolEpoch, 10))
+	request.Header.Set("Carrack-Sdk-Version", SDKVersion)
 
 	if authorization != "" {
 		request.Header.Set("Authorization", authorization)
@@ -301,8 +372,12 @@ func (client *ControlClient) requestWithQuery(
 		return fmt.Errorf("send Carrack control-plane request: %w", err)
 	}
 
+	return decodeControlResponse(response, destination)
+}
+
+func decodeControlResponse(response *http.Response, destination any) error {
 	limited := io.LimitReader(response.Body, maximumControlBodyBytes+1)
-	body, readErr := io.ReadAll(limited)
+	responseBody, readErr := io.ReadAll(limited)
 	closeErr := response.Body.Close()
 
 	if readErr != nil || closeErr != nil {
@@ -312,15 +387,19 @@ func (client *ControlClient) requestWithQuery(
 		)
 	}
 
-	if len(body) > maximumControlBodyBytes {
+	if len(responseBody) > maximumControlBodyBytes {
 		return fmt.Errorf("%w: body exceeds %d bytes", ErrControlPlaneResponse, maximumControlBodyBytes)
+	}
+
+	if response.StatusCode == http.StatusUpgradeRequired {
+		return decodeUpgradeRequired(responseBody)
 	}
 
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("%w: HTTP status %d", ErrControlPlaneResponse, response.StatusCode)
 	}
 
-	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder := json.NewDecoder(bytes.NewReader(responseBody))
 	decoder.DisallowUnknownFields()
 
 	if err := decoder.Decode(destination); err != nil {
@@ -332,6 +411,67 @@ func (client *ControlClient) requestWithQuery(
 	}
 
 	return nil
+}
+
+func decodeUpgradeRequired(body []byte) error {
+	var failure UpgradeRequiredError
+
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(&failure); err == nil &&
+		failure.Schema == "carrack.protocol-error.v1" &&
+		failure.Code == "sdk_upgrade_required" &&
+		failure.ProtocolEpoch > 0 &&
+		validControlString(failure.MinimumSDKVersion, 128) &&
+		validControlString(failure.UpgradeCommand, 512) {
+		return failure
+	}
+
+	return fmt.Errorf("%w: malformed HTTP 426 response", ErrUpgradeRequired)
+}
+
+func versionAtLeast(candidate, minimum string) bool {
+	current, currentOK := parseSDKVersion(candidate)
+	required, requiredOK := parseSDKVersion(minimum)
+
+	if !currentOK || !requiredOK {
+		return false
+	}
+
+	for index := range current {
+		if current[index] != required[index] {
+			return current[index] > required[index]
+		}
+	}
+
+	return true
+}
+
+func parseSDKVersion(value string) ([3]uint64, bool) {
+	core, _, _ := strings.Cut(value, "-")
+	fields := strings.Split(core, ".")
+
+	if len(fields) != 3 || strings.Contains(value, "+") {
+		return [3]uint64{}, false
+	}
+
+	var result [3]uint64
+
+	for index, field := range fields {
+		if field == "" || (len(field) > 1 && field[0] == '0') {
+			return [3]uint64{}, false
+		}
+
+		parsed, err := strconv.ParseUint(field, 10, 64)
+		if err != nil {
+			return [3]uint64{}, false
+		}
+
+		result[index] = parsed
+	}
+
+	return result, true
 }
 
 func validateControlURL(endpoint *url.URL) error {

@@ -265,6 +265,8 @@ INSERT INTO vfs_locations (
   '$location', '$version', 'put-driver-1', '$storage_key', 'native-object-1',
   'provider-version-1', 'etag-1', 10, '$encoded_sha', unixepoch(), unixepoch()
 );
+INSERT INTO vfs_version_origins (version_id, directory_id, created_at)
+VALUES ('$version', '$directory', unixepoch());
 UPDATE vfs_locations
 SET state = 'verified', verified_at = unixepoch(),
     revision = revision + 1, updated_at = unixepoch()

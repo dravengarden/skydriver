@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -850,6 +851,8 @@ func (client *AdminClient) request(
 	}
 
 	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Carrack-Protocol-Epoch", strconv.FormatUint(ProtocolEpoch, 10))
+	request.Header.Set("Carrack-Sdk-Version", SDKVersion)
 
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")

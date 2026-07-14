@@ -6,12 +6,13 @@ V1 implements an incrementally synchronized, content-addressed local namespace
 catalog. It lets a client prefetch and verify directory metadata before payload
 planning, then skip every unchanged subtree on later synchronizations.
 
-The implemented slice contains directory identities, names, file and version
+The namespace catalog contains directory identities, names, file and version
 IDs, plaintext lengths, file roots, metadata roots, child-directory IDs, and
-child-directory roots. It does not yet cache immutable file-version transport
-records, available locations, block manifests, driver descriptors, credentials,
-or directory keys. Those records are the next catalog slice required for fully
-offline download planning.
+child-directory roots. The Rust sync state separately retains authenticated
+file-version and verification-block identities plus completed local ranges.
+Credentials, directory keys, and signed provider URLs are never persisted in
+either cache. A fresh scoped transfer grant is still required before provider
+I/O, so "offline planning" never means offline authorization.
 
 ## Why the catalog is a Merkle DAG
 
@@ -33,8 +34,7 @@ the public cache key.
 
 ## Synchronization protocol
 
-`VFSControlClient.SyncCatalog` and `carrack vfs catalog sync` perform these
-steps:
+The Rust `carrack sync` implementation performs these steps:
 
 1. Read the first live page of the requested root directory with the current
    VFS bearer token.
@@ -121,40 +121,23 @@ next synchronization reconstructs it from authenticated metadata.
 
 ## SDK and CLI
 
-SDK entry points:
-
-```go
-store, err := sdk.NewVFSCatalogStore(cacheDirectory)
-result, err := control.SyncCatalog(ctx, rootDirectoryID, store, sdk.VFSCatalogSyncOptions{
-    PageSize:       1000,
-    MaxConcurrency: 8,
-})
-```
-
-`PageSize` may be 1 through 1,000. `MaxConcurrency` may be 1 through 64 and
-applies to independent child-directory fetches; pagination within one directory
-remains ordered by its opaque cursor.
-
-CLI:
+The canonical CLI surface is:
 
 ```bash
+export CARRACK_CONTROL_URL='https://dev.carrack.stormbird.xyz'
 export CARRACK_VFS_TOKEN='<attenuated bearer>'
 
-carrack vfs catalog sync "$root_directory_id" \
-  --control-url "$control_url" \
-  --cache-directory "$private_cache" \
-  --page-size 1000 \
-  --max-concurrency 8 \
-  --format json
+carrack sync /releases ./local-releases \
+  --maximum-concurrency 4 \
+  --maximum-file-concurrency 4
 ```
 
-When `--cache-directory` is omitted, the CLI uses
-`$XDG_CACHE_HOME/carrack/vfs/catalog` or
-`$HOME/.cache/carrack/vfs/catalog`.
-
-The result reports the observed root, complete directory and entry counts, and
-the number of fetched versus reused nodes. It reports success only after the
-entire recursive closure and final root revalidation succeed.
+The client fetches and authenticates the complete recursive catalog before it
+schedules payloads. It then runs changed files concurrently, uses bounded
+ranged pipelines within each file, resumes only verified completed ranges, and
+atomically publishes each fully verified local file. Untracked local files are
+preserved. Success requires the pinned recursive closure and every requested
+plaintext Merkle root to match.
 
 ## R2 materialization and outbox correctness
 

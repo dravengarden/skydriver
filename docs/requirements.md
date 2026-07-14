@@ -12,12 +12,24 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 - Carrack MUST remain business-neutral. Exchange adapters, market-data
   catalogs, dataset schedules, parsers, and trading semantics belong to
   consumer projects.
-- Carrack MUST contain exactly two product components: a Go client SDK and a
-  Rust control plane deployed on Cloudflare with a TypeScript operator UI.
+- Carrack MUST contain exactly two product components: a language-neutral
+  client data plane with a canonical Rust implementation, and a Rust control
+  plane deployed on Cloudflare with a TypeScript operator UI.
+- The `carrack` CLI MUST expose filesystem operations only. Provider selection,
+  transfer planning, catalog synchronization, encryption, recovery journals,
+  snapshots, leases, and garbage collection MUST remain implementation details.
+- The separate `carrackctl` CLI MUST expose every operation available through
+  the operator UI through the same management API and validation rules. It is
+  an SDK consumer for operators and AI agents, not a third product component.
+- The public filesystem SDK MUST NOT expose garbage-collection candidates,
+  delete tasks, janitor leases, fencing tokens, or provider delete grants.
 - Payload bytes MUST flow directly between clients and storage drivers. The
   control plane MUST NOT relay payload bytes in V1.
-- A client MUST be able to import, copy, move, restore, verify, compact, and
-  reconcile data through the same SDK.
+- The control plane MAY access a driver for credential refresh, transfer-plan
+  creation, exact object Stat, multipart abort, and physical deletion. These
+  control operations MUST NOT relay file payload bytes through the Worker.
+- A filesystem client MUST be able to put, get, list, stat, create, remove,
+  rename, and incrementally synchronize files through one simple SDK facade.
 - Adding a driver or changing a transfer scheduler MUST NOT require changing
   the archive encryption format.
 
@@ -79,12 +91,21 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 
 ## Driver requirements
 
-- Drivers MUST be selected through versioned, compiled, typed factories.
-  Control-plane data MUST NOT cause a client to execute arbitrary driver code.
-- Native Go implementations SHOULD be used for S3-compatible storage, R2,
-  public HTTP, and local filesystems. OpenList-derived adapters MAY be used for
-  consumer cloud drives where they reduce provider-specific maintenance.
-- Running an OpenList server MUST NOT be required.
+- Hosted VFS drivers MUST be selected through versioned, compiled, typed
+  server-side factories. Control-plane data MUST NOT cause a client to execute
+  arbitrary provider code.
+- Provider-specific lifecycle policy MUST be authoritative on the control
+  plane. Clients SHOULD execute a bounded, validated direct-transfer plan
+  instead of independently deciding provider publication or deletion rules.
+- A VFS backend driver MUST declare server-side credential refresh, exact Stat,
+  multipart abort, and Delete capabilities. A backend without stable object
+  identity MUST remain ineligible for automatic physical garbage collection.
+- Native Rust adapters SHOULD be used for S3-compatible storage, R2, public
+  HTTP, and supported cloud drives. Local filesystems are client-side external
+  sources or destinations, not hosted VFS backends.
+- OpenList MAY be used as a reviewed behavioral reference for consumer cloud
+  drives. OpenList code, modules, servers, WebDAV endpoints, and runtime
+  processes MUST NOT be dependencies of Carrack clients or deployments.
 - Drivers MUST advertise capabilities, size limits, checksum support,
   resumability, safe concurrency, and rate-limit constraints.
 - Provider-object grouping MUST use only whole consecutive extents, respect a
@@ -93,7 +114,7 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 - Proxy policy MUST be injected below the driver and MUST NOT appear in object
   identity, manifests, or crypto metadata.
 - Carrack MUST NOT embed, download, configure, supervise, or launch a proxy
-  daemon. HTTP-capable drivers MUST use Go's standard HTTP transport with either
+  daemon. HTTP-capable components MUST use their native HTTP stack with either
   direct routing or an external `http`, `https`, `socks5`, or `socks5h` proxy.
 - A driver MUST distinguish transient, throttled, authorization, quota,
   not-found, integrity, and permanent errors when its provider exposes enough
@@ -127,6 +148,14 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
   final local result.
 - Failures SHOULD prefer duplicate work, staging orphans, and temporary extra
   replicas over ambiguous publication or deletion.
+- Garbage collection MUST be an internal control-plane maintenance operation.
+  Ordinary clients and the public filesystem SDK MUST NOT enumerate candidates,
+  claim delete work, receive delete credentials, or physically delete VFS
+  backend objects.
+- Server-side garbage collection MUST use bounded indexed selection, a grace
+  period, exact reachability revalidation, stable provider identity, and a
+  fenced idempotent completion transition. If D1, snapshot materialization,
+  driver identity, or authorization evidence is unavailable, deletion MUST stop.
 
 ## Concurrent client correctness
 
@@ -151,7 +180,9 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 - Concurrent repair or compaction winners MUST be selected by conditional
   publication. Valid losing outputs MAY be adopted or quarantined for later
   GC.
-- Read operations MUST use renewable read leases. GC MUST NOT delete the final
+- Read operations MUST use durable read leases bounded by the issuing token's
+  original expiry and explicitly complete them when transfer stops. A resumed
+  client MAY acquire a fresh lease through a new immutable plan. GC MUST NOT delete the final
   usable replica needed by an active read lease.
 - Progress reports MUST carry operation, attempt, monotonically increasing
   sequence, lease, and fencing identities. Duplicate or reordered reports MUST
@@ -160,9 +191,27 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
   bytes but MUST NOT increase unique verified progress.
 - Distributed rate coordination MUST prevent many clients sharing a credential
   from independently selecting an unsafe aggregate request rate.
-- Normal transfer clients SHOULD NOT physically delete provider objects.
-  Destructive work SHOULD be performed by explicitly authorized, fenced
-  janitor clients after final revalidation.
+- Normal transfer clients MUST NOT physically delete VFS backend objects.
+  Destructive work MUST be performed by control-plane maintenance after final
+  D1 revalidation. A provider request may outlive its Worker invocation, so
+  response-loss recovery MUST converge through exact Stat and fenced retry.
+
+## Public command and management surfaces
+
+- `carrack` MUST behave like a filesystem tool. Its ordinary users MUST NOT
+  need to understand driver IDs, storage keys, locations, Merkle nodes, key
+  epochs, catalog revisions, GC state, or provider credentials.
+- `carrackctl` MUST be non-interactive and machine-readable by default. Every
+  response and error MUST have a stable schema and every mutation MUST carry an
+  idempotency identity and optimistic expected revision where applicable.
+- UI and `carrackctl` mutations MUST use one server-side validate/apply
+  protocol. Validation results MUST be bound to the complete desired state and
+  current revision; apply MUST reject stale or modified validation evidence.
+- Secrets MUST enter `carrackctl` through approved private input, never argv,
+  plans, logs, audit payloads, or ordinary output.
+- The management operation registry, permission requirement, request schema,
+  response schema, and examples MUST be discoverable by an AI agent. The UI
+  MUST NOT have management capabilities absent from `carrackctl`.
 
 ## Control-plane recovery
 

@@ -1,0 +1,220 @@
+//! Canonical Carrack file Merkle and block-manifest implementation.
+
+use sha2::{Digest as _, Sha256};
+use std::io::{Read as _, Write as _};
+use std::path::Path;
+
+const FILE_LEAF_DOMAIN: &str = "carrack.vfs.file.leaf.v1";
+const FILE_EMPTY_DOMAIN: &str = "carrack.vfs.file.empty.v1";
+const FILE_NODE_DOMAIN: &str = "carrack.vfs.file.node.v1";
+const MANIFEST_DOMAIN: &str = "carrack.vfs.block-manifest.v1";
+const EMPTY_METADATA_DOMAIN: &str = "carrack.vfs.metadata.empty.v1";
+const MAXIMUM_BLOCKS: usize = 1_000_000;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FileBlock {
+    pub index: u64,
+    pub offset: u64,
+    pub size_bytes: u64,
+    pub digest: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FileTree {
+    pub size_bytes: u64,
+    pub block_bytes: u64,
+    pub blocks: Vec<FileBlock>,
+    pub tree_digest: [u8; 32],
+    pub root: [u8; 32],
+}
+
+pub(crate) fn build_file(path: &Path, block_bytes: u64) -> Result<FileTree, crate::Error> {
+    if block_bytes == 0 || block_bytes > 256 * 1024 * 1024 {
+        return Err(crate::Error::InvalidResponse(
+            "unsafe verification block size".to_owned(),
+        ));
+    }
+    let mut file = std::fs::File::open(path)
+        .map_err(|error| crate::Error::InvalidResponse(format!("open source: {error}")))?;
+    let before = file
+        .metadata()
+        .map_err(|error| crate::Error::InvalidResponse(format!("inspect source: {error}")))?;
+    if !before.is_file() {
+        return Err(crate::Error::InvalidResponse(
+            "source is not a regular file".to_owned(),
+        ));
+    }
+    let size_bytes = before.len();
+    let block_count = if size_bytes == 0 {
+        0
+    } else {
+        1 + (size_bytes - 1) / block_bytes
+    };
+    if block_count > MAXIMUM_BLOCKS as u64 {
+        return Err(crate::Error::InvalidResponse(
+            "source exceeds verification block limit".to_owned(),
+        ));
+    }
+    let capacity = usize::try_from(block_bytes).map_err(|_| {
+        crate::Error::InvalidResponse("block size exceeds this platform".to_owned())
+    })?;
+    let mut buffer = vec![0_u8; capacity];
+    let block_capacity = usize::try_from(block_count).map_err(|_| {
+        crate::Error::InvalidResponse("block count exceeds this platform".to_owned())
+    })?;
+    let mut blocks = Vec::with_capacity(block_capacity);
+    let mut offset = 0_u64;
+    for index in 0..block_count {
+        let length = block_bytes.min(size_bytes - offset);
+        let length_usize = usize::try_from(length)
+            .map_err(|_| crate::Error::InvalidResponse("block exceeds this platform".to_owned()))?;
+        file.read_exact(&mut buffer[..length_usize])
+            .map_err(|error| {
+                crate::Error::InvalidResponse(format!("hash source block: {error}"))
+            })?;
+        blocks.push(FileBlock {
+            index,
+            offset,
+            size_bytes: length,
+            digest: hash_block(index, &buffer[..length_usize]),
+        });
+        offset += length;
+    }
+    let mut trailing = [0_u8; 1];
+    if file
+        .read(&mut trailing)
+        .map_err(|error| crate::Error::InvalidResponse(format!("check source EOF: {error}")))?
+        != 0
+    {
+        return Err(crate::Error::InvalidResponse(
+            "source grew while hashing".to_owned(),
+        ));
+    }
+    let after = file
+        .metadata()
+        .map_err(|error| crate::Error::InvalidResponse(format!("reinspect source: {error}")))?;
+    if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
+        return Err(crate::Error::InvalidResponse(
+            "source changed while hashing".to_owned(),
+        ));
+    }
+    root_from_blocks(size_bytes, block_bytes, blocks)
+}
+
+pub(crate) fn manifest(tree: &FileTree) -> Vec<u8> {
+    let mut encoded =
+        Vec::with_capacity(MANIFEST_DOMAIN.len() + 1 + 24 + tree.blocks.len() * 32 + 32);
+    encoded.extend_from_slice(MANIFEST_DOMAIN.as_bytes());
+    encoded.push(0);
+    encoded.extend_from_slice(&tree.size_bytes.to_be_bytes());
+    encoded.extend_from_slice(&tree.block_bytes.to_be_bytes());
+    encoded.extend_from_slice(&(tree.blocks.len() as u64).to_be_bytes());
+    for block in &tree.blocks {
+        encoded.extend_from_slice(&block.digest);
+    }
+    encoded.extend_from_slice(&tree.root);
+    encoded
+}
+
+pub(crate) fn empty_metadata_root() -> [u8; 32] {
+    domain_hasher(EMPTY_METADATA_DOMAIN).finalize().into()
+}
+
+fn root_from_blocks(
+    size_bytes: u64,
+    block_bytes: u64,
+    blocks: Vec<FileBlock>,
+) -> Result<FileTree, crate::Error> {
+    let leaves = blocks.iter().map(|block| block.digest).collect::<Vec<_>>();
+    let tree_digest = if leaves.is_empty() {
+        domain_hasher(FILE_EMPTY_DOMAIN).finalize().into()
+    } else {
+        canonical_tree(&leaves, 0)
+    };
+    let root =
+        carrack_sdk_core::file_merkle_root_from_block_digests(size_bytes, block_bytes, &leaves)
+            .map_err(|error| crate::Error::InvalidResponse(error.to_string()))?;
+    Ok(FileTree {
+        size_bytes,
+        block_bytes,
+        blocks,
+        tree_digest,
+        root,
+    })
+}
+
+fn hash_block(index: u64, payload: &[u8]) -> [u8; 32] {
+    let mut hash = domain_hasher(FILE_LEAF_DOMAIN);
+    hash.write_all(&index.to_be_bytes())
+        .expect("SHA-256 writes cannot fail");
+    hash.write_all(&(payload.len() as u64).to_be_bytes())
+        .expect("SHA-256 writes cannot fail");
+    hash.write_all(payload).expect("SHA-256 writes cannot fail");
+    hash.finalize().into()
+}
+
+fn canonical_tree(leaves: &[[u8; 32]], first: u64) -> [u8; 32] {
+    if leaves.len() == 1 {
+        return leaves[0];
+    }
+    let mut left_count = 1;
+    while left_count <= (leaves.len() - 1) / 2 {
+        left_count *= 2;
+    }
+    let left = canonical_tree(&leaves[..left_count], first);
+    let right = canonical_tree(&leaves[left_count..], first + left_count as u64);
+    let mut hash = domain_hasher(FILE_NODE_DOMAIN);
+    hash.write_all(&first.to_be_bytes())
+        .expect("SHA-256 writes cannot fail");
+    hash.write_all(&(leaves.len() as u64).to_be_bytes())
+        .expect("SHA-256 writes cannot fail");
+    hash.write_all(&left).expect("SHA-256 writes cannot fail");
+    hash.write_all(&right).expect("SHA-256 writes cannot fail");
+    hash.finalize().into()
+}
+
+fn domain_hasher(domain: &str) -> Sha256 {
+    let mut hash = Sha256::new();
+    hash.update(domain.as_bytes());
+    hash.update([0]);
+    hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_file, empty_metadata_root, manifest};
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    struct Vectors {
+        files: Vec<Vector>,
+    }
+    #[derive(Deserialize)]
+    struct Vector {
+        payload_hex: String,
+        expected: Expected,
+    }
+    #[derive(Deserialize)]
+    struct Expected {
+        block_bytes: u64,
+        root: String,
+        tree_digest: String,
+    }
+
+    #[test]
+    fn matches_shared_go_golden_vectors() {
+        let vectors: Vectors =
+            serde_json::from_str(include_str!("../../../testdata/vfs-merkle-v1.json")).unwrap();
+        for vector in vectors.files {
+            let directory = std::env::temp_dir();
+            let path = directory.join(format!("carrack-rust-merkle-{}", vector.expected.root));
+            std::fs::write(&path, hex::decode(vector.payload_hex).unwrap()).unwrap();
+            let tree = build_file(&path, vector.expected.block_bytes).unwrap();
+            std::fs::remove_file(path).unwrap();
+            assert_eq!(hex::encode(tree.root), vector.expected.root);
+            assert_eq!(hex::encode(tree.tree_digest), vector.expected.tree_digest);
+            assert!(!manifest(&tree).is_empty());
+        }
+        assert_eq!(hex::encode(empty_metadata_root()).len(), 64);
+    }
+}

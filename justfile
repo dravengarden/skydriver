@@ -21,6 +21,8 @@ lint:
     pnpm --filter @carrack/web lint
 
 test:
+    bash tests/architecture-boundaries.sh
+    bash -n tests/aliyun-live.sh
     go test -race ./...
     cargo test --workspace --all-features
     pnpm --filter @carrack/web test
@@ -35,6 +37,7 @@ test:
 
 build:
     go build ./...
+    cargo check -p carrack-sdk-core --target wasm32-unknown-unknown
     pnpm --filter @carrack/web build
     pnpm exec wrangler deploy --dry-run --env dev --config control-plane/wrangler.jsonc
     pnpm exec wrangler deploy --dry-run --env prod --config control-plane/wrangler.jsonc
