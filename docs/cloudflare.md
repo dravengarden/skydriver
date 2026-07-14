@@ -189,12 +189,14 @@ still authorize the wider drive. Store each environment's encrypted credential
 in its own D1 database, use only the dev root for provider experiments, and do
 not register or enable the production root until its own acceptance gate.
 
-An out-of-band OAuth helper may bootstrap an Aliyun access token, but Carrack
-must never link to, launch, or call OpenList at runtime. The built-in OpenList
-refresh relay carries refresh tokens in URL query parameters, so it is not a
-permitted unattended Carrack refresh path. Keep recovery material outside Git;
-if it is lost or expires, repeat interactive provider authorization and rotate
-the encrypted access-token credential through `carrackctl`.
+An out-of-band OAuth helper may bootstrap an Aliyun access and refresh token
+bundle. Carrack never links to, launches, or routes payloads through OpenList,
+but the control plane may use the typed `openlist-online/v1` issuer to renew the
+same OAuth bundle. Both tokens remain in the authenticated encrypted D1
+envelope; filesystem grants project only the access token. Cron renews before
+expiry with a D1 lease and fencing token. A permanent rejection becomes
+`reauth_required`; repeat interactive authorization and replace the write-only
+credential through `carrackctl`. Never put recovery material in Git.
 
 ## Garbage collection
 
@@ -212,29 +214,20 @@ There is no client or operator GC command. A driver without stable identity,
 exact Stat, and idempotent Delete retains its candidates for later retry;
 capability and identity errors require investigation, not manual deletion.
 
-Namespace `retention_policy_json` accepts `move_grace_seconds`,
-`gc_minimum_age_seconds`, `gc_grace_seconds`, and
-`inventory_quarantine_seconds`. GC age defaults to seven days; Move, GC, and
-inventory quarantine grace default to one day. Every value must be between 60
-seconds and 365 days. An existing operation pins its cutoff and grace, so
-changing the namespace cannot change in-flight work.
+GC is an internal control-plane lifecycle and is intentionally absent from the
+Rust SDK and both CLIs. Every Cron invocation performs a bounded pass: it marks
+old locations selected by `safe_unreachable_vfs_locations`, creates immutable
+delete tasks, and processes at most one hosted-location task plus one abandoned
+Put task. Before provider I/O it rechecks the location revision, driver
+revision, reachability, grace deadline, lease fence, and active direct-read
+leases. A concurrent publication or read therefore blocks deletion.
 
-Run `carrack gc mark` with an `administrator` token. The Worker atomically
-selects only complete unreachable provider objects, tombstones their indexed
-ranges, records object-grouped delete tasks, and releases the short mark lease.
-It does not contact a provider. If no object is eligible, the operation succeeds
-with zero candidates.
-
-After grace, run `carrack gc sweep <operation-id>` with a `janitor` or
-`administrator` token and the exact local driver configuration. Each task is
-claimed and then revalidated immediately before provider deletion. A new active
-lease, a newly published reference, a stale incarnation, a changed location
-revision, or any non-candidate range sharing the provider object blocks the
-task. Provider failure is retained for retry.
-
-Do not schedule these commands automatically yet. The explicit GC protocol is
-implemented and tested, but production Cron activation remains subject to the
-fault-injection and disaster-recovery gate in `docs/requirements.md`.
+Locations must be unreachable for 30 days before tombstoning and then remain
+under a seven-day delete grace. Aliyun deletion is server-owned and idempotent;
+provider failure remains retryable. A local filesystem is deliberately
+server-blocked because a Cloudflare Worker cannot safely reach an agent-local
+path. Operators inspect lifecycle state and alerts but never claim or execute
+GC tasks.
 
 ## D1 cost and index maintenance
 
@@ -261,57 +254,18 @@ unused indexes only through a new append-only migration.
 
 ## Provider inventory
 
-Run `carrack reconcile inventory` with an `administrator` token, the exact
-registered local driver ID and root, and a dedicated Carrack-owned prefix. The
-SDK lists only regular files under that prefix in bounded pages and maintains a
-renewable operation fence through final report commit. Unknown objects are
-retained in quarantine for the pinned `inventory_quarantine_seconds`; absent
-indexed objects produce findings for a later Verify or Repair decision.
-Provider adapters normalize pagination to strictly increasing storage keys;
-duplicate or regressed pages are rejected, while a stale omission remains only
-conservative evidence and can converge on the next full scan.
+The current Rust V2 product does not expose provider-wide inventory, adoption,
+quarantine, or delete-task execution in either CLI. Historical Go protocols and
+D1 tables remain as compatibility and fault-model evidence only; agents must
+not invoke their old `reconcile`, `quarantine`, or janitor commands. They are
+removed with the rest of the compatibility archive surface.
 
-Inventory is deliberately read-only. It does not adopt provider objects,
-change manifest or location state, or invoke provider deletion. Do not overlap
-owned prefixes across namespaces: an unknown object already quarantined for a
-different namespace rejects completion instead of guessing ownership. Cron
-scheduling and adoption remain disabled pending their own fenced protocols and
-production fault-injection gates.
-
-After the integrity console's `quarantine_until`, use `carrack quarantine
-acknowledge` with the displayed quarantine revision and a durable review reason.
-Then use `carrack quarantine tombstone` with the newly acknowledged revision to
-start a second `inventory_quarantine_seconds` grace. Both commands require an
-`administrator` client token and reject stale object, driver, provider-version,
-ETag, size, revision, incarnation, or lease identities. Their audit records and
-integrity findings remain in D1.
-
-A D1 write that makes a matching location non-deleted or recovery sidecar
-non-missing immediately resolves the quarantine finding, supersedes any pending,
-claimed, or failed delete task, and records the reference in the audit log. An
-older janitor fence then fails revalidation without provider I/O; this safeguard
-does not depend on waiting for another inventory pass.
-
-These review commands do not delete provider bytes. Tombstoning creates a task
-that remains ineligible until `delete_after`. Run the explicit local-filesystem
-janitor only after that deadline:
-
-```bash
-export CARRACK_CONTROL_TOKEN="$(read-janitor-token)"
-
-carrack quarantine sweep <tombstone-operation-id> \
-  --control-url https://carrack.example.com \
-  --local-driver-id local-archive \
-  --local-root /srv/carrack/archive
-```
-
-The token needs the `janitor` or `administrator` role. The SDK requires exact
-provider `Stat` identity before asking D1 to rotate the fence and repeat grace,
-driver-revision, reference, recovery-sidecar, incarnation, and role checks. It
-then invokes the idempotent driver delete and records either `deleted` or
-`already_absent`. A changed provider identity fails the task without deletion.
-Do not schedule this command automatically yet; the explicit protocol is
-implemented, but the production fault-injection gate remains outstanding.
+A future hosted inventory pass must remain read-only, bounded, fenced, and
+conservative: an unknown object is quarantined rather than adopted or deleted,
+and a missing listing result is evidence rather than proof of absence. Its
+review and physical deletion stages belong to the control plane, require the
+same final reachability and identity fences as normal lifecycle GC, and must
+pass production fault-injection before Cron enables them.
 
 ## Integrity findings
 

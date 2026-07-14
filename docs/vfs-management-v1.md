@@ -4,24 +4,25 @@
 
 This document defines the implemented live VFS directory, token, ACL, and
 placement-management API. The Cloudflare Worker is the transaction authority;
-the compatibility Go SDK and `carrackctl` expose the same management
-operations while they migrate to the canonical Rust client.
+the canonical Rust `carrack-client`, `carrack`, and `carrackctl` surfaces expose
+the supported operations. The Go SDK is retained only as a compatibility and
+conformance oracle.
 
 Management requests never carry or relay file payload bytes, provider
 credentials, plaintext directory secrets, or provider-object locators. Payload
-I/O remains a direct Go-client-to-driver operation.
+I/O remains a direct Rust-client-to-driver operation.
 
 The currently implemented management surface is:
 
-| Surface | Worker | Go SDK | CLI |
+| Surface | Worker | Rust client | CLI |
 |---|---:|---:|---:|
-| Revision-consistent directory listing | Yes | `ListDirectory` | `carrack list` migration pending |
-| Empty child-directory creation | Yes | `CreateDirectory` | `carrack mkdir` migration pending |
-| Attenuated child-token issue | Yes | `IssueToken` | `carrackctl token issue` |
-| Same-principal token revocation | Yes | `RevokeToken` | `carrackctl token revoke` |
-| Direct ACL inspection and principal replacement | Yes | `ACL`, `ReplaceACL` | `carrackctl acl show`, `carrackctl acl replace` |
-| Placement inspection and replace-all | Yes | `Placements`, `ReplacePlacements` | `carrackctl placement list`, `carrackctl placement replace` |
-| Recursive verified namespace prefetch | Existing directory pages | `SyncCatalog` | Hidden filesystem cache |
+| Revision-consistent directory listing | Yes | `list_path` | `carrack list` |
+| Empty child-directory creation | Yes | `mkdir` | `carrack mkdir` |
+| Attenuated child-token issue | Yes | `issue_token` | `carrackctl vfs token issue` |
+| Same-principal token revocation | Yes | `revoke_token` | `carrackctl vfs token revoke` |
+| Direct ACL inspection and principal replacement | Yes | `acl`, `replace_acl` | `carrackctl vfs acl show`, `carrackctl vfs acl replace` |
+| Placement inspection and replace-all | Yes | `placements`, `replace_placements` | `carrackctl vfs placement show`, `carrackctl vfs placement replace` |
+| Recursive verified namespace prefetch | Existing directory pages | Filesystem catalog cache | `carrack sync` uses it internally |
 | Group membership management | No | No | No |
 | Typed driver registration or credential rotation | Operator API | `AdminClient` | `carrackctl driver register`, `carrackctl driver credential set` |
 | Snapshot-pinned metadata reads | No | No | No |

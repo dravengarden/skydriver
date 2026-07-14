@@ -24,7 +24,7 @@ The current implemented V2 slice includes:
   Worker and `local-filesystem/v2` driver; and
 - revision-consistent directory reads, Merkle-linked child creation,
   attenuated token lifecycle, direct ACL replacement, and placement replace-all
-  through the Worker, Go SDK, and CLI; and
+  through the Worker, canonical Rust client, and CLIs; and
 - a private local namespace and transfer catalog keyed by authenticated roots,
   bounded concurrent prefetch, durable verified nodes and range journals,
   subtree reuse, and final live-root revalidation; and
@@ -33,9 +33,10 @@ The current implemented V2 slice includes:
   drivers the Worker cannot reach.
 
 Remaining expansion work is explicit: R2 checkpoint/delta acceleration,
-additional hosted drivers, durable Aliyun refresh-token rotation, and final
-removal of the compatibility-only Go archive surface. None changes the public
-complete-object filesystem contract.
+additional hosted drivers, production fault-injection for every lifecycle
+class, and final removal of the compatibility-only Go archive surface. Durable
+Aliyun credential rotation is already server-owned and does not change the
+public complete-object filesystem contract.
 
 ## Product boundary
 
@@ -249,10 +250,11 @@ file by default so hashing, retry, and recovery remain possible. `Get` to an
 ordinary writer similarly stages and verifies before emitting bytes unless the
 caller explicitly requests a non-resumable stream.
 
-The Go SDK exposes both high-level methods and prepare, transfer, and commit
-primitives. Callers may schedule many prepared transfers and supply their own
-source pipeline, but they cannot bypass Carrack hashing, encryption, provider
-verification, or conditional publication.
+The canonical Rust client exposes the high-level filesystem methods and owns
+prepare, transfer, and commit internally. Callers may schedule independent file
+operations and supply byte or local-file sources, but they cannot bypass
+Carrack hashing, encryption, provider verification, or conditional
+publication. The Go SDK remains only a compatibility and conformance oracle.
 
 `vfs-bootstrap-v1.md` defines the one-shot authority bootstrap.
 `vfs-put-v1.md` defines the implemented prepare, key and driver grants,
