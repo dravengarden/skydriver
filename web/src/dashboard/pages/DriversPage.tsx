@@ -44,6 +44,20 @@ interface DriversPageProps {
 
 const CREDENTIAL_EXPIRY_WARNING_SECONDS = 24 * 60 * 60;
 
+function credentialError(error: unknown): string {
+    const message = error instanceof Error ? error.message : "";
+    if (message.includes("refresh token was rejected")) {
+        return "This refresh token was rejected. Obtain a new token through OAuth and try again.";
+    }
+    if (message.includes("temporarily unavailable")) {
+        return "The authorization provider is temporarily unavailable. Your stored authorization was not changed; retry later.";
+    }
+    if (message.includes("authorization is already in progress")) {
+        return "Another authorization exchange is already running for this driver. Wait briefly, refresh, and retry only if it did not complete.";
+    }
+    return "The server rejected the authorization or its committed state could not be verified. No token was exposed.";
+}
+
 function credentialStatus(driver: DriverView, observedAt: number) {
     if (!driver.credential_present) {
         return {
@@ -680,8 +694,9 @@ export function DriversPage({
                     />
                     {(credentialValidationMutation.isError || credentialApplyMutation.isError) && (
                         <Alert severity="error" sx={{ mt: 2 }}>
-                            The server rejected the credential change or its committed state could
-                            not be verified. Close this dialog before retrying.
+                            {credentialError(
+                                credentialApplyMutation.error ?? credentialValidationMutation.error,
+                            )}
                         </Alert>
                     )}
                     {credentialValidation !== null && (

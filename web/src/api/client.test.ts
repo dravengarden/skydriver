@@ -136,6 +136,21 @@ describe("driver configuration", () => {
         expect(headers.get("Carrack-SDK-Version")).toBe("0.3.0");
         expect(JSON.stringify(validation)).not.toContain("refresh-private");
     });
+
+    it("preserves a bounded server rejection reason for operator recovery", async () => {
+        vi.stubGlobal(
+            "fetch",
+            vi
+                .fn<typeof fetch>()
+                .mockResolvedValue(
+                    new Response("refresh token was rejected by the provider\n", { status: 400 }),
+                ),
+        );
+
+        await expect(validateDriverCredential("aliyun-main", "refresh-private", 1)).rejects.toThrow(
+            "Carrack API returned 400: refresh token was rejected by the provider",
+        );
+    });
 });
 
 describe("parseHealth", () => {

@@ -345,7 +345,20 @@ async function requestJson<TSchema extends v.BaseSchema<unknown, unknown, v.Base
     headers.set("Carrack-SDK-Version", "0.3.0");
     const response = await fetch(input, { ...init, headers });
     if (!response.ok) {
-        throw new Error(`Carrack API returned ${response.status}`);
+        const detail = (await response.text())
+            .slice(0, 512)
+            .split("")
+            .map((character) => {
+                const code = character.charCodeAt(0);
+                return code < 32 || code === 127 ? " " : character;
+            })
+            .join("")
+            .trim();
+        throw new Error(
+            detail === ""
+                ? `Carrack API returned ${String(response.status)}`
+                : `Carrack API returned ${String(response.status)}: ${detail}`,
+        );
     }
 
     const body: unknown = await response.json();
