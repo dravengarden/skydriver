@@ -120,6 +120,14 @@ WHERE type = 'view' AND name IN (
 INSERT INTO vfs_v2_protocol_assertions
 SELECT COUNT(*) = 3 FROM sqlite_schema
 WHERE type = 'trigger' AND name IN (
+  'protect_vfs_location_delete_task_identity',
+  'validate_vfs_location_delete_task_transition',
+  'validate_completed_vfs_location_delete_task'
+);
+
+INSERT INTO vfs_v2_protocol_assertions
+SELECT COUNT(*) = 3 FROM sqlite_schema
+WHERE type = 'trigger' AND name IN (
   'validate_vfs_version_origin_insert',
   'protect_vfs_version_origin_update',
   'require_vfs_version_origin_for_publication'
@@ -717,6 +725,57 @@ expect_failure \
    SET directory_id = '$root_a'
    WHERE version_id = '$version_b';" \
   "mutation of immutable VFS version origin"
+
+execute "
+UPDATE vfs_locations
+SET state = 'tombstoned', delete_after = unixepoch() + 3600,
+    revision = revision + 1, updated_at = unixepoch()
+WHERE id = '$location_b';
+INSERT INTO vfs_location_delete_tasks (
+  id, expected_location_revision, driver_id, driver_revision, storage_key,
+  native_id, provider_version, etag, size_bytes, delete_after, created_at, updated_at
+) SELECT location.id, location.revision, location.driver_id, driver.revision,
+         location.storage_key, location.native_id, location.provider_version,
+         location.etag, location.size_bytes, location.delete_after,
+         unixepoch(), unixepoch()
+  FROM vfs_locations AS location
+  JOIN driver_instances AS driver ON driver.id = location.driver_id
+ WHERE location.id = '$location_b';
+"
+
+expect_failure \
+  "UPDATE vfs_location_delete_tasks
+   SET driver_revision = driver_revision + 1
+   WHERE id = '$location_b';" \
+  "mutation of immutable lifecycle task identity"
+
+expect_failure \
+  "UPDATE vfs_location_delete_tasks
+   SET state = 'blocked', last_error_code = 'unsafe', updated_at = unixepoch()
+   WHERE id = '$location_b';" \
+  "lifecycle task bypassing a fenced claim"
+
+execute "
+UPDATE vfs_location_delete_tasks
+SET state = 'claimed', fencing_token = fencing_token + 1,
+    lease_expires_at = unixepoch() + 120, attempt_count = attempt_count + 1,
+    updated_at = unixepoch()
+WHERE id = '$location_b';
+"
+
+expect_failure \
+  "UPDATE vfs_location_delete_tasks
+   SET state = 'deleted', lease_expires_at = NULL,
+       completed_at = unixepoch(), updated_at = unixepoch()
+   WHERE id = '$location_b';" \
+  "lifecycle completion before the exact location is deleted"
+
+execute "
+UPDATE vfs_location_delete_tasks
+SET state = 'blocked', lease_expires_at = NULL,
+    last_error_code = 'fault_injection_complete', updated_at = unixepoch()
+WHERE id = '$location_b';
+"
 
 execute "
 INSERT INTO vfs_v2_protocol_assertions

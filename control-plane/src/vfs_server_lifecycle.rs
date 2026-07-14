@@ -104,23 +104,60 @@ async fn delete_one_abandoned_put(env: &Env, database: &D1Database, now: u64) ->
     if changes(claim.meta()?) != 1 {
         return Ok(());
     }
+    let Some(fencing_token) =
+        load_claim_fencing(database, "vfs_put_delete_tasks", &id, now).await?
+    else {
+        return Ok(());
+    };
     let Some(task) = load_abandoned_put(database, &id, now).await? else {
-        fail_abandoned_put(database, &id, now, "revalidation_failed", false).await?;
+        fail_abandoned_put(
+            database,
+            &id,
+            fencing_token,
+            now,
+            "revalidation_failed",
+            false,
+        )
+        .await?;
         return Ok(());
     };
     if task.kind == "local-filesystem/v2" {
-        fail_abandoned_put(database, &id, now, "server_cannot_reach_local_driver", true).await?;
+        fail_abandoned_put(
+            database,
+            &id,
+            task.fencing_token,
+            now,
+            "server_cannot_reach_local_driver",
+            true,
+        )
+        .await?;
         return Ok(());
     }
     if task.kind != "aliyundrive-open/v2" {
-        fail_abandoned_put(database, &id, now, "unsupported_server_delete_driver", true).await?;
+        fail_abandoned_put(
+            database,
+            &id,
+            task.fencing_token,
+            now,
+            "unsupported_server_delete_driver",
+            true,
+        )
+        .await?;
         return Ok(());
     }
     match delete_aliyun(env, &task).await {
         Ok(()) => complete_abandoned_put(database, &task, now).await,
         Err(error) => {
             worker::console_error!("server abandoned-Put delete {} failed: {error:?}", task.id);
-            fail_abandoned_put(database, &id, now, "provider_delete_failed", false).await
+            fail_abandoned_put(
+                database,
+                &id,
+                task.fencing_token,
+                now,
+                "provider_delete_failed",
+                false,
+            )
+            .await
         }
     }
 }
@@ -178,6 +215,7 @@ async fn complete_abandoned_put(database: &D1Database, task: &DeleteTask, now: u
 async fn fail_abandoned_put(
     database: &D1Database,
     id: &str,
+    fencing_token: u64,
     now: u64,
     code: &str,
     blocked: bool,
@@ -189,13 +227,14 @@ async fn fail_abandoned_put(
                  lease_expires_at = NULL, last_error_code = ?1,
                  server_blocked_at = CASE WHEN ?2 = 1 THEN ?3 ELSE NULL END,
                  updated_at = ?3
-             WHERE id = ?4 AND state = 'claimed'",
+             WHERE id = ?4 AND state = 'claimed' AND fencing_token = ?5",
         )
         .bind(&[
             JsValue::from_str(code),
             integer(u64::from(blocked)),
             integer(now),
             JsValue::from_str(id),
+            integer(fencing_token),
         ])?
         .run()
         .await?;
@@ -287,14 +326,28 @@ async fn delete_one(env: &Env, database: &D1Database, now: u64) -> Result<()> {
     if changes(claim.meta()?) != 1 {
         return Ok(());
     }
+    let Some(fencing_token) =
+        load_claim_fencing(database, "vfs_location_delete_tasks", &id, now).await?
+    else {
+        return Ok(());
+    };
     let Some(task) = load_revalidated(database, &id, now).await? else {
-        fail(database, &id, now, "revalidation_failed", "blocked").await?;
+        fail(
+            database,
+            &id,
+            fencing_token,
+            now,
+            "revalidation_failed",
+            "blocked",
+        )
+        .await?;
         return Ok(());
     };
     if task.kind == "local-filesystem/v2" {
         fail(
             database,
             &id,
+            task.fencing_token,
             now,
             "server_cannot_reach_local_driver",
             "blocked",
@@ -306,6 +359,7 @@ async fn delete_one(env: &Env, database: &D1Database, now: u64) -> Result<()> {
         fail(
             database,
             &id,
+            task.fencing_token,
             now,
             "unsupported_server_delete_driver",
             "blocked",
@@ -318,7 +372,15 @@ async fn delete_one(env: &Env, database: &D1Database, now: u64) -> Result<()> {
         Ok(()) => complete(database, &task, now).await,
         Err(error) => {
             worker::console_error!("server lifecycle delete {} failed: {error:?}", task.id);
-            fail(database, &task.id, now, "provider_delete_failed", "retry").await
+            fail(
+                database,
+                &task.id,
+                task.fencing_token,
+                now,
+                "provider_delete_failed",
+                "retry",
+            )
+            .await
         }
     }
 }
@@ -449,27 +511,58 @@ async fn aliyun_post<T: for<'de> Deserialize<'de>>(
 }
 
 async fn complete(database: &D1Database, task: &DeleteTask, now: u64) -> Result<()> {
-    let location = database
-        .prepare(
+    let results = database
+        .batch(vec![
+            database
+                .prepare(
             "UPDATE vfs_locations SET state = 'deleted', revision = revision + 1, updated_at = ?1
              WHERE id = ?2 AND state = 'tombstoned' AND revision = ?3
+               AND EXISTS (
+                   SELECT 1 FROM vfs_location_delete_tasks AS task
+                   WHERE task.id = ?2 AND task.state = 'claimed'
+                     AND task.fencing_token = ?4 AND task.lease_expires_at > ?1
+                     AND task.expected_location_revision = ?3
+               )
                AND NOT EXISTS (
                    SELECT 1 FROM vfs_read_leases AS lease
                    WHERE lease.location_id = ?2 AND lease.completed_at IS NULL
                      AND lease.expires_at > ?1
                )",
-        )
-        .bind(&[
-            integer(now),
-            JsValue::from_str(&task.id),
-            integer(task.expected_location_revision),
-        ])?
-        .run()
+                )
+                .bind(&[
+                    integer(now),
+                    JsValue::from_str(&task.id),
+                    integer(task.expected_location_revision),
+                    integer(task.fencing_token),
+                ])?,
+            database
+                .prepare(
+                    "UPDATE vfs_location_delete_tasks
+                     SET state = 'deleted', lease_expires_at = NULL,
+                         completed_at = ?1, updated_at = ?1
+                     WHERE id = ?2 AND state = 'claimed' AND fencing_token = ?3
+                       AND EXISTS (
+                           SELECT 1 FROM vfs_locations AS location
+                           WHERE location.id = ?2 AND location.state = 'deleted'
+                             AND location.revision = expected_location_revision + 1
+                       )",
+                )
+                .bind(&[
+                    integer(now),
+                    JsValue::from_str(&task.id),
+                    integer(task.fencing_token),
+                ])?,
+        ])
         .await?;
-    if changes(location.meta()?) != 1 {
+    let mut committed = results.len() == 2;
+    for result in &results {
+        committed &= changes(result.meta()?) == 1;
+    }
+    if !committed {
         fail(
             database,
             &task.id,
+            task.fencing_token,
             now,
             "completion_fence_changed",
             "blocked",
@@ -477,38 +570,62 @@ async fn complete(database: &D1Database, task: &DeleteTask, now: u64) -> Result<
         .await?;
         return Ok(());
     }
-    database
-        .prepare(
-            "UPDATE vfs_location_delete_tasks
-         SET state = 'deleted', lease_expires_at = NULL, completed_at = ?1, updated_at = ?1
-         WHERE id = ?2 AND state = 'claimed' AND fencing_token = ?3",
-        )
-        .bind(&[
-            integer(now),
-            JsValue::from_str(&task.id),
-            integer(task.fencing_token),
-        ])?
-        .run()
-        .await?;
     Ok(())
 }
 
-async fn fail(database: &D1Database, id: &str, now: u64, code: &str, state: &str) -> Result<()> {
+async fn fail(
+    database: &D1Database,
+    id: &str,
+    fencing_token: u64,
+    now: u64,
+    code: &str,
+    state: &str,
+) -> Result<()> {
     database
         .prepare(
             "UPDATE vfs_location_delete_tasks
          SET state = ?1, lease_expires_at = NULL, last_error_code = ?2, updated_at = ?3
-         WHERE id = ?4 AND state = 'claimed'",
+         WHERE id = ?4 AND state = 'claimed' AND fencing_token = ?5",
         )
         .bind(&[
             JsValue::from_str(state),
             JsValue::from_str(code),
             integer(now),
             JsValue::from_str(id),
+            integer(fencing_token),
         ])?
         .run()
         .await?;
     Ok(())
+}
+
+async fn load_claim_fencing(
+    database: &D1Database,
+    table: &str,
+    id: &str,
+    now: u64,
+) -> Result<Option<u64>> {
+    let query = match table {
+        "vfs_put_delete_tasks" => {
+            "SELECT fencing_token FROM vfs_put_delete_tasks
+             WHERE id = ?1 AND state = 'claimed' AND lease_expires_at > ?2"
+        }
+        "vfs_location_delete_tasks" => {
+            "SELECT fencing_token FROM vfs_location_delete_tasks
+             WHERE id = ?1 AND state = 'claimed' AND lease_expires_at > ?2"
+        }
+        _ => {
+            return Err(worker::Error::RustError(
+                "invalid lifecycle task table".to_owned(),
+            ));
+        }
+    };
+    database
+        .prepare(query)
+        .bind(&[JsValue::from_str(id), integer(now)])?
+        .first::<serde_json::Value>(Some("fencing_token"))
+        .await
+        .map(|value| value.and_then(|value| value.as_u64()))
 }
 
 fn integer(value: u64) -> JsValue {
