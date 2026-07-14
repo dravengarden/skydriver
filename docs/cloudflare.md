@@ -189,14 +189,15 @@ still authorize the wider drive. Store each environment's encrypted credential
 in its own D1 database, use only the dev root for provider experiments, and do
 not register or enable the production root until its own acceptance gate.
 
-An out-of-band OAuth helper may bootstrap an Aliyun access and refresh token
-bundle. Carrack never links to, launches, or routes payloads through OpenList,
-but the control plane may use the typed `openlist-online/v1` issuer to renew the
-same OAuth bundle. Both tokens remain in the authenticated encrypted D1
-envelope; filesystem grants project only the access token. Cron renews before
-expiry with a D1 lease and fencing token. A permanent rejection becomes
-`reauth_required`; repeat interactive authorization and replace the write-only
-credential through `carrackctl`. Never put recovery material in Git.
+An out-of-band OAuth helper may bootstrap an Aliyun refresh token. Carrack
+never links to, launches, or routes payloads through OpenList, but the control
+plane may use the typed `openlist-online/v1` issuer to exchange and renew that
+authority. The control plane derives access tokens internally; both tokens then
+remain in the authenticated encrypted D1 envelope, while filesystem grants
+project only the access token. Cron renews before expiry with a D1 lease and
+fencing token. A permanent rejection becomes `reauth_required`; repeat
+interactive authorization and replace the write-only refresh token through
+`carrackctl`. Never put recovery material in Git.
 
 ## Garbage collection
 

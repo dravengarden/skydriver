@@ -519,9 +519,12 @@ invalidate immutable transfer plans or server deletion fences. Transient
 provider failures use bounded exponential backoff; rejected authority enters
 `reauth_required` and cannot produce a near-expiry driver grant.
 
-The management UI and `carrackctl` only import the initial write-only OAuth
-bundle or repair a revoked bundle. Ordinary `carrack` commands and SDK methods
-contain no renewal API or token-lifecycle state.
+The management UI and `carrackctl` only import the initial write-only refresh
+authority or repair revoked authority. A separate D1 lease fences the provider
+exchange so concurrent configuration requests cannot rotate the same refresh
+token twice. The control plane derives and stores access tokens internally.
+Ordinary `carrack` commands and SDK methods contain no renewal API or
+token-lifecycle state.
 
 ### Distributed rate coordination
 

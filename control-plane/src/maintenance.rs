@@ -4,6 +4,7 @@ use crate::{driver_credentials, vfs_server_lifecycle};
 
 const DATABASE_BINDING: &str = "CARRACK_INDEX";
 const MAXIMUM_EXPIRED_SESSIONS_PER_RUN: u64 = 500;
+const MAXIMUM_EXPIRED_AUTHORIZATION_CLAIMS_PER_RUN: u64 = 250;
 const MAXIMUM_EXPIRED_PUTS_PER_RUN: u64 = 250;
 const MAXIMUM_EXPIRED_READ_LEASES_PER_RUN: u64 = 1_000;
 const VFS_PUT_DELETE_GRACE_SECONDS: u64 = 86_400;
@@ -18,6 +19,7 @@ const READ_LEASE_EVIDENCE_SECONDS: u64 = 7 * 86_400;
 pub(crate) async fn run(env: &Env) -> Result<()> {
     let now = worker::Date::now().as_millis() / 1_000;
     let database = env.d1(DATABASE_BINDING)?;
+    delete_expired_authorization_claims(&database, now).await?;
 
     database
         .batch(vec![
@@ -104,5 +106,27 @@ pub(crate) async fn run(env: &Env) -> Result<()> {
     driver_credentials::run(env, now).await?;
     vfs_server_lifecycle::run(env, now).await?;
 
+    Ok(())
+}
+
+async fn delete_expired_authorization_claims(
+    database: &worker::D1Database,
+    now: u64,
+) -> Result<()> {
+    database
+        .prepare(
+            "DELETE FROM driver_authorization_claims
+             WHERE driver_id IN (
+                 SELECT driver_id FROM driver_authorization_claims
+                 WHERE lease_expires_at <= ?1
+                 ORDER BY lease_expires_at LIMIT ?2
+             )",
+        )
+        .bind(&[
+            JsValue::from_str(&now.to_string()),
+            JsValue::from_str(&MAXIMUM_EXPIRED_AUTHORIZATION_CLAIMS_PER_RUN.to_string()),
+        ])?
+        .run()
+        .await?;
     Ok(())
 }

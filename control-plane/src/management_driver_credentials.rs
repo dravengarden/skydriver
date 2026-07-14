@@ -20,6 +20,7 @@ const VALIDATION_LIFETIME_SECONDS: u64 = 5 * 60;
 const CREDENTIAL_KIND: &str = "driver.credential";
 const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.driver-credential.v1\0";
 const ALIYUN_DRIVE_KIND: &str = "aliyundrive-open/v2";
+const AUTHORIZATION_CLAIM_SECONDS: u64 = 5 * 60;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -62,6 +63,14 @@ struct ReceiptRow {
     request_sha256: String,
     validation_digest: String,
     result_json: String,
+}
+
+#[derive(Deserialize)]
+struct AuthorizationClaimRow {
+    idempotency_key: String,
+    validation_digest: String,
+    fencing_token: u64,
+    lease_expires_at: u64,
 }
 
 #[derive(Serialize)]
@@ -229,6 +238,19 @@ pub(crate) async fn apply(
         return Response::error("driver kind does not accept this credential", 409);
     }
 
+    let Some(authorization_fence) = claim_authorization(
+        &database,
+        driver_id,
+        desired.expected_revision,
+        &requested.validation_digest,
+        &requested.idempotency_key,
+        now,
+    )
+    .await?
+    else {
+        return Response::error("driver authorization is already in progress", 409);
+    };
+
     let credential = match driver_credentials::authorize_refresh_token(
         &desired.credential.refresh_token,
         &desired.credential.refresh_issuer,
@@ -237,9 +259,23 @@ pub(crate) async fn apply(
     {
         Ok(credential) => credential,
         Err(RefreshFailure::Reauthenticate(_)) => {
+            release_authorization(
+                &database,
+                driver_id,
+                authorization_fence,
+                &requested.idempotency_key,
+            )
+            .await?;
             return Response::error("refresh token was rejected by the provider", 400);
         }
         Err(RefreshFailure::Retry(_)) => {
+            release_authorization(
+                &database,
+                driver_id,
+                authorization_fence,
+                &requested.idempotency_key,
+            )
+            .await?;
             return Response::error("provider authorization is temporarily unavailable", 503);
         }
     };
@@ -371,6 +407,16 @@ pub(crate) async fn apply(
             refresh_statement,
             database
                 .prepare(
+                    "DELETE FROM driver_authorization_claims
+                     WHERE driver_id = ?1 AND fencing_token = ?2 AND idempotency_key = ?3",
+                )
+                .bind(&[
+                    JsValue::from_str(driver_id),
+                    JsValue::from_str(&authorization_fence.to_string()),
+                    JsValue::from_str(&requested.idempotency_key),
+                ])?,
+            database
+                .prepare(
                     r"INSERT INTO management_mutation_receipts (
                          operation_id, operator_subject, kind, resource_id, idempotency_key,
                          request_sha256, expected_revision, final_revision, validation_digest,
@@ -428,6 +474,76 @@ pub(crate) async fn apply(
     }
 
     no_store_json(&receipt)
+}
+
+async fn claim_authorization(
+    database: &worker::D1Database,
+    driver_id: &str,
+    expected_revision: u64,
+    validation_digest: &str,
+    idempotency_key: &str,
+    now: u64,
+) -> Result<Option<u64>> {
+    database
+        .prepare(
+            r"INSERT INTO driver_authorization_claims (
+                 driver_id, expected_driver_revision, validation_digest,
+                 idempotency_key, lease_expires_at, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+             ON CONFLICT(driver_id) DO UPDATE SET
+                 expected_driver_revision = excluded.expected_driver_revision,
+                 validation_digest = excluded.validation_digest,
+                 idempotency_key = excluded.idempotency_key,
+                 fencing_token = driver_authorization_claims.fencing_token + 1,
+                 lease_expires_at = excluded.lease_expires_at,
+                 updated_at = excluded.updated_at
+             WHERE driver_authorization_claims.lease_expires_at <= excluded.updated_at",
+        )
+        .bind(&[
+            JsValue::from_str(driver_id),
+            JsValue::from_str(&expected_revision.to_string()),
+            JsValue::from_str(validation_digest),
+            JsValue::from_str(idempotency_key),
+            JsValue::from_str(&(now + AUTHORIZATION_CLAIM_SECONDS).to_string()),
+            JsValue::from_str(&now.to_string()),
+        ])?
+        .run()
+        .await?;
+    let claim = database
+        .prepare(
+            "SELECT idempotency_key, validation_digest, fencing_token, lease_expires_at
+             FROM driver_authorization_claims WHERE driver_id = ?1",
+        )
+        .bind(&[JsValue::from_str(driver_id)])?
+        .first::<AuthorizationClaimRow>(None)
+        .await?;
+    Ok(claim.and_then(|claim| {
+        (claim.idempotency_key == idempotency_key
+            && claim.validation_digest == validation_digest
+            && claim.lease_expires_at > now)
+            .then_some(claim.fencing_token)
+    }))
+}
+
+async fn release_authorization(
+    database: &worker::D1Database,
+    driver_id: &str,
+    fencing_token: u64,
+    idempotency_key: &str,
+) -> Result<()> {
+    database
+        .prepare(
+            "DELETE FROM driver_authorization_claims
+             WHERE driver_id = ?1 AND fencing_token = ?2 AND idempotency_key = ?3",
+        )
+        .bind(&[
+            JsValue::from_str(driver_id),
+            JsValue::from_str(&fencing_token.to_string()),
+            JsValue::from_str(idempotency_key),
+        ])?
+        .run()
+        .await?;
+    Ok(())
 }
 
 async fn load_driver(database: &worker::D1Database, driver_id: &str) -> Result<Option<DriverRow>> {
