@@ -4,7 +4,7 @@ use worker::{Date, Env, Response, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
 
 use crate::{
-    vfs_access,
+    driver_credentials, vfs_access,
     vfs_envelopes::{
         DirectoryEnvelopeRef, PLAINTEXT_SUITE, open_directory_key, open_driver_credential,
     },
@@ -52,6 +52,7 @@ struct DownloadRow {
     credential_nonce: Option<Vec<u8>>,
     credential_ciphertext: Option<Vec<u8>>,
     credential_revision: Option<u64>,
+    credential_expires_at: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -105,9 +106,20 @@ pub(crate) async fn plan(
         return Response::error("invalid VFS version ID", 400);
     }
     let database = env.d1("CARRACK_INDEX")?;
-    let Some(row) = load(&database, version_id).await? else {
+    let Some(mut row) = load(&database, version_id).await? else {
         return Response::error("published VFS version was not found", 404);
     };
+    if let Some(expires_at) = row.credential_expires_at
+        && expires_at <= Date::now().as_millis() / 1_000 + 5 * 60
+    {
+        if !driver_credentials::ensure_fresh(env, &row.driver_id, expires_at).await? {
+            return Response::error("download driver credential requires reauthentication", 503);
+        }
+        let Some(reloaded) = load(&database, version_id).await? else {
+            return Response::error("download location changed during credential renewal", 409);
+        };
+        row = reloaded;
+    }
     if !vfs_access::authorized(
         &database,
         token,
@@ -285,7 +297,8 @@ async fn load(database: &worker::D1Database, version_id: &str) -> Result<Option<
                     credential.key_version AS credential_key_version,
                     credential.nonce AS credential_nonce,
                     credential.ciphertext AS credential_ciphertext,
-                    credential.revision AS credential_revision
+                    credential.revision AS credential_revision,
+                    credential.expires_at AS credential_expires_at
              FROM vfs_file_versions AS version
              JOIN vfs_files AS file ON file.id = version.file_id
              JOIN vfs_version_origins AS origin ON origin.version_id = version.id
@@ -359,9 +372,10 @@ fn decrypt_credential(env: &Env, row: &DownloadRow) -> Result<Option<serde_json:
     };
     let mut plaintext =
         open_driver_credential(env, id, revision, algorithm, version, nonce, ciphertext)?;
-    let decoded = serde_json::from_slice(&plaintext).map_err(|error| {
-        worker::Error::RustError(format!("decode download driver credential: {error}"))
-    });
+    let decoded = driver_credentials::access_grant_from_plaintext(&row.driver_kind, &plaintext)
+        .map_err(|error| {
+            worker::Error::RustError(format!("decode download driver credential: {error}"))
+        });
     plaintext.zeroize();
     Ok(Some(decoded?))
 }

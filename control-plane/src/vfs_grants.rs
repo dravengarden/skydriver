@@ -4,6 +4,7 @@ use worker::{D1Database, Date, Env, Response, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
 
 use crate::{
+    driver_credentials,
     vfs_envelopes::{
         DirectoryEnvelopeRef, PLAINTEXT_SUITE, open_directory_key, open_driver_credential,
     },
@@ -40,6 +41,7 @@ struct PutGrantRow {
     credential_nonce: Option<Vec<u8>>,
     credential_ciphertext: Option<Vec<u8>>,
     credential_revision: Option<u64>,
+    credential_expires_at: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -57,6 +59,7 @@ struct PutDeleteGrantRow {
     credential_nonce: Option<Vec<u8>>,
     credential_ciphertext: Option<Vec<u8>>,
     credential_revision: Option<u64>,
+    credential_expires_at: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -105,9 +108,20 @@ pub(crate) async fn grant_put_key(
     intent_id: &str,
 ) -> Result<Response> {
     let database = env.d1("CARRACK_INDEX")?;
-    let Some(context) = load_context(&database, intent_id).await? else {
+    let Some(mut context) = load_context(&database, intent_id).await? else {
         return Response::error("VFS put intent was not found", 404);
     };
+    if let Some(expires_at) = context.credential_expires_at
+        && expires_at <= current_unix_seconds() + 5 * 60
+    {
+        if !driver_credentials::ensure_fresh(env, &context.driver_id, expires_at).await? {
+            return Response::error("VFS driver credential requires reauthentication", 503);
+        }
+        let Some(reloaded) = load_context(&database, intent_id).await? else {
+            return Response::error("VFS put intent changed during credential renewal", 409);
+        };
+        context = reloaded;
+    }
     if !grant_allowed(&database, token, &context).await? {
         return Response::error("VFS directory-key grant is not authorized", 403);
     }
@@ -220,9 +234,23 @@ pub(crate) async fn grant_put_delete_driver(
     if !vfs_put_deletion::authorized(&database, token, task_id).await? {
         return Response::error("VFS put-delete driver grant is not authorized", 403);
     }
-    let Some(context) = load_put_delete_context(&database, token, task_id).await? else {
+    let Some(mut context) = load_put_delete_context(&database, token, task_id).await? else {
         return Response::error("VFS put-delete task has no current safe fence", 409);
     };
+    if let Some(expires_at) = context.credential_expires_at
+        && expires_at <= current_unix_seconds() + 5 * 60
+    {
+        if !driver_credentials::ensure_fresh(env, &context.driver_id, expires_at).await? {
+            return Response::error("VFS driver credential requires reauthentication", 503);
+        }
+        let Some(reloaded) = load_put_delete_context(&database, token, task_id).await? else {
+            return Response::error(
+                "VFS put-delete fence changed during credential renewal",
+                409,
+            );
+        };
+        context = reloaded;
+    }
     let config = serde_json::from_str::<serde_json::Value>(&context.driver_config_json).map_err(
         |error| {
             worker::Error::RustError(format!("decode stored VFS driver configuration: {error}"))
@@ -305,9 +333,10 @@ fn decrypt_credential(env: &Env, context: &PutGrantRow) -> Result<Option<serde_j
         nonce,
         ciphertext,
     )?;
-    let decoded = serde_json::from_slice(&plaintext).map_err(|error| {
-        worker::Error::RustError(format!("decode VFS driver credential JSON: {error}"))
-    });
+    let decoded = driver_credentials::access_grant_from_plaintext(&context.driver_kind, &plaintext)
+        .map_err(|error| {
+            worker::Error::RustError(format!("decode VFS driver credential JSON: {error}"))
+        });
     plaintext.zeroize();
     Ok(Some(decoded?))
 }
@@ -339,9 +368,10 @@ fn decrypt_put_delete_credential(
         nonce,
         ciphertext,
     )?;
-    let decoded = serde_json::from_slice(&plaintext).map_err(|error| {
-        worker::Error::RustError(format!("decode VFS driver credential JSON: {error}"))
-    });
+    let decoded = driver_credentials::access_grant_from_plaintext(&context.driver_kind, &plaintext)
+        .map_err(|error| {
+            worker::Error::RustError(format!("decode VFS driver credential JSON: {error}"))
+        });
     plaintext.zeroize();
     Ok(Some(decoded?))
 }
@@ -362,7 +392,8 @@ async fn load_context(database: &D1Database, intent_id: &str) -> Result<Option<P
                     credential.key_version AS credential_key_version,\
                     credential.nonce AS credential_nonce,\
                     credential.ciphertext AS credential_ciphertext,\
-                    credential.revision AS credential_revision \
+                    credential.revision AS credential_revision,\
+                    credential.expires_at AS credential_expires_at \
              FROM vfs_put_intents AS intent \
              JOIN driver_instances AS driver ON driver.id = intent.driver_id \
              LEFT JOIN vfs_directory_key_epochs AS key_epoch \
@@ -394,7 +425,8 @@ async fn load_put_delete_context(
                     credential.key_version AS credential_key_version,\
                     credential.nonce AS credential_nonce,\
                     credential.ciphertext AS credential_ciphertext,\
-                    credential.revision AS credential_revision \
+                    credential.revision AS credential_revision,\
+                    credential.expires_at AS credential_expires_at \
              FROM vfs_put_delete_tasks AS task \
              JOIN vfs_put_intents AS intent ON intent.id = task.id \
              JOIN driver_instances AS driver ON driver.id = intent.driver_id \

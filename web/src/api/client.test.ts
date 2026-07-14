@@ -123,14 +123,18 @@ describe("driver configuration", () => {
         const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(Response.json(validation));
         vi.stubGlobal("fetch", fetchMock);
 
-        await expect(validateDriverCredential("aliyun-main", "private-token", 1)).resolves.toEqual(
-            validation,
-        );
+        await expect(
+            validateDriverCredential("aliyun-main", "private-token", "refresh-private", 1),
+        ).resolves.toEqual(validation);
         const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
-        expect(body.credential).toEqual({ access_token: "private-token" });
+        expect(body.credential).toEqual({
+            access_token: "private-token",
+            refresh_token: "refresh-private",
+            refresh_issuer: "openlist-online/v1",
+        });
         const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
         expect(headers.get("Carrack-Protocol-Epoch")).toBe("2");
-        expect(headers.get("Carrack-SDK-Version")).toBe("0.2.0");
+        expect(headers.get("Carrack-SDK-Version")).toBe("0.3.0");
         expect(JSON.stringify(validation)).not.toContain("private-token");
     });
 });

@@ -8,7 +8,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{Client, Error, MAXIMUM_CONTROL_BODY_BYTES, PROTOCOL_EPOCH, SDK_VERSION, decode_json};
 
-const SNAPSHOT_SCHEMA: &str = "carrack.management.snapshot.v1";
+const SNAPSHOT_SCHEMA: &str = "carrack.management.snapshot.v2";
 const DIRECTORY_SCHEMA: &str = "carrack.management.directory.v1";
 const TOKEN_ANNOTATION_VALIDATION_SCHEMA: &str =
     "carrack.management.token-annotation-validation.v1";
@@ -71,6 +71,10 @@ pub struct ManagementDriver {
     pub credential_present: bool,
     pub credential_rotated_at: Option<u64>,
     pub credential_expires_at: Option<u64>,
+    pub credential_refresh_state: Option<String>,
+    pub credential_refresh_after: Option<u64>,
+    pub credential_refresh_last_succeeded_at: Option<u64>,
+    pub credential_refresh_last_error_code: Option<String>,
     pub placement_count: u64,
     pub location_count: u64,
     pub available_location_count: u64,

@@ -104,14 +104,26 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
   HTTP, and supported cloud drives. Local filesystems are client-side external
   sources or destinations, not hosted VFS backends.
 - OpenList MAY be used as a reviewed behavioral reference for consumer cloud
-  drives. OpenList code, modules, servers, WebDAV endpoints, and runtime
-  processes MUST NOT be dependencies of Carrack clients or deployments.
+  drives. Its OAuth broker MAY be configured as a control-plane-only token
+  issuer when Carrack has no provider application credential. OpenList code,
+  modules, storage servers, WebDAV endpoints, and runtime processes MUST NOT be
+  dependencies of Carrack clients or the payload data path.
 - Drivers MUST advertise capabilities, size limits, checksum support,
   resumability, safe concurrency, and rate-limit constraints.
 - Hosted access-token credentials MUST expose a non-secret absolute expiry when
   the provider token carries one. The server MUST reject malformed or expired
   credentials before persistence, and management clients MUST warn before
   expiry without ever returning credential material.
+- Refresh authority MUST remain inside an authenticated encrypted control-plane
+  envelope. Filesystem SDKs and the `carrack` CLI MUST receive only access
+  credentials, MUST NOT receive refresh tokens, and MUST NOT implement renewal.
+- Credential renewal MUST use a D1 CAS lease and fencing token, rotate the
+  encrypted access and refresh tokens in one D1 batch, validate provider
+  identity and expiry before commit, retry transient failures with bounded
+  backoff, and fail closed as `reauth_required` after permanent rejection.
+- Cron MUST renew hosted credentials proactively. A transfer grant MUST also
+  refuse an access token with less than five minutes of validity unless the
+  control plane first completes a fenced renewal.
 - Provider-object grouping MUST use only whole consecutive extents, respect a
   driver's hard maximum, and emit an exact short tail. Changing provider-object
   policy MUST NOT change bundle, frame, extent, or ciphertext identities.

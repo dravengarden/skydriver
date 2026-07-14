@@ -4,7 +4,7 @@ set -euo pipefail
 curl() {
   command curl \
     --header "Carrack-Protocol-Epoch: 2" \
-    --header "Carrack-SDK-Version: 0.2.0" \
+    --header "Carrack-SDK-Version: 0.3.0" \
     "$@"
 }
 

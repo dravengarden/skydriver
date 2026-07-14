@@ -503,6 +503,26 @@ material allow the index to be rebuilt. A per-namespace Durable Object may
 reduce hot-key contention, but D1 conditional writes remain the live mutation
 boundary; Durable Object eviction cannot weaken the protocol.
 
+### Server-owned credential renewal
+
+Hosted provider credentials use one authenticated encrypted envelope containing
+the access token and, when available, the refresh token plus a typed issuer.
+The public filesystem SDK never sees that envelope. Download and upload grants
+project it to the least-authority access-token object before serialization.
+
+Cron claims due renewals from `driver_credential_refreshes` using a short D1
+lease and monotonically increasing fencing token. The Worker validates the new
+JWT subject, audience, and expiry, then atomically replaces the encrypted
+envelope and advances the observed credential revision. A refresh does not
+change the driver revision: provider authentication maintenance must not
+invalidate immutable transfer plans or server deletion fences. Transient
+provider failures use bounded exponential backoff; rejected authority enters
+`reauth_required` and cannot produce a near-expiry driver grant.
+
+The management UI and `carrackctl` only import the initial write-only OAuth
+bundle or repair a revoked bundle. Ordinary `carrack` commands and SDK methods
+contain no renewal API or token-lifecycle state.
+
 ### Distributed rate coordination
 
 Local driver limiters are insufficient when many SDK instances share one cloud

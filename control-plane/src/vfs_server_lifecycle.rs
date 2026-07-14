@@ -7,7 +7,7 @@ use worker::{
 };
 use zeroize::Zeroize as _;
 
-use crate::vfs_envelopes::open_driver_credential;
+use crate::{driver_credentials::AliyunCredential, vfs_envelopes::open_driver_credential};
 
 const MAXIMUM_MARKS_PER_RUN: u64 = 100;
 const MAXIMUM_TASKS_PER_RUN: u64 = 100;
@@ -38,12 +38,6 @@ struct AliyunConfig {
     drive_type: String,
     root_folder_id: String,
     upload_part_bytes: u64,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AliyunCredential {
-    access_token: String,
 }
 
 #[derive(Deserialize)]

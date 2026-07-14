@@ -1,6 +1,6 @@
 use worker::{Env, Result, wasm_bindgen::JsValue};
 
-use crate::vfs_server_lifecycle;
+use crate::{driver_credentials, vfs_server_lifecycle};
 
 const DATABASE_BINDING: &str = "CARRACK_INDEX";
 const MAXIMUM_EXPIRED_SESSIONS_PER_RUN: u64 = 500;
@@ -101,6 +101,7 @@ pub(crate) async fn run(env: &Env) -> Result<()> {
         ])
         .await?;
 
+    driver_credentials::run(env, now).await?;
     vfs_server_lifecycle::run(env, now).await?;
 
     Ok(())

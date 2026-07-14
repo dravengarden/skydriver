@@ -42,7 +42,7 @@ func TestControlClientAuthenticatesWithoutLeakingTokenToHealth(t *testing.T) {
 				t.Error("session request did not send the expected bearer token")
 			}
 
-			_, _ = response.Write([]byte(`{"id":"client-1","name":"hawk","sdk_version":"0.2.0"}`))
+			_, _ = response.Write([]byte(`{"id":"client-1","name":"hawk","sdk_version":"0.3.0"}`))
 		default:
 			http.NotFound(response, request)
 		}

@@ -59,6 +59,20 @@ function credentialStatus(driver: DriverView, observedAt: number) {
             label: "Credential sealed",
         } as const;
     }
+    if (driver.credential_refresh_state === "reauth_required") {
+        return {
+            color: "error",
+            icon: <WarningAmberOutlinedIcon />,
+            label: "Reauthentication required",
+        } as const;
+    }
+    if (driver.credential_refresh_state === "retry") {
+        return {
+            color: "warning",
+            icon: <WarningAmberOutlinedIcon />,
+            label: "Renewal retry scheduled",
+        } as const;
+    }
     if (driver.credential_expires_at === null) {
         return {
             color: "warning",
@@ -83,7 +97,10 @@ function credentialStatus(driver: DriverView, observedAt: number) {
     return {
         color: "success",
         icon: <CheckCircleOutlineIcon />,
-        label: `Sealed · expires ${formatDate(driver.credential_expires_at)}`,
+        label:
+            driver.credential_refresh_state === null
+                ? `Manual · expires ${formatDate(driver.credential_expires_at)}`
+                : `Auto-renew · expires ${formatDate(driver.credential_expires_at)}`,
     } as const;
 }
 
@@ -97,6 +114,7 @@ export function DriversPage({
     const [validation, setValidation] = useState<DriverStateValidation | null>(null);
     const [credentialTarget, setCredentialTarget] = useState<DriverView | null>(null);
     const [accessToken, setAccessToken] = useState("");
+    const [refreshToken, setRefreshToken] = useState("");
     const [credentialValidation, setCredentialValidation] =
         useState<DriverCredentialValidation | null>(null);
     const [registrationOpen, setRegistrationOpen] = useState(false);
@@ -128,12 +146,12 @@ export function DriversPage({
     });
     const credentialValidationMutation = useMutation({
         mutationFn: (driver: DriverView) =>
-            validateDriverCredential(driver.id, accessToken, driver.revision),
+            validateDriverCredential(driver.id, accessToken, refreshToken, driver.revision),
         onSuccess: setCredentialValidation,
     });
     const credentialApplyMutation = useMutation({
         mutationFn: async (desired: DriverCredentialValidation) => {
-            const receipt = await applyDriverCredential(desired, accessToken);
+            const receipt = await applyDriverCredential(desired, accessToken, refreshToken);
             const refreshed = await queryClient.fetchQuery({
                 queryKey: ["management-snapshot"],
                 queryFn: fetchManagementSnapshot,
@@ -202,6 +220,7 @@ export function DriversPage({
     function closeCredentialDialog() {
         setCredentialTarget(null);
         setAccessToken("");
+        setRefreshToken("");
         setCredentialValidation(null);
         credentialValidationMutation.reset();
         credentialApplyMutation.reset();
@@ -214,6 +233,7 @@ export function DriversPage({
         }
         setCredentialTarget(driver);
         setAccessToken("");
+        setRefreshToken("");
         setCredentialValidation(null);
         credentialValidationMutation.reset();
         credentialApplyMutation.reset();
@@ -585,8 +605,8 @@ export function DriversPage({
                 </DialogTitle>
                 <DialogContent>
                     <Alert severity="warning" sx={{ mb: 2 }}>
-                        This access token is write-only. Carrack encrypts it before persistence and
-                        never returns it in validation, receipts, snapshots, audit events, or logs.
+                        Both tokens are write-only. Carrack keeps refresh authority in the control
+                        plane; filesystem SDKs receive only short-lived access tokens.
                     </Alert>
                     <Typography sx={{ fontWeight: 800 }}>{credentialTarget?.id}</Typography>
                     <Typography color="text.secondary" variant="body2" sx={{ mb: 2 }}>
@@ -602,6 +622,17 @@ export function DriversPage({
                         value={accessToken}
                         disabled={credentialValidation !== null}
                         onChange={(event) => setAccessToken(event.target.value)}
+                    />
+                    <TextField
+                        fullWidth
+                        label="Aliyun Drive refresh token"
+                        type="password"
+                        autoComplete="new-password"
+                        value={refreshToken}
+                        disabled={credentialValidation !== null}
+                        onChange={(event) => setRefreshToken(event.target.value)}
+                        sx={{ mt: 2 }}
+                        helperText="Obtained once through OpenList OAuth; control plane renews it thereafter."
                     />
                     {(credentialValidationMutation.isError || credentialApplyMutation.isError) && (
                         <Alert severity="error" sx={{ mt: 2 }}>
@@ -641,6 +672,7 @@ export function DriversPage({
                             disabled={
                                 credentialTarget === null ||
                                 accessToken.length === 0 ||
+                                refreshToken.length === 0 ||
                                 credentialValidationMutation.isPending
                             }
                             onClick={() =>

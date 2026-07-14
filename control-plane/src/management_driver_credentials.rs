@@ -8,6 +8,7 @@ use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
 
 use crate::{
+    driver_credentials::{self, AliyunCredential},
     management_driver_registration, operator_sessions,
     vfs_envelopes::{ENVELOPE_ALGORITHM, MASTER_KEY_VERSION, blob_binding, seal_driver_credential},
     vfs_identifiers,
@@ -19,22 +20,9 @@ const VALIDATION_LIFETIME_SECONDS: u64 = 5 * 60;
 const CREDENTIAL_KIND: &str = "driver.credential";
 const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.driver-credential.v1\0";
 const ALIYUN_DRIVE_KIND: &str = "aliyundrive-open/v2";
-const MAXIMUM_ACCESS_TOKEN_BYTES: usize = 16 << 10;
 const MAXIMUM_JSON_INTEGER: u64 = (1_u64 << 53) - 1;
 
 type HmacSha256 = Hmac<Sha256>;
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct AliyunCredential {
-    access_token: String,
-}
-
-impl Drop for AliyunCredential {
-    fn drop(&mut self) {
-        self.access_token.zeroize();
-    }
-}
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -112,6 +100,9 @@ pub(crate) async fn validate(
     let Some(credential_expires_at) = credential_expiry(&requested) else {
         return Response::error("driver credential is invalid", 400);
     };
+    if !requested.credential.valid_refresh_identity() {
+        return Response::error("driver credential refresh configuration is invalid", 400);
+    }
     if credential_expires_at <= now_seconds() {
         return Response::error("driver credential is expired", 400);
     }
@@ -145,10 +136,17 @@ pub(crate) async fn validate(
         expected_revision: requested.expected_revision,
         validation_expires_at,
         validation_digest,
-        warnings: vec![
-            "The credential is write-only and cannot be recovered from Carrack after this request.",
-            "Clients holding an earlier credential grant may retain it until that grant or provider token expires.",
-        ],
+        warnings: if requested.credential.managed_issuer().is_some() {
+            vec![
+                "The credential is write-only; refresh authority remains encrypted in the control plane.",
+                "Filesystem SDKs receive only access tokens and never receive refresh tokens.",
+            ]
+        } else {
+            vec![
+                "This access-only credential cannot be renewed by the control plane.",
+                "Import a refresh_token and refresh_issuer before the access token expires.",
+            ]
+        },
     })
 }
 
@@ -175,6 +173,9 @@ pub(crate) async fn apply(
     let Some(credential_expires_at) = credential_expiry(&desired) else {
         return Response::error("driver credential apply is invalid", 400);
     };
+    if !desired.credential.valid_refresh_identity() {
+        return Response::error("driver credential refresh configuration is invalid", 400);
+    }
     if !valid_string(&requested.idempotency_key, 256) {
         return Response::error("driver credential apply is invalid", 400);
     }
@@ -287,6 +288,37 @@ pub(crate) async fn apply(
             ])?
     };
 
+    let refresh_statement = if let Some(issuer) = desired.credential.managed_issuer() {
+        database
+            .prepare(
+                r"INSERT INTO driver_credential_refreshes (
+                     credential_id, driver_id, issuer, observed_credential_revision,
+                     refresh_after, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+                 ON CONFLICT(credential_id) DO UPDATE SET
+                     driver_id = excluded.driver_id, issuer = excluded.issuer,
+                     observed_credential_revision = excluded.observed_credential_revision,
+                     state = 'ready', lease_expires_at = NULL,
+                     refresh_after = excluded.refresh_after, retry_at = NULL,
+                     attempt_count = 0, last_error_code = NULL,
+                     updated_at = excluded.updated_at",
+            )
+            .bind(&[
+                JsValue::from_str(&credential_id),
+                JsValue::from_str(driver_id),
+                JsValue::from_str(issuer),
+                JsValue::from_str(&credential_revision.to_string()),
+                JsValue::from_str(
+                    &driver_credentials::refresh_after(credential_expires_at, now).to_string(),
+                ),
+                JsValue::from_str(&now.to_string()),
+            ])?
+    } else {
+        database
+            .prepare("DELETE FROM driver_credential_refreshes WHERE credential_id = ?1")
+            .bind(&[JsValue::from_str(&credential_id)])?
+    };
+
     let mutation = database
         .batch(vec![
             credential_statement,
@@ -302,6 +334,7 @@ pub(crate) async fn apply(
                     JsValue::from_str(driver_id),
                     JsValue::from_str(&driver.revision.to_string()),
                 ])?,
+            refresh_statement,
             database
                 .prepare(
                     r"INSERT INTO management_mutation_receipts (
@@ -423,7 +456,7 @@ fn credential_expiry(requested: &CredentialRequest) -> Option<u64> {
     let token = &requested.credential.access_token;
     if requested.expected_revision == 0
         || token.is_empty()
-        || token.len() > MAXIMUM_ACCESS_TOKEN_BYTES
+        || token.len() > (16 << 10)
         || token.chars().any(char::is_control)
     {
         return None;
@@ -534,6 +567,8 @@ mod tests {
             credential_expiry(&CredentialRequest {
                 credential: AliyunCredential {
                     access_token: access_token(2_000_000_000),
+                    refresh_token: None,
+                    refresh_issuer: None,
                 },
                 expected_revision: 1,
             }),
@@ -543,6 +578,8 @@ mod tests {
             credential_expiry(&CredentialRequest {
                 credential: AliyunCredential {
                     access_token: "line\nbreak".to_owned(),
+                    refresh_token: None,
+                    refresh_issuer: None,
                 },
                 expected_revision: 1,
             }),
@@ -552,6 +589,8 @@ mod tests {
             credential_expiry(&CredentialRequest {
                 credential: AliyunCredential {
                     access_token: "e30.e30.".to_owned(),
+                    refresh_token: None,
+                    refresh_issuer: None,
                 },
                 expected_revision: 1,
             }),

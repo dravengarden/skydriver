@@ -107,7 +107,7 @@ The current native V2 adapters are:
 | Driver | Complete upload | Exact range download | Resume/concurrency | Server delete | Notes |
 |---|---:|---:|---:|---:|---|
 | `local-filesystem/v2` | yes | yes | yes | retained/blocked | Cloudflare cannot safely reach an agent-local path; use a hosted driver for automatic physical cleanup |
-| `aliyundrive-open/v2` | yes | yes | journaled, upload concurrency 1 | yes | access-token credential; native Open API; no OpenList runtime |
+| `aliyundrive-open/v2` | yes | yes | journaled, upload concurrency 1 | yes | native Open API; server-owned OAuth renewal; optional OpenList token issuer only |
 
 Unsupported capabilities fail closed or return an explicit warning with the
 safe replacement. Additional S3/R2, Google Drive, and WebDAV adapters must use

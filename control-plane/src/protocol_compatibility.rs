@@ -2,7 +2,7 @@ use serde::Serialize;
 use worker::{Request, Response, ResponseBuilder, Result};
 
 pub(crate) const PROTOCOL_EPOCH: u64 = 2;
-pub(crate) const MINIMUM_SDK_VERSION: &str = "0.2.0";
+pub(crate) const MINIMUM_SDK_VERSION: &str = "0.3.0";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const COMPATIBILITY_SCHEMA: &str = "carrack.protocol-compatibility.v1";
 const ERROR_SCHEMA: &str = "carrack.protocol-error.v1";
@@ -50,7 +50,7 @@ pub(crate) fn enforce(request: &Request) -> Result<Option<Response>> {
         && sdk_version
             .as_deref()
             .and_then(parse_version)
-            .is_some_and(|candidate| candidate >= (0, 2, 0));
+            .is_some_and(|candidate| candidate >= (0, 3, 0));
 
     if compatible {
         return Ok(None);

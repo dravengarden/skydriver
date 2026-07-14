@@ -17,7 +17,7 @@ import (
 
 const (
 	operatorCredentialBytes            = 32
-	managementSnapshotSchema           = "carrack.management.snapshot.v1"
+	managementSnapshotSchema           = "carrack.management.snapshot.v2"
 	managementDirectorySchema          = "carrack.management.directory.v1"
 	tokenAnnotationValidationSchema    = "carrack.management.token-annotation-validation.v1"
 	tokenAnnotationReceiptSchema       = "carrack.management.token-annotation-receipt.v1"
@@ -60,19 +60,24 @@ func (credential *OperatorCredential) Clear() {
 
 // ManagementDriver is one redacted driver read model.
 type ManagementDriver struct {
-	ID                     string          `json:"id"`
-	Kind                   string          `json:"kind"`
-	Config                 json.RawMessage `json:"config"`
-	Enabled                bool            `json:"enabled"`
-	Revision               uint64          `json:"revision"`
-	CredentialPresent      bool            `json:"credential_present"`
-	CredentialRotatedAt    *uint64         `json:"credential_rotated_at"`
-	PlacementCount         uint64          `json:"placement_count"`
-	LocationCount          uint64          `json:"location_count"`
-	AvailableLocationCount uint64          `json:"available_location_count"`
-	EncodedBytes           uint64          `json:"encoded_bytes"`
-	FileCount              uint64          `json:"file_count"`
-	UpdatedAt              uint64          `json:"updated_at"`
+	ID                               string          `json:"id"`
+	Kind                             string          `json:"kind"`
+	Config                           json.RawMessage `json:"config"`
+	Enabled                          bool            `json:"enabled"`
+	Revision                         uint64          `json:"revision"`
+	CredentialPresent                bool            `json:"credential_present"`
+	CredentialRotatedAt              *uint64         `json:"credential_rotated_at"`
+	CredentialExpiresAt              *uint64         `json:"credential_expires_at"`
+	CredentialRefreshState           *string         `json:"credential_refresh_state"`
+	CredentialRefreshAfter           *uint64         `json:"credential_refresh_after"`
+	CredentialRefreshLastSucceededAt *uint64         `json:"credential_refresh_last_succeeded_at"`
+	CredentialRefreshLastErrorCode   *string         `json:"credential_refresh_last_error_code"`
+	PlacementCount                   uint64          `json:"placement_count"`
+	LocationCount                    uint64          `json:"location_count"`
+	AvailableLocationCount           uint64          `json:"available_location_count"`
+	EncodedBytes                     uint64          `json:"encoded_bytes"`
+	FileCount                        uint64          `json:"file_count"`
+	UpdatedAt                        uint64          `json:"updated_at"`
 }
 
 // ManagementFilesystem is one filesystem and recursive storage summary.

@@ -270,12 +270,15 @@ func (client *VFSControlClient) syncVFSCatalogDescendants(
 	workers uint32,
 ) (vfsCatalogSyncStats, error) {
 	workerContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	jobs := make(chan vfsCatalogNodeReference)
 	results := make(chan vfsCatalogNodeResult, workers)
 
 	var waitGroup sync.WaitGroup
 	for range workers {
 		waitGroup.Add(1)
+
 		go client.runVFSCatalogWorker(workerContext, &waitGroup, jobs, results, store, pageSize)
 	}
 

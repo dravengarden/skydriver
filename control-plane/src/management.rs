@@ -16,6 +16,10 @@ struct DriverRow {
     credential_present: u64,
     credential_rotated_at: Option<u64>,
     credential_expires_at: Option<u64>,
+    credential_refresh_state: Option<String>,
+    credential_refresh_after: Option<u64>,
+    credential_refresh_last_succeeded_at: Option<u64>,
+    credential_refresh_last_error_code: Option<String>,
     placement_count: u64,
     location_count: u64,
     available_location_count: u64,
@@ -34,6 +38,10 @@ struct DriverView {
     credential_present: bool,
     credential_rotated_at: Option<u64>,
     credential_expires_at: Option<u64>,
+    credential_refresh_state: Option<String>,
+    credential_refresh_after: Option<u64>,
+    credential_refresh_last_succeeded_at: Option<u64>,
+    credential_refresh_last_error_code: Option<String>,
     placement_count: u64,
     location_count: u64,
     available_location_count: u64,
@@ -227,6 +235,10 @@ pub(crate) async fn snapshot(request: &Request, env: &Env) -> Result<Response> {
                     CASE WHEN driver.credential_ref IS NULL THEN 0 ELSE 1 END AS credential_present,
                     credential.rotated_at AS credential_rotated_at,
                     credential.expires_at AS credential_expires_at,
+                    refresh.state AS credential_refresh_state,
+                    refresh.refresh_after AS credential_refresh_after,
+                    refresh.last_succeeded_at AS credential_refresh_last_succeeded_at,
+                    refresh.last_error_code AS credential_refresh_last_error_code,
                     (SELECT COUNT(*) FROM vfs_directory_drivers AS directory_driver
                      WHERE directory_driver.driver_id = driver.id) AS placement_count,
                     (SELECT COUNT(*) FROM vfs_locations AS location
@@ -245,6 +257,8 @@ pub(crate) async fn snapshot(request: &Request, env: &Env) -> Result<Response> {
                     driver.updated_at
              FROM driver_instances AS driver
              LEFT JOIN credential_envelopes AS credential ON credential.id = driver.credential_ref
+             LEFT JOIN driver_credential_refreshes AS refresh
+               ON refresh.credential_id = credential.id
              ORDER BY driver.id",
         )
         .all()
@@ -261,6 +275,10 @@ pub(crate) async fn snapshot(request: &Request, env: &Env) -> Result<Response> {
             credential_present: row.credential_present == 1,
             credential_rotated_at: row.credential_rotated_at,
             credential_expires_at: row.credential_expires_at,
+            credential_refresh_state: row.credential_refresh_state,
+            credential_refresh_after: row.credential_refresh_after,
+            credential_refresh_last_succeeded_at: row.credential_refresh_last_succeeded_at,
+            credential_refresh_last_error_code: row.credential_refresh_last_error_code,
             placement_count: row.placement_count,
             location_count: row.location_count,
             available_location_count: row.available_location_count,
@@ -361,7 +379,7 @@ pub(crate) async fn snapshot(request: &Request, env: &Env) -> Result<Response> {
         .map_or(0, |row| row.event_cursor);
 
     no_store_json(&SnapshotResponse {
-        schema: "carrack.management.snapshot.v1",
+        schema: "carrack.management.snapshot.v2",
         observed_at: now_seconds(),
         event_cursor: cursor,
         drivers,

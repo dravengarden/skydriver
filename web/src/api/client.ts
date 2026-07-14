@@ -100,6 +100,10 @@ const DriverViewSchema = v.object({
     credential_present: v.boolean(),
     credential_rotated_at: v.nullable(v.number()),
     credential_expires_at: v.nullable(v.number()),
+    credential_refresh_state: v.nullable(v.string()),
+    credential_refresh_after: v.nullable(v.number()),
+    credential_refresh_last_succeeded_at: v.nullable(v.number()),
+    credential_refresh_last_error_code: v.nullable(v.string()),
     placement_count: v.number(),
     location_count: v.number(),
     available_location_count: v.number(),
@@ -143,7 +147,7 @@ const TokenViewSchema = v.object({
 });
 
 const ManagementSnapshotSchema = v.object({
-    schema: v.literal("carrack.management.snapshot.v1"),
+    schema: v.literal("carrack.management.snapshot.v2"),
     observed_at: v.number(),
     event_cursor: v.number(),
     drivers: v.array(DriverViewSchema),
@@ -336,7 +340,7 @@ async function requestJson<TSchema extends v.BaseSchema<unknown, unknown, v.Base
 ): Promise<v.InferOutput<TSchema>> {
     const headers = new Headers(init?.headers);
     headers.set("Carrack-Protocol-Epoch", "2");
-    headers.set("Carrack-SDK-Version", "0.2.0");
+    headers.set("Carrack-SDK-Version", "0.3.0");
     const response = await fetch(input, { ...init, headers });
     if (!response.ok) {
         throw new Error(`Carrack API returned ${response.status}`);
@@ -538,6 +542,7 @@ export function applyDriverRegistration(
 export function validateDriverCredential(
     driverId: string,
     accessToken: string,
+    refreshToken: string,
     expectedRevision: number,
 ): Promise<DriverCredentialValidation> {
     return requestJson(
@@ -546,7 +551,11 @@ export function validateDriverCredential(
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-                credential: { access_token: accessToken },
+                credential: {
+                    access_token: accessToken,
+                    refresh_token: refreshToken,
+                    refresh_issuer: "openlist-online/v1",
+                },
                 expected_revision: expectedRevision,
             }),
         },
@@ -557,6 +566,7 @@ export function validateDriverCredential(
 export function applyDriverCredential(
     validation: DriverCredentialValidation,
     accessToken: string,
+    refreshToken: string,
 ): Promise<DriverCredentialReceipt> {
     return requestJson(
         `/api/admin/drivers/${encodeURIComponent(validation.driver_id)}/credential/apply`,
@@ -564,7 +574,11 @@ export function applyDriverCredential(
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-                credential: { access_token: accessToken },
+                credential: {
+                    access_token: accessToken,
+                    refresh_token: refreshToken,
+                    refresh_issuer: "openlist-online/v1",
+                },
                 expected_revision: validation.expected_revision,
                 validation_expires_at: validation.validation_expires_at,
                 validation_digest: validation.validation_digest,
