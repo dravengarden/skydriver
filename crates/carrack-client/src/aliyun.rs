@@ -1,7 +1,7 @@
 //! Native Aliyun Drive Open API complete-object transport.
 
 use reqwest::{StatusCode, Url};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use std::{
@@ -42,18 +42,30 @@ struct Client {
 
 #[derive(Clone, Deserialize)]
 struct FileRecord {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     file_id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     file_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     size: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     content_hash: String,
-    #[serde(rename = "type", default)]
+    #[serde(
+        rename = "type",
+        default,
+        deserialize_with = "deserialize_null_default"
+    )]
     kind: String,
+}
+
+fn deserialize_null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Deserialize)]
@@ -656,7 +668,27 @@ mod tests {
     use serde_json::json;
     use sha2::{Digest as _, Sha256};
 
-    use super::{download, upload};
+    use super::{FileRecord, download, upload};
+
+    #[test]
+    fn normalizes_nullable_folder_metadata() {
+        let folder: FileRecord = serde_json::from_value(json!({
+            "file_id": "folder-1",
+            "name": "objects",
+            "file_name": null,
+            "size": null,
+            "content_hash": null,
+            "type": "folder"
+        }))
+        .expect("decode Aliyun folder metadata");
+
+        assert_eq!(folder.file_id, "folder-1");
+        assert_eq!(folder.name, "objects");
+        assert!(folder.file_name.is_empty());
+        assert_eq!(folder.size, 0);
+        assert!(folder.content_hash.is_empty());
+        assert_eq!(folder.kind, "folder");
+    }
 
     #[tokio::test]
     #[allow(

@@ -175,11 +175,26 @@ environments. After deployment, verify that `/api/health` reports the expected
 Deployment and VFS bootstrap are separate operations. Keep a new environment
 unbootstrapped until its initial payload-driver topology is decided: bootstrap
 is intentionally one-shot. The currently implemented bootstrap creates a
-`local-filesystem/v2` driver and placement, while the compiled Aliyun Drive
-provider still belongs to the archive-oriented V1 path. Before an Aliyun Drive
-V2 canary, implement the complete-object V2 driver plus its registration or a
-driver-neutral bootstrap path, then bootstrap `dev` only. Never use `prod` for
-provider credential or compatibility experiments.
+`local-filesystem/v2` driver and placement. Register a hosted driver through
+the validated management API, install its write-only credential, enable it,
+and then atomically replace the root placement before payload use. The native
+`aliyundrive-open/v2` adapter has completed this dev canary with encrypted
+complete-object upload, concurrent exact-range download, interrupted resume,
+hash verification, and logical removal.
+
+Development and production may use one Aliyun Drive account only with distinct
+dedicated provider folders and distinct `root_folder_id` configurations. This
+is namespace isolation, not provider-account isolation: the OAuth grant can
+still authorize the wider drive. Store each environment's encrypted credential
+in its own D1 database, use only the dev root for provider experiments, and do
+not register or enable the production root until its own acceptance gate.
+
+An out-of-band OAuth helper may bootstrap an Aliyun access token, but Carrack
+must never link to, launch, or call OpenList at runtime. The built-in OpenList
+refresh relay carries refresh tokens in URL query parameters, so it is not a
+permitted unattended Carrack refresh path. Keep recovery material outside Git;
+if it is lost or expires, repeat interactive provider authorization and rotate
+the encrypted access-token credential through `carrackctl`.
 
 ## Garbage collection
 
