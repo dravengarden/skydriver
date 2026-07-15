@@ -16,6 +16,8 @@ use crate::{
 };
 
 const PAGE_SIZE: u32 = 100;
+const MAXIMUM_ALIYUN_PAGES_PER_RUN: usize = 8;
+const MAXIMUM_ALIYUN_CURSOR_BYTES: usize = 64 * 1024;
 
 #[derive(Deserialize)]
 struct Candidate {
@@ -67,6 +69,20 @@ struct AliyunFile {
     size: Option<i64>,
     #[serde(rename = "type", default)]
     kind: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AliyunCursor {
+    stack: Vec<AliyunFrame>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AliyunFrame {
+    folder_id: String,
+    path: String,
+    marker: String,
 }
 
 #[derive(Deserialize)]
@@ -361,6 +377,10 @@ async fn load_credential(database: &D1Database, driver_id: &str) -> Result<Crede
         })
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "bounded recursive listing, cursor advancement, and object projection stay one provider-page protocol"
+)]
 async fn list_aliyun_with_credential(
     config: &AliyunConfig,
     cursor: Option<&str>,
@@ -383,43 +403,94 @@ async fn list_aliyun_with_credential(
             ));
         }
     };
-    let page: AliyunListResponse = aliyun_post(
-        &config.api_base_url,
-        "/adrive/v1.0/openFile/list",
-        &credential.access_token,
-        &json!({
-            "drive_id": drive_id,
-            "parent_file_id": config.root_folder_id,
-            "limit": PAGE_SIZE,
-            "marker": cursor.unwrap_or(""),
-            "order_by": "name",
-            "order_direction": "ASC"
-        }),
-    )
-    .await?;
-    let objects = page
-        .items
-        .into_iter()
-        .filter_map(|item| {
-            let file_id = item.file_id?;
-            let size = item.size?;
-            if item.kind.as_deref() != Some("file") || file_id.is_empty() || size < 0 {
-                return None;
+    let mut traversal = match cursor {
+        Some(encoded) => serde_json::from_str::<AliyunCursor>(encoded).map_err(|error| {
+            worker::Error::RustError(format!("invalid Aliyun inventory cursor: {error}"))
+        })?,
+        None => AliyunCursor {
+            stack: vec![AliyunFrame {
+                folder_id: config.root_folder_id.clone(),
+                path: String::new(),
+                marker: String::new(),
+            }],
+        },
+    };
+    let mut objects = Vec::new();
+    for _ in 0..MAXIMUM_ALIYUN_PAGES_PER_RUN {
+        let Some(frame) = traversal.stack.pop() else {
+            break;
+        };
+        let page: AliyunListResponse = aliyun_post(
+            &config.api_base_url,
+            "/adrive/v1.0/openFile/list",
+            &credential.access_token,
+            &json!({
+                "drive_id": drive_id,
+                "parent_file_id": frame.folder_id,
+                "limit": PAGE_SIZE,
+                "marker": frame.marker,
+                "order_by": "name",
+                "order_direction": "ASC"
+            }),
+        )
+        .await?;
+        if !page.next_marker.is_empty() {
+            traversal.stack.push(AliyunFrame {
+                folder_id: frame.folder_id,
+                path: frame.path.clone(),
+                marker: page.next_marker,
+            });
+        }
+        let mut folders = Vec::new();
+        for item in page.items {
+            let Some(file_id) = item.file_id else {
+                continue;
+            };
+            let Some(name) = item.name.filter(|name| !name.is_empty()).or(item.file_name) else {
+                continue;
+            };
+            let path = if frame.path.is_empty() {
+                name
+            } else {
+                format!("{}/{name}", frame.path)
+            };
+            match item.kind.as_deref() {
+                Some("folder") if !file_id.is_empty() => folders.push(AliyunFrame {
+                    folder_id: file_id,
+                    path,
+                    marker: String::new(),
+                }),
+                Some("file") if !file_id.is_empty() && item.size.is_some_and(|size| size >= 0) => {
+                    objects.push(ObservedObject {
+                        storage_key: path,
+                        provider_version: file_id,
+                        size_bytes: u64::try_from(item.size.unwrap_or_default())
+                            .unwrap_or_default(),
+                    });
+                }
+                _ => {}
             }
-            let storage_key = item
-                .name
-                .filter(|name| !name.is_empty())
-                .or(item.file_name)?;
-            (!storage_key.is_empty()).then(|| ObservedObject {
-                storage_key,
-                provider_version: file_id,
-                size_bytes: u64::try_from(size).unwrap_or_default(),
-            })
-        })
-        .collect();
+        }
+        traversal.stack.extend(folders.into_iter().rev());
+        if objects.len() >= usize::try_from(PAGE_SIZE).unwrap_or(usize::MAX) {
+            break;
+        }
+    }
+    let next_cursor = if traversal.stack.is_empty() {
+        None
+    } else {
+        let encoded = serde_json::to_string(&traversal)
+            .map_err(|error| worker::Error::RustError(error.to_string()))?;
+        if encoded.len() > MAXIMUM_ALIYUN_CURSOR_BYTES {
+            return Err(worker::Error::RustError(
+                "Aliyun inventory cursor exceeds the bounded state limit".to_owned(),
+            ));
+        }
+        Some(encoded)
+    };
     Ok(ProviderPage {
         objects,
-        next_cursor: (!page.next_marker.is_empty()).then_some(page.next_marker),
+        next_cursor,
     })
 }
 
