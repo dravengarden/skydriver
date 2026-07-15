@@ -1,433 +1,252 @@
 # Carrack requirements
 
-This document is the product and correctness baseline for Carrack. It records
-requirements, not a particular database schema or implementation plan. The
-architecture may evolve only if these guarantees remain true or this document
-is deliberately revised.
-
-The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
+This document is the normative product and correctness baseline. The key words
+**MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 
 ## Product boundary
 
-- Carrack MUST remain business-neutral. Exchange adapters, market-data
-  catalogs, dataset schedules, parsers, and trading semantics belong to
-  consumer projects.
-- Carrack MUST contain exactly two product components: a language-neutral
-  client data plane with a canonical Rust implementation, and a Rust control
-  plane deployed on Cloudflare with a TypeScript operator UI.
-- The `carrack` CLI MUST expose filesystem operations only. Provider selection,
-  transfer planning, catalog synchronization, encryption, recovery journals,
-  snapshots, leases, and garbage collection MUST remain implementation details.
-- The separate `carrackctl` CLI MUST expose every operation available through
-  the operator UI through the same management API and validation rules. It is
-  an SDK consumer for operators and AI agents, not a third product component.
-- The public filesystem SDK MUST NOT expose garbage-collection candidates,
-  delete tasks, janitor leases, fencing tokens, or provider delete grants.
-- Payload bytes MUST flow directly between clients and storage drivers. The
-  control plane MUST NOT relay payload bytes in V1.
-- The control plane MAY access a driver for credential refresh, transfer-plan
-  creation, exact object Stat, multipart abort, and physical deletion. These
-  control operations MUST NOT relay file payload bytes through the Worker.
-- A filesystem client MUST be able to put, get, list, stat, create, remove,
-  rename, and incrementally synchronize files through one simple SDK facade.
-- Adding a driver or changing a transfer scheduler MUST NOT require changing
-  the archive encryption format.
+- Carrack MUST remain business-neutral. Source adapters, dataset catalogs,
+  schedules, parsers, and consumer semantics belong to callers.
+- Carrack MUST have exactly two product components: a Rust Cloudflare control
+  plane and a canonical Rust client core.
+- `carrack` MUST expose filesystem-like byte and local-file operations.
+  `carrackctl` MUST expose every supported operator UI mutation through the
+  same server validation contract.
+- Payload bytes MUST flow directly between clients and drivers. The Worker
+  MUST NOT relay a file body.
+- GC tasks, refresh tokens, driver parent credentials, key envelopes, provider
+  locators, and fencing tokens MUST remain hidden from ordinary filesystem
+  callers.
+- Carrack MUST NOT split, pack, bundle, merge, compact, or stripe user files.
+  One input file MUST remain one complete provider object at every location.
 
-## Data and archive model
+## Namespace and object model
 
-- Logical objects MUST be independent from physical provider paths.
-- Object versions, manifests, packs, and ciphertext extents MUST be immutable
-  after publication.
-- Every published object version MUST reference an ordered, content-addressed
-  manifest.
-- Every readable location MUST have an exact expected length and ciphertext
-  SHA-256 identity. Its physical provider offset and length MUST be recorded
-  independently so many extents can safely share one provider object.
-- Frame, extent, logical-pack, multipart-part, transfer-window, and provider-
-  object sizes MUST be targets or upper bounds, never preallocated logical
-  slots. Carrack MUST NOT add zero padding to reach any configured target.
-- A final frame, extent, pack, or provider object MUST use its exact actual
-  length. Authenticated-encryption tags and defined recovery metadata are
-  overhead, not padding.
-- Small-file bundles MUST concatenate file payloads without alignment gaps.
-  The bundle data-region length MUST equal the sum of member file lengths.
-  File entries MAY cross frame, extent, and pack boundaries.
-- The defaults MUST be 64 MiB plaintext chunks, 8 MiB authenticated frames,
-  and an 8 GiB logical pack target. They MUST be independently configurable
-  within protocol-safe bounds.
-- Chunk size, crypto frame size, provider object size, multipart part size,
-  and transfer concurrency MUST remain independent controls.
-- A download scheduler MAY coalesce only exactly adjacent preferred ranges
-  with the same driver and storage key. It MUST enforce a configured range
-  bound, verify every constituent extent independently before consumption, and
-  fall back to ordinary per-extent replica selection after a coalesced failure.
-- Compaction MUST create and conditionally publish a new immutable pack. It
-  MUST NOT rewrite an existing pack in place.
+- Directory, file, and version identities MUST be stable opaque identifiers
+  independent of paths. Server-created identities SHOULD be UUIDv7 for D1
+  locality.
+- Every content change MUST create a new immutable file version. Publication
+  MUST only move a file's current-version pointer atomically with its namespace
+  and Merkle changes.
+- Rename and move MUST be metadata-only. They MUST NOT copy or re-encrypt an
+  unchanged file version.
+- A location MUST identify one complete encoded object with its exact length,
+  encoded SHA-256, driver identity and revision, opaque provider key, lifecycle
+  state, and every available strong provider-native identity.
+- Provider object names MUST NOT reveal virtual paths, original filenames,
+  principals, media types, directory identities, or consumer meaning.
+- Multipart parts, encryption frames, verification blocks, HTTP ranges, and
+  staging files MUST remain private transport units and MUST NOT become
+  independently addressable VFS objects.
+- Different files in one directory MAY use different drivers. The authenticated
+  directory tree MUST remain independent of provider directory trees.
 
-## Cryptography and recovery material
+## Integrity and cryptography
 
-- Encryption and decryption MUST be provider-free streaming transforms.
-- Transfer code MUST treat encrypted extents as opaque bytes.
-- V1 MUST use the versioned
-  `carrack-aes128gcm-hkdfsha256-v1` suite with independently authenticated
-  frames.
-- Pack keys MUST be deterministically derived from a versioned root seed,
-  namespace, key epoch, and pack identifier. D1 MUST NOT contain root, epoch,
-  pack, or plaintext data-encryption keys.
-- Root seeds MUST live in Cloudflare secrets and tested offline recovery
-  storage. Losing D1 MUST NOT lose a root seed.
-- Every manifest MUST identify its crypto suite, root version, namespace, key
-  epoch, pack identifiers, sizes, ordering, and authenticated hashes without
-  containing secret material.
-- Missing key material, an unsupported crypto suite, corrupt ciphertext, and
-  missing ciphertext MUST be reported as different conditions.
-- Encryption and decryption MUST be fast enough that storage or network I/O,
-  rather than crypto, remains the expected bottleneck on supported modern
-  amd64 and arm64 clients.
-- Memory use MUST be bounded by configured frame, transfer-window, and
-  concurrency limits, not by object or pack size.
-- Bundle membership, canonical paths, declared lengths, and ordering MUST be
-  fixed before transfer. A retry MUST NOT silently regroup or reorder members.
+- Every plaintext file MUST have a canonical SHA-256 Merkle root over fixed
+  verification blocks. Every directory MUST have a canonical ordered Merkle
+  root that commits to all visible child roots.
+- Upload MUST hash the complete plaintext, verify the complete encoded provider
+  object, and publish metadata only after all proofs pass.
+- Download MUST verify each received block or range, complete encoded identity,
+  authenticated decryption, plaintext length, and final plaintext Merkle root
+  before exposing success.
+- A corrupt, short, long, reordered, stale, or unauthenticated response MUST be
+  rejected. Correctness MUST NOT depend on provider ETags being content hashes.
+- Encryption MUST be enabled by default and MAY be disabled by explicit
+  directory policy.
+- Each directory MUST own a versioned sealed key epoch. Each immutable file
+  version MUST derive a distinct key and nonce domain from that epoch and its
+  version identity.
+- D1 MUST NOT store plaintext directory keys or file keys. Provider and key
+  credentials MUST be stored only in authenticated encrypted envelopes.
+- A supported client MUST distinguish missing authority, unsupported suite,
+  corrupt ciphertext, corrupt plaintext, provider unavailability, and
+  permanent loss.
+- Memory use MUST be bounded by configured frame, block, range, multipart, and
+  concurrency limits rather than file size.
 
-## Driver requirements
+## Catalog and incremental synchronization
 
-- Hosted VFS drivers MUST be selected through versioned, compiled, typed
-  server-side factories. Control-plane data MUST NOT cause a client to execute
-  arbitrary provider code.
-- Provider-specific lifecycle policy MUST be authoritative on the control
-  plane. Clients SHOULD execute a bounded, validated direct-transfer plan
-  instead of independently deciding provider publication or deletion rules.
-- A VFS backend driver MUST declare server-side credential refresh, exact Stat,
-  multipart abort, and Delete capabilities. A backend without stable object
-  identity MUST remain ineligible for automatic physical garbage collection.
-- Native Rust adapters SHOULD be used for S3-compatible storage, R2, public
-  HTTP, and supported cloud drives. Local filesystems are client-side external
-  sources or destinations, not hosted VFS backends.
-- OpenList MAY be used as a reviewed behavioral reference for consumer cloud
-  drives. Its OAuth broker MAY be configured as a control-plane-only token
-  issuer when Carrack has no provider application credential. OpenList code,
-  modules, storage servers, WebDAV endpoints, and runtime processes MUST NOT be
-  dependencies of Carrack clients or the payload data path.
-- Drivers MUST advertise capabilities, size limits, checksum support,
-  resumability, safe concurrency, and rate-limit constraints.
-- Hosted access-token credentials MUST expose a non-secret absolute expiry when
-  the provider token carries one. The server MUST reject malformed or expired
-  credentials before persistence, and management clients MUST warn before
-  expiry without ever returning credential material.
-- Refresh authority MUST remain inside an authenticated encrypted control-plane
-  envelope. Filesystem SDKs and the `carrack` CLI MUST receive only access
-  credentials, MUST NOT receive refresh tokens, and MUST NOT implement renewal.
-- Credential renewal MUST use a D1 CAS lease and fencing token, rotate the
-  encrypted access and refresh tokens in one D1 batch, validate provider
-  identity and expiry before commit, retry transient failures with bounded
-  backoff, and fail closed as `reauth_required` after permanent rejection.
-- Cron MUST renew hosted credentials proactively. A transfer grant MUST also
-  refuse an access token with less than five minutes of validity unless the
-  control plane first completes a fenced renewal.
-- Provider-object grouping MUST use only whole consecutive extents, respect a
-  driver's hard maximum, and emit an exact short tail. Changing provider-object
-  policy MUST NOT change bundle, frame, extent, or ciphertext identities.
-- Proxy policy MUST be injected below the driver and MUST NOT appear in object
-  identity, manifests, or crypto metadata.
-- Carrack MUST NOT embed, download, configure, supervise, or launch a proxy
-  daemon. HTTP-capable components MUST use their native HTTP stack with either
-  direct routing or an external `http`, `https`, `socks5`, or `socks5h` proxy.
-- A driver MUST distinguish transient, throttled, authorization, quota,
-  not-found, integrity, and permanent errors when its provider exposes enough
-  evidence to do so.
-- A directory hard quota MUST cover its complete active subtree regardless of
-  physical driver placement. A put MUST satisfy the file-size, logical-byte,
-  and file-count limits of every ancestor policy.
-- A driver hard quota MUST count every non-deleted physical object plus active
-  upload reservations, including encryption overhead and objects retained for
-  recovery or garbage collection.
-- An environment-owned default R2 driver MUST initialize its physical-byte
-  quota from the environment creation profile. The hosted profile defaults to
-  100 GiB. This initial value MUST be committed atomically with driver creation
-  and MUST NOT be reasserted after an operator changes it through the shared
-  UI or management-CLI quota protocol.
-- Hosted environment setup MUST mint the default R2 signing credential as an
-  account-owned token scoped to exactly that environment's payload bucket. The
-  routine deploy credential MUST NOT be able to create API tokens, and the
-  operator UI MUST NOT accept or render the environment-owned R2 credential.
-  Provisioning MUST use the normal server validation, encrypted credential
-  envelope, optimistic driver revision, idempotency, and readback protocol.
-- Environment setup MAY create a root placement only when the complete root
-  placement set is empty. It MUST preserve a nonempty policy unless an operator
-  explicitly requests and reviews a replace-all mutation.
-- Put preparation MUST reserve quota atomically in D1. Commit converts the
-  reservation to durable usage; abandon or expiry releases it without client
-  or SDK involvement. Quota checks MUST NOT use a check-then-upload race.
-- Lowering a hard limit below current usage MUST NOT delete or hide data. It
-  MUST reject new positive reservations until usage returns below the limit.
-- A provider-wide outage or authorization failure MUST NOT cause all of its
-  locations to be immediately classified as missing.
-- One `404`, stale inventory response, expired signed URL, or timed-out request
-  MUST NOT be sufficient evidence for permanent data loss.
-- Upload, stat, range-read, and delete implementations MUST tolerate a request
-  succeeding remotely while its response is lost locally.
+- A client MUST authenticate every catalog checkpoint, subtree, page, and
+  delta before it plans payload work.
+- A directory checkpoint MUST commit to the exact filesystem, revision, root
+  directory, data root, node count, and canonical node bytes.
+- A catalog delta MUST commit to an exact authenticated base and target and
+  MUST reconstruct a complete target that independently verifies to the target
+  root.
+- Missing, incompatible, oversized, multi-hop, narrow-authorization, or
+  ACL-sensitive acceleration MUST fall back to a complete checkpoint or
+  revision-pinned traversal without weakening correctness.
+- Incremental sync MUST transfer no payload for an unchanged authenticated file
+  and MUST redownload a locally missing or corrupt file even if metadata is
+  unchanged.
+- A final live-root recheck MUST reject a plan whose namespace changed during
+  synchronization unless the caller explicitly requested a pinned snapshot.
 
-## Operation safety
+## Transfer and recovery
 
-- All control-plane mutations MUST be idempotent.
-- Import publication MUST occur only after all referenced payload locations and
-  recovery manifests have been durably written and verified.
-- A crash before publication MAY leave staging objects but MUST NOT expose a
-  partially published object version.
-- Publication metadata MAY be staged across bounded D1 batches, but the final
-  object pointer, published version, durable recovery record, operation state,
-  and lease release MUST switch in one fenced atomic batch.
-- Copy MUST preserve the source and MUST publish a destination only after
-  verifying its complete identity.
-- Move MUST be implemented as copy, verify, publish destination, tombstone
-  source, and delayed delete. It MUST NOT be implemented as an atomic-looking
-  copy-and-delete request.
-- Source deletion MUST require a currently verified destination and the active
-  replica policy to remain satisfied.
-- Restore MUST pin one immutable manifest generation, use resumable local
-  state without key material, verify every layer, and atomically publish the
-  final local result.
-- Failures SHOULD prefer duplicate work, staging orphans, and temporary extra
-  replicas over ambiguous publication or deletion.
-- Garbage collection MUST be an internal control-plane maintenance operation.
-  Ordinary clients and the public filesystem SDK MUST NOT enumerate candidates,
-  claim delete work, receive delete credentials, or physically delete VFS
-  backend objects.
-- Server-side garbage collection MUST use bounded indexed selection, a grace
-  period, exact reachability revalidation, stable provider identity, and a
-  fenced idempotent completion transition. If D1, snapshot materialization,
-  driver identity, or authorization evidence is unavailable, deletion MUST stop.
+- Transfer APIs MUST support bytes, local files, replayable readers, bounded
+  range sources, and private spooling for one-shot streams.
+- Uploads and downloads MUST support bounded concurrency, pipelining,
+  interruption, and resume where the driver permits it.
+- Recovery journals MUST persist no payload bytes, plaintext keys, refresh
+  tokens, or provider parent credentials.
+- A journal MUST bind the source identity, immutable plan, destination,
+  expected revisions, driver descriptor, provider object, checksums, and
+  completion receipts with an integrity-protected revision history.
+- Resume MUST revalidate local source or staging identity, reacquire short-lived
+  authority, compare remote identity, and transfer only missing or invalid
+  units.
+- A driver lacking exact ranges or multipart resume MAY restart the current
+  complete file after an explicit capability warning. It MUST NOT report a
+  partial object as published.
+- Local destination publication MUST be atomic. A failed verification MUST
+  leave the prior destination intact.
 
-## Concurrent client correctness
+## Driver contract
 
-- Network transfer MUST NOT hold a D1 transaction or distributed pessimistic
-  lock.
-- Metadata publication MUST use short transactions, unique constraints, and
-  compare-and-swap revisions.
-- Work ownership MUST use renewable leases for scheduling and fencing tokens
-  for correctness. Every mutating heartbeat, stage commit, publish, move, and
-  delete MUST validate the current fencing token.
-- Lease expiry MUST use control-plane time. Correctness MUST NOT depend on a
-  client clock.
-- Losing a lease MUST prevent a client from publishing metadata or deleting
-  provider data, even if its in-flight upload later completes.
-- An uncommitted publication intent MAY be rebound after lease takeover only
-  when every immutable object, manifest, recovery, and CAS identity is exactly
-  unchanged. A committed or conflicting intent MUST NOT be rebound.
-- Two clients importing the same bytes MAY both transfer data, but publication
-  MUST converge on one valid immutable result.
-- Conflicting content for the same logical object MUST produce explicit object
-  versions or a visible CAS conflict. It MUST NOT silently overwrite data.
-- Concurrent repair or compaction winners MUST be selected by conditional
-  publication. Valid losing outputs MAY be adopted or quarantined for later
-  GC.
-- Read operations MUST use durable read leases bounded by the issuing token's
-  original expiry and explicitly complete them when transfer stops. A resumed
-  client MAY acquire a fresh lease through a new immutable plan. GC MUST NOT delete the final
-  usable replica needed by an active read lease.
-- Progress reports MUST carry operation, attempt, monotonically increasing
-  sequence, lease, and fencing identities. Duplicate or reordered reports MUST
-  be harmless.
-- Progress reports MUST use cumulative counters. Retries MUST increase wire
-  bytes but MUST NOT increase unique verified progress.
-- Distributed rate coordination MUST prevent many clients sharing a credential
-  from independently selecting an unsafe aggregate request rate.
-- Normal transfer clients MUST NOT physically delete VFS backend objects.
-  Destructive work MUST be performed by control-plane maintenance after final
-  D1 revalidation. A provider request may outlive its Worker invocation, so
-  response-loss recovery MUST converge through exact Stat and fenced retry.
+- Product drivers MUST be compiled, versioned Rust adapters selected through a
+  typed registry. Server data MUST NOT cause a client to load arbitrary code.
+- A driver descriptor MUST declare complete upload, exact range, multipart,
+  concurrency, checksum, stable identity, Stat, abort, Delete, maximum object,
+  and proxy capabilities.
+- Unsupported optimization capabilities MUST produce a warning that names the
+  fallback and a suitable replacement when one exists.
+- Every fallback MUST preserve complete-object identity and full verification.
+- Driver configuration and credentials MUST pass client-side checks and
+  authoritative server-side validation before persistence.
+- Refresh authority MUST stay in the control plane. Filesystem clients MUST
+  receive only short-lived object-scoped grants and MUST NOT implement
+  credential renewal.
+- Renewal MUST use a bounded lease and fencing token, validate provider
+  identity and expiry, atomically rotate the encrypted bundle, retry transient
+  failures, and fail closed as reauthorization-required after permanent
+  rejection.
+- OpenList MAY be reviewed as provider-behavior reference material and MAY be
+  used interactively as an OAuth issuer. Carrack MUST NOT link to, launch,
+  supervise, or route payloads through OpenList.
+- Carrack MUST NOT embed a proxy daemon. A component MAY use an external HTTP,
+  HTTPS, SOCKS5, or SOCKS5H proxy through its native network stack.
 
-## Public command and management surfaces
+## Concurrency and publication
 
-- `carrack` MUST behave like a filesystem tool. Its ordinary users MUST NOT
-  need to understand driver IDs, storage keys, locations, Merkle nodes, key
-  epochs, catalog revisions, GC state, or provider credentials.
-- `carrackctl` MUST be non-interactive and machine-readable by default. Every
-  response and error MUST have a stable schema and every mutation MUST carry an
-  idempotency identity and optimistic expected revision where applicable.
-- UI and `carrackctl` mutations MUST use one server-side validate/apply
-  protocol. Validation results MUST be bound to the complete desired state and
-  current revision; apply MUST reject stale or modified validation evidence.
-- Secrets MUST enter `carrackctl` through approved private input, never argv,
-  plans, logs, audit payloads, or ordinary output.
-- The management operation registry, permission requirement, request schema,
-  response schema, and examples MUST be discoverable by an AI agent. The UI
-  MUST NOT have management capabilities absent from `carrackctl`.
+- Network or provider I/O MUST NOT hold a D1 transaction or distributed
+  pessimistic lock.
+- Metadata mutation MUST use immutable identities, expected revisions,
+  idempotency keys, and short optimistic transactions.
+- An idempotent replay with identical canonical input MUST return its durable
+  receipt. Reusing a key with different input MUST fail.
+- A stale namespace, ACL, placement, driver, quota, key epoch, lease, or fence
+  MUST fail before publication or deletion.
+- Provider success followed by a lost response MUST be recoverable by exact
+  identity inspection and idempotent retry.
+- Duplicate physical work MAY exist temporarily after a race or crash, but at
+  most one logical version may win publication. Losing objects MUST be
+  reclaimable only through the normal delayed lifecycle protocol.
 
-## Control-plane recovery
+## Authorization and management
 
-- D1 MUST be the authoritative online coordination ledger, but MUST NOT be the
-  only copy of information required to locate and decode published data.
-- Each published object version MUST have a portable, immutable recovery
-  manifest outside D1.
-- V1 publication MUST durably store the recovery manifest in the control-plane
-  R2 manifest archive and as a sidecar on the destination driver before the D1
-  version becomes published.
-- Portable manifests MUST be discoverable by bounded provider-prefix inventory
-  and verifiable without D1.
-- Root seeds, portable manifests, and ciphertext MUST be sufficient to rebuild
-  the data index in a fresh control plane.
-- D1 MUST be exported periodically to longer-lived storage. Backups MUST be
-  restored in drills; merely creating backup files is insufficient.
-- A D1 point-in-time restore MUST occur in maintenance mode with mutations
-  disabled.
-- The control plane MUST have a random `control_plane_incarnation`. After any
-  D1 restore, the operator MUST write a new incarnation before reopening
-  mutations.
-- Every lease, fencing token, operation attempt, and destructive mutation MUST
-  be bound to the current incarnation. Clients from an earlier incarnation
-  MUST be rejected even if restored counters collide with their old values.
-- Recovery MUST invalidate or supersede all previously running operations,
-  scan portable manifests and provider inventory, classify differences, and
-  repair the index before normal mutation resumes.
-- Client registrations, credentials, and operational history MAY require
-  separate restoration or re-enrollment; this MUST NOT prevent offline data
-  reconstruction.
+- VFS bearer tokens MUST be attenuated by principal, subtree, fixed actions,
+  expiry, revocation ancestry, and optional driver scope.
+- The server MUST reevaluate current inherited allow-only ACLs on every request.
+  A token MUST NOT preserve an ACL grant that was later removed.
+- A child token MUST NOT outlive or exceed any ancestor authority.
+- Named roles MAY be UI presets expanded to fixed actions. Carrack MUST NOT
+  require a general RBAC or policy-language engine.
+- Operator configuration authority MUST remain separate from VFS plaintext
+  authority. The bootstrap all-actions VFS token is recovery authority, not an
+  everyday agent credential.
+- The UI MUST be read-only by default. Reauthentication MAY open only a
+  short-lived mutation session and MUST NOT grant file-content access.
+- Every UI mutation MUST have an equivalent `carrackctl` operation with stable
+  JSON, local validation, server normalization, expected revision, idempotency,
+  and durable audit receipt.
+- Secret input MUST use stdin, an owner-private file, browser paste, or an
+  equivalent non-argv channel. A secret MUST never be returned after storage;
+  only redacted health and expiry metadata may be displayed.
 
-## Integrity states and operator action
+## Quota and placement
 
-The control plane MUST distinguish at least these conditions:
+- A directory policy MAY set maximum single-file bytes, logical subtree bytes,
+  active file count, and allowed or preferred drivers.
+- A Put MUST satisfy every inherited ancestor quota and placement policy in the
+  same publication decision.
+- A driver hard quota MUST include committed encoded bytes plus conservatively
+  reserved in-flight bytes. A failed or expired intent MUST eventually release
+  its reservation exactly once.
+- Quota and placement changes MUST be revisioned, validated, auditable, and
+  immediately visible to both UI and management clients.
+- Quotas are safety limits, not billing promises. Provider-side quota
+  exhaustion MUST remain a distinct diagnosable error.
 
-- `driver_unavailable`: the provider or credential cannot currently be used;
-- `unindexed`: a valid recovery manifest or owned object is absent from D1;
-- `degraded`: valid data exists but replica policy is not satisfied;
-- `missing`: an indexed location is absent while other evidence is available;
-- `corrupt`: length, hash, or authenticated-decryption verification failed;
-- `key_unavailable`: required root material is not currently available;
-- `unsupported_suite`: the inspecting client cannot decode the format;
-- `orphan`: provider data cannot yet be associated with a published manifest;
-- `quarantined`: suspicious data is retained but cannot be selected for reads;
-- `unrecoverable`: all known recovery paths have been exhausted.
+## Retention and garbage collection
 
-The control plane MUST NOT automatically delete data classified as
-`key_unavailable`, `unsupported_suite`, ambiguous `orphan`, or `unrecoverable`.
-Permanent cleanup MUST require explicit loss acknowledgement, a tombstone, a
-grace period, and a final fenced recheck. The audit record SHOULD outlive the
-provider object.
+- Logical remove MUST tombstone namespace state without synchronously deleting
+  provider bytes.
+- Filesystem clients and the public SDK MUST NOT enumerate, claim, authorize,
+  or execute GC.
+- Server Cron MUST own bounded metadata hygiene, reachability marking,
+  tombstone grace, abandoned-upload cleanup, and hosted-provider deletion.
+- Current roots, valid retained snapshots, active snapshot sessions, unexpired
+  upload intents, and active direct-read leases MUST protect reachable
+  locations.
+- Missing, unsealed, inconsistent, or ambiguous reachability evidence MUST fail
+  closed and retain data.
+- Immediately before provider deletion, the server MUST recheck reachability,
+  read leases, immutable locator, provider identity, driver revision, grace,
+  claim lease, and fencing token.
+- Automatic deletion MUST require stable provider identity, exact Stat, and
+  idempotent Delete. Unsupported drivers MUST remain tombstoned and
+  server-blocked rather than guessed clean.
+- Provider absence after a lost delete response MAY complete a task only after
+  the same final fences and exact identity checks.
 
-The operator UI MUST show the reason, supporting evidence, manifest identity,
-root version, locations attempted, last successful verification, available
-repair sources, and required manual action.
+## Compatibility and upgrades
 
-## Reconciliation and garbage collection
+- Every native request MUST identify a protocol epoch and SDK version.
+- The server MUST reject an unsupported epoch or SDK below its minimum with a
+  machine-readable upgrade-required response before metadata mutation or
+  provider I/O.
+- Clients MUST fail closed on an unknown mandatory field, schema, algorithm,
+  capability, or state transition.
+- Optional acceleration MAY be version-negotiated. Its absence MUST only reduce
+  performance and MUST NOT alter identity or correctness.
+- Rust is the sole product implementation. Retained Go conformance packages
+  MUST NOT expose a CLI, SDK, hosted provider, archive model, or product policy.
 
-- Reconciliation MUST operate in both directions: D1-to-provider validation
-  and provider-to-D1 inventory discovery.
-- Newly discovered owned objects MUST enter quarantine before adoption or
-  deletion.
-- Quarantine deletion MUST require explicit acknowledgement, an exact-revision
-  tombstone, a second policy-derived grace period, and a janitor task bound to
-  the inventoried driver revision and provider identity.
-- Quarantine action retries MUST recover an exact committed receipt without a
-  new claim. Completion replay with a changed lease, incarnation, or fencing
-  token MUST be rejected, and a recovery-invalidated action MUST remain
-  terminal.
-- Immediately before deleting a quarantined object, the janitor MUST compare
-  provider `Stat` identity and the control plane MUST recheck references,
-  recovery sidecars, grace, driver revision, incarnation, role, and fencing.
-- A changed or newly referenced quarantined object MUST supersede the prior
-  delete authorization without provider I/O.
-- Missing or corrupt replicas MUST trigger repair from a separately verified
-  replica when policy permits.
-- Important archives SHOULD have at least two replicas in independent failure
-  domains. Two paths in one provider account do not count as independent.
-- Verification MUST include scheduled full ciphertext hashing or authenticated
-  reads; metadata-only `stat` checks are not sufficient evidence against bit
-  rot.
-- GC MUST use mark, grace, and sweep phases. Marking MUST NOT delete payload.
-- The sweep phase MUST recheck reachability, revision, incarnation, fencing,
-  active leases, and replica policy immediately before deletion.
-- A provider delete MUST be idempotent. If its response is lost, the janitor
-  MUST re-observe state instead of assuming either success or failure.
-- A D1 restore MUST invalidate unfinished GC epochs and delete tasks.
+## Security and environments
 
-## Observability
-
-- The UI MUST show registered clients, versions, capabilities, health,
-  operations, stages, progress, retries, throttling, verification failures,
-  current speed, and historical average speeds.
-- The UI MUST expose redacted driver statistics, token scopes and annotations,
-  and a navigable VFS view with file sizes, directory aggregates, placements,
-  integrity roots, and access-policy context.
-- Authenticated UI pages MUST start read-only. Entering a mutation-capable
-  configuration mode MUST require fresh operator reauthentication, have a
-  short absolute lifetime, and be independently revocable.
-- CLI and UI configuration changes MUST use the same strict server-side
-  schemas, complete desired-state validation, optimistic revisions,
-  idempotency identities, redacted audit events, and durable receipts. Client
-  validation MUST NOT replace validation inside the commit transaction.
-- A management-state change made by any UI, CLI, or SDK client MUST become
-  observable to other active UI sessions through a monotonic event cursor.
-- Metrics MUST distinguish wire bytes from uniquely verified useful bytes and
-  active throughput from wall-clock throughput.
-- Telemetry ingestion MUST tolerate duplicate, delayed, and reordered samples
-  without affecting operation correctness.
-- High-frequency telemetry MUST be isolated from correctness-critical metadata
-  writes and compacted into bounded-cardinality time buckets.
-- Tokens, keys, credentials, signed URLs, provider paths containing secrets,
-  and plaintext data MUST never appear in metric labels or logs.
-- Recovery, corruption, replica loss, key unavailability, and manual cleanup
-  requirements MUST produce explicit alerts rather than silent state changes.
-
-## Security boundary
-
-- Development and production MUST use distinct Worker names, D1 database
-  UUIDs, metadata and payload R2 bucket names, driver identities, runtime
-  secrets, and administrator credentials. Sharing a Cloudflare account MUST
-  NOT permit a credential or binding from one environment to access the other.
-- The operator UI MUST use one environment-scoped credential without username
-  accounts. Browser sessions MUST be random, revocable, time-bounded, and
-  represented in D1 only by a one-way verifier. This operator credential MUST
-  remain separate from VFS principals, ACLs, and attenuated capability tokens.
-- Environment configuration authority MUST NOT imply content plaintext access.
-  Normal agents MUST use the operator credential only through the validated
-  management CLI and use a separate short-lived attenuated VFS token for file
-  operations. The bootstrap all-actions VFS bearer is a recovery authority,
-  not an everyday automation credential.
-- Deployment tooling MUST reject a configuration that overlaps any dev and
-  prod Worker, D1, or R2 identity. The default local configuration MUST NOT be
-  remotely routable.
+- Secrets and credentials MUST never enter Git, command arguments, logs,
+  analytics, browser storage, plaintext D1 columns, or API responses.
+- Provider credentials MUST be least-privilege and environment-scoped. A
+  default R2 parent credential MUST be scoped to exactly its environment bucket.
+- Development and production MUST use distinct Workers, custom routes, D1
+  databases, R2 buckets, secrets, credentials, bootstrap authorities, and
+  provider roots.
 - Production MUST use `carrack.stormbird.xyz`; development MUST use
-  `dev.carrack.stormbird.xyz`. Both environments MUST disable workers.dev and
-  version preview URLs.
-- Public health responses and every operator UI surface MUST identify the
-  active environment. Development tokens and provider credentials MUST NOT be
-  accepted by production.
-- V1 MAY trade narrow key isolation for simplicity and throughput because its
-  intended archives are not highly confidential.
-- Authentication tokens, provider credentials, and root seeds MUST never be
-  committed to Git or stored in plaintext in D1.
-- A fully compromised client authorized to restore plaintext is outside the
-  V1 confidentiality boundary; Carrack MUST still limit the blast radius of a
-  leaked token through namespace permissions, expiry, revocation, and audit.
-- Key rotation MUST affect new immutable packs only. Existing packs MUST remain
-  decodable until explicitly re-encrypted and republished.
+  `dev.carrack.stormbird.xyz`. Both MUST disable workers.dev and preview URLs.
+- Deployment tooling MUST reject overlapping dev/prod resource identifiers and
+  MUST run environment-specific acceptance before promotion.
+- Public health and every operator surface MUST identify the active
+  environment without revealing secrets.
+- Configuration changes and security-sensitive lifecycle actions MUST emit
+  durable audit records with actor, exact target, revision, result, and time.
 
 ## Verification gate
 
-Production multi-client concurrency, move deletion, and automatic GC MUST
-remain disabled until the following tests pass:
-
-- unit, race, fuzz, and property tests for crypto, manifests, state transitions,
-  retries, and counters;
-- shared Go/Rust golden vectors for every derivation or wire contract used by
-  both components;
-- provider contract tests with partial reads, wrong ranges, stale listings,
-  duplicate responses, throttling, authorization loss, quota exhaustion, and
-  success-with-lost-response faults;
-- deterministic bounded interleaving tests for competing imports, repairs,
-  compactions, restores, moves, lease expiry, and GC;
-- crash injection before and after every remote side effect and D1 state
-  transition;
-- stale-client tests proving that an expired lease or old control-plane
-  incarnation cannot publish or delete;
-- disaster tests rebuilding a fresh D1 index from only root recovery material,
-  portable manifests, and ciphertext;
-- corruption tests distinguishing missing key, unsupported suite, missing
-  replica, corrupt replica, provider outage, and permanent loss;
-- throughput and bounded-memory benchmarks on supported amd64 and arm64 hosts.
-
-The system's safety target is deliberate: retries, crashes, partitions, stale
-clients, and provider ambiguity may create duplicate work or retained garbage,
-but they MUST NOT cause silent overwrite, false successful restore, or deletion
-of the last verified recoverable copy.
+- Every commit MUST pass formatting, strict Rust/Go/TypeScript lint, race
+  tests, unit tests, native and WASM SDK tests, local Worker+D1 protocols, UI
+  tests, architecture boundaries, and dev/prod deployment dry-runs.
+- Shared binary formats MUST have deterministic cross-language golden vectors
+  while more than one conformance implementation exists.
+- Driver acceptance MUST cover partial and wrong ranges, stale identity,
+  throttling, authorization loss, quota exhaustion, interruption, resume,
+  success-with-lost-response, and corruption.
+- Lifecycle acceptance MUST inject crashes and stale fences around every remote
+  side effect and D1 transition before a driver is eligible for automatic
+  production deletion.
+- D1 query shapes used by bounded production loops MUST have explicit tested
+  indexes. New indexes MUST correspond to a concrete read or maintenance path.
+- Tests MUST prove that stale clients cannot publish, move, authorize, or
+  delete after their expected revision, token, lease, or fence becomes invalid.

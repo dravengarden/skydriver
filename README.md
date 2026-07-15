@@ -148,8 +148,9 @@ just verify
 
 The full gate runs formatting, strict Rust/Go/web lint, race tests, Rust tests,
 real local Worker+D1 protocol tests, UI tests, and dev/prod dry-run builds.
-The retained Go packages are a compatibility and conformance oracle only; the
-repository no longer builds public Go CLI binaries.
+The small retained Go packages are conformance oracles for the complete-object
+driver contract, durable journal, and shared Merkle/crypto vectors only. There
+is no public Go SDK or CLI and no legacy archive implementation.
 
 Key specifications:
 

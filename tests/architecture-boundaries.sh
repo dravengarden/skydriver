@@ -23,3 +23,28 @@ if test -e cmd/carrack/main.go || test -e cmd/carrackctl/main.go; then
   echo "public Carrack CLIs must be the native Rust binaries" >&2
   exit 1
 fi
+
+legacy_go_paths=(archive cryptostream manifest provider sdk internal/cli driver/aliyundrive)
+for legacy_path in "${legacy_go_paths[@]}"; do
+  if test -d "$legacy_path" && find "$legacy_path" -type f -name '*.go' -print -quit | grep -q .; then
+    echo "legacy Go archive code is forbidden under $legacy_path" >&2
+    exit 1
+  fi
+done
+
+if find transfer -maxdepth 1 -type f -name '*.go' -print -quit | grep -q .; then
+  echo "only the V2 transfer/journal Go oracle may remain under transfer" >&2
+  exit 1
+fi
+
+if rg --line-number \
+  'github\.com/dravengarden/carrack/(archive|cryptostream|manifest|provider|sdk)(/|"|$)' \
+  --glob '*.go' .; then
+  echo "retained Go conformance packages must not import the removed archive stack" >&2
+  exit 1
+fi
+
+if test -e schemas/bundle.v1.schema.json || test -e schemas/bundle-plan.v1.schema.json; then
+  echo "bundle schemas are forbidden by the complete-object V2 model" >&2
+  exit 1
+fi

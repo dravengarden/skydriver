@@ -8,9 +8,10 @@ ingestion schedules, trading semantics, or other consumer-specific behavior.
 
 - `crates/carrack-client/`, `crates/carrack-cli/`: canonical Rust client core
   and the `carrack`/`carrackctl` binaries.
-- `cmd/`, `archive/`, `manifest/`, `provider/`, `sdk/`: compatibility Go
-  implementation retained while commands migrate behind language-neutral
-  contracts. It must not gain new provider lifecycle policy.
+- `driver/`, `transfer/journal/`, `vfs/`: narrow Go conformance oracles for the
+  complete-object contract, recovery journal, and shared binary vectors. They
+  are not a public SDK or installation surface and must not gain product
+  behavior.
 - `control-plane/`: Rust Cloudflare Worker for auth, index, jobs, and status.
 - `web/`: strict TypeScript SPA using React, TanStack, and MUI.
 - `schemas/`: language-neutral wire contracts.
@@ -46,3 +47,6 @@ agent processes are SDK consumers, not a third architectural component.
 - Treat `docs/requirements.md` as the normative product and correctness
   baseline. Architecture and implementation changes must preserve its MUST and
   MUST NOT guarantees or revise the requirements deliberately.
+- Legacy Go archive packages, public Go CLIs, packs, extents, bundles, leaf
+  merging, and compaction are forbidden. Product behavior belongs in the Rust
+  client, Worker, or their language-neutral contracts.

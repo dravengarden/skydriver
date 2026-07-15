@@ -344,10 +344,10 @@ unused indexes only through a new append-only migration.
 ## Provider inventory
 
 The current Rust V2 product does not expose provider-wide inventory, adoption,
-quarantine, or delete-task execution in either CLI. Historical Go protocols and
-D1 tables remain as compatibility and fault-model evidence only; agents must
-not invoke their old `reconcile`, `quarantine`, or janitor commands. They are
-removed with the rest of the compatibility archive surface.
+quarantine, or delete-task execution in either CLI. The former Go command and
+archive implementations have been removed. Historical D1 tables remain only as
+migration and fault-model evidence; no agent may synthesize their old HTTP
+protocols or mutate them directly.
 
 A future hosted inventory pass must remain read-only, bounded, fenced, and
 conservative: an unknown object is quarantined rather than adopted or deleted,

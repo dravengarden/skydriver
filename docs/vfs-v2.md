@@ -4,10 +4,10 @@
 
 This document records the implemented V2 product boundary. The public client,
 SDK, and management binaries are Rust and use complete provider objects. The
-archive-oriented Go packages remain temporarily as compatibility and
-conformance oracles; they are not an installation surface and must not acquire
-new product behavior. V2 removes V1 packs, bundles, extents, leaf merging, and
-compaction instead of adapting them into the filesystem.
+former Go archive SDK, CLI adapters, providers, packs, bundles, extents, leaf
+merging, and compaction have been removed. The small retained Go packages are
+strict conformance oracles for the complete-object driver contract, recovery
+journal, and shared binary vectors; they are not an installation surface.
 
 The current implemented V2 slice includes:
 
@@ -41,10 +41,10 @@ The current implemented V2 slice includes:
   binding-owned server cleanup independent of client signing-key rotation.
 
 Remaining expansion work is explicit: multi-hop or narrow-view catalog-page
-acceleration, additional hosted drivers, production fault-injection for every
-lifecycle class, and final removal of the compatibility-only Go archive
-surface. Durable Aliyun credential rotation is already server-owned and does
-not change the public complete-object filesystem contract.
+acceleration, additional hosted drivers, and production fault-injection for
+every lifecycle class. Durable Aliyun credential rotation and removal of the
+compatibility Go archive surface are complete and do not change the public
+complete-object filesystem contract.
 
 ## Product boundary
 
@@ -295,7 +295,7 @@ The canonical Rust client exposes the high-level filesystem methods and owns
 prepare, transfer, and commit internally. Callers may schedule independent file
 operations and supply byte or local-file sources, but they cannot bypass
 Carrack hashing, encryption, provider verification, or conditional
-publication. The Go SDK remains only a compatibility and conformance oracle.
+publication. No compatibility SDK implements a second product path.
 
 `vfs-bootstrap-v1.md` defines the one-shot authority bootstrap.
 `vfs-put-v1.md` defines the implemented prepare, key and driver grants,
@@ -559,9 +559,8 @@ leases, driver revision, and provider identity. Its hosted driver adapter
 performs idempotent `Delete`; after a lost response, provider absence is
 success.
 
-The compatibility Go janitor protocol remains only as migration evidence and
-is not a public CLI or native SDK operation. Filesystem clients cannot
-enumerate, authorize, or execute cleanup. The control plane owns bounded
+Filesystem clients cannot enumerate, authorize, or execute cleanup. The
+control plane owns bounded
 selection, exact reachability revalidation, driver capability checks, fencing,
 provider deletion, and idempotent completion. Aliyun has a native hosted
 lifecycle adapter. Agent-local paths are not reachable by Cloudflare, so their
@@ -582,23 +581,11 @@ never receive that parent. The console exposes only redacted readiness; an
 additional operator-owned R2 driver retains the normal write-only credential
 flow.
 
-## Initial implementation order
+## Implementation record
 
-1. Introduce the V2 driver contract, capability assessment, warnings, and
-   generated support documentation beside the legacy provider package.
-2. Implement a V2 local-filesystem driver and complete-object transfer journal
-   as the reference contract implementation.
-3. Add file and directory Merkle formats with Go/Rust golden vectors.
-4. Add VFS identifiers, entries, immutable versions, locations, snapshots,
-   ACLs, tokens, optimistic prepare/commit, and catalog revisions.
-5. Implement metadata checkpoints, deltas, local SQLite synchronization, and
-   local planning.
-6. Implement high-level `put`, `get`, `push`, and `pull` APIs and AI-stable CLI
-   JSON contracts.
-7. Add the completed R2 driver, then generic S3, Google Drive, and WebDAV behind
-   the same contract tests; keep the existing Aliyun Drive Open adapter in the
-   shared suite.
-8. Build the location mark/task protocol on the implemented fail-closed
-   snapshot reachability and abandoned-Put janitor foundations.
-9. Remove legacy packs, extents, bundles, compaction, and operation protocols
-   after V2 parity and migration tests pass.
+The V2 complete-object driver, local reference driver, recovery journal,
+Merkle formats, VFS identities, optimistic publication, catalog checkpoints
+and deltas, high-level filesystem API, R2 and Aliyun adapters, and server-owned
+lifecycle protocol are implemented. After Rust parity and migration tests
+passed, the legacy Go archive and command surface was removed. Future drivers
+must enter through the same Rust contract and acceptance suite.

@@ -5,8 +5,8 @@
 This document defines the implemented live VFS directory, token, ACL, and
 placement-management API. The Cloudflare Worker is the transaction authority;
 the canonical Rust `carrack-client`, `carrack`, and `carrackctl` surfaces expose
-the supported operations. The Go SDK is retained only as a compatibility and
-conformance oracle.
+the supported operations. There is no compatibility SDK or second command
+implementation.
 
 Management requests never carry or relay file payload bytes, provider
 credentials, plaintext directory secrets, or provider-object locators. Payload

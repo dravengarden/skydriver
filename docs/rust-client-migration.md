@@ -1,7 +1,8 @@
 # Rust client migration
 
-Carrack's public binaries and canonical client core are Rust. The retained Go
-code is a compatibility/conformance oracle only; it does not build a public
+Carrack's public binaries and canonical client core are Rust. Migration is
+complete: the former Go archive SDK and internal CLI have been removed. The
+remaining Go packages are narrow conformance oracles and do not build a public
 `carrack` or `carrackctl` binary.
 
 ## Target boundary
@@ -44,8 +45,13 @@ or applying a partial response.
    links to, launches, or calls OpenList.
 4. Direct downloads acquire a durable server read lease and explicitly release
    it. Server cron alone owns reachability marking and physical cleanup.
-5. Go remains only for conformance vectors and legacy protocol tests until
-   those tests have native replacements; it is not an installation surface.
+5. Go remains only for the complete-object driver contract, durable transfer
+   journal, and shared Merkle/crypto conformance vectors. It is not a product
+   SDK, provider implementation, or installation surface.
+
+The removed surface included packs, bundles, extents, archive manifests,
+compaction, the provider-oriented Go transfer stack, and every Go command
+adapter. Architecture tests reject their reintroduction.
 
 The migration must never expose provider credentials, GC leases, storage keys,
 Merkle internals, or journal maintenance to ordinary filesystem users.

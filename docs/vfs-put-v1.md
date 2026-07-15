@@ -178,84 +178,45 @@ provider evidence for the same intent returns `409`.
 ## Expired upload deletion
 
 Metadata hygiene expires an uncommitted intent and plans at most one delete
-task from its immutable upload evidence after an additional one-day grace. A
-janitor token requires both `gc.run` and `driver.use`, the task directory in its
-subtree, an allowed driver, and both inherited ACL grants.
+task from its immutable upload evidence after an additional one-day grace. The
+task is internal control-plane state and is never exposed to a filesystem
+token, SDK, or CLI.
 
-The bounded API is `POST /api/v2/put-deletes/claim`, followed by
-`/:id/driver-grant`, `/:id/revalidate`, and exactly one of `/:id/complete` or
-`/:id/fail`. Claim leases are 15 through 300 seconds. The driver grant pins the
-task's exact driver revision and expires with the shorter token or claim lease.
-It uses schema `carrack.vfs.put-delete-driver-grant.v1` and is never cached.
-
-The server lifecycle executor opens only a compiled registered driver,
-requires advertised Stat and exact Delete support, and compares storage key, encoded length, and
-every recorded native ID, provider version, and ETag. At least one strong
-provider identity must be present. Only then does final revalidation rotate the
-fencing token immediately before `Delete`. Completion accepts `deleted` or
-`already_absent`; failure releases the claim for retry. A stale lease, fence,
-driver revision, new location, publication receipt, or changed evidence makes
-provider deletion impossible.
+The bounded server lifecycle executor opens only a compiled registered driver,
+requires advertised Stat and exact Delete support, and compares storage key,
+encoded length, every recorded native ID, provider version, and ETag. At least
+one strong provider identity must be present. Only then does final
+revalidation rotate the fencing token immediately before `Delete`. Provider
+absence is idempotent success; failure releases the claim for retry. A stale
+lease, fence, driver revision, new location, publication receipt, or changed
+evidence makes provider deletion impossible.
 
 ## Current implementation boundary
 
-The compatibility Go protocol, D1 invariants, Merkle verification, encrypted and plaintext
-local-filesystem paths, token refresh, grants, create/overwrite flow, exact
-idempotent replay, ACL-revocation tests, and fenced expired-upload cleanup are
-implemented. The Go SDK exposes `Put`, `PutFile`, and `PutBytes`; its legacy CLI
-exposes one-file upload while the Rust `carrack put` facade is migrated:
+The D1 invariants, Merkle verification, encrypted and plaintext paths, token
+refresh, grants, create/overwrite flow, exact idempotent replay,
+ACL-revocation tests, and fenced expired-upload cleanup are implemented by the
+Worker and canonical Rust client. The former Go SDK and legacy CLI have been
+removed. The supported command is:
 
 ```bash
 export CARRACK_VFS_TOKEN='<bootstrap or attenuated token>'
 
-carrack vfs put ./release.tar.zst release.tar.zst \
-  --control-url https://carrack.example.com \
-  --directory-id <directory-id> \
-  --preferred-driver-id local-main \
-  --idempotency-key release-2026-07-13 \
-  --format json
+carrack put ./release.tar.zst /releases/release.tar.zst \
+  --idempotency-key release-2026-07-13
 ```
 
-Use `-` as `LOCAL_FILE` to spool stdin into a private staging file before
-hashing and upload. Journal and encoded staging roots default to private XDG
-state and cache directories and can be overridden explicitly.
+The CLI accepts a canonical local regular file. Applications may use the Rust
+client's byte API for in-memory content. Encoded staging defaults to the
+private Carrack state directory and may be overridden with
+`--staging-directory`.
 
-After the upload journal exists, an SDK transfer or commit error unwraps through
-`VFSPutRecoveryError` and carries its `JournalID`. Retry the identical source,
-destination, expected revision, and idempotency key with that ID:
-
-```bash
-carrack vfs put ./release.tar.zst release.tar.zst \
-  --control-url https://carrack.example.com \
-  --directory-id <directory-id> \
-  --preferred-driver-id local-main \
-  --idempotency-key release-2026-07-13 \
-  --resume-journal-id <journal-id> \
-  --format json
-```
-
-Resume reacquires current key and driver grants, revalidates the source,
-complete encoded identity, storage key, exact driver descriptor, capability
-requirements, and hash-chained journal, then transfers only missing valid
-parts. A journal already in `complete` state reuses its verified provider
-object and retries only conditional metadata publication. The immutable part
-layout in the journal takes precedence over new tuning flags. A journal for a
-different staging path, object, or driver is a hard integrity error.
-
-If a process is killed before it can report the ID, discover every local
-candidate without a control-plane token:
-
-```bash
-carrack vfs journal list --format json
-```
-
-The command reads the same XDG state root as Put, validates every immutable plan,
-state hash-chain, and progress receipt, and returns stable source, driver,
-storage-key, checksum, status, and completed-piece fields. It refuses the whole
-listing on an unexpected or corrupt published entry rather than hiding it.
-Private temporary directories left before atomic journal publication are
-ignored because provider I/O cannot have started yet. Use `--journal-directory`
-when Put used a non-default root.
+Resume is automatic and intentionally has no public journal-management
+surface. Retry the identical source, destination, expected revision, placement,
+and idempotency key. The client reacquires current key and driver grants,
+revalidates the source and complete encoded identity, and lets the typed driver
+reuse only verified multipart or range receipts. Changed source or plan
+identity is a hard error.
 
 Cleanup is not exposed through the filesystem CLI or SDK. Expired upload
 evidence remains durable until the control plane's bounded lifecycle executor
@@ -263,8 +224,7 @@ can perform exact Stat, final reachability revalidation, fenced idempotent
 Delete, and completion through a capable hosted-driver adapter. Missing exact
 delete support is a hard stop, never a weaker client-side delete.
 
-A dedicated durable receipt-recovery API beyond intent lifetime, replacement
-and deleted-version reachability, remote V2 drivers, download, directory
-synchronization, and catalog-prefetch planning
-remain later V2 slices. This boundary does not weaken publication checks or
-make the control plane a payload proxy.
+R2 and Aliyun complete-object transfers, download, directory synchronization,
+catalog prefetch, replacement reachability, and server-owned expired-upload
+cleanup are implemented. None weakens publication checks or makes the control
+plane a payload proxy.
