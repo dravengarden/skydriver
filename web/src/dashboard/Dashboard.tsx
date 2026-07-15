@@ -32,7 +32,7 @@ import {
     Typography,
 } from "@mui/material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import {
     disableConfiguration,
     enableConfiguration,
@@ -41,12 +41,7 @@ import {
     fetchManagementSnapshot,
 } from "../api/client";
 import { CarrackMark } from "../brand/CarrackLogo";
-import { AccessPage } from "./pages/AccessPage";
-import { ActivityPage } from "./pages/ActivityPage";
-import { DriversPage } from "./pages/DriversPage";
-import { FilesPage } from "./pages/FilesPage";
 import { OverviewPage } from "./pages/OverviewPage";
-import { SettingsPage } from "./pages/SettingsPage";
 
 interface DashboardProps {
     readonly environment: string;
@@ -54,6 +49,36 @@ interface DashboardProps {
 }
 
 type Page = "overview" | "files" | "drivers" | "access" | "activity" | "settings";
+
+const pageLoaders = {
+    files: () => import("./pages/FilesPage"),
+    drivers: () => import("./pages/DriversPage"),
+    access: () => import("./pages/AccessPage"),
+    activity: () => import("./pages/ActivityPage"),
+    settings: () => import("./pages/SettingsPage"),
+};
+
+const FilesPage = lazy(() =>
+    pageLoaders.files().then(({ FilesPage: component }) => ({ default: component })),
+);
+const DriversPage = lazy(() =>
+    pageLoaders.drivers().then(({ DriversPage: component }) => ({ default: component })),
+);
+const AccessPage = lazy(() =>
+    pageLoaders.access().then(({ AccessPage: component }) => ({ default: component })),
+);
+const ActivityPage = lazy(() =>
+    pageLoaders.activity().then(({ ActivityPage: component }) => ({ default: component })),
+);
+const SettingsPage = lazy(() =>
+    pageLoaders.settings().then(({ SettingsPage: component }) => ({ default: component })),
+);
+
+function preloadPage(page: Page) {
+    if (page !== "overview") {
+        void pageLoaders[page]();
+    }
+}
 
 const navigation: ReadonlyArray<{
     readonly id: Page;
@@ -342,6 +367,8 @@ export function Dashboard({ environment, onLogout }: DashboardProps) {
                                 key={item.id}
                                 selected={page === item.id}
                                 onClick={() => setPage(item.id)}
+                                onFocus={() => preloadPage(item.id)}
+                                onPointerEnter={() => preloadPage(item.id)}
                                 sx={{
                                     borderRadius: 2,
                                     minWidth: { xs: "max-content", md: 0 },
@@ -359,7 +386,21 @@ export function Dashboard({ environment, onLogout }: DashboardProps) {
                         </Typography>
                     </Box>
                 </Box>
-                <Box sx={{ minWidth: 0, p: { xs: 2, sm: 3, lg: 5 } }}>{content}</Box>
+                <Box sx={{ minWidth: 0, p: { xs: 2, sm: 3, lg: 5 } }}>
+                    <Suspense
+                        fallback={
+                            <Box
+                                role="status"
+                                aria-label="Loading page"
+                                sx={{ minHeight: 240, display: "grid", placeItems: "center" }}
+                            >
+                                <Typography color="text.secondary">Loading…</Typography>
+                            </Box>
+                        }
+                    >
+                        {content}
+                    </Suspense>
+                </Box>
             </Box>
 
             <Dialog

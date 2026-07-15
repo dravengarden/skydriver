@@ -1,8 +1,12 @@
-import { CssBaseline, ThemeProvider, createTheme } from "@mui/material";
+import { Box, CircularProgress, CssBaseline, ThemeProvider, createTheme } from "@mui/material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Suspense, lazy } from "react";
 import { fetchHealth, fetchSession, login, logout } from "./api/client";
 import { LoginPage } from "./auth/LoginPage";
-import { Dashboard } from "./dashboard/Dashboard";
+
+const Dashboard = lazy(() =>
+    import("./dashboard/Dashboard").then(({ Dashboard: component }) => ({ default: component })),
+);
 
 const theme = createTheme({
     colorSchemes: { dark: true },
@@ -34,7 +38,26 @@ export function App() {
 
     let content;
     if (session.data?.authenticated) {
-        content = <Dashboard environment={environment} onLogout={() => logoutMutation.mutate()} />;
+        content = (
+            <Suspense
+                fallback={
+                    <Box
+                        role="status"
+                        aria-label="Loading control plane"
+                        sx={{
+                            minHeight: "100dvh",
+                            display: "grid",
+                            placeItems: "center",
+                            bgcolor: "#f6f8fb",
+                        }}
+                    >
+                        <CircularProgress size={30} />
+                    </Box>
+                }
+            >
+                <Dashboard environment={environment} onLogout={() => logoutMutation.mutate()} />
+            </Suspense>
+        );
     } else {
         content = (
             <LoginPage
