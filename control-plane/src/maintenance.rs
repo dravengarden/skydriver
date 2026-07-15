@@ -105,7 +105,8 @@ pub(crate) async fn run(env: &Env) -> Result<()> {
                     "DELETE FROM vfs_read_leases
                      WHERE id IN (
                          SELECT id FROM vfs_read_leases
-                         WHERE COALESCE(completed_at, expires_at) <= ?1
+                         WHERE COALESCE(completed_at, expires_at)
+                               <= CAST(?1 AS INTEGER)
                          ORDER BY COALESCE(completed_at, expires_at), id LIMIT ?2
                      )",
                 )

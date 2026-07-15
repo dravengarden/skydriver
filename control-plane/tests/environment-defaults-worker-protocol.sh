@@ -334,6 +334,91 @@ if "${wrangler[@]}" r2 object get \
   exit 1
 fi
 
+# A direct provider read remains protected by its durable D1 lease. Cron may
+# block the stale task, but it must leave both the location and provider bytes
+# intact until a later lifecycle decision creates a newly fenced task.
+token_id=$(jq -r '.token_id' <<<"$bootstrapped")
+leased_source="$state_directory/lifecycle-leased-object"
+leased_readback="$state_directory/lifecycle-leased-readback"
+printf 'actively-downloaded-object\n' >"$leased_source"
+leased_bytes=$(wc -c <"$leased_source" | tr -d ' ')
+leased_sha=$(sha256sum "$leased_source" | cut -d ' ' -f 1)
+"${wrangler[@]}" r2 object put \
+  carrack-payload-local/lifecycle-fault-injection/leased \
+  --local --persist-to "$state_directory" --file "$leased_source" >/dev/null
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" --command \
+  "INSERT INTO vfs_files (id, filesystem_id, created_at, updated_at)
+   VALUES ('a3333333333333333333333333333333', '$filesystem_id', unixepoch(), unixepoch());
+   INSERT INTO vfs_file_versions (
+     id, file_id, plaintext_bytes, verification_block_bytes,
+     verification_block_count, file_root, block_manifest_sha256,
+     block_manifest_bytes, block_manifest_r2_key, block_manifest_r2_version,
+     crypto_suite, key_epoch, encryption_frame_bytes, encoded_bytes,
+     encoded_sha256, created_at
+   ) VALUES (
+     'b3333333333333333333333333333333', 'a3333333333333333333333333333333',
+     $leased_bytes, 4096, 1,
+     '1333333333333333333333333333333333333333333333333333333333333333',
+     '2333333333333333333333333333333333333333333333333333333333333333',
+     1, 'fault/manifests/leased', 'fault-manifest-leased', 'plaintext/v1',
+     1, 4096, $leased_bytes, '$leased_sha', unixepoch()
+   );
+   INSERT INTO vfs_locations (
+     id, version_id, driver_id, storage_key, size_bytes, object_sha256,
+     created_at, updated_at
+   ) VALUES (
+     'c3333333333333333333333333333333', 'b3333333333333333333333333333333',
+     'r2-default', 'lifecycle-fault-injection/leased', $leased_bytes,
+     '$leased_sha', unixepoch(), unixepoch()
+   );
+   UPDATE vfs_locations
+   SET state = 'verified', verified_at = unixepoch(), revision = revision + 1,
+       updated_at = unixepoch()
+   WHERE id = 'c3333333333333333333333333333333';
+   UPDATE vfs_locations
+   SET state = 'tombstoned', delete_after = unixepoch() - 1,
+       revision = revision + 1, updated_at = unixepoch()
+   WHERE id = 'c3333333333333333333333333333333';
+   INSERT INTO vfs_read_leases (
+     id, version_id, location_id, token_id, expires_at, created_at
+   ) VALUES (
+     'd3333333333333333333333333333333', 'b3333333333333333333333333333333',
+     'c3333333333333333333333333333333', '$token_id',
+     unixepoch() + 3600, unixepoch()
+   );" >/dev/null
+curl --silent --show-error --fail-with-body \
+  "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
+leased_fence=$("${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" --command \
+  "SELECT CASE WHEN location.state = 'tombstoned'
+                       AND task.state = 'blocked'
+                       AND task.last_error_code = 'revalidation_failed'
+                       AND lease.completed_at IS NULL
+                       AND lease.expires_at > unixepoch()
+     THEN 1 ELSE 0 END AS accepted
+   FROM vfs_locations AS location
+   JOIN vfs_location_delete_tasks AS task ON task.id = location.id
+   JOIN vfs_read_leases AS lease ON lease.location_id = location.id
+   WHERE location.id = 'c3333333333333333333333333333333';" --json)
+if ! jq -e '.[0].results == [{"accepted":1}]' <<<"$leased_fence" >/dev/null; then
+  jq . <<<"$leased_fence" >&2
+  "${wrangler[@]}" d1 execute CARRACK_INDEX \
+    --local --persist-to "$state_directory" --command \
+    "SELECT location.state AS location_state, task.state AS task_state,
+            task.last_error_code, task.delete_after, unixepoch() AS now,
+            lease.expires_at, lease.completed_at
+     FROM vfs_locations AS location
+     LEFT JOIN vfs_location_delete_tasks AS task ON task.id = location.id
+     LEFT JOIN vfs_read_leases AS lease ON lease.location_id = location.id
+     WHERE location.id = 'c3333333333333333333333333333333';" --json >&2
+  exit 1
+fi
+"${wrangler[@]}" r2 object get \
+  carrack-payload-local/lifecycle-fault-injection/leased \
+  --local --persist-to "$state_directory" --file "$leased_readback" >/dev/null
+cmp "$leased_source" "$leased_readback"
+
 "${wrangler[@]}" d1 execute CARRACK_INDEX \
   --local --persist-to "$state_directory" --command \
   "CREATE TABLE environment_default_assertions (
