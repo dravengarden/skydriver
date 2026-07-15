@@ -14,9 +14,11 @@ import {
     DialogContent,
     DialogTitle,
     Divider,
-    Paper,
+    FormControlLabel,
     MenuItem,
+    Paper,
     Stack,
+    Switch,
     TextField,
     Typography,
 } from "@mui/material";
@@ -157,6 +159,7 @@ export function DriversPage({
     const [r2Endpoint, setR2Endpoint] = useState("");
     const [r2Bucket, setR2Bucket] = useState("");
     const [r2Prefix, setR2Prefix] = useState("");
+    const [r2Managed, setR2Managed] = useState(true);
     const [registrationValidation, setRegistrationValidation] =
         useState<DriverRegistrationValidation | null>(null);
     const validationMutation = useMutation({
@@ -218,8 +221,8 @@ export function DriversPage({
                     ? {
                           endpoint: r2Endpoint,
                           bucket: r2Bucket,
-                          prefix: r2Prefix,
-                          managed: false,
+                          prefix: r2Managed ? "" : r2Prefix,
+                          managed: r2Managed,
                       }
                     : {
                           api_base_url: "https://openapi.alipan.com",
@@ -335,6 +338,7 @@ export function DriversPage({
         setR2Endpoint("");
         setR2Bucket("");
         setR2Prefix("");
+        setR2Managed(true);
         setRegistrationValidation(null);
         registrationValidationMutation.reset();
         registrationApplyMutation.reset();
@@ -346,6 +350,8 @@ export function DriversPage({
             return;
         }
         setRegistrationOpen(true);
+        const environment = window.location.hostname.startsWith("dev.") ? "dev" : "prod";
+        setR2Bucket(`carrack-payload-${environment}`);
     }
 
     if (management.isPending) {
@@ -610,6 +616,27 @@ export function DriversPage({
                     </TextField>
                     {registrationKind === "r2/v1" && (
                         <Stack spacing={2} sx={{ mt: 2 }}>
+                            <FormControlLabel
+                                control={
+                                    <Switch
+                                        checked={r2Managed}
+                                        disabled={registrationValidation !== null}
+                                        onChange={(event) => {
+                                            const managed = event.target.checked;
+                                            setR2Managed(managed);
+                                            if (managed) {
+                                                const environment =
+                                                    window.location.hostname.startsWith("dev.")
+                                                        ? "dev"
+                                                        : "prod";
+                                                setR2Bucket(`carrack-payload-${environment}`);
+                                                setR2Prefix("");
+                                            }
+                                        }}
+                                    />
+                                }
+                                label="Environment-managed default R2 bucket"
+                            />
                             <TextField
                                 label="R2 S3 endpoint"
                                 value={r2Endpoint}
@@ -621,12 +648,18 @@ export function DriversPage({
                                 label="Bucket"
                                 value={r2Bucket}
                                 disabled={registrationValidation !== null}
+                                helperText={
+                                    r2Managed
+                                        ? "Locked to this control-plane environment."
+                                        : "Third-party Cloudflare R2 bucket."
+                                }
+                                slotProps={{ htmlInput: { readOnly: r2Managed } }}
                                 onChange={(event) => setR2Bucket(event.target.value)}
                             />
                             <TextField
                                 label="Object prefix (optional, end with /)"
                                 value={r2Prefix}
-                                disabled={registrationValidation !== null}
+                                disabled={registrationValidation !== null || r2Managed}
                                 onChange={(event) => setR2Prefix(event.target.value)}
                             />
                         </Stack>
