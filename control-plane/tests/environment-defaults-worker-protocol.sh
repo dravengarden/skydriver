@@ -419,6 +419,58 @@ fi
   --local --persist-to "$state_directory" --file "$leased_readback" >/dev/null
 cmp "$leased_source" "$leased_readback"
 
+# A provider may have committed Delete while its response was lost. Replaying
+# the exact fenced R2 delete against an already-missing object is idempotent and
+# must still commit the D1 location and task state.
+missing_bytes=29
+missing_sha=4444444444444444444444444444444444444444444444444444444444444444
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" --command \
+  "INSERT INTO vfs_files (id, filesystem_id, created_at, updated_at)
+   VALUES ('a4444444444444444444444444444444', '$filesystem_id', unixepoch(), unixepoch());
+   INSERT INTO vfs_file_versions (
+     id, file_id, plaintext_bytes, verification_block_bytes,
+     verification_block_count, file_root, block_manifest_sha256,
+     block_manifest_bytes, block_manifest_r2_key, block_manifest_r2_version,
+     crypto_suite, key_epoch, encryption_frame_bytes, encoded_bytes,
+     encoded_sha256, created_at
+   ) VALUES (
+     'b4444444444444444444444444444444', 'a4444444444444444444444444444444',
+     $missing_bytes, 4096, 1,
+     '1444444444444444444444444444444444444444444444444444444444444444',
+     '2444444444444444444444444444444444444444444444444444444444444444',
+     1, 'fault/manifests/missing', 'fault-manifest-missing', 'plaintext/v1',
+     1, 4096, $missing_bytes, '$missing_sha', unixepoch()
+   );
+   INSERT INTO vfs_locations (
+     id, version_id, driver_id, storage_key, size_bytes, object_sha256,
+     created_at, updated_at
+   ) VALUES (
+     'c4444444444444444444444444444444', 'b4444444444444444444444444444444',
+     'r2-default', 'lifecycle-fault-injection/already-missing', $missing_bytes,
+     '$missing_sha', unixepoch(), unixepoch()
+   );
+   UPDATE vfs_locations
+   SET state = 'verified', verified_at = unixepoch(), revision = revision + 1,
+       updated_at = unixepoch()
+   WHERE id = 'c4444444444444444444444444444444';
+   UPDATE vfs_locations
+   SET state = 'tombstoned', delete_after = unixepoch() - 1,
+       revision = revision + 1, updated_at = unixepoch()
+   WHERE id = 'c4444444444444444444444444444444';" >/dev/null
+curl --silent --show-error --fail-with-body \
+  "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" --command \
+  "SELECT CASE WHEN location.state = 'deleted' AND task.state = 'deleted'
+                       AND task.attempt_count = 1
+                       AND task.last_error_code IS NULL
+     THEN 1 ELSE 0 END AS accepted
+   FROM vfs_locations AS location
+   JOIN vfs_location_delete_tasks AS task ON task.id = location.id
+   WHERE location.id = 'c4444444444444444444444444444444';" --json |
+  jq -e '.[0].results == [{"accepted":1}]' >/dev/null
+
 "${wrangler[@]}" d1 execute CARRACK_INDEX \
   --local --persist-to "$state_directory" --command \
   "CREATE TABLE environment_default_assertions (
