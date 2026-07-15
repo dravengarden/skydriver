@@ -89,6 +89,8 @@ and child-token operations.
 
 ```bash
 carrackctl snapshot
+carrackctl metrics global all
+carrackctl metrics driver aliyun-main
 carrackctl watch --after 0 --limit 100
 carrackctl directory <directory-id>
 carrackctl driver register aliyun-main \

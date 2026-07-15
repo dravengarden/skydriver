@@ -82,6 +82,16 @@ enum ManagementCommand {
         #[arg(long = "format", value_enum, default_value_t = Output::Json)]
         output: Output,
     },
+    /// Read sampled transfer performance for one global, driver, token, or directory scope.
+    Metrics {
+        /// Scope kind: global, driver, token, or directory.
+        scope: String,
+        /// Stable scope identifier; use `all` with the global scope.
+        id: String,
+        /// Output encoding.
+        #[arg(long = "format", value_enum, default_value_t = Output::Json)]
+        output: Output,
+    },
     /// Read one bounded audit-event page after a monotonic cursor.
     Watch {
         /// Last event ID already processed; zero starts at the retained beginning.
@@ -587,6 +597,11 @@ async fn run_management() -> Result<(), Error> {
             let client = admin_client(arguments.control_url)?;
             client.check_compatibility().await?;
             write_json(output, &client.snapshot().await?)?;
+        }
+        ManagementCommand::Metrics { scope, id, output } => {
+            let client = admin_client(arguments.control_url)?;
+            client.check_compatibility().await?;
+            write_json(output, &client.transfer_metrics(&scope, &id).await?)?;
         }
         ManagementCommand::Watch {
             after,
@@ -1415,13 +1430,14 @@ mod tests {
     }
 
     #[test]
-    fn management_cli_exposes_bounded_event_watch() {
+    fn management_cli_exposes_bounded_reads() {
         let command = ManagementArguments::command();
         let names = command
             .get_subcommands()
             .map(clap::Command::get_name)
             .collect::<Vec<_>>();
         assert!(names.contains(&"watch"));
+        assert!(names.contains(&"metrics"));
     }
 
     #[test]

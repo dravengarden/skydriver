@@ -132,6 +132,41 @@ const ManagementActivitySchema = v.object({
     events: v.array(ManagementActivityEventSchema),
 });
 
+const TransferMetricRowSchema = v.object({
+    day: v.number(),
+    scope_kind: v.picklist(["global", "driver", "token", "directory"]),
+    scope_id: v.string(),
+    direction: v.picklist(["upload", "download"]),
+    weighted_transfers: v.number(),
+    weighted_bytes: v.number(),
+    weighted_provider_ms: v.number(),
+    weighted_total_ms: v.number(),
+    weighted_retries: v.number(),
+    speed_b0: v.number(),
+    speed_b1: v.number(),
+    speed_b2: v.number(),
+    speed_b3: v.number(),
+    speed_b4: v.number(),
+    speed_b5: v.number(),
+    speed_b6: v.number(),
+    speed_b7: v.number(),
+    speed_b8: v.number(),
+    speed_b9: v.number(),
+    speed_b10: v.number(),
+    speed_b11: v.number(),
+    updated_at: v.number(),
+});
+
+const TransferMetricsSchema = v.object({
+    schema: v.literal("carrack.management.transfer-metrics.v1"),
+    observed_at: v.number(),
+    scope_kind: v.picklist(["global", "driver", "token", "directory"]),
+    scope_id: v.string(),
+    retention_days: v.number(),
+    window_days: v.number(),
+    rows: v.array(TransferMetricRowSchema),
+});
+
 const ManagementDirectorySchema = v.object({
     schema: v.literal("carrack.management.directory.v1"),
     observed_at: v.number(),
@@ -316,6 +351,8 @@ export type ManagementEventCursor = v.InferOutput<typeof ManagementEventCursorSc
 export type ManagementActivityItem = v.InferOutput<typeof ManagementActivityItemSchema>;
 export type ManagementActivityEvent = v.InferOutput<typeof ManagementActivityEventSchema>;
 export type ManagementActivity = v.InferOutput<typeof ManagementActivitySchema>;
+export type TransferMetrics = v.InferOutput<typeof TransferMetricsSchema>;
+export type TransferMetricScope = TransferMetrics["scope_kind"];
 export type ManagementDirectory = v.InferOutput<typeof ManagementDirectorySchema>;
 export type TokenAnnotationValidation = v.InferOutput<typeof TokenAnnotationValidationSchema>;
 export type TokenAnnotationReceipt = v.InferOutput<typeof TokenAnnotationReceiptSchema>;
@@ -434,6 +471,17 @@ export function fetchManagementSnapshot(): Promise<ManagementSnapshot> {
 
 export function fetchManagementEventCursor(): Promise<ManagementEventCursor> {
     return requestJson("/api/admin/events/cursor", undefined, ManagementEventCursorSchema);
+}
+
+export function fetchTransferMetrics(
+    scope: TransferMetricScope,
+    scopeId: string,
+): Promise<TransferMetrics> {
+    return requestJson(
+        `/api/admin/metrics/${scope}/${encodeURIComponent(scopeId)}?days=30`,
+        undefined,
+        TransferMetricsSchema,
+    );
 }
 
 export function fetchManagementDirectory(directoryId: string): Promise<ManagementDirectory> {

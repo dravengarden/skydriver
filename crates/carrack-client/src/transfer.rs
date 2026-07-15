@@ -12,6 +12,7 @@ use sha2::{Digest as _, Sha256};
 use std::io::{Read, Seek as _, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use zeroize::Zeroize;
 
 use crate::{
@@ -176,6 +177,26 @@ struct CommitRequest<'a> {
     native_id: Option<&'a str>,
     provider_version: Option<&'a str>,
     etag: Option<&'a str>,
+    telemetry: TransferTelemetry,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct TransferTelemetry {
+    schema: &'static str,
+    provider_ms: u64,
+    total_ms: u64,
+    retries: u64,
+}
+
+impl TransferTelemetry {
+    pub(crate) fn measured(provider: std::time::Duration, total: std::time::Duration) -> Self {
+        Self {
+            schema: "carrack.transfer-telemetry.v1",
+            provider_ms: duration_ms(provider),
+            total_ms: duration_ms(total).max(duration_ms(provider)),
+            retries: 0,
+        }
+    }
 }
 
 impl VfsClient {
@@ -247,6 +268,7 @@ impl VfsClient {
         vfs_path: &str,
         options: &PutOptions,
     ) -> Result<PutResult, Error> {
+        let transfer_started = Instant::now();
         validate_options(options)?;
         let components = canonical_components(vfs_path)?;
         let (entry_name, parent_components) = components.split_last().ok_or_else(|| {
@@ -342,6 +364,7 @@ impl VfsClient {
             ));
         }
         let manifest_stage = self.stage_manifest(&token, &preparation, &manifest).await?;
+        let provider_started = Instant::now();
         let object = upload_driver(
             &self.control,
             &token,
@@ -353,6 +376,7 @@ impl VfsClient {
             options.maximum_concurrency,
         )
         .await?;
+        let provider_elapsed = provider_started.elapsed();
         let warnings = if driver.driver_kind == "aliyundrive-open/v2"
             && options.maximum_concurrency > 1
         {
@@ -378,6 +402,10 @@ impl VfsClient {
                     native_id: Some(&object.native_id),
                     provider_version: Some(&object.provider_version),
                     etag: Some(&object.etag),
+                    telemetry: TransferTelemetry::measured(
+                        provider_elapsed,
+                        transfer_started.elapsed(),
+                    ),
                 }),
             )
             .await?;
@@ -443,6 +471,12 @@ impl VfsClient {
         }
         Ok(staged)
     }
+}
+
+fn duration_ms(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_millis())
+        .unwrap_or(u64::MAX)
+        .max(1)
 }
 
 struct ProviderObject {

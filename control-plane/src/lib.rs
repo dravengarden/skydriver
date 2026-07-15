@@ -15,6 +15,7 @@ mod management_quotas;
 mod operator_sessions;
 mod protocol_compatibility;
 mod r2_signing;
+mod transfer_metrics;
 mod vfs_access;
 mod vfs_authorization;
 mod vfs_bootstrap;
@@ -72,7 +73,7 @@ struct ControlStateRow {
     clippy::too_many_lines,
     reason = "the fetch entrypoint keeps the complete HTTP route table visible"
 )]
-pub async fn main(request: Request, env: Env, _context: Context) -> Result<Response> {
+pub async fn main(request: Request, env: Env, context: Context) -> Result<Response> {
     if !request.path().starts_with("/api/") {
         return env
             .assets("ASSETS")?
@@ -87,7 +88,7 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
         return Ok(response);
     }
 
-    Router::new()
+    Router::with_data(context)
         .get("/api/compatibility", |_, _| {
             protocol_compatibility::describe()
         })
@@ -180,14 +181,15 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
         )
         .post_async(
             "/api/v2/read-leases/:id/complete",
-            |request, context| async move {
+            |mut request, context| async move {
                 let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
                     return Response::error("VFS token authentication required", 401);
                 };
                 let Some(lease_id) = context.param("id") else {
                     return Response::error("VFS read lease ID is required", 400);
                 };
-                vfs_download::complete(&context.env, &token, lease_id).await
+                vfs_download::complete(&mut request, &context.env, &context.data, &token, lease_id)
+                    .await
             },
         )
         .post_async(
@@ -390,7 +392,8 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
                     return Response::error("VFS put intent ID is required", 400);
                 };
 
-                vfs_put_commit::commit(&mut request, &context.env, &token, intent_id).await
+                vfs_put_commit::commit(&mut request, &context.env, &context.data, &token, intent_id)
+                    .await
             },
         )
         .post_async(
@@ -513,6 +516,18 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
         .get_async("/api/admin/events", |request, context| async move {
             management::events(&request, &context.env).await
         })
+        .get_async(
+            "/api/admin/metrics/:scope/:id",
+            |request, context| async move {
+                transfer_metrics::management(
+                    &request,
+                    &context.env,
+                    context.param("scope").map(String::as_str),
+                    context.param("id").map(String::as_str),
+                )
+                .await
+            },
+        )
         .get_async(
             "/api/admin/directories/:id",
             |request, context| async move {

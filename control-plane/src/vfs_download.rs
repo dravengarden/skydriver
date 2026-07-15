@@ -1,16 +1,31 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
-use worker::{Date, Env, Response, Result, wasm_bindgen::JsValue};
+use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
 
 use crate::{
-    driver_credentials, r2_signing, vfs_access,
+    driver_credentials, r2_signing,
+    transfer_metrics::{self, OwnedTransferIdentity, TransferTelemetry},
+    vfs_access,
     vfs_envelopes::{
         DirectoryEnvelopeRef, PLAINTEXT_SUITE, open_directory_key, open_driver_credential,
     },
     vfs_identifiers,
     vfs_tokens::AuthenticatedVfsToken,
 };
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct CompletionRequest {
+    telemetry: Option<TransferTelemetry>,
+}
+
+#[derive(Deserialize)]
+struct CompletionIdentityRow {
+    directory_id: String,
+    driver_id: String,
+    encoded_bytes: u64,
+}
 
 #[derive(Deserialize)]
 struct DownloadRow {
@@ -237,7 +252,9 @@ pub(crate) async fn plan(
 /// Releases a direct-read lease after the client has finished or abandoned
 /// the immutable provider read. Repeating completion is idempotent.
 pub(crate) async fn complete(
+    request: &mut Request,
     env: &Env,
+    context: &worker::Context,
     token: &AuthenticatedVfsToken,
     lease_id: &str,
 ) -> Result<Response> {
@@ -246,6 +263,24 @@ pub(crate) async fn complete(
     }
     let now = Date::now().as_millis() / 1_000;
     let database = env.d1("CARRACK_INDEX")?;
+    let encoded = request.bytes().await.unwrap_or_default();
+    let requested = if encoded.is_empty() {
+        CompletionRequest::default()
+    } else {
+        serde_json::from_slice::<CompletionRequest>(&encoded).unwrap_or_default()
+    };
+    let identity = database
+        .prepare(
+            "SELECT origin.directory_id, location.driver_id, version.encoded_bytes
+             FROM vfs_read_leases AS lease
+             JOIN vfs_file_versions AS version ON version.id = lease.version_id
+             JOIN vfs_version_origins AS origin ON origin.version_id = version.id
+             JOIN vfs_locations AS location ON location.id = lease.location_id
+             WHERE lease.id = ?1 AND lease.token_id = ?2",
+        )
+        .bind(&[JsValue::from_str(lease_id), JsValue::from_str(&token.id)])?
+        .first::<CompletionIdentityRow>(None)
+        .await?;
     let result = database
         .prepare(
             "UPDATE vfs_read_leases SET completed_at = COALESCE(completed_at, ?1)
@@ -265,6 +300,22 @@ pub(crate) async fn complete(
         != 1
     {
         return Response::error("VFS read lease was not found", 404);
+    }
+    if let Some(identity) = identity {
+        transfer_metrics::schedule(
+            context,
+            env,
+            OwnedTransferIdentity {
+                operation_id: lease_id.to_owned(),
+                direction: "download",
+                driver_id: identity.driver_id,
+                token_id: token.id.clone(),
+                directory_id: identity.directory_id,
+                encoded_bytes: identity.encoded_bytes,
+            },
+            requested.telemetry,
+            now,
+        );
     }
     Response::from_json(&serde_json::json!({
         "schema": "carrack.vfs.read-lease-completion.v1",

@@ -75,6 +75,31 @@ assert_uses_index read-lease-retirement idx_vfs_read_leases_retirement \
    WHERE COALESCE(completed_at, expires_at) <= 1
    ORDER BY COALESCE(completed_at, expires_at), id LIMIT 1000"
 
+# Transfer observability is sampled, but its rollups are still a write-heavy
+# path. Keep exactly one history index and prove that both UI reads and bounded
+# retirement avoid table scans before accepting a migration.
+assert_uses_index transfer-metrics-history idx_vfs_transfer_metrics_scope_day \
+  "SELECT day, direction, weighted_bytes, weighted_provider_ms
+   FROM vfs_transfer_daily_metrics
+   WHERE scope_kind = 'driver' AND scope_id = 'driver-a' AND day >= 1
+   ORDER BY direction, day"
+
+assert_uses_index transfer-metrics-retirement "USING PRIMARY KEY" \
+  "SELECT day, scope_kind, scope_id, direction
+   FROM vfs_transfer_daily_metrics
+   WHERE day < 1
+   ORDER BY day, scope_kind, scope_id, direction LIMIT 1000"
+
+assert_uses_index transfer-receipt-retirement idx_vfs_transfer_metric_receipts_retirement \
+  "SELECT operation_id FROM vfs_transfer_metric_receipts
+   WHERE recorded_at < 1
+   ORDER BY recorded_at, operation_id LIMIT 1000"
+
+assert_uses_index access-audit-retirement idx_vfs_audit_transfer_retirement \
+  "SELECT id FROM vfs_audit_events
+   WHERE event_kind IN ('download_planned', 'upload_committed') AND created_at < 1
+   ORDER BY created_at, id LIMIT 1000"
+
 assert_uses_index r2-cleanup-retirement idx_vfs_r2_cleanup_evidence_retirement \
   "SELECT intent_id FROM vfs_r2_upload_cleanup_tasks
    WHERE state IN ('cleaned', 'superseded') AND completed_at <= 1

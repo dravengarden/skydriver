@@ -10,6 +10,7 @@ use std::{
     io::Seek as _,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant},
 };
 use zeroize::Zeroize;
 
@@ -17,7 +18,14 @@ use crate::{
     Error, VfsClient,
     crypto::{Descriptor, restore},
     integrity,
+    transfer::TransferTelemetry,
 };
+
+#[derive(Serialize)]
+struct CompletionRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    telemetry: Option<TransferTelemetry>,
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -169,6 +177,7 @@ impl VfsClient {
         options: &GetOptions,
     ) -> Result<GetResult, Error> {
         validate_options(options)?;
+        let transfer_started = Instant::now();
         let token = self.token.encode();
         let mut plan: DownloadPlan = self
             .control
@@ -184,17 +193,22 @@ impl VfsClient {
         let outcome = self
             .finish_download(vfs_path, destination, options, &mut plan)
             .await;
+        let completion = CompletionRequest {
+            telemetry: outcome.as_ref().ok().map(|(_, provider_elapsed)| {
+                TransferTelemetry::measured(*provider_elapsed, transfer_started.elapsed())
+            }),
+        };
         let release = self
             .control
-            .send_json::<Value, ()>(
+            .send_json::<Value, CompletionRequest>(
                 Method::POST,
                 &format!("api/v2/read-leases/{}/complete", plan.read_lease_id),
                 Some(&token),
                 &[],
-                None,
+                Some(&completion),
             )
             .await;
-        let result = outcome?;
+        let (result, _) = outcome?;
         release?;
         Ok(result)
     }
@@ -205,8 +219,10 @@ impl VfsClient {
         destination: &Path,
         options: &GetOptions,
         plan: &mut DownloadPlan,
-    ) -> Result<GetResult, Error> {
+    ) -> Result<(GetResult, Duration), Error> {
+        let provider_started = Instant::now();
         let encoded = fetch_provider(&self.control.http, plan, options).await?;
+        let provider_elapsed = provider_started.elapsed();
         let mut directory_key = decode_directory_key(plan)?;
         let descriptor = Descriptor {
             directory_id: parse_identifier(&plan.directory_id)?,
@@ -238,25 +254,28 @@ impl VfsClient {
         }
         std::fs::remove_file(&encoded)
             .map_err(|error| Error::InvalidResponse(format!("remove download staging: {error}")))?;
-        Ok(GetResult {
-            schema: "carrack.fs-get.v1",
-            path: vfs_path.to_owned(),
-            version_id: plan.version_id.clone(),
-            plaintext_bytes: plan.plaintext_bytes,
-            file_root: plan.file_root.clone(),
-            verification_block_bytes: plan.verification_block_bytes,
-            driver_id: plan.driver_id.clone(),
-            warnings: if plan.driver_kind == "aliyundrive-open/v2"
-                && options.maximum_concurrency > 1
-            {
-                vec![
+        Ok((
+            GetResult {
+                schema: "carrack.fs-get.v1",
+                path: vfs_path.to_owned(),
+                version_id: plan.version_id.clone(),
+                plaintext_bytes: plan.plaintext_bytes,
+                file_root: plan.file_root.clone(),
+                verification_block_bytes: plan.verification_block_bytes,
+                driver_id: plan.driver_id.clone(),
+                warnings: if plan.driver_kind == "aliyundrive-open/v2"
+                    && options.maximum_concurrency > 1
+                {
+                    vec![
                     "Aliyun exact-range download is safely degraded to sequential requests; use an S3 or R2 driver when parallel ranges are required."
                         .to_owned(),
                 ]
-            } else {
-                Vec::new()
+                } else {
+                    Vec::new()
+                },
             },
-        })
+            provider_elapsed,
+        ))
     }
 }
 

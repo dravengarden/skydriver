@@ -81,6 +81,9 @@ unauthenticated_activity=$(curl --silent --output /dev/null --write-out '%{http_
 unauthenticated_events=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   "$base_url/api/admin/events?after=0&limit=1")
 [[ "$unauthenticated_events" == 401 ]]
+unauthenticated_metrics=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  "$base_url/api/admin/metrics/global/all")
+[[ "$unauthenticated_metrics" == 401 ]]
 
 for retired_get_route in \
   /api/client/session \
@@ -123,6 +126,18 @@ principal_id=$(jq -r '.principal_id' <<<"$bootstrapped")
 root_directory_id=$(jq -r '.root_directory_id' <<<"$bootstrapped")
 root_token=$(jq -r '.token' <<<"$bootstrapped")
 root_authorization="Authorization: Bearer $root_token"
+
+global_metrics=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" "$base_url/api/admin/metrics/global/all")
+[[ "$(jq -r '.schema' <<<"$global_metrics")" == carrack.management.transfer-metrics.v1 ]]
+[[ "$(jq -r '.scope_kind' <<<"$global_metrics")" == global ]]
+[[ "$(jq -r '.scope_id' <<<"$global_metrics")" == all ]]
+[[ "$(jq -r '.retention_days' <<<"$global_metrics")" == 400 ]]
+[[ "$(jq -r '.window_days' <<<"$global_metrics")" == 30 ]]
+[[ "$(jq -r '.rows | length' <<<"$global_metrics")" == 0 ]]
+oversized_metrics_window=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -b "$cookie_jar" "$base_url/api/admin/metrics/global/all?days=401")
+[[ "$oversized_metrics_window" == 400 ]]
 
 vfs_session=$(curl --silent --show-error --fail-with-body \
   -H "$root_authorization" "$base_url/api/v2/session")

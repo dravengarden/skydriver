@@ -129,6 +129,10 @@ commands are:
 
 ```text
 carrackctl snapshot
+carrackctl metrics global all
+carrackctl metrics driver <driver-id>
+carrackctl metrics token <token-id>
+carrackctl metrics directory <directory-id>
 carrackctl watch
 carrackctl directory <directory-id>
 carrackctl token annotate <token-id>
@@ -147,6 +151,22 @@ exact observed revision, and an idempotency key. `--check` performs client and
 server validation without applying. `--format json` emits stable schemas and
 no decorative text; warnings go to structured output, not ad-hoc stderr
 strings.
+
+Transfer metrics are completion-only sampled estimates, not correctness
+receipts. Complete transfers of at least 64 MiB are retained at weight one;
+smaller successful transfers use deterministic 10% sampling at weight ten.
+The SDK measures provider and end-to-end time only at pipeline boundaries and
+piggybacks the observation on the existing commit or lease-completion request.
+The Worker returns the correctness response without waiting for the D1 rollup;
+missing or invalid telemetry is dropped and never changes file semantics.
+
+D1 stores one rollup per UTC day, direction, and global/driver/token/directory
+scope for 400 days. The day-first primary key serves bounded retirement. One
+secondary scope/day index serves UI and CLI history queries; separate narrow
+retirement indexes cover idempotency receipts and high-volume download audit
+events. The UI requests only its visible 30-day window; `carrackctl` requests
+the retained 400-day history. Query-plan tests reject regressions to full scans. No transfer part,
+plaintext path, bearer, provider credential, or file key enters telemetry.
 
 Quota replacement uses the same validate/apply protocol. Directory policies
 set nullable `max_file_bytes`, `max_logical_bytes`, and `max_file_count` fields;

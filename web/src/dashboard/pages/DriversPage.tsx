@@ -36,7 +36,14 @@ import {
     type DriverView,
     type ManagementSnapshot,
 } from "../../api/client";
-import { ErrorState, LoadingState, PageHeading, formatBytes, formatDate } from "./shared";
+import {
+    ErrorState,
+    LoadingState,
+    PageHeading,
+    TransferPerformance,
+    formatBytes,
+    formatDate,
+} from "./shared";
 import { QuotaDialog } from "./QuotaDialog";
 
 interface DriversPageProps {
@@ -565,6 +572,8 @@ export function DriversPage({
                                     </Box>
                                 </Box>
                             )}
+
+                            <TransferPerformance scope="driver" scopeId={driver.id} />
 
                             <Box sx={{ mt: 3 }}>
                                 <Typography color="text.secondary" variant="caption">

@@ -24,7 +24,7 @@ import {
     type TokenAnnotationValidation,
     type TokenView,
 } from "../../api/client";
-import { ErrorState, LoadingState, PageHeading, formatDate } from "./shared";
+import { ErrorState, LoadingState, PageHeading, TransferPerformance, formatDate } from "./shared";
 
 function tokenState(
     token: TokenView,
@@ -58,6 +58,7 @@ export function AccessPage({
 }: AccessPageProps) {
     const queryClient = useQueryClient();
     const [draft, setDraft] = useState<AnnotationDraft | null>(null);
+    const [performanceTokenId, setPerformanceTokenId] = useState<string | null>(null);
     const [validation, setValidation] = useState<TokenAnnotationValidation | null>(null);
     const validationMutation = useMutation({
         mutationFn: (value: AnnotationDraft) =>
@@ -193,6 +194,18 @@ export function AccessPage({
                                     >
                                         Edit annotation
                                     </Button>
+                                    <Button
+                                        size="small"
+                                        onClick={() =>
+                                            setPerformanceTokenId((current) =>
+                                                current === token.id ? null : token.id,
+                                            )
+                                        }
+                                    >
+                                        {performanceTokenId === token.id
+                                            ? "Hide performance"
+                                            : "View performance"}
+                                    </Button>
                                 </Stack>
                             </Stack>
                             {token.note.length > 0 && (
@@ -228,6 +241,9 @@ export function AccessPage({
                                         : token.driver_ids.join(", ")}
                                 </Typography>
                             </Box>
+                            {performanceTokenId === token.id && (
+                                <TransferPerformance scope="token" scopeId={token.id} />
+                            )}
                         </Paper>
                     );
                 })}

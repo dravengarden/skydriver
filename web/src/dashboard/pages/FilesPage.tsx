@@ -7,7 +7,14 @@ import type { UseQueryResult } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { fetchManagementDirectory } from "../../api/client";
 import type { ManagementSnapshot } from "../../api/client";
-import { ErrorState, LoadingState, PageHeading, formatBytes, formatDate } from "./shared";
+import {
+    ErrorState,
+    LoadingState,
+    PageHeading,
+    TransferPerformance,
+    formatBytes,
+    formatDate,
+} from "./shared";
 import { QuotaDialog } from "./QuotaDialog";
 
 export function FilesPage({
@@ -166,6 +173,11 @@ export function FilesPage({
                         >
                             Merkle root {directory.data.directory.data_root}
                         </Typography>
+                        <TransferPerformance
+                            scope="directory"
+                            scopeId={directory.data.directory.id}
+                            title="Collection transfer performance"
+                        />
                     </Paper>
 
                     <Paper variant="outlined" sx={{ overflow: "hidden" }}>

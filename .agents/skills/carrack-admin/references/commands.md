@@ -4,7 +4,7 @@
 
 | Surface | Environment variable | Authority |
 |---|---|---|
-| `carrackctl snapshot`, `watch`, `directory`, `driver`, `quota`, `token annotate` | `CARRACK_OPERATOR_CREDENTIAL` | Redacted environment management |
+| `carrackctl snapshot`, `metrics`, `watch`, `directory`, `driver`, `quota`, `token annotate` | `CARRACK_OPERATOR_CREDENTIAL` | Redacted environment management |
 | `carrackctl vfs acl`, `vfs placement`, `vfs token` | `CARRACK_VFS_TOKEN` | Explicit token actions and directory scope |
 
 Both credentials are canonical unpadded base64url values encoding 32 bytes.
@@ -14,6 +14,10 @@ Keep them out of argv and output.
 
 ```bash
 carrackctl snapshot --control-url "$CARRACK_CONTROL_URL" --format json
+carrackctl metrics global all --control-url "$CARRACK_CONTROL_URL" --format json
+carrackctl metrics driver "$driver_id" --control-url "$CARRACK_CONTROL_URL" --format json
+carrackctl metrics token "$token_id" --control-url "$CARRACK_CONTROL_URL" --format json
+carrackctl metrics directory "$directory_id" --control-url "$CARRACK_CONTROL_URL" --format json
 carrackctl watch --after "$event_cursor" --limit 100 \
   --control-url "$CARRACK_CONTROL_URL" --format json
 carrackctl directory "$directory_id" --control-url "$CARRACK_CONTROL_URL" --format json
@@ -24,6 +28,11 @@ carrackctl vfs placement show /collection --control-url "$CARRACK_CONTROL_URL" -
 The admin snapshot contains only redacted driver configuration and non-secret
 token metadata. It never contains provider credentials, token bearers, token
 verifiers, directory keys, or plaintext file bytes.
+
+`metrics` returns up to 400 days of sampled daily rollups. Use `global all` for
+the environment total. Rates are estimates derived from completed transfers;
+zero rows means no sampled completion, not zero provider availability. The
+command is read-only and must not be used as a transfer correctness signal.
 
 `watch` returns one ascending audit page with schema
 `carrack.management.events.v1`; it is deliberately bounded and does not stay

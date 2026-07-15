@@ -5,7 +5,14 @@ import VerifiedOutlinedIcon from "@mui/icons-material/VerifiedOutlined";
 import { Box, Button, Chip, Paper, Stack, Typography } from "@mui/material";
 import type { UseQueryResult } from "@tanstack/react-query";
 import type { ManagementSnapshot } from "../../api/client";
-import { ErrorState, LoadingState, PageHeading, StatCard, formatBytes } from "./shared";
+import {
+    ErrorState,
+    LoadingState,
+    PageHeading,
+    StatCard,
+    TransferPerformance,
+    formatBytes,
+} from "./shared";
 
 interface OverviewPageProps {
     readonly management: UseQueryResult<ManagementSnapshot>;
@@ -69,6 +76,8 @@ export function OverviewPage({ management, onNavigate }: OverviewPageProps) {
                     icon={<KeyOutlinedIcon />}
                 />
             </Box>
+
+            <TransferPerformance scope="global" scopeId="all" title="VFS transfer performance" />
 
             <Box
                 sx={{

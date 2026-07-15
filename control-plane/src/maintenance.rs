@@ -13,6 +13,9 @@ const MAXIMUM_R2_CLEANUP_EVIDENCE_PER_RUN: u64 = 250;
 const VFS_PUT_DELETE_GRACE_SECONDS: u64 = 86_400;
 const READ_LEASE_EVIDENCE_SECONDS: u64 = 7 * 86_400;
 const R2_CLEANUP_EVIDENCE_SECONDS: u64 = 30 * 86_400;
+const TRANSFER_METRICS_RETENTION_SECONDS: u64 = 400 * 86_400;
+const MAXIMUM_TRANSFER_METRIC_ROWS_PER_RUN: u64 = 1_000;
+const MAXIMUM_ACCESS_AUDIT_ROWS_PER_RUN: u64 = 1_000;
 
 /// Performs bounded metadata hygiene without touching provider objects.
 ///
@@ -108,11 +111,65 @@ pub(crate) async fn run(env: &Env) -> Result<()> {
         ])
         .await?;
 
+    delete_expired_transfer_observability(&database, now).await?;
     delete_expired_r2_cleanup_evidence(&database, now).await?;
     driver_credentials::run(env, now).await?;
     vfs_server_lifecycle::run(env, now).await?;
     vfs_catalog_materialization::run(env, now).await?;
 
+    Ok(())
+}
+
+async fn delete_expired_transfer_observability(
+    database: &worker::D1Database,
+    now: u64,
+) -> Result<()> {
+    let before = now.saturating_sub(TRANSFER_METRICS_RETENTION_SECONDS);
+    database
+        .batch(vec![
+            database
+                .prepare(
+                    "DELETE FROM vfs_transfer_daily_metrics
+                     WHERE (day, scope_kind, scope_id, direction) IN (
+                         SELECT day, scope_kind, scope_id, direction
+                         FROM vfs_transfer_daily_metrics
+                         WHERE day < ?1
+                         ORDER BY day, scope_kind, scope_id, direction LIMIT ?2
+                     )",
+                )
+                .bind(&[
+                    JsValue::from_str(&before.to_string()),
+                    JsValue::from_str(&MAXIMUM_TRANSFER_METRIC_ROWS_PER_RUN.to_string()),
+                ])?,
+            database
+                .prepare(
+                    "DELETE FROM vfs_transfer_metric_receipts
+                     WHERE operation_id IN (
+                         SELECT operation_id FROM vfs_transfer_metric_receipts
+                         WHERE recorded_at < ?1
+                         ORDER BY recorded_at, operation_id LIMIT ?2
+                     )",
+                )
+                .bind(&[
+                    JsValue::from_str(&before.to_string()),
+                    JsValue::from_str(&MAXIMUM_TRANSFER_METRIC_ROWS_PER_RUN.to_string()),
+                ])?,
+            database
+                .prepare(
+                    "DELETE FROM vfs_audit_events
+                     WHERE id IN (
+                         SELECT id FROM vfs_audit_events
+                         WHERE event_kind IN ('download_planned', 'upload_committed')
+                           AND created_at < ?1
+                         ORDER BY created_at, id LIMIT ?2
+                     )",
+                )
+                .bind(&[
+                    JsValue::from_str(&before.to_string()),
+                    JsValue::from_str(&MAXIMUM_ACCESS_AUDIT_ROWS_PER_RUN.to_string()),
+                ])?,
+        ])
+        .await?;
     Ok(())
 }
 

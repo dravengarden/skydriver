@@ -38,7 +38,7 @@ pub use admin::{
     ManagementDirectory, ManagementDirectoryEntry, ManagementDirectoryIdentity, ManagementDriver,
     ManagementEvent, ManagementEventPage, ManagementFilesystem, ManagementSnapshot,
     ManagementToken, OperatorCredential, QuotaLimits, QuotaReceipt, QuotaValidation,
-    TokenAnnotationReceipt, TokenAnnotationValidation,
+    TokenAnnotationReceipt, TokenAnnotationValidation, TransferMetricRow, TransferMetrics,
 };
 
 pub use download::{GetOptions, GetResult};

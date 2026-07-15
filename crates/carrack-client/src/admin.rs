@@ -11,6 +11,7 @@ use crate::{Client, Error, MAXIMUM_CONTROL_BODY_BYTES, PROTOCOL_EPOCH, SDK_VERSI
 const SNAPSHOT_SCHEMA: &str = "carrack.management.snapshot.v2";
 const EVENTS_SCHEMA: &str = "carrack.management.events.v1";
 const DIRECTORY_SCHEMA: &str = "carrack.management.directory.v1";
+const TRANSFER_METRICS_SCHEMA: &str = "carrack.management.transfer-metrics.v1";
 const TOKEN_ANNOTATION_VALIDATION_SCHEMA: &str =
     "carrack.management.token-annotation-validation.v1";
 const TOKEN_ANNOTATION_RECEIPT_SCHEMA: &str = "carrack.management.token-annotation-receipt.v1";
@@ -155,6 +156,55 @@ pub struct ManagementSnapshot {
     pub drivers: Vec<ManagementDriver>,
     pub filesystems: Vec<ManagementFilesystem>,
     pub tokens: Vec<ManagementToken>,
+}
+
+/// One sampled daily transfer rollup.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(
+    missing_docs,
+    reason = "wire fields retain the documented server schema names"
+)]
+pub struct TransferMetricRow {
+    pub day: u64,
+    pub scope_kind: String,
+    pub scope_id: String,
+    pub direction: String,
+    pub weighted_transfers: u64,
+    pub weighted_bytes: u64,
+    pub weighted_provider_ms: u64,
+    pub weighted_total_ms: u64,
+    pub weighted_retries: u64,
+    pub speed_b0: u64,
+    pub speed_b1: u64,
+    pub speed_b2: u64,
+    pub speed_b3: u64,
+    pub speed_b4: u64,
+    pub speed_b5: u64,
+    pub speed_b6: u64,
+    pub speed_b7: u64,
+    pub speed_b8: u64,
+    pub speed_b9: u64,
+    pub speed_b10: u64,
+    pub speed_b11: u64,
+    pub updated_at: u64,
+}
+
+/// Bounded transfer-performance history for one management scope.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(
+    missing_docs,
+    reason = "wire fields retain the documented server schema names"
+)]
+pub struct TransferMetrics {
+    pub schema: String,
+    pub observed_at: u64,
+    pub scope_kind: String,
+    pub scope_id: String,
+    pub retention_days: u64,
+    pub window_days: u64,
+    pub rows: Vec<TransferMetricRow>,
 }
 
 /// One redacted, durable management audit event.
@@ -522,6 +572,49 @@ impl AdminClient {
             ));
         }
         Ok(snapshot)
+    }
+
+    /// Reads sampled transfer performance for a global, driver, token, or directory scope.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on an unsafe scope, authentication, transport, or schema mismatch.
+    pub async fn transfer_metrics(
+        &self,
+        scope: &str,
+        scope_id: &str,
+    ) -> Result<TransferMetrics, Error> {
+        if !matches!(scope, "global" | "driver" | "token" | "directory")
+            || scope_id.is_empty()
+            || scope_id.len() > 128
+            || !scope_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+            || (scope == "global" && scope_id != "all")
+        {
+            return Err(Error::InvalidResponse(
+                "invalid transfer metrics scope".to_owned(),
+            ));
+        }
+        let cookie = self.login().await?;
+        let metrics: TransferMetrics = self
+            .request(
+                &format!("api/admin/metrics/{scope}/{scope_id}?days=400"),
+                &cookie,
+            )
+            .await?;
+        if metrics.schema != TRANSFER_METRICS_SCHEMA
+            || metrics.scope_kind != scope
+            || metrics.scope_id != scope_id
+            || metrics.observed_at == 0
+            || metrics.retention_days == 0
+            || metrics.window_days != metrics.retention_days
+        {
+            return Err(Error::InvalidResponse(
+                "invalid transfer metrics identity".to_owned(),
+            ));
+        }
+        Ok(metrics)
     }
 
     /// Reads one ascending, bounded audit-event page after a monotonic cursor.

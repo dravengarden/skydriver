@@ -8,6 +8,7 @@ use worker::{
 };
 
 use crate::{
+    transfer_metrics::{self, OwnedTransferIdentity, TransferTelemetry},
     vfs_envelopes::{ENCRYPTED_SUITE, PLAINTEXT_SUITE},
     vfs_merkle::{DirectoryEntry, decode_hex, directory_root, validate_block_manifest},
     vfs_put,
@@ -47,6 +48,8 @@ struct CommitRequest {
     native_id: Option<String>,
     provider_version: Option<String>,
     etag: Option<String>,
+    #[serde(default, skip_serializing)]
+    telemetry: Option<TransferTelemetry>,
 }
 
 #[derive(Deserialize)]
@@ -274,9 +277,14 @@ pub(crate) async fn stage_block_manifest(
 /// batch. Root-only races are rebased and retried; a changed target entry is an
 /// explicit conflict. The current VFS token and ACL are checked again by the
 /// final database transition.
+#[allow(
+    clippy::too_many_lines,
+    reason = "publication keeps evidence, optimistic rebase, and receipt replay in one visible protocol"
+)]
 pub(crate) async fn commit(
     request: &mut Request,
     env: &Env,
+    context: &worker::Context,
     token: &AuthenticatedVfsToken,
     intent_id: &str,
 ) -> Result<Response> {
@@ -291,7 +299,16 @@ pub(crate) async fn commit(
     };
 
     if let Some(receipt) = load_receipt(&database, intent_id).await? {
-        return receipt_response(receipt, &commit_sha256);
+        return receipt_response_with_metric(
+            receipt,
+            &commit_sha256,
+            context,
+            env,
+            &intent,
+            token,
+            &requested,
+            current_unix_seconds(),
+        );
     }
     if intent.state != "prepared" || intent.expires_at <= current_unix_seconds() {
         return Response::error("VFS put intent is no longer committable", 409);
@@ -362,11 +379,29 @@ pub(crate) async fn commit(
             let Some(receipt) = load_receipt(&database, intent_id).await? else {
                 return Response::error("VFS put commit did not publish a receipt", 409);
             };
-            return receipt_response(receipt, &commit_sha256);
+            return receipt_response_with_metric(
+                receipt,
+                &commit_sha256,
+                context,
+                env,
+                &intent,
+                token,
+                &requested,
+                now,
+            );
         }
 
         if let Some(receipt) = load_receipt(&database, intent_id).await? {
-            return receipt_response(receipt, &commit_sha256);
+            return receipt_response_with_metric(
+                receipt,
+                &commit_sha256,
+                context,
+                env,
+                &intent,
+                token,
+                &requested,
+                current_unix_seconds(),
+            );
         }
         let Some(current) = load_intent(&database, intent_id, &token.principal_id).await? else {
             return Response::error("VFS put intent disappeared", 409);
@@ -377,6 +412,49 @@ pub(crate) async fn commit(
     }
 
     Response::error("VFS directory roots remained contended", 409)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the metric identity must match the exact committed receipt context"
+)]
+fn receipt_response_with_metric(
+    receipt: ReceiptRow,
+    commit_sha256: &str,
+    context: &worker::Context,
+    env: &Env,
+    intent: &PutIntentRow,
+    token: &AuthenticatedVfsToken,
+    requested: &CommitRequest,
+    now: u64,
+) -> Result<Response> {
+    let response = receipt_response(receipt, commit_sha256)?;
+    schedule_transfer_metric(context, env, intent, token, requested, now);
+    Ok(response)
+}
+
+fn schedule_transfer_metric(
+    context: &worker::Context,
+    env: &Env,
+    intent: &PutIntentRow,
+    token: &AuthenticatedVfsToken,
+    requested: &CommitRequest,
+    now: u64,
+) {
+    transfer_metrics::schedule(
+        context,
+        env,
+        OwnedTransferIdentity {
+            operation_id: intent.id.clone(),
+            direction: "upload",
+            driver_id: intent.driver_id.clone(),
+            token_id: token.id.clone(),
+            directory_id: intent.directory_id.clone(),
+            encoded_bytes: requested.encoded_bytes,
+        },
+        requested.telemetry.clone(),
+        now,
+    );
 }
 
 async fn store_immutable_manifest(
@@ -1348,6 +1426,30 @@ fn commit_statements(
     statements.push(
         database
             .prepare(
+                "INSERT INTO vfs_audit_events (
+                     filesystem_id, principal_id, token_id, event_kind,
+                     subject_kind, subject_id, details_json, created_at
+                 ) VALUES (?1, ?2, ?3, 'upload_committed', 'file_version', ?4, ?5, ?6)",
+            )
+            .bind(&[
+                JsValue::from_str(&intent.filesystem_id),
+                JsValue::from_str(&token.principal_id),
+                JsValue::from_str(&token.id),
+                JsValue::from_str(&intent.version_id),
+                JsValue::from_str(
+                    &serde_json::json!({
+                        "driver_id": intent.driver_id,
+                        "location_id": intent.location_id,
+                        "encoded_bytes": requested.encoded_bytes,
+                    })
+                    .to_string(),
+                ),
+                number_binding(now),
+            ])?,
+    );
+    statements.push(
+        database
+            .prepare(
                 "INSERT INTO vfs_version_origins (
                      version_id, directory_id, created_at
                  ) VALUES (?1, ?2, ?3)",
@@ -1776,6 +1878,7 @@ mod tests {
             native_id: Some("native-1".to_owned()),
             provider_version: Some("provider-1".to_owned()),
             etag: None,
+            telemetry: None,
         }
     }
 
