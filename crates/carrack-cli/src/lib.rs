@@ -10,6 +10,16 @@ use serde_json::Value;
 use thiserror::Error;
 use zeroize::Zeroize;
 
+const R2_DRIVER_KIND: &str = "r2/v1";
+
+fn refresh_expiry_matches(kind: &str, observed: Option<u64>, committed: u64) -> bool {
+    if kind == R2_DRIVER_KIND {
+        observed.is_none()
+    } else {
+        observed == Some(committed)
+    }
+}
+
 /// Stable CLI execution failures.
 #[derive(Debug, Error)]
 pub enum Error {
@@ -937,8 +947,11 @@ async fn run_driver_command(client: &AdminClient, command: DriverCommand) -> Res
                             && driver.credential_present
                             && driver.credential_rotated_at == Some(receipt.rotated_at)
                             && driver.credential_expires_at == Some(receipt.credential_expires_at)
-                            && driver.credential_refresh_token_expires_at
-                                == Some(receipt.refresh_token_expires_at)
+                            && refresh_expiry_matches(
+                                &driver.kind,
+                                driver.credential_refresh_token_expires_at,
+                                receipt.refresh_token_expires_at,
+                            )
                     }) {
                         return Err(Error::Verification(format!(
                             "driver credential {} did not match receipt {}",
@@ -1438,6 +1451,30 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(names.contains(&"watch"));
         assert!(names.contains(&"metrics"));
+    }
+
+    #[test]
+    fn credential_receipts_distinguish_static_and_refreshable_authority() {
+        assert!(refresh_expiry_matches(
+            R2_DRIVER_KIND,
+            None,
+            253_402_300_799
+        ));
+        assert!(!refresh_expiry_matches(
+            R2_DRIVER_KIND,
+            Some(253_402_300_799),
+            253_402_300_799,
+        ));
+        assert!(refresh_expiry_matches(
+            "aliyundrive-open/v2",
+            Some(1_800_000_000),
+            1_800_000_000,
+        ));
+        assert!(!refresh_expiry_matches(
+            "aliyundrive-open/v2",
+            None,
+            1_800_000_000,
+        ));
     }
 
     #[test]

@@ -12,14 +12,16 @@ The day-to-day token needs only the account permissions required by Carrack:
 - Workers R2 Storage: Edit
 - Account Settings: Read, only when required by Wrangler identity checks
 
-It deliberately does not have `Account API Tokens: Edit`. Default R2 setup uses
-a separate, short-lived `CLOUDFLARE_TOKEN_FACTORY_API_TOKEN`, created in the
-Cloudflare dashboard from the **Create additional tokens** template. Do not put
-that token in `.env`, a Worker secret, the UI, or D1. Supply it only to the
-one-time environment provision command, preferably with an IP restriction or
-short TTL, then remove it from the process environment. Cloudflare documents
-both this required bootstrap authority and the recommendation to keep it free
-of unrelated permissions:
+It deliberately does not have `Account API Tokens: Write`. Default R2 setup uses
+a separate, short-lived account-owned `CLOUDFLARE_TOKEN_FACTORY_API_TOKEN`.
+Create it under **Manage account > Account API tokens** with only **Entire
+Account > Account API Tokens: Write** and a short TTL. A user-owned **Create
+additional tokens** credential is not the same authority and cannot inspect or
+create the account-owned bucket tokens used here. Do not put the factory token
+in `.env`, a Worker secret, the UI, or D1. Supply it only to the one-time
+environment provision command, then revoke it and remove it from the process
+environment. Cloudflare documents both this required bootstrap authority and
+the recommendation to keep it free of unrelated permissions:
 <https://developers.cloudflare.com/fundamentals/api/how-to/create-via-api/>.
 
 Creating or changing the committed custom domains is a separate, rare trigger
@@ -212,7 +214,7 @@ After VFS bootstrap, provision the environment-owned driver outside the normal
 deployment credential boundary:
 
 ```bash
-export CLOUDFLARE_TOKEN_FACTORY_API_TOKEN='<short-lived Create additional tokens credential>'
+export CLOUDFLARE_TOKEN_FACTORY_API_TOKEN='<short-lived Account API Tokens Write credential>'
 export CARRACK_OPERATOR_CREDENTIAL='<environment operator credential>'
 # Required only when this environment already has a bootstrapped VFS.
 export CARRACK_VFS_TOKEN='<environment root or scoped driver.manage token>'
