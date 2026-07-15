@@ -108,6 +108,12 @@ verifier; logout deletes it. A 15-minute metadata-hygiene Cron Trigger also
 deletes expired operator and configuration sessions, so cleanup does not depend
 on a later login.
 
+The unauthenticated health response exposes the non-secret account so the UI
+can present an environment-qualified password-manager identity. Safari stores
+`draven@dev` and `draven@prod`, while the UI submits only the canonical
+`draven` account to the Worker. The password-manager suffix is not an account,
+principal, or authorization input.
+
 Set independent operator and VFS-master secrets for each environment:
 
 ```bash

@@ -46,6 +46,7 @@ use worker::{
 struct HealthResponse {
     service: &'static str,
     environment: String,
+    operator_account: String,
     transfer_mode: &'static str,
     mode: String,
     incarnation: String,
@@ -699,10 +700,12 @@ async fn health(env: &Env) -> Result<Response> {
     let state = load_control_state(env).await?;
     let external_maintenance = external_maintenance(env);
     let environment = env.var("CARRACK_ENVIRONMENT")?.to_string();
+    let operator_account = env.var("CARRACK_OPERATOR_ACCOUNT")?.to_string();
 
     Response::from_json(&HealthResponse {
         service: "carrack-control-plane",
         environment,
+        operator_account,
         transfer_mode: "direct",
         mutations_allowed: state.mode == "active" && !external_maintenance,
         mode: state.mode,

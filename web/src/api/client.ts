@@ -12,6 +12,7 @@ const ConfigurationSessionSchema = v.object({
 const HealthSchema = v.object({
     service: v.string(),
     environment: v.string(),
+    operator_account: v.string(),
     transfer_mode: v.string(),
     mode: v.string(),
     incarnation: v.string(),

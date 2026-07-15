@@ -9,6 +9,7 @@ import {
     validateDriverRegistration,
     validateDriverState,
 } from "./client";
+import { passwordManagerIdentity, resolvePasswordManagerIdentity } from "../auth/loginIdentity";
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -27,6 +28,13 @@ describe("parseSession", () => {
 });
 
 describe("operator session", () => {
+    it("keeps saved identities separate while preserving the server account", () => {
+        expect(passwordManagerIdentity("draven", "dev")).toBe("draven@dev");
+        expect(passwordManagerIdentity("draven", "prod")).toBe("draven@prod");
+        expect(resolvePasswordManagerIdentity("draven@dev", "draven", "dev")).toBe("draven");
+        expect(resolvePasswordManagerIdentity("draven@prod", "draven", "dev")).toBeNull();
+    });
+
     it("maps an unauthorized status to a logged-out session", async () => {
         vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 401 })));
 
@@ -167,6 +175,7 @@ describe("parseHealth", () => {
             parseHealth({
                 service: "carrack-control-plane",
                 environment: "dev",
+                operator_account: "draven",
                 transfer_mode: "direct",
                 mode: "active",
                 incarnation: "0123456789abcdef0123456789abcdef",

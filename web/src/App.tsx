@@ -24,6 +24,7 @@ export function App() {
     const health = useQuery({ queryKey: ["health"], queryFn: fetchHealth });
     const session = useQuery({ queryKey: ["session"], queryFn: fetchSession });
     const environment = health.data?.environment ?? "unknown";
+    const operatorAccount = health.data?.operator_account ?? "";
     const loginMutation = useMutation({
         mutationFn: login,
         onSuccess: (value) => queryClient.setQueryData(["session"], value),
@@ -61,7 +62,9 @@ export function App() {
     } else {
         content = (
             <LoginPage
+                key={`${environment}:${operatorAccount}`}
                 environment={environment}
+                operatorAccount={operatorAccount}
                 pending={loginMutation.isPending}
                 error={loginMutation.isError}
                 onLogin={(account, password) => loginMutation.mutate({ account, password })}

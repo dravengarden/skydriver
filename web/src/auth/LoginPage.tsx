@@ -13,21 +13,35 @@ import {
 import { useState, type FormEvent } from "react";
 import { CarrackMark } from "../brand/CarrackLogo";
 import { OceanBackdrop } from "../brand/OceanBackdrop";
+import { passwordManagerIdentity, resolvePasswordManagerIdentity } from "./loginIdentity";
 
 interface LoginPageProps {
     readonly environment: string;
+    readonly operatorAccount: string;
     readonly pending: boolean;
     readonly error: boolean;
     readonly onLogin: (account: string, password: string) => void;
 }
 
-export function LoginPage({ environment, pending, error, onLogin }: LoginPageProps) {
-    const [account, setAccount] = useState("");
+export function LoginPage({
+    environment,
+    operatorAccount,
+    pending,
+    error,
+    onLogin,
+}: LoginPageProps) {
+    const expectedIdentity = passwordManagerIdentity(operatorAccount, environment);
+    const [savedIdentity, setSavedIdentity] = useState(expectedIdentity);
+    const [identityError, setIdentityError] = useState(false);
     const [password, setPassword] = useState("");
 
     function submit(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
-        if (account !== "" && password !== "") {
+        const account = resolvePasswordManagerIdentity(savedIdentity, operatorAccount, environment);
+        if (account === null) {
+            setIdentityError(true);
+        } else if (password !== "") {
+            setIdentityError(false);
             onLogin(account, password);
         }
     }
@@ -116,13 +130,22 @@ export function LoginPage({ environment, pending, error, onLogin }: LoginPagePro
                     ) : null}
 
                     <TextField
-                        label="Account"
-                        autoComplete="username"
-                        value={account}
-                        onChange={(event) => setAccount(event.target.value)}
+                        label="Saved login"
+                        autoComplete={`section-carrack-${environment} username`}
+                        value={savedIdentity}
+                        onChange={(event) => {
+                            setSavedIdentity(event.target.value);
+                            setIdentityError(false);
+                        }}
                         required
                         fullWidth
                         autoFocus
+                        error={identityError}
+                        helperText={
+                            identityError
+                                ? `Use ${expectedIdentity} for this environment.`
+                                : `Carrack account ${operatorAccount}; qualified so Safari keeps environments separate.`
+                        }
                         slotProps={{
                             htmlInput: { autoCapitalize: "none", spellCheck: false },
                         }}
@@ -131,7 +154,7 @@ export function LoginPage({ environment, pending, error, onLogin }: LoginPagePro
                     <TextField
                         label="Operator credential"
                         type="password"
-                        autoComplete="current-password"
+                        autoComplete={`section-carrack-${environment} current-password`}
                         value={password}
                         onChange={(event) => setPassword(event.target.value)}
                         required
@@ -149,7 +172,7 @@ export function LoginPage({ environment, pending, error, onLogin }: LoginPagePro
                         type="submit"
                         variant="contained"
                         size="large"
-                        disabled={pending || account === "" || password === ""}
+                        disabled={pending || savedIdentity === "" || password === ""}
                         startIcon={pending ? <CircularProgress size={18} /> : <LockOutlinedIcon />}
                         sx={{
                             minHeight: 48,
