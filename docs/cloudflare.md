@@ -179,11 +179,14 @@ Deployment and VFS bootstrap are separate operations. Bootstrap is
 intentionally one-shot. Every dev or production Worker materializes one
 disabled, immutable `r2-default` identity from its `CARRACK_PAYLOAD` binding,
 account S3 endpoint, and environment-specific `carrack-payload-<environment>`
-bucket. A new bootstrap selects that identity but creates no placement while
-it is disabled. Install one bucket-scoped R2 access-key pair through the
-write-only management flow, enable the driver, and then add it to the intended
-directory placements. Additional R2 buckets remain operator-registered with
-`managed:false`. The native
+bucket. Driver creation atomically initializes a 100 GiB physical-byte hard
+quota from `CARRACK_DEFAULT_R2_MAX_PHYSICAL_BYTES`; later UI or `carrackctl`
+quota changes advance the independent quota revision and are never overwritten
+by environment reconciliation. A new bootstrap selects that identity but
+creates no placement while it is disabled. Install one bucket-scoped R2
+access-key pair through the write-only management flow, enable the driver, and
+then add it to the intended directory placements. Additional R2 buckets remain
+operator-registered with `managed:false`. The native
 `aliyundrive-open/v2` adapter has completed this dev canary with encrypted
 complete-object upload, concurrent exact-range download, interrupted resume,
 hash verification, and logical removal.

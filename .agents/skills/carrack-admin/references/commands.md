@@ -39,7 +39,7 @@ carrackctl quota set directory "$directory_id" \
 
 carrackctl quota set driver "$driver_id" \
   --control-url "$CARRACK_CONTROL_URL" \
-  --max-physical-bytes 1099511627776 \
+  --max-physical-bytes 107374182400 \
   --max-object-count 1000000 \
   --expected-revision "$quota_revision" \
   --idempotency-key "$idempotency_key" --format json

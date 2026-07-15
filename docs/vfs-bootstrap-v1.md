@@ -14,8 +14,11 @@ payload API. In one D1 batch it creates:
 - an immutable bootstrap receipt and audit record.
 
 The default R2 identity is derived from the Worker environment and begins
-disabled until a bucket-scoped S3 key is validated and sealed. The Cloudflare
-Worker stores only the token verifier and authenticated key
+with the environment profile's 100 GiB physical-byte hard quota. It remains
+disabled until a bucket-scoped S3 key is validated and sealed. Operators may
+later replace that quota through the same validated UI or `carrackctl` policy
+flow; environment reconciliation never resets an operator revision. The
+Cloudflare Worker stores only the token verifier and authenticated key
 envelope. It never stores the bearer token or plaintext directory key in D1 and
 never opens the configured local filesystem path.
 

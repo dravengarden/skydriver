@@ -99,6 +99,9 @@ for (const [name, wanted] of Object.entries(expected)) {
     if (environment.vars?.CARRACK_R2_ENDPOINT !== expectedR2Endpoint) {
         fail(`${name} must pin the account R2 S3 endpoint used for direct grants`);
     }
+    if (environment.vars?.CARRACK_DEFAULT_R2_MAX_PHYSICAL_BYTES !== "107374182400") {
+        fail(`${name} must initialize r2-default with a 100 GiB hard quota`);
+    }
 
     const database = requireSingleBinding(environment, "d1_databases", "CARRACK_INDEX");
     const bucket = requireSingleBinding(environment, "r2_buckets", "CARRACK_MANIFESTS");

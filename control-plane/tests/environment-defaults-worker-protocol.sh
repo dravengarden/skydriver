@@ -59,6 +59,7 @@ r2_endpoint=https://0123456789abcdef.r2.cloudflarestorage.com
   --port "$port" \
   --inspector-port 0 \
   --var CARRACK_ENVIRONMENT:dev \
+  --var CARRACK_DEFAULT_R2_MAX_PHYSICAL_BYTES:107374182400 \
   --var CARRACK_R2_ENDPOINT:"$r2_endpoint" \
   --var CARRACK_ROOT_KEY_V1:"$admin_token" \
   --var CARRACK_VFS_MASTER_KEY_V1:"$admin_token" \
@@ -112,8 +113,8 @@ jq -e --arg endpoint "$r2_endpoint" '
     available_location_count: 0,
     encoded_bytes: 0,
     file_count: 0,
-    quota_revision: 1,
-    max_physical_bytes: null,
+    quota_revision: 2,
+    max_physical_bytes: 107374182400,
     max_object_count: null,
     reserved_physical_bytes: 0,
     reserved_object_count: 0,
@@ -177,7 +178,10 @@ directory=$(curl --silent --show-error --fail-with-body \
      (SELECT retired_at IS NOT NULL FROM driver_instances WHERE id = 'legacy-empty')
      AND (SELECT lifecycle_owner = 'environment' FROM driver_instances
           WHERE id = 'r2-default')
-     AND (SELECT COUNT(*) FROM driver_quota_policies WHERE driver_id = 'r2-default') = 1
+     AND (SELECT COUNT(*) FROM driver_quota_policies
+          WHERE driver_id = 'r2-default'
+            AND revision = 2
+            AND max_physical_bytes = 107374182400) = 1
      AND (SELECT COUNT(*) FROM vfs_audit_events
           WHERE event_kind = 'environment.driver.materialized'
             AND subject_id = 'r2-default') = 1

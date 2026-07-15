@@ -141,6 +141,11 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 - A driver hard quota MUST count every non-deleted physical object plus active
   upload reservations, including encryption overhead and objects retained for
   recovery or garbage collection.
+- An environment-owned default R2 driver MUST initialize its physical-byte
+  quota from the environment creation profile. The hosted profile defaults to
+  100 GiB. This initial value MUST be committed atomically with driver creation
+  and MUST NOT be reasserted after an operator changes it through the shared
+  UI or management-CLI quota protocol.
 - Put preparation MUST reserve quota atomically in D1. Commit converts the
   reservation to durable usage; abandon or expiry releases it without client
   or SDK involvement. Quota checks MUST NOT use a check-then-upload race.

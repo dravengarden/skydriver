@@ -6,6 +6,8 @@ use worker::{D1Database, Env, Result, wasm_bindgen::JsValue};
 use crate::r2_signing;
 
 pub(crate) const DEFAULT_R2_DRIVER_ID: &str = "r2-default";
+const DEFAULT_R2_MAX_PHYSICAL_BYTES_BINDING: &str = "CARRACK_DEFAULT_R2_MAX_PHYSICAL_BYTES";
+const MAXIMUM_D1_INTEGER: u64 = 9_007_199_254_740_991;
 const R2_KIND: &str = "r2/v1";
 const LOCAL_FILESYSTEM_KIND: &str = "local-filesystem/v2";
 
@@ -34,6 +36,7 @@ pub(crate) async fn ensure(env: &Env, database: &D1Database, now: u64) -> Result
     if let Some(existing) = load_driver(database, DEFAULT_R2_DRIVER_ID).await? {
         validate_existing(&existing, &config_json)?;
     } else {
+        let initial_max_physical_bytes = configured_initial_max_physical_bytes(env)?;
         let inserted = database
             .batch(vec![
                 database
@@ -51,19 +54,35 @@ pub(crate) async fn ensure(env: &Env, database: &D1Database, now: u64) -> Result
                     ])?,
                 database
                     .prepare(
+                        r"UPDATE driver_quota_policies
+                         SET max_physical_bytes = ?1, revision = revision + 1,
+                             updated_at = MAX(updated_at, ?2)
+                         WHERE driver_id = ?3 AND revision = 1
+                           AND max_physical_bytes IS NULL AND max_object_count IS NULL",
+                    )
+                    .bind(&[
+                        integer(initial_max_physical_bytes),
+                        integer(now),
+                        JsValue::from_str(DEFAULT_R2_DRIVER_ID),
+                    ])?,
+                database
+                    .prepare(
                         r"INSERT INTO vfs_audit_events (
                              filesystem_id, principal_id, token_id, event_kind,
                              subject_kind, subject_id, details_json, created_at
                          ) VALUES (
                              NULL, NULL, NULL, 'environment.driver.materialized',
                              'driver', ?1,
-                             json_object('kind', ?2, 'enabled', 0, 'source', 'environment'),
-                             ?3
+                             json_object(
+                                 'kind', ?2, 'enabled', 0, 'source', 'environment',
+                                 'initial_max_physical_bytes', CAST(?3 AS INTEGER)
+                             ), ?4
                          )",
                     )
                     .bind(&[
                         JsValue::from_str(DEFAULT_R2_DRIVER_ID),
                         JsValue::from_str(R2_KIND),
+                        integer(initial_max_physical_bytes),
                         integer(now),
                     ])?,
             ])
@@ -92,6 +111,25 @@ pub(crate) fn configured_r2(env: &Env) -> Result<Option<r2_signing::Config>> {
     }
     let endpoint = env.var("CARRACK_R2_ENDPOINT")?.to_string();
     desired_r2_config_from_values(&environment, &endpoint).map(Some)
+}
+
+fn configured_initial_max_physical_bytes(env: &Env) -> Result<u64> {
+    let value = env.var(DEFAULT_R2_MAX_PHYSICAL_BYTES_BINDING)?.to_string();
+    parse_initial_max_physical_bytes(&value)
+}
+
+fn parse_initial_max_physical_bytes(value: &str) -> Result<u64> {
+    let parsed = value.parse::<u64>().map_err(|_| {
+        worker::Error::RustError(
+            "invalid environment-managed R2 initial physical-byte quota".to_owned(),
+        )
+    })?;
+    if parsed == 0 || parsed > MAXIMUM_D1_INTEGER {
+        return Err(worker::Error::RustError(
+            "invalid environment-managed R2 initial physical-byte quota".to_owned(),
+        ));
+    }
+    Ok(parsed)
 }
 
 fn desired_r2_config_from_values(environment: &str, endpoint: &str) -> Result<r2_signing::Config> {
@@ -233,5 +271,16 @@ mod tests {
             .is_err()
         );
         assert!(desired_r2_config_from_values("dev", "http://example.com").is_err());
+    }
+
+    #[test]
+    fn validates_environment_initial_physical_byte_quota() {
+        assert_eq!(
+            parse_initial_max_physical_bytes("107374182400").expect("100 GiB quota"),
+            100 * 1024 * 1024 * 1024
+        );
+        assert!(parse_initial_max_physical_bytes("0").is_err());
+        assert!(parse_initial_max_physical_bytes(&(MAXIMUM_D1_INTEGER + 1).to_string()).is_err());
+        assert!(parse_initial_max_physical_bytes("100 GiB").is_err());
     }
 }
