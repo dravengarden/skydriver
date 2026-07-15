@@ -63,6 +63,11 @@ assert_uses_index activity-credential-refresh idx_driver_credential_refreshes_ac
    WHERE state IN ('claimed', 'retry', 'reauth_required')
    ORDER BY updated_at DESC, credential_id LIMIT 100"
 
+assert_uses_index management-event-page "USING INTEGER PRIMARY KEY" \
+  "SELECT id, event_kind FROM vfs_audit_events
+   WHERE id > 1 AND id <= 1000
+   ORDER BY id LIMIT 101"
+
 # Cron retention and claim loops are bounded only when their deadline indexes
 # remain usable by the exact production predicates.
 assert_uses_index read-lease-retirement idx_vfs_read_leases_retirement \

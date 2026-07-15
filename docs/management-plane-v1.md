@@ -129,6 +129,7 @@ commands are:
 
 ```text
 carrackctl snapshot
+carrackctl watch
 carrackctl directory <directory-id>
 carrackctl token annotate <token-id>
 carrackctl driver register <driver-id>
@@ -197,9 +198,14 @@ cursor advances outside the current browser mutation, TanStack Query
 invalidates only affected resources and shows a snackbar naming the source and
 resource when available.
 
-`carrackctl watch` will use the same cursor and return bounded event pages. V1
-does not require WebSockets or a Durable Object. The cursor protocol can later
-back an SSE or WebSocket transport without changing event identity.
+`carrackctl watch --after <cursor> --limit <1..250>` uses the same cursor and
+returns one ascending, bounded JSON event page. The page pins the current
+server high-water mark and reports `next_after` plus `has_more`; agents consume
+all pages, then persist only the last successfully processed cursor. A cursor
+ahead of the selected environment fails closed instead of silently switching
+streams. V1 does not require WebSockets, a Durable Object, or a resident CLI
+process. The cursor protocol can later back SSE or WebSocket delivery without
+changing event identity.
 
 ## Races and failure handling
 

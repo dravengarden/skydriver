@@ -9,6 +9,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use crate::{Client, Error, MAXIMUM_CONTROL_BODY_BYTES, PROTOCOL_EPOCH, SDK_VERSION, decode_json};
 
 const SNAPSHOT_SCHEMA: &str = "carrack.management.snapshot.v2";
+const EVENTS_SCHEMA: &str = "carrack.management.events.v1";
 const DIRECTORY_SCHEMA: &str = "carrack.management.directory.v1";
 const TOKEN_ANNOTATION_VALIDATION_SCHEMA: &str =
     "carrack.management.token-annotation-validation.v1";
@@ -154,6 +155,42 @@ pub struct ManagementSnapshot {
     pub drivers: Vec<ManagementDriver>,
     pub filesystems: Vec<ManagementFilesystem>,
     pub tokens: Vec<ManagementToken>,
+}
+
+/// One redacted, durable management audit event.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(
+    missing_docs,
+    reason = "wire fields retain the documented server schema names"
+)]
+pub struct ManagementEvent {
+    pub id: u64,
+    pub filesystem_id: Option<String>,
+    pub principal_id: Option<String>,
+    pub token_id: Option<String>,
+    pub event_kind: String,
+    pub subject_kind: String,
+    pub subject_id: String,
+    pub details: Value,
+    pub created_at: u64,
+}
+
+/// One fixed-high-water, bounded management event page.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(
+    missing_docs,
+    reason = "wire fields retain the documented server schema names"
+)]
+pub struct ManagementEventPage {
+    pub schema: String,
+    pub observed_at: u64,
+    pub after: u64,
+    pub event_cursor: u64,
+    pub next_after: u64,
+    pub has_more: bool,
+    pub events: Vec<ManagementEvent>,
 }
 
 /// Recursive collection identity and aggregate statistics.
@@ -485,6 +522,33 @@ impl AdminClient {
             ));
         }
         Ok(snapshot)
+    }
+
+    /// Reads one ascending, bounded audit-event page after a monotonic cursor.
+    ///
+    /// Reinvoke this method with `next_after` while `has_more` is true. A page
+    /// pins its server high-water mark, so concurrent appends are returned by a
+    /// later call rather than extending the current response.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on invalid bounds, authentication, transport, schema,
+    /// ordering, cursor, or event identity errors.
+    pub async fn events(&self, after: u64, limit: u64) -> Result<ManagementEventPage, Error> {
+        if i64::try_from(after).is_err() || !(1..=250).contains(&limit) {
+            return Err(Error::InvalidResponse(
+                "invalid management event query".to_owned(),
+            ));
+        }
+        let cookie = self.login().await?;
+        let page: ManagementEventPage = self
+            .request(
+                &format!("api/admin/events?after={after}&limit={limit}"),
+                &cookie,
+            )
+            .await?;
+        validate_event_page(&page, after, limit)?;
+        Ok(page)
     }
 
     /// Reads one directory with placements and recursive statistics.
@@ -1132,6 +1196,46 @@ fn valid_identifier(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
+fn validate_event_page(page: &ManagementEventPage, after: u64, limit: u64) -> Result<(), Error> {
+    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+    if page.schema != EVENTS_SCHEMA
+        || page.observed_at == 0
+        || page.after != after
+        || page.event_cursor < after
+        || page.next_after < after
+        || page.next_after > page.event_cursor
+        || page.events.len() > limit
+    {
+        return Err(Error::InvalidResponse(
+            "invalid management event page identity".to_owned(),
+        ));
+    }
+    let mut previous = after;
+    for event in &page.events {
+        if event.id <= previous
+            || event.id > page.event_cursor
+            || event.created_at == 0
+            || event.event_kind.is_empty()
+            || event.subject_kind.is_empty()
+            || event.subject_id.is_empty()
+        {
+            return Err(Error::InvalidResponse(
+                "invalid management event ordering or identity".to_owned(),
+            ));
+        }
+        previous = event.id;
+    }
+    if page.next_after != previous
+        || (page.has_more && (page.events.len() != limit || page.next_after >= page.event_cursor))
+        || (!page.has_more && page.next_after != page.event_cursor)
+    {
+        return Err(Error::InvalidResponse(
+            "invalid management event continuation".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn valid_validation(digest: &str, expires_at: u64) -> bool {
     expires_at > 0
         && URL_SAFE_NO_PAD
@@ -1141,11 +1245,54 @@ fn valid_validation(digest: &str, expires_at: u64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::OperatorCredential;
+    use serde_json::json;
+
+    use super::{ManagementEvent, ManagementEventPage, OperatorCredential, validate_event_page};
 
     #[test]
     fn rejects_noncanonical_operator_credentials() {
         assert!(OperatorCredential::parse("secret").is_err());
         assert!(OperatorCredential::parse("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").is_err());
+    }
+
+    #[test]
+    fn validates_strict_management_event_continuations() {
+        let event = ManagementEvent {
+            id: 4,
+            filesystem_id: None,
+            principal_id: None,
+            token_id: None,
+            event_kind: "driver.updated".to_owned(),
+            subject_kind: "driver".to_owned(),
+            subject_id: "driver-main".to_owned(),
+            details: json!({"revision": 2}),
+            created_at: 100,
+        };
+        let complete = ManagementEventPage {
+            schema: "carrack.management.events.v1".to_owned(),
+            observed_at: 100,
+            after: 3,
+            event_cursor: 4,
+            next_after: 4,
+            has_more: false,
+            events: vec![event.clone()],
+        };
+        assert!(validate_event_page(&complete, 3, 100).is_ok());
+
+        let mut invalid = complete.clone();
+        invalid.next_after = 3;
+        assert!(validate_event_page(&invalid, 3, 100).is_err());
+
+        let paged = ManagementEventPage {
+            schema: "carrack.management.events.v1".to_owned(),
+            observed_at: 100,
+            after: 3,
+            event_cursor: 8,
+            next_after: 4,
+            has_more: true,
+            events: vec![event],
+        };
+        assert!(validate_event_page(&paged, 3, 1).is_ok());
+        assert!(validate_event_page(&paged, 3, 2).is_err());
     }
 }

@@ -82,6 +82,18 @@ enum ManagementCommand {
         #[arg(long = "format", value_enum, default_value_t = Output::Json)]
         output: Output,
     },
+    /// Read one bounded audit-event page after a monotonic cursor.
+    Watch {
+        /// Last event ID already processed; zero starts at the retained beginning.
+        #[arg(long, default_value_t = 0)]
+        after: u64,
+        /// Maximum events in this page.
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u64).range(1..=250))]
+        limit: u64,
+        /// Output encoding.
+        #[arg(long = "format", value_enum, default_value_t = Output::Json)]
+        output: Output,
+    },
     /// Read one directory, its placements, entries, and recursive statistics.
     Directory {
         /// Stable directory identifier from a snapshot.
@@ -568,6 +580,15 @@ async fn run_management() -> Result<(), Error> {
             let client = admin_client(arguments.control_url)?;
             client.check_compatibility().await?;
             write_json(output, &client.snapshot().await?)?;
+        }
+        ManagementCommand::Watch {
+            after,
+            limit,
+            output,
+        } => {
+            let client = admin_client(arguments.control_url)?;
+            client.check_compatibility().await?;
+            write_json(output, &client.events(after, limit).await?)?;
         }
         ManagementCommand::Directory { id, output } => {
             let client = admin_client(arguments.control_url)?;
@@ -1337,5 +1358,15 @@ mod tests {
                 .iter()
                 .any(|name| matches!(*name, "gc" | "janitor" | "driver-grant"))
         );
+    }
+
+    #[test]
+    fn management_cli_exposes_bounded_event_watch() {
+        let command = ManagementArguments::command();
+        let names = command
+            .get_subcommands()
+            .map(clap::Command::get_name)
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"watch"));
     }
 }

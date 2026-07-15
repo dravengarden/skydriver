@@ -4,7 +4,7 @@
 
 | Surface | Environment variable | Authority |
 |---|---|---|
-| `carrackctl snapshot`, `directory`, `driver`, `quota`, `token annotate` | `CARRACK_OPERATOR_CREDENTIAL` | Redacted environment management |
+| `carrackctl snapshot`, `watch`, `directory`, `driver`, `quota`, `token annotate` | `CARRACK_OPERATOR_CREDENTIAL` | Redacted environment management |
 | `carrackctl vfs acl`, `vfs placement`, `vfs token` | `CARRACK_VFS_TOKEN` | Explicit token actions and directory scope |
 
 Both credentials are canonical unpadded base64url values encoding 32 bytes.
@@ -14,6 +14,8 @@ Keep them out of argv and output.
 
 ```bash
 carrackctl snapshot --control-url "$CARRACK_CONTROL_URL" --format json
+carrackctl watch --after "$event_cursor" --limit 100 \
+  --control-url "$CARRACK_CONTROL_URL" --format json
 carrackctl directory "$directory_id" --control-url "$CARRACK_CONTROL_URL" --format json
 carrackctl vfs acl show /collection --control-url "$CARRACK_CONTROL_URL" --format json
 carrackctl vfs placement show /collection --control-url "$CARRACK_CONTROL_URL" --format json
@@ -22,6 +24,14 @@ carrackctl vfs placement show /collection --control-url "$CARRACK_CONTROL_URL" -
 The admin snapshot contains only redacted driver configuration and non-secret
 token metadata. It never contains provider credentials, token bearers, token
 verifiers, directory keys, or plaintext file bytes.
+
+`watch` returns one ascending audit page with schema
+`carrack.management.events.v1`; it is deliberately bounded and does not stay
+resident. Start from a snapshot's `event_cursor`, process every event in order,
+and continue with `next_after` while `has_more` is true. Persist only a cursor
+whose events were handled successfully. A `409` for an ahead cursor usually
+means the wrong environment was selected or metadata was restored; stop and
+reconcile rather than resetting to zero automatically.
 
 ## Existing mutation commands
 

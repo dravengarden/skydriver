@@ -4,7 +4,7 @@ set -euo pipefail
 curl() {
   command curl \
     --header "Carrack-Protocol-Epoch: 2" \
-    --header "Carrack-SDK-Version: 0.3.2" \
+    --header "Carrack-SDK-Version: 0.3.3" \
     "$@"
 }
 
@@ -78,6 +78,9 @@ old_admin_sdk=$(command curl --silent --output /dev/null --write-out '%{http_cod
 unauthenticated_activity=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   "$base_url/api/admin/activity")
 [[ "$unauthenticated_activity" == 401 ]]
+unauthenticated_events=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  "$base_url/api/admin/events?after=0&limit=1")
+[[ "$unauthenticated_events" == 401 ]]
 
 for retired_get_route in \
   /api/client/session \
@@ -478,6 +481,76 @@ acl_denied_status=$(curl --silent --output /dev/null --write-out '%{http_code}' 
 [[ "$acl_denied_status" == 403 ]]
 
 child_verifier=$(printf '%s' "$child_token" | sha256sum | cut -d' ' -f1)
+
+now=$(date +%s)
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local \
+  --persist-to "$state_directory" \
+  --command "
+    INSERT INTO vfs_audit_events (
+      event_kind, subject_kind, subject_id, details_json, created_at
+    ) VALUES (
+      'management.events.redaction_test', 'test', 'event-page',
+      '{\"credential\":\"must-not-render\",\"safe\":\"visible\"}', $now
+    );
+  " >/dev/null
+
+for invalid_event_query in \
+  'after=01' \
+  'after=0&after=1' \
+  'limit=0' \
+  'limit=251' \
+  'unknown=1'; do
+  invalid_event_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+    -b "$cookie_jar" "$base_url/api/admin/events?$invalid_event_query")
+  [[ "$invalid_event_status" == 400 ]]
+done
+
+event_headers="$state_directory/event-headers.txt"
+event_page_1=$(curl --silent --show-error --fail-with-body \
+  -D "$event_headers" -b "$cookie_jar" "$base_url/api/admin/events?after=0&limit=2")
+grep -iq '^cache-control: no-store, max-age=0' "$event_headers"
+jq -e '
+  .schema == "carrack.management.events.v1" and
+  .after == 0 and
+  .has_more == true and
+  (.events | length) == 2 and
+  .next_after == .events[-1].id and
+  .events[0].id < .events[1].id and
+  .next_after < .event_cursor
+' <<<"$event_page_1" >/dev/null
+
+event_page_1_cursor=$(jq -r '.event_cursor' <<<"$event_page_1")
+event_page_1_next=$(jq -r '.next_after' <<<"$event_page_1")
+event_page_2=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" \
+  "$base_url/api/admin/events?after=$event_page_1_next&limit=250")
+jq -e --argjson cursor "$event_page_1_cursor" --argjson after "$event_page_1_next" '
+  .schema == "carrack.management.events.v1" and
+  .after == $after and
+  .event_cursor == $cursor and
+  .has_more == false and
+  .next_after == .event_cursor and
+  ([.events[].id] | all(. > $after and . <= $cursor)) and
+  ([.events[].event_kind] | index("management.events.redaction_test") != null) and
+  ([.events[] | select(.event_kind == "management.events.redaction_test")][0].details ==
+    {"credential":"[redacted]","safe":"visible"})
+' <<<"$event_page_2" >/dev/null
+
+ahead_event_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -b "$cookie_jar" \
+  "$base_url/api/admin/events?after=$((event_page_1_cursor + 1))&limit=1")
+[[ "$ahead_event_status" == 409 ]]
+
+cli_event_page=$(env CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  "$control_binary" watch --after 0 --limit 2 \
+  --control-url "$base_url" --format json)
+jq -e '
+  .schema == "carrack.management.events.v1" and
+  .after == 0 and
+  (.events | length) == 2 and
+  .next_after == .events[-1].id
+' <<<"$cli_event_page" >/dev/null
 
 activity_headers="$state_directory/activity-headers.txt"
 activity=$(curl --silent --show-error --fail-with-body \

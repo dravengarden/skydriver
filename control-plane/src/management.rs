@@ -5,6 +5,8 @@ use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 use crate::{environment_defaults, operator_sessions};
 
 const DATABASE_BINDING: &str = "CARRACK_INDEX";
+const DEFAULT_EVENT_PAGE_SIZE: u64 = 100;
+const MAXIMUM_EVENT_PAGE_SIZE: u64 = 250;
 
 #[derive(Deserialize)]
 struct DriverRow {
@@ -207,6 +209,17 @@ struct ActivityResponse {
     observed_at: u64,
     event_cursor: u64,
     active_items: Vec<ActivityItemView>,
+    events: Vec<ActivityEventView>,
+}
+
+#[derive(Serialize)]
+struct EventPageResponse {
+    schema: &'static str,
+    observed_at: u64,
+    after: u64,
+    event_cursor: u64,
+    next_after: u64,
+    has_more: bool,
     events: Vec<ActivityEventView>,
 }
 
@@ -531,6 +544,63 @@ pub(crate) async fn event_cursor(request: &Request, env: &Env) -> Result<Respons
     })
 }
 
+/// Returns one bounded, ascending audit-event page after a monotonic cursor.
+///
+/// The response pins the current high-water mark before reading rows. Events
+/// appended during the request are therefore left for the next page rather
+/// than making a busy environment an unbounded response.
+pub(crate) async fn events(request: &Request, env: &Env) -> Result<Response> {
+    if !operator_sessions::authorized(request, env).await? {
+        return Response::error("authentication required", 401);
+    }
+    let Some((after, limit)) = event_page_options(request)? else {
+        return Response::error("invalid management event query", 400);
+    };
+
+    let database = env.d1(DATABASE_BINDING)?;
+    let event_cursor = database
+        .prepare("SELECT COALESCE(MAX(id), 0) AS event_cursor FROM vfs_audit_events")
+        .first::<CursorRow>(None)
+        .await?
+        .map_or(0, |row| row.event_cursor);
+    if after > event_cursor {
+        return Response::error("management event cursor is ahead of this environment", 409);
+    }
+
+    let bindings = [
+        JsValue::from_str(&after.to_string()),
+        JsValue::from_str(&event_cursor.to_string()),
+        JsValue::from_str(&(limit + 1).to_string()),
+    ];
+    let mut rows = database
+        .prepare(
+            r"SELECT id, filesystem_id, principal_id, token_id, event_kind,
+                     subject_kind, subject_id, details_json, created_at
+              FROM vfs_audit_events
+              WHERE id > CAST(?1 AS INTEGER) AND id <= CAST(?2 AS INTEGER)
+              ORDER BY id
+              LIMIT CAST(?3 AS INTEGER)",
+        )
+        .bind(&bindings)?
+        .all()
+        .await?
+        .results::<ActivityEventRow>()?;
+    let has_more = rows.len() > usize::try_from(limit).unwrap_or(usize::MAX);
+    rows.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+    let next_after = rows.last().map_or(after, |row| row.id);
+    let events = rows.into_iter().map(event_view).collect();
+
+    no_store_json(&EventPageResponse {
+        schema: "carrack.management.events.v1",
+        observed_at: now_seconds(),
+        after,
+        event_cursor,
+        next_after,
+        has_more,
+        events,
+    })
+}
+
 /// Returns bounded, current VFS lifecycle work and the newest audit events.
 ///
 /// Direct provider payload progress remains client-local by design. This view
@@ -680,24 +750,7 @@ pub(crate) async fn activity(request: &Request, env: &Env) -> Result<Response> {
         .await?
         .results::<ActivityEventRow>()?;
     let event_cursor = event_rows.first().map_or(0, |row| row.id);
-    let events = event_rows
-        .into_iter()
-        .map(|row| {
-            let mut details = serde_json::from_str(&row.details_json).unwrap_or(Value::Null);
-            redact_value(&mut details);
-            ActivityEventView {
-                id: row.id,
-                filesystem_id: row.filesystem_id,
-                principal_id: row.principal_id,
-                token_id: row.token_id,
-                event_kind: row.event_kind,
-                subject_kind: row.subject_kind,
-                subject_id: row.subject_id,
-                details,
-                created_at: row.created_at,
-            }
-        })
-        .collect();
+    let events = event_rows.into_iter().map(event_view).collect();
 
     no_store_json(&ActivityResponse {
         schema: "carrack.management.activity.v1",
@@ -910,6 +963,66 @@ fn sensitive_key(key: &str) -> bool {
     .any(|needle| key == *needle || key.ends_with(&format!("_{needle}")))
 }
 
+fn event_view(row: ActivityEventRow) -> ActivityEventView {
+    let mut details = serde_json::from_str(&row.details_json).unwrap_or(Value::Null);
+    redact_value(&mut details);
+    ActivityEventView {
+        id: row.id,
+        filesystem_id: row.filesystem_id,
+        principal_id: row.principal_id,
+        token_id: row.token_id,
+        event_kind: row.event_kind,
+        subject_kind: row.subject_kind,
+        subject_id: row.subject_id,
+        details,
+        created_at: row.created_at,
+    }
+}
+
+fn event_page_options(request: &Request) -> Result<Option<(u64, u64)>> {
+    let url = request.url()?;
+    let mut after = 0;
+    let mut limit = DEFAULT_EVENT_PAGE_SIZE;
+    let mut saw_after = false;
+    let mut saw_limit = false;
+    for (key, value) in url.query_pairs() {
+        match key.as_ref() {
+            "after" if !saw_after => {
+                saw_after = true;
+                let Some(parsed) = canonical_integer(&value) else {
+                    return Ok(None);
+                };
+                after = parsed;
+            }
+            "limit" if !saw_limit => {
+                saw_limit = true;
+                let Some(parsed) = canonical_integer(&value) else {
+                    return Ok(None);
+                };
+                if !(1..=MAXIMUM_EVENT_PAGE_SIZE).contains(&parsed) {
+                    return Ok(None);
+                }
+                limit = parsed;
+            }
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some((after, limit)))
+}
+
+fn canonical_integer(value: &str) -> Option<u64> {
+    if value.is_empty()
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|parsed| i64::try_from(*parsed).is_ok())
+}
+
 fn valid_identifier(value: &str) -> bool {
     value.len() == 32
         && value != "00000000000000000000000000000000"
@@ -926,7 +1039,7 @@ fn now_seconds() -> u64 {
 mod tests {
     use serde_json::json;
 
-    use super::{redact_value, sensitive_key, valid_identifier};
+    use super::{canonical_integer, redact_value, sensitive_key, valid_identifier};
 
     #[test]
     fn redacts_secret_shaped_driver_configuration() {
@@ -950,5 +1063,15 @@ mod tests {
         assert!(!valid_identifier("0123456789ABCDEF0123456789ABCDEF"));
         assert!(!valid_identifier("00000000000000000000000000000000"));
         assert!(!valid_identifier("short"));
+    }
+
+    #[test]
+    fn accepts_only_canonical_d1_event_cursors() {
+        assert_eq!(canonical_integer("0"), Some(0));
+        assert_eq!(canonical_integer("250"), Some(250));
+        assert_eq!(canonical_integer("01"), None);
+        assert_eq!(canonical_integer("+1"), None);
+        assert_eq!(canonical_integer("-1"), None);
+        assert_eq!(canonical_integer("9223372036854775808"), None);
     }
 }

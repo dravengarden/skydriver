@@ -365,6 +365,15 @@ server-side lifecycle state. The response is `Cache-Control: no-store`, returns
 at most 100 active items and 100 newest events, and requires an operator
 session.
 
+Agents consume the same immutable audit stream through
+`GET /api/admin/events?after=<cursor>&limit=<1..250>`. The Worker reads the
+current high-water mark first, then performs an ascending bounded primary-key
+range query no later than that mark. The response returns `next_after` and
+`has_more`, redacts secret-shaped detail fields exactly like Activity, and
+fails with `409` when a cursor is ahead of the selected environment. The Rust
+`carrackctl watch` command validates ordering and continuation before emitting
+the page as JSON.
+
 ## D1 backup and recovery
 
 D1 Time Travel is a short-window rollback mechanism, not a complete provider

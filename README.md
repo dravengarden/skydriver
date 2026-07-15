@@ -89,6 +89,7 @@ and child-token operations.
 
 ```bash
 carrackctl snapshot
+carrackctl watch --after 0 --limit 100
 carrackctl directory <directory-id>
 carrackctl driver register aliyun-main \
   --kind aliyundrive-open/v2 --config-file ./aliyun-config.json --check

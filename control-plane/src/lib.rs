@@ -510,6 +510,9 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
         .get_async("/api/admin/events/cursor", |request, context| async move {
             management::event_cursor(&request, &context.env).await
         })
+        .get_async("/api/admin/events", |request, context| async move {
+            management::events(&request, &context.env).await
+        })
         .get_async(
             "/api/admin/directories/:id",
             |request, context| async move {

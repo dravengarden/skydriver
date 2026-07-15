@@ -35,8 +35,9 @@ pub use admin::{
     AdminClient, DriverCredentialReceipt, DriverCredentialValidation, DriverRegistrationReceipt,
     DriverRegistrationValidation, DriverStateReceipt, DriverStateValidation, ManagementBreadcrumb,
     ManagementDirectory, ManagementDirectoryEntry, ManagementDirectoryIdentity, ManagementDriver,
-    ManagementFilesystem, ManagementSnapshot, ManagementToken, OperatorCredential, QuotaLimits,
-    QuotaReceipt, QuotaValidation, TokenAnnotationReceipt, TokenAnnotationValidation,
+    ManagementEvent, ManagementEventPage, ManagementFilesystem, ManagementSnapshot,
+    ManagementToken, OperatorCredential, QuotaLimits, QuotaReceipt, QuotaValidation,
+    TokenAnnotationReceipt, TokenAnnotationValidation,
 };
 
 pub use download::{GetOptions, GetResult};
@@ -467,7 +468,7 @@ mod tests {
             let request = String::from_utf8_lossy(&request[..length]).to_ascii_lowercase();
             assert!(request.starts_with("get /api/compatibility http/1.1"));
             assert!(request.contains("carrack-protocol-epoch: 2"));
-            assert!(request.contains("carrack-sdk-version: 0.3.2"));
+            assert!(request.contains("carrack-sdk-version: 0.3.3"));
             let body = r#"{"schema":"carrack.protocol-compatibility.v1","protocol_epoch":2,"minimum_sdk_version":"0.3.0","server_version":"0.3.2","enforcement":"required","upgrade_command":"upgrade carrack"}"#;
             stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.expect("write response");
         });

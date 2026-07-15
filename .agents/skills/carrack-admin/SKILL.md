@@ -19,16 +19,28 @@ is only for filesystem data operations.
    carrackctl snapshot --control-url "$CARRACK_CONTROL_URL" --format json
    ```
 
-3. Inspect each affected collection before deciding on a change:
+3. When observing changes after that snapshot, pass its `event_cursor` into a
+   bounded event read:
+
+   ```bash
+   carrackctl watch --after "$event_cursor" --limit 100 \
+     --control-url "$CARRACK_CONTROL_URL" --format json
+   ```
+
+   Process events in returned order. While `has_more` is true, repeat with
+   `next_after`; persist a cursor only after every event through it has been
+   handled successfully. This command returns one page and never leaves an
+   agent-owned watcher running.
+4. Inspect each affected collection before deciding on a change:
 
    ```bash
    carrackctl directory "$directory_id" \
      --control-url "$CARRACK_CONTROL_URL" --format json
    ```
 
-4. Read the exact ACL or placement revision with `carrackctl vfs acl show`
+5. Read the exact ACL or placement revision with `carrackctl vfs acl show`
    or `carrackctl vfs placement show` before a policy mutation.
-5. State the intended complete desired state and affected resource IDs.
+6. State the intended complete desired state and affected resource IDs.
 
 Read [references/commands.md](references/commands.md) when selecting a command
 or handling a failure.
