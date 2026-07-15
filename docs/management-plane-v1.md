@@ -165,8 +165,12 @@ to the current environment's `carrack-payload-dev` or `carrack-payload-prod`
 bucket; external instances may use another Cloudflare R2 bucket. Its write-only
 credential is `{access_key_id,secret_access_key}`. Validation performs a
 temporary PUT and DELETE before commit, and VFS clients receive only
-object-scoped signed URLs valid for at most 15 minutes. Single PUT fails closed
-above 5 GiB until multipart is available. Disablement is allowed even
+object-scoped signed URLs valid for at most 15 minutes. Uploads at or above
+100 MiB use a private resumable multipart journal and bounded concurrent part
+grants; large downloads use concurrent signed ranges. The server records every
+R2 Put grant and, after an unpublished intent expires, aborts any multipart
+upload and idempotently removes the object. CLI and filesystem SDK APIs expose
+no GC controls. Disablement is allowed even
 when placements or available locations exist, but those counts and warnings
 are covered by the signed validation. Disabling does not delete locations or
 provider objects; it makes them unavailable through that driver until a later

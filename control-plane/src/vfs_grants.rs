@@ -1,6 +1,6 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
-use worker::{D1Database, Date, Env, Response, Result, wasm_bindgen::JsValue};
+use worker::{D1Database, Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
 
 use crate::{
@@ -62,6 +62,14 @@ struct PutDeleteGrantRow {
     credential_ciphertext: Option<Vec<u8>>,
     credential_revision: Option<u64>,
     credential_expires_at: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct R2MultipartGrantRequest {
+    upload_id: String,
+    first_part: u32,
+    part_count: u32,
 }
 
 #[derive(Serialize)]
@@ -191,6 +199,9 @@ pub(crate) async fn grant_put_driver(
     if !grant_allowed(&database, token, &context).await? {
         return Response::error("VFS driver grant is not authorized", 403);
     }
+    if context.driver_kind == "r2/v1" && context.state != "prepared" {
+        return Response::error("VFS Put is no longer uploadable", 409);
+    }
 
     let config = serde_json::from_str::<serde_json::Value>(&context.driver_config_json).map_err(
         |error| {
@@ -203,6 +214,22 @@ pub(crate) async fn grant_put_driver(
         "PUT",
         context.expires_at.min(token.expires_at),
     )?;
+    if context.driver_kind == "r2/v1" {
+        database
+            .prepare(
+                "INSERT INTO vfs_r2_upload_cleanup_tasks (
+                     intent_id, driver_revision, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?3)
+                 ON CONFLICT(intent_id) DO NOTHING",
+            )
+            .bind(&[
+                JsValue::from_str(&context.intent_id),
+                JsValue::from_str(&context.driver_revision.to_string()),
+                JsValue::from_str(&current_unix_seconds().to_string()),
+            ])?
+            .run()
+            .await?;
+    }
     record_audit(
         &database,
         token,
@@ -227,6 +254,101 @@ pub(crate) async fn grant_put_driver(
         credential,
         expires_at: context.expires_at.min(token.expires_at),
     })?)
+}
+
+/// Signs one bounded batch of R2 multipart operations for an authorized Put.
+///
+/// The upload ID is provider-issued, while the object key, driver revision,
+/// credential, expiry, and caller remain pinned to the immutable Put intent.
+pub(crate) async fn grant_put_r2_multipart(
+    request: &mut Request,
+    env: &Env,
+    token: &AuthenticatedVfsToken,
+    intent_id: &str,
+) -> Result<Response> {
+    let requested = request.json::<R2MultipartGrantRequest>().await?;
+    let database = env.d1("CARRACK_INDEX")?;
+    let Some(context) = load_context(&database, intent_id).await? else {
+        return Response::error("VFS put intent was not found", 404);
+    };
+    if !grant_allowed(&database, token, &context).await? {
+        return Response::error("VFS multipart grant is not authorized", 403);
+    }
+    if context.state != "prepared" {
+        return Response::error("VFS Put is no longer uploadable", 409);
+    }
+    if context.driver_kind != "r2/v1" {
+        return Response::error("VFS driver does not support R2 multipart grants", 400);
+    }
+    let Some(credential_id) = context.credential_id.as_deref() else {
+        return Response::error("R2 driver credential is absent", 409);
+    };
+    let (Some(algorithm), Some(version), Some(nonce), Some(ciphertext), Some(revision)) = (
+        context.credential_algorithm.as_deref(),
+        context.credential_key_version.as_deref(),
+        context.credential_nonce.as_deref(),
+        context.credential_ciphertext.as_deref(),
+        context.credential_revision,
+    ) else {
+        return Err(worker::Error::RustError(
+            "R2 driver credential envelope is incomplete".to_owned(),
+        ));
+    };
+    let mut plaintext = open_driver_credential(
+        env,
+        credential_id,
+        revision,
+        algorithm,
+        version,
+        nonce,
+        ciphertext,
+    )?;
+    let grant = r2_signing::multipart_grant_from_plaintext(
+        &context.driver_config_json,
+        &context.storage_key,
+        &plaintext,
+        &requested.upload_id,
+        requested.first_part,
+        requested.part_count,
+        context.expires_at.min(token.expires_at),
+    );
+    plaintext.zeroize();
+    let Some(grant) = grant else {
+        return Response::error("invalid R2 multipart grant request", 400);
+    };
+    let bound = database
+        .prepare(
+            "UPDATE vfs_r2_upload_cleanup_tasks
+             SET upload_id = ?1, updated_at = ?2
+             WHERE intent_id = ?3 AND state = 'active'
+               AND (upload_id IS NULL OR upload_id = ?1)",
+        )
+        .bind(&[
+            JsValue::from_str(&requested.upload_id),
+            JsValue::from_str(&current_unix_seconds().to_string()),
+            JsValue::from_str(&context.intent_id),
+        ])?
+        .run()
+        .await?
+        .meta()?
+        .and_then(|metadata| metadata.changes)
+        .unwrap_or_default();
+    if bound != 1 {
+        return Response::error("R2 multipart upload identity conflict", 409);
+    }
+    record_audit(
+        &database,
+        token,
+        &context,
+        "r2_multipart_granted",
+        serde_json::json!({
+            "first_part": requested.first_part,
+            "part_count": requested.part_count,
+            "intent_id": context.intent_id,
+        }),
+    )
+    .await?;
+    no_store(Response::from_json(&grant)?)
 }
 
 /// Returns the pinned compiled-driver configuration for a currently fenced

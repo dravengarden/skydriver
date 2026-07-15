@@ -74,25 +74,46 @@ pub(crate) fn presign(
     key: &str,
     expires_seconds: u64,
 ) -> Option<String> {
-    presign_at(
+    presign_query_at(
         method,
         config,
         credential,
         key,
         expires_seconds,
+        &[],
         &amz_timestamp()?,
     )
 }
 
-fn presign_at(
+fn presign_query(
     method: &str,
     config: &Config,
     credential: &Credential,
     key: &str,
     expires_seconds: u64,
+    query: &[(&str, &str)],
+) -> Option<String> {
+    presign_query_at(
+        method,
+        config,
+        credential,
+        key,
+        expires_seconds,
+        query,
+        &amz_timestamp()?,
+    )
+}
+
+fn presign_query_at(
+    method: &str,
+    config: &Config,
+    credential: &Credential,
+    key: &str,
+    expires_seconds: u64,
+    extra_query: &[(&str, &str)],
     timestamp: &str,
 ) -> Option<String> {
-    if !matches!(method, "GET" | "PUT" | "DELETE")
+    if !matches!(method, "GET" | "PUT" | "POST" | "DELETE")
         || !valid_config(config)
         || !valid_credential(credential)
         || expires_seconds == 0
@@ -108,17 +129,26 @@ fn presign_at(
         percent_encode(&config.bucket, true),
         percent_encode(key, false)
     );
-    let mut query = [
-        ("X-Amz-Algorithm", ALGORITHM.to_owned()),
+    let mut query = vec![
+        ("X-Amz-Algorithm".to_owned(), ALGORITHM.to_owned()),
         (
-            "X-Amz-Credential",
+            "X-Amz-Credential".to_owned(),
             format!("{}/{}", credential.access_key_id, scope),
         ),
-        ("X-Amz-Date", timestamp.to_owned()),
-        ("X-Amz-Expires", expires_seconds.to_string()),
-        ("X-Amz-SignedHeaders", "host".to_owned()),
+        ("X-Amz-Date".to_owned(), timestamp.to_owned()),
+        ("X-Amz-Expires".to_owned(), expires_seconds.to_string()),
+        ("X-Amz-SignedHeaders".to_owned(), "host".to_owned()),
     ];
-    query.sort_by(|left, right| left.0.cmp(right.0));
+    query.extend(
+        extra_query
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
+    );
+    query.sort_by(|left, right| {
+        percent_encode(&left.0, true)
+            .cmp(&percent_encode(&right.0, true))
+            .then_with(|| percent_encode(&left.1, true).cmp(&percent_encode(&right.1, true)))
+    });
     let canonical_query = query
         .iter()
         .map(|(name, value)| {
@@ -163,9 +193,88 @@ pub(crate) fn access_grant_from_plaintext(
     } else {
         None
     };
+    let multipart_create_url = if method == "PUT" {
+        Some(presign_query(
+            "POST",
+            &config,
+            &credential,
+            &key,
+            lifetime,
+            &[("uploads", "")],
+        )?)
+    } else {
+        None
+    };
     Some(serde_json::json!({
         "method": method,
         "url": url,
+        "verify_url": verify_url,
+        "multipart_create_url": multipart_create_url,
+        "expires_at": now + lifetime,
+    }))
+}
+
+pub(crate) fn multipart_grant_from_plaintext(
+    config_json: &str,
+    storage_key: &str,
+    plaintext: &[u8],
+    upload_id: &str,
+    first_part: u32,
+    part_count: u32,
+    maximum_expires_at: u64,
+) -> Option<serde_json::Value> {
+    if upload_id.is_empty()
+        || upload_id.len() > 1_024
+        || upload_id.contains(['\0', '\r', '\n'])
+        || first_part == 0
+        || part_count == 0
+        || part_count > 64
+        || first_part.checked_add(part_count)? > 10_001
+    {
+        return None;
+    }
+    let config = serde_json::from_str::<Config>(config_json).ok()?;
+    let credential = serde_json::from_slice::<Credential>(plaintext).ok()?;
+    let key = object_key(&config, storage_key)?;
+    let now = Date::now().as_millis() / 1_000;
+    let lifetime = maximum_expires_at.saturating_sub(now).min(900);
+    let parts = (first_part..first_part + part_count)
+        .map(|part_number| {
+            let part = part_number.to_string();
+            let url = presign_query(
+                "PUT",
+                &config,
+                &credential,
+                &key,
+                lifetime,
+                &[("partNumber", &part), ("uploadId", upload_id)],
+            )?;
+            Some(serde_json::json!({"part_number": part_number, "url": url}))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let complete_url = presign_query(
+        "POST",
+        &config,
+        &credential,
+        &key,
+        lifetime,
+        &[("uploadId", upload_id)],
+    )?;
+    let abort_url = presign_query(
+        "DELETE",
+        &config,
+        &credential,
+        &key,
+        lifetime,
+        &[("uploadId", upload_id)],
+    )?;
+    let verify_url = presign("GET", &config, &credential, &key, lifetime)?;
+    Some(serde_json::json!({
+        "schema": "carrack.vfs.r2-multipart-grant.v1",
+        "upload_id": upload_id,
+        "parts": parts,
+        "complete_url": complete_url,
+        "abort_url": abort_url,
         "verify_url": verify_url,
         "expires_at": now + lifetime,
     }))
@@ -228,6 +337,51 @@ pub(crate) async fn delete_from_plaintext(
     } else {
         Err(worker::Error::RustError(format!(
             "R2 delete returned {}",
+            response.status_code()
+        )))
+    }
+}
+
+pub(crate) async fn cleanup_upload_from_plaintext(
+    config_json: &str,
+    storage_key: &str,
+    upload_id: Option<&str>,
+    plaintext: &[u8],
+) -> Result<(), worker::Error> {
+    let config = serde_json::from_str::<Config>(config_json)
+        .map_err(|error| worker::Error::RustError(format!("decode R2 config: {error}")))?;
+    let credential = serde_json::from_slice::<Credential>(plaintext)
+        .map_err(|error| worker::Error::RustError(format!("decode R2 credential: {error}")))?;
+    let key = object_key(&config, storage_key)
+        .ok_or_else(|| worker::Error::RustError("invalid R2 storage key".to_owned()))?;
+    if let Some(upload_id) = upload_id {
+        let url = presign_query(
+            "DELETE",
+            &config,
+            &credential,
+            &key,
+            60,
+            &[("uploadId", upload_id)],
+        )
+        .ok_or_else(|| worker::Error::RustError("sign R2 multipart abort".to_owned()))?;
+        let request = Request::new(&url, Method::Delete)?;
+        let response = Fetch::Request(request).send().await?;
+        if response.status_code() != 404 && !(200..300).contains(&response.status_code()) {
+            return Err(worker::Error::RustError(format!(
+                "R2 multipart abort returned {}",
+                response.status_code()
+            )));
+        }
+    }
+    let url = presign("DELETE", &config, &credential, &key, 60)
+        .ok_or_else(|| worker::Error::RustError("sign R2 cleanup delete".to_owned()))?;
+    let request = Request::new(&url, Method::Delete)?;
+    let response = Fetch::Request(request).send().await?;
+    if response.status_code() == 404 || (200..300).contains(&response.status_code()) {
+        Ok(())
+    } else {
+        Err(worker::Error::RustError(format!(
+            "R2 cleanup delete returned {}",
             response.status_code()
         )))
     }
@@ -304,7 +458,7 @@ fn valid_secret(value: &str, maximum: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, Credential, object_key, percent_encode, presign_at, valid_config};
+    use super::{Config, Credential, object_key, percent_encode, presign_query_at, valid_config};
 
     #[test]
     fn validates_r2_identity_and_canonical_keys() {
@@ -334,17 +488,45 @@ mod tests {
             access_key_id: "test-access".to_owned(),
             secret_access_key: "test-secret".to_owned(),
         };
-        let grant = presign_at(
+        let grant = presign_query_at(
             "PUT",
             &config,
             &credential,
             "objects/v2/value",
             900,
+            &[],
             "20260715T120000Z",
         )
         .expect("sign grant");
         assert!(grant.contains("X-Amz-Signature"));
         assert!(grant.contains("X-Amz-Expires"));
+        assert!(!grant.contains("test-secret"));
+    }
+
+    #[test]
+    fn multipart_query_is_canonical_and_provider_values_are_encoded() {
+        let config = Config {
+            endpoint: "https://0123456789abcdef.r2.cloudflarestorage.com".to_owned(),
+            bucket: "payload-dev".to_owned(),
+            prefix: String::new(),
+            managed: false,
+        };
+        let credential = Credential {
+            access_key_id: "test-access".to_owned(),
+            secret_access_key: "test-secret".to_owned(),
+        };
+        let grant = presign_query_at(
+            "PUT",
+            &config,
+            &credential,
+            "objects/value",
+            900,
+            &[("uploadId", "id+/="), ("partNumber", "7")],
+            "20260715T120000Z",
+        )
+        .expect("sign multipart part");
+        assert!(grant.contains("partNumber=7"));
+        assert!(grant.contains("uploadId=id%2B%2F%3D"));
         assert!(!grant.contains("test-secret"));
     }
 }

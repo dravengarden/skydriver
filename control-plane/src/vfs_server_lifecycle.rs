@@ -35,6 +35,21 @@ struct DeleteTask {
 }
 
 #[derive(Deserialize)]
+struct R2CleanupTask {
+    intent_id: String,
+    storage_key: String,
+    upload_id: Option<String>,
+    fencing_token: u64,
+    config_json: String,
+    credential_id: String,
+    credential_algorithm: String,
+    credential_key_version: String,
+    credential_nonce: Vec<u8>,
+    credential_ciphertext: Vec<u8>,
+    credential_revision: u64,
+}
+
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AliyunConfig {
     api_base_url: String,
@@ -62,7 +77,121 @@ pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
     mark_unreachable(&database, now).await?;
     create_tasks(&database, now).await?;
     delete_one(env, &database, now).await?;
-    delete_one_abandoned_put(env, &database, now).await
+    delete_one_abandoned_put(env, &database, now).await?;
+    cleanup_one_r2_upload(env, &database, now).await
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "claim, final safety reload, sealed credential use, provider cleanup, and fenced outcome form one lifecycle transaction"
+)]
+async fn cleanup_one_r2_upload(env: &Env, database: &D1Database, now: u64) -> Result<()> {
+    let candidate = database
+        .prepare(
+            "SELECT intent_id FROM vfs_r2_upload_cleanup_tasks
+             WHERE intent_id IN (SELECT intent_id FROM safe_vfs_r2_upload_cleanup_tasks)
+               AND (state IN ('active', 'failed')
+                    OR (state = 'cleaning' AND lease_expires_at <= ?1))
+             ORDER BY intent_id LIMIT 1",
+        )
+        .bind(&[integer(now)])?
+        .first::<serde_json::Value>(Some("intent_id"))
+        .await?;
+    let Some(serde_json::Value::String(intent_id)) = candidate else {
+        return Ok(());
+    };
+    let claimed = database
+        .prepare(
+            "UPDATE vfs_r2_upload_cleanup_tasks
+             SET state = 'cleaning', fencing_token = fencing_token + 1,
+                 lease_expires_at = ?1, attempt_count = attempt_count + 1,
+                 last_error_code = NULL, updated_at = ?2
+             WHERE intent_id = ?3
+               AND intent_id IN (SELECT intent_id FROM safe_vfs_r2_upload_cleanup_tasks)
+               AND (state IN ('active', 'failed')
+                    OR (state = 'cleaning' AND lease_expires_at <= ?2))",
+        )
+        .bind(&[
+            integer(now + CLAIM_SECONDS),
+            integer(now),
+            JsValue::from_str(&intent_id),
+        ])?
+        .run()
+        .await?;
+    if changes(claimed.meta()?) != 1 {
+        return Ok(());
+    }
+    let task = database
+        .prepare(
+            "SELECT task.intent_id, intent.storage_key, task.upload_id,
+                    task.fencing_token, driver.config_json,
+                    credential.id AS credential_id,
+                    credential.envelope_algorithm AS credential_algorithm,
+                    credential.key_version AS credential_key_version,
+                    credential.nonce AS credential_nonce,
+                    credential.ciphertext AS credential_ciphertext,
+                    credential.revision AS credential_revision
+             FROM vfs_r2_upload_cleanup_tasks AS task
+             JOIN vfs_put_intents AS intent ON intent.id = task.intent_id
+             JOIN driver_instances AS driver ON driver.id = intent.driver_id
+             JOIN credential_envelopes AS credential ON credential.id = driver.credential_ref
+             WHERE task.intent_id = ?1 AND task.state = 'cleaning'
+               AND task.lease_expires_at > ?2
+               AND task.intent_id IN (
+                   SELECT intent_id FROM safe_vfs_r2_upload_cleanup_tasks
+               )",
+        )
+        .bind(&[JsValue::from_str(&intent_id), integer(now)])?
+        .first::<R2CleanupTask>(None)
+        .await?;
+    let Some(task) = task else {
+        return Ok(());
+    };
+    let mut plaintext = open_driver_credential(
+        env,
+        &task.credential_id,
+        task.credential_revision,
+        &task.credential_algorithm,
+        &task.credential_key_version,
+        &task.credential_nonce,
+        &task.credential_ciphertext,
+    )?;
+    let result = r2_signing::cleanup_upload_from_plaintext(
+        &task.config_json,
+        &task.storage_key,
+        task.upload_id.as_deref(),
+        &plaintext,
+    )
+    .await;
+    plaintext.zeroize();
+    let (state, error, completed_at) = if result.is_ok() {
+        ("cleaned", JsValue::NULL, integer(now))
+    } else {
+        worker::console_error!("R2 upload cleanup {} failed", task.intent_id);
+        (
+            "failed",
+            JsValue::from_str("provider_cleanup_failed"),
+            JsValue::NULL,
+        )
+    };
+    database
+        .prepare(
+            "UPDATE vfs_r2_upload_cleanup_tasks
+             SET state = ?1, lease_expires_at = NULL, last_error_code = ?2,
+                 completed_at = ?3, updated_at = ?4
+             WHERE intent_id = ?5 AND state = 'cleaning' AND fencing_token = ?6",
+        )
+        .bind(&[
+            JsValue::from_str(state),
+            error,
+            completed_at,
+            integer(now),
+            JsValue::from_str(&task.intent_id),
+            integer(task.fencing_token),
+        ])?
+        .run()
+        .await?;
+    Ok(())
 }
 
 #[allow(

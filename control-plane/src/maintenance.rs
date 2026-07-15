@@ -7,8 +7,10 @@ const MAXIMUM_EXPIRED_SESSIONS_PER_RUN: u64 = 500;
 const MAXIMUM_EXPIRED_AUTHORIZATION_CLAIMS_PER_RUN: u64 = 250;
 const MAXIMUM_EXPIRED_PUTS_PER_RUN: u64 = 250;
 const MAXIMUM_EXPIRED_READ_LEASES_PER_RUN: u64 = 1_000;
+const MAXIMUM_R2_CLEANUP_EVIDENCE_PER_RUN: u64 = 250;
 const VFS_PUT_DELETE_GRACE_SECONDS: u64 = 86_400;
 const READ_LEASE_EVIDENCE_SECONDS: u64 = 7 * 86_400;
+const R2_CLEANUP_EVIDENCE_SECONDS: u64 = 30 * 86_400;
 
 /// Performs bounded metadata hygiene without touching provider objects.
 ///
@@ -103,9 +105,29 @@ pub(crate) async fn run(env: &Env) -> Result<()> {
         ])
         .await?;
 
+    delete_expired_r2_cleanup_evidence(&database, now).await?;
     driver_credentials::run(env, now).await?;
     vfs_server_lifecycle::run(env, now).await?;
 
+    Ok(())
+}
+
+async fn delete_expired_r2_cleanup_evidence(database: &worker::D1Database, now: u64) -> Result<()> {
+    database
+        .prepare(
+            "DELETE FROM vfs_r2_upload_cleanup_tasks
+             WHERE intent_id IN (
+                 SELECT intent_id FROM vfs_r2_upload_cleanup_tasks
+                 WHERE state IN ('cleaned', 'superseded') AND completed_at <= ?1
+                 ORDER BY completed_at, intent_id LIMIT ?2
+             )",
+        )
+        .bind(&[
+            JsValue::from_str(&now.saturating_sub(R2_CLEANUP_EVIDENCE_SECONDS).to_string()),
+            JsValue::from_str(&MAXIMUM_R2_CLEANUP_EVIDENCE_PER_RUN.to_string()),
+        ])?
+        .run()
+        .await?;
     Ok(())
 }
 

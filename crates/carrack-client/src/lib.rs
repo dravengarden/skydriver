@@ -117,7 +117,7 @@ pub enum Error {
 #[derive(Clone, Debug)]
 pub struct Client {
     endpoint: Url,
-    http: reqwest::Client,
+    pub(crate) http: reqwest::Client,
 }
 
 impl Client {
@@ -187,7 +187,7 @@ impl Client {
         Ok(response)
     }
 
-    async fn send_json<T: DeserializeOwned, B: Serialize + ?Sized>(
+    pub(crate) async fn send_json<T: DeserializeOwned, B: Serialize + ?Sized>(
         &self,
         method: reqwest::Method,
         path: &str,

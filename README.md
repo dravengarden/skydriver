@@ -108,7 +108,7 @@ The current native V2 adapters are:
 |---|---:|---:|---:|---:|---|
 | `local-filesystem/v2` | yes | yes | yes | retained/blocked | Cloudflare cannot safely reach an agent-local path; use a hosted driver for automatic physical cleanup |
 | `aliyundrive-open/v2` | yes | yes | journaled, upload concurrency 1 | yes | native Open API; server-owned OAuth renewal; optional OpenList token issuer only |
-| `r2/v1` | yes | yes | streaming single PUT up to 5 GiB; multipart pending | yes | direct short-lived SigV4 URLs; managed or third-party bucket; long-lived keys stay server-side |
+| `r2/v1` | yes | yes | resumable multipart and concurrent ranges | yes | direct short-lived SigV4 URLs; managed or third-party bucket; long-lived keys stay server-side |
 
 Unsupported capabilities fail closed or return an explicit warning with the
 safe replacement. Additional S3/R2, Google Drive, and WebDAV adapters must use

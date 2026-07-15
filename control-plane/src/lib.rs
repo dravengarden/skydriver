@@ -503,6 +503,24 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
                 vfs_grants::grant_put_driver(&context.env, &token, intent_id).await
             },
         )
+        .post_async(
+            "/api/v2/puts/:id/r2-multipart-grant",
+            |mut request, context| async move {
+                let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                    return Response::error("VFS token authentication required", 401);
+                };
+                let Some(intent_id) = context.param("id") else {
+                    return Response::error("VFS put intent ID is required", 400);
+                };
+                vfs_grants::grant_put_r2_multipart(
+                    &mut request,
+                    &context.env,
+                    &token,
+                    intent_id,
+                )
+                .await
+            },
+        )
         .post_async("/api/v2/put-deletes/claim", |mut request, context| async move {
             if external_maintenance(&context.env) {
                 return Response::error("control-plane mutations are disabled", 409);

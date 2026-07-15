@@ -373,7 +373,7 @@ fn registration_warnings(kind: &str) -> Vec<String> {
                 .to_owned(),
             "Payload bytes transfer directly between the client and R2 through short-lived object-scoped signed URLs; long-lived keys never leave the control plane."
                 .to_owned(),
-            "This release supports complete-object PUT, GET, range GET, and delayed fenced deletion; oversized objects fail closed until multipart upload is available."
+            "Complete-object upload uses streaming single PUT below 100 MiB and a resumable concurrent multipart journal above it; download uses concurrent signed ranges when requested."
                 .to_owned(),
         ];
     }

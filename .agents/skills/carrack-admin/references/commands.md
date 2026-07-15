@@ -106,6 +106,10 @@ For R2, use the same register and credential commands with private JSON files:
 Managed bucket names must match the control-plane environment. Use
 `managed:false` for a third-party R2 bucket. The server validates the key with
 a temporary object and stores it sealed; never print or commit either file.
+R2 multipart journals and abandoned-object cleanup are internal. Agents should
+retry the same VFS Put idempotency key and staging directory to resume; never
+manually list, complete, abort, or delete multipart uploads through provider
+tools.
 
 Validate a token annotation without changing state:
 

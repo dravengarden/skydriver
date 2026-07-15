@@ -343,7 +343,8 @@ impl VfsClient {
         }
         let manifest_stage = self.stage_manifest(&token, &preparation, &manifest).await?;
         let object = upload_driver(
-            &self.control.http,
+            &self.control,
+            &token,
             &mut driver,
             &preparation.intent_id,
             &preparation.storage_key,
@@ -451,11 +452,13 @@ struct ProviderObject {
 }
 
 #[allow(
+    clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "provider dispatch and resumable local publication share one readback boundary"
+    reason = "provider dispatch binds the control capability, immutable intent, staged object, and pipeline controls at one readback boundary"
 )]
 async fn upload_driver(
-    http: &reqwest::Client,
+    control: &crate::Client,
+    token: &str,
     driver: &mut DriverGrant,
     intent_id: &str,
     storage_key: &str,
@@ -468,7 +471,7 @@ async fn upload_driver(
             Error::InvalidResponse("Aliyun driver omitted its credential".to_owned())
         })?;
         let object = crate::aliyun::upload(
-            http,
+            &control.http,
             &driver.driver_kind,
             &driver.config,
             credential,
@@ -489,11 +492,15 @@ async fn upload_driver(
             Error::InvalidResponse("R2 driver omitted its signed grant".to_owned())
         })?;
         let (native_id, provider_version, etag) = crate::r2::upload(
-            http,
+            control,
+            token,
+            intent_id,
             credential,
             &staged.path,
             staged.encoded_bytes,
             &staged.encoded_sha256,
+            part_bytes,
+            maximum_concurrency,
         )
         .await?;
         return Ok(ProviderObject {

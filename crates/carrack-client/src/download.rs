@@ -285,6 +285,8 @@ async fn fetch_provider(
             &plan.version_id,
             plan.encoded_bytes,
             &plan.encoded_sha256,
+            options.transfer_part_bytes,
+            options.maximum_concurrency,
         )
         .await;
     }
