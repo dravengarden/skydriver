@@ -18,16 +18,17 @@ interface LoginPageProps {
     readonly environment: string;
     readonly pending: boolean;
     readonly error: boolean;
-    readonly onLogin: (password: string) => void;
+    readonly onLogin: (account: string, password: string) => void;
 }
 
 export function LoginPage({ environment, pending, error, onLogin }: LoginPageProps) {
+    const [account, setAccount] = useState("");
     const [password, setPassword] = useState("");
 
     function submit(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
-        if (password !== "") {
-            onLogin(password);
+        if (account !== "" && password !== "") {
+            onLogin(account, password);
         }
     }
 
@@ -106,11 +107,26 @@ export function LoginPage({ environment, pending, error, onLogin }: LoginPagePro
                             Control plane
                         </Typography>
                         <Typography sx={{ mt: 0.75, color: "#536d7b" }}>
-                            Enter this environment's operator credential.
+                            Enter this environment's operator account and credential.
                         </Typography>
                     </Box>
 
-                    {error ? <Alert severity="error">Invalid operator credential.</Alert> : null}
+                    {error ? (
+                        <Alert severity="error">Invalid account or operator credential.</Alert>
+                    ) : null}
+
+                    <TextField
+                        label="Account"
+                        autoComplete="username"
+                        value={account}
+                        onChange={(event) => setAccount(event.target.value)}
+                        required
+                        fullWidth
+                        autoFocus
+                        slotProps={{
+                            htmlInput: { autoCapitalize: "none", spellCheck: false },
+                        }}
+                    />
 
                     <TextField
                         label="Operator credential"
@@ -120,7 +136,6 @@ export function LoginPage({ environment, pending, error, onLogin }: LoginPagePro
                         onChange={(event) => setPassword(event.target.value)}
                         required
                         fullWidth
-                        autoFocus
                         sx={{
                             "& .MuiInputLabel-root": { color: "#58717e" },
                             "& .MuiOutlinedInput-root": {
@@ -134,7 +149,7 @@ export function LoginPage({ environment, pending, error, onLogin }: LoginPagePro
                         type="submit"
                         variant="contained"
                         size="large"
-                        disabled={pending || password === ""}
+                        disabled={pending || account === "" || password === ""}
                         startIcon={pending ? <CircularProgress size={18} /> : <LockOutlinedIcon />}
                         sx={{
                             minHeight: 48,

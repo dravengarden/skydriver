@@ -385,7 +385,7 @@ async function requestJson<TSchema extends v.BaseSchema<unknown, unknown, v.Base
 ): Promise<v.InferOutput<TSchema>> {
     const headers = new Headers(init?.headers);
     headers.set("Carrack-Protocol-Epoch", "2");
-    headers.set("Carrack-SDK-Version", "0.3.5");
+    headers.set("Carrack-SDK-Version", "0.3.6");
     const response = await fetch(input, { ...init, headers });
     if (!response.ok) {
         const detail = (await response.text())
@@ -425,13 +425,18 @@ export function fetchHealth(): Promise<Health> {
     return requestJson("/api/health", undefined, HealthSchema);
 }
 
-export function login(password: string): Promise<Session> {
+export interface LoginInput {
+    readonly account: string;
+    readonly password: string;
+}
+
+export function login({ account, password }: LoginInput): Promise<Session> {
     return requestJson(
         "/api/auth/login",
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ password }),
+            body: JSON.stringify({ account, password }),
         },
         SessionSchema,
     );

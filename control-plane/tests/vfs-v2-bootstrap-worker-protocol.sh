@@ -4,7 +4,7 @@ set -euo pipefail
 curl() {
   command curl \
     --header "Carrack-Protocol-Epoch: 2" \
-    --header "Carrack-SDK-Version: 0.3.5" \
+    --header "Carrack-SDK-Version: 0.3.6" \
     "$@"
 }
 
@@ -45,6 +45,8 @@ wrangler=(
   --persist-to "$state_directory" >/dev/null
 
 admin_token=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA
+operator_account=draven
+export CARRACK_OPERATOR_ACCOUNT="$operator_account"
 
 "${wrangler[@]}" dev \
   --local \
@@ -53,6 +55,7 @@ admin_token=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA
   --inspector-port 0 \
   --test-scheduled \
   --var CARRACK_VFS_MASTER_KEY_V1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
+  --var CARRACK_OPERATOR_ACCOUNT:"$operator_account" \
   --var CARRACK_ADMIN_TOKEN:"$admin_token" \
   --show-interactive-dev-session=false >"$server_log" 2>&1 &
 server_pid=$!
@@ -95,9 +98,26 @@ unauthenticated_status=$(curl --silent --output /dev/null --write-out '%{http_co
   -H "$json" --data "$bootstrap_request" "$base_url/api/v2/bootstrap")
 [[ "$unauthenticated_status" == 401 ]]
 
+legacy_login_status=$(command curl --silent --show-error \
+  --output "$state_directory/management-upgrade-required.json" --write-out '%{http_code}' \
+  --header 'Carrack-Protocol-Epoch: 2' --header 'Carrack-SDK-Version: 0.3.5' \
+  -H "$json" --data '{"account":"draven","password":"ignored"}' \
+  "$base_url/api/auth/login")
+[[ "$legacy_login_status" == 426 ]]
+jq -e '.code == "sdk_upgrade_required" and .minimum_sdk_version == "0.3.6"' \
+  "$state_directory/management-upgrade-required.json" >/dev/null
+
+wrong_account_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$json" \
+  --data "$(jq -cn --arg password "$admin_token" \
+    '{account: "someone-else", password: $password}')" \
+  "$base_url/api/auth/login")
+[[ "$wrong_account_status" == 401 ]]
+
 curl --silent --show-error --fail-with-body \
   -c "$cookie_jar" -H "$json" \
-  --data "$(jq -cn --arg password "$admin_token" '{password: $password}')" \
+  --data "$(jq -cn --arg account "$operator_account" --arg password "$admin_token" \
+    '{account: $account, password: $password}')" \
   "$base_url/api/auth/login" >/dev/null
 
 bootstrap_headers="$state_directory/bootstrap-headers.txt"

@@ -41,6 +41,9 @@ if (config.name !== "carrack-control-plane-local") {
 if (config.workers_dev !== false || config.preview_urls !== false) {
     fail("the default Worker must not expose public URLs");
 }
+if (config.vars?.CARRACK_OPERATOR_ACCOUNT !== "draven") {
+    fail("the local Worker must define the canonical operator account");
+}
 
 const localDatabase = requireSingleBinding(config, "d1_databases", "CARRACK_INDEX");
 if (localDatabase.database_id !== "00000000-0000-0000-0000-000000000000") {
@@ -95,6 +98,9 @@ for (const [name, wanted] of Object.entries(expected)) {
     }
     if (environment.vars?.CARRACK_ENVIRONMENT !== name) {
         fail(`${name} must identify itself through CARRACK_ENVIRONMENT`);
+    }
+    if (environment.vars?.CARRACK_OPERATOR_ACCOUNT !== "draven") {
+        fail(`${name} must require the draven operator account`);
     }
     if (environment.vars?.CARRACK_R2_ENDPOINT !== expectedR2Endpoint) {
         fail(`${name} must pin the account R2 S3 endpoint used for direct grants`);

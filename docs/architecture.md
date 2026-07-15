@@ -143,7 +143,8 @@ fixed actions, optional driver scope, expiry, and revocation ancestry. The
 server also reevaluates inherited allow-only ACLs on every request. Named roles
 are UI presets expanded to fixed actions, not a general policy language.
 
-The operator credential is separate from VFS data authority. It opens a
+The non-secret operator account and its credential are separate from VFS data
+authority. Together they open a
 short-lived configuration mutation session and never grants plaintext access.
 The UI is read-only until reauthentication. `carrackctl` exposes the same
 validated configuration surface for humans and AI agents, with local checks,

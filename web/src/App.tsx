@@ -64,7 +64,7 @@ export function App() {
                 environment={environment}
                 pending={loginMutation.isPending}
                 error={loginMutation.isError}
-                onLogin={(password) => loginMutation.mutate(password)}
+                onLogin={(account, password) => loginMutation.mutate({ account, password })}
             />
         );
     }

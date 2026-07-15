@@ -83,6 +83,7 @@ are internal. Transfer bounds tune the pipeline; they do not alter identity.
 
 ## Management CLI for agents
 
+`CARRACK_OPERATOR_ACCOUNT` identifies the non-secret operator account and
 `CARRACK_OPERATOR_CREDENTIAL` authorizes redacted UI-equivalent environment
 management. `CARRACK_VFS_TOKEN` separately authorizes scoped ACL, placement,
 and child-token operations.

@@ -98,9 +98,11 @@ removes the terminal semicolon from SQLite trigger definitions; D1 then rejects
 the incomplete trigger. The Carrack runner imports one migration and its
 `d1_migrations` receipt atomically, and verifies that receipt before advancing.
 
-The operator console has no username or account directory. Each environment
-uses one independent `CARRACK_ADMIN_TOKEN` Worker secret, following Stormbird's
-operator-credential model. A successful login exchanges that credential for a
+The operator console requires the committed canonical account
+`CARRACK_OPERATOR_ACCOUNT=draven` plus one independent
+`CARRACK_ADMIN_TOKEN` Worker secret per environment. The account is a
+non-secret login identity, not an additional authentication factor or account
+directory. A successful login exchanges the exact account and credential for a
 random 12-hour HttpOnly browser session. D1 stores only the session's SHA-256
 verifier; logout deletes it. A 15-minute metadata-hygiene Cron Trigger also
 deletes expired operator and configuration sessions, so cleanup does not depend
@@ -197,7 +199,7 @@ The stable UI endpoints are:
 
 The workers.dev subdomain and version preview URLs are disabled for both
 environments. After deployment, verify that `/api/health` reports the expected
-`environment`, sign in with the environment's operator credential, and confirm
+`environment`, sign in as `draven` with the environment's operator credential, and confirm
 `/api/admin/snapshot` and `/api/admin/activity` read only that environment's D1
 database.
 
@@ -216,12 +218,14 @@ deployment credential boundary:
 ```bash
 export CLOUDFLARE_TOKEN_FACTORY_API_TOKEN='<short-lived Account API Tokens Write credential>'
 export CARRACK_OPERATOR_CREDENTIAL='<environment operator credential>'
+export CARRACK_OPERATOR_ACCOUNT=draven
 # Required only when this environment already has a bootstrapped VFS.
 export CARRACK_VFS_TOKEN='<environment root or scoped driver.manage token>'
 
 just check-r2-dev
 CARRACK_PROVISION_R2=1 just provision-r2-dev
-unset CLOUDFLARE_TOKEN_FACTORY_API_TOKEN CARRACK_OPERATOR_CREDENTIAL CARRACK_VFS_TOKEN
+unset CLOUDFLARE_TOKEN_FACTORY_API_TOKEN CARRACK_OPERATOR_ACCOUNT \
+  CARRACK_OPERATOR_CREDENTIAL CARRACK_VFS_TOKEN
 ```
 
 Production additionally requires `CARRACK_PROVISION_PROD=1`. The preflight and

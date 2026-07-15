@@ -58,6 +58,7 @@ const expected = Object.fromEntries(
                 bucketName: bucket.bucket_name,
                 payloadBucketName: payload.bucket_name,
                 hostname: environment.routes?.[0]?.pattern,
+                operatorAccount: environment.vars?.CARRACK_OPERATOR_ACCOUNT,
             },
         ];
     }),
@@ -140,6 +141,12 @@ for (const environment of Object.values(expected)) {
     );
     if (marker?.text !== environment.name) {
         throw new Error(`${environment.name} Worker has the wrong environment marker`);
+    }
+    const operatorAccount = settings.bindings.find(
+        ({ type, name }) => type === "plain_text" && name === "CARRACK_OPERATOR_ACCOUNT",
+    );
+    if (operatorAccount?.text !== environment.operatorAccount || operatorAccount.text !== "draven") {
+        throw new Error(`${environment.name} Worker has the wrong operator account`);
     }
 
     const subdomain = await api(`/workers/scripts/${environment.worker}/subdomain`);

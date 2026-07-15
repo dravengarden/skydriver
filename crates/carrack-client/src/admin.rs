@@ -1,12 +1,15 @@
 //! Strict redacted management-plane reads.
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use reqwest::{Method, header::SET_COOKIE};
+use reqwest::{Method, StatusCode, header::SET_COOKIE};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{Client, Error, MAXIMUM_CONTROL_BODY_BYTES, PROTOCOL_EPOCH, SDK_VERSION, decode_json};
+use crate::{
+    Client, Error, MAXIMUM_CONTROL_BODY_BYTES, PROTOCOL_EPOCH, SDK_VERSION, decode_json,
+    decode_upgrade_required,
+};
 
 const SNAPSHOT_SCHEMA: &str = "carrack.management.snapshot.v2";
 const EVENTS_SCHEMA: &str = "carrack.management.events.v1";
@@ -26,6 +29,37 @@ const DRIVER_CREDENTIAL_VALIDATION_SCHEMA: &str =
 const DRIVER_CREDENTIAL_RECEIPT_SCHEMA: &str = "carrack.management.driver-credential-receipt.v1";
 const QUOTA_VALIDATION_SCHEMA: &str = "carrack.management.quota-validation.v1";
 const QUOTA_RECEIPT_SCHEMA: &str = "carrack.management.quota-receipt.v1";
+
+/// Canonical non-secret operator account identity.
+#[derive(Clone, Debug)]
+pub struct OperatorAccount(String);
+
+impl OperatorAccount {
+    /// Parses a lowercase account identifier used during operator login.
+    ///
+    /// # Errors
+    ///
+    /// Rejects empty, oversized, or non-canonical account names.
+    pub fn parse(account: &str) -> Result<Self, Error> {
+        let bytes = account.as_bytes();
+        if !(1..=64).contains(&bytes.len())
+            || !bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+            || !bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+            || !bytes.iter().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(byte)
+            })
+        {
+            return Err(Error::InvalidResponse(
+                "operator account must be a canonical lowercase identifier".to_owned(),
+            ));
+        }
+        Ok(Self(account.to_owned()))
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 /// Environment-scoped break-glass credential used only to mint short sessions.
 #[derive(Zeroize, ZeroizeOnDrop)]
@@ -533,6 +567,7 @@ pub struct DriverCredentialReceipt {
 /// Native operator client. It never exposes VFS payload access.
 pub struct AdminClient {
     client: Client,
+    account: OperatorAccount,
     credential: OperatorCredential,
 }
 
@@ -542,9 +577,14 @@ impl AdminClient {
     /// # Errors
     ///
     /// Returns an endpoint validation or HTTP-client construction error.
-    pub fn new(endpoint: &str, credential: OperatorCredential) -> Result<Self, Error> {
+    pub fn new(
+        endpoint: &str,
+        account: OperatorAccount,
+        credential: OperatorCredential,
+    ) -> Result<Self, Error> {
         Ok(Self {
             client: Client::new(endpoint)?,
+            account,
             credential,
         })
     }
@@ -1093,6 +1133,7 @@ impl AdminClient {
     async fn login(&self) -> Result<String, Error> {
         #[derive(Serialize)]
         struct Login<'a> {
+            account: &'a str,
             password: &'a str,
         }
         #[derive(Deserialize)]
@@ -1114,11 +1155,17 @@ impl AdminClient {
             .header("Accept", "application/json")
             .header("Carrack-Protocol-Epoch", PROTOCOL_EPOCH)
             .header("Carrack-SDK-Version", SDK_VERSION)
-            .json(&Login { password: &encoded })
+            .json(&Login {
+                account: self.account.as_str(),
+                password: &encoded,
+            })
             .send()
             .await;
         encoded.zeroize();
         let response = response_result?;
+        if response.status() == StatusCode::UPGRADE_REQUIRED {
+            return Err(decode_upgrade_required(response).await?);
+        }
         if !response.status().is_success() {
             return Err(Error::Rejected {
                 status: response.status().as_u16(),
@@ -1340,7 +1387,17 @@ fn valid_validation(digest: &str, expires_at: u64) -> bool {
 mod tests {
     use serde_json::json;
 
-    use super::{ManagementEvent, ManagementEventPage, OperatorCredential, validate_event_page};
+    use super::{
+        ManagementEvent, ManagementEventPage, OperatorAccount, OperatorCredential,
+        validate_event_page,
+    };
+
+    #[test]
+    fn rejects_noncanonical_operator_accounts() {
+        assert!(OperatorAccount::parse("draven").is_ok());
+        assert!(OperatorAccount::parse("Draven").is_err());
+        assert!(OperatorAccount::parse("-operator").is_err());
+    }
 
     #[test]
     fn rejects_noncanonical_operator_credentials() {

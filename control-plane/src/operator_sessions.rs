@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 
 const ADMIN_TOKEN_BINDING: &str = "CARRACK_ADMIN_TOKEN";
+const OPERATOR_ACCOUNT_BINDING: &str = "CARRACK_OPERATOR_ACCOUNT";
 const DATABASE_BINDING: &str = "CARRACK_INDEX";
 const SESSION_COOKIE: &str = "carrack_session";
 const SESSION_LIFETIME_SECONDS: u64 = 12 * 60 * 60;
@@ -23,6 +24,13 @@ type HmacSha256 = Hmac<Sha256>;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LoginRequest {
+    account: String,
+    password: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CredentialRequest {
     password: String,
 }
 
@@ -39,6 +47,12 @@ struct ConfigurationSessionResponse {
 
 pub(crate) async fn login(request: &mut Request, env: &Env) -> Result<Response> {
     let credentials = request.json::<LoginRequest>().await?;
+    let configured_account = env.var(OPERATOR_ACCOUNT_BINDING)?.to_string();
+    if !canonical_account(&configured_account) {
+        return Err(worker::Error::RustError(
+            "CARRACK_OPERATOR_ACCOUNT must be a canonical account name".to_owned(),
+        ));
+    }
     let configured = env.secret(ADMIN_TOKEN_BINDING)?.to_string();
     if !canonical_token(&configured) {
         return Err(worker::Error::RustError(
@@ -50,7 +64,7 @@ pub(crate) async fn login(request: &mut Request, env: &Env) -> Result<Response> 
     } else {
         ""
     };
-    if !credential_matches(candidate, &configured) {
+    if credentials.account != configured_account || !credential_matches(candidate, &configured) {
         return Response::error("invalid credentials", 401);
     }
 
@@ -123,7 +137,7 @@ pub(crate) async fn enable_configuration(request: &mut Request, env: &Env) -> Re
         return Response::error("authentication required", 401);
     }
 
-    let credentials = request.json::<LoginRequest>().await?;
+    let credentials = request.json::<CredentialRequest>().await?;
     let configured = env.secret(ADMIN_TOKEN_BINDING)?.to_string();
     let candidate = if credentials.password.len() <= MAXIMUM_CREDENTIAL_BYTES {
         credentials.password.as_str()
@@ -312,6 +326,16 @@ fn canonical_token(token: &str) -> bool {
     })
 }
 
+fn canonical_account(account: &str) -> bool {
+    let bytes = account.as_bytes();
+    (1..=64).contains(&bytes.len())
+        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(byte))
+}
+
 fn credential_matches(candidate: &str, configured: &str) -> bool {
     let Ok(mut expected_mac) = HmacSha256::new_from_slice(configured.as_bytes()) else {
         return false;
@@ -366,7 +390,9 @@ fn now_seconds() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{canonical_token, cookie_value, credential_matches, token_verifier};
+    use super::{
+        canonical_account, canonical_token, cookie_value, credential_matches, token_verifier,
+    };
 
     const TOKEN: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
 
@@ -375,6 +401,15 @@ mod tests {
         assert!(canonical_token(TOKEN));
         assert!(!canonical_token("short"));
         assert!(!canonical_token(&format!("{TOKEN}=")));
+    }
+
+    #[test]
+    fn accepts_only_canonical_operator_accounts() {
+        assert!(canonical_account("draven"));
+        assert!(canonical_account("operator.dev-1"));
+        assert!(!canonical_account(""));
+        assert!(!canonical_account("Draven"));
+        assert!(!canonical_account("-operator"));
     }
 
     #[test]

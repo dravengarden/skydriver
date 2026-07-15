@@ -424,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "carrack-cli"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "carrack-client",
  "clap",
@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "carrack-client"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -462,7 +462,7 @@ dependencies = [
 
 [[package]]
 name = "carrack-control-plane"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -482,7 +482,7 @@ dependencies = [
 
 [[package]]
 name = "carrack-sdk-core"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "aes-gcm",
  "hex",

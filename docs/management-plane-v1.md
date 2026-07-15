@@ -123,9 +123,10 @@ credentials is an explicit exceptional workflow.
 ## Agent-safe CLI
 
 `carrackctl` is non-interactive and JSON-first. Every command accepts
-`--control-url`; credentials are read from `CARRACK_OPERATOR_CREDENTIAL` or a
-private file descriptor, never a command-line flag. The implemented operator
-commands are:
+`--control-url`; the non-secret login identity is read from
+`CARRACK_OPERATOR_ACCOUNT`, and credentials are read from
+`CARRACK_OPERATOR_CREDENTIAL` or a private file descriptor, never a
+command-line flag. The implemented operator commands are:
 
 ```text
 carrackctl snapshot

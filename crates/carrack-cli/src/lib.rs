@@ -1,7 +1,7 @@
 //! Shared command surface for the native Carrack binaries.
 
 use carrack_client::{
-    AdminClient, Client, EntryKind, GetOptions, OperatorCredential, Placement,
+    AdminClient, Client, EntryKind, GetOptions, OperatorAccount, OperatorCredential, Placement,
     ProtocolCompatibility, PutOptions, QuotaLimits, SyncOptions, VfsClient, VfsToken,
 };
 use clap::{Parser, Subcommand, ValueEnum, error::ErrorKind};
@@ -1249,10 +1249,13 @@ fn vfs_client(control_url: Option<String>) -> Result<VfsClient, Error> {
 
 fn admin_client(control_url: Option<String>) -> Result<AdminClient, Error> {
     let endpoint = require_control_url(control_url)?;
+    let account = std::env::var("CARRACK_OPERATOR_ACCOUNT")
+        .map_err(|_| Error::MissingEnvironment("CARRACK_OPERATOR_ACCOUNT"))?;
     let encoded = std::env::var("CARRACK_OPERATOR_CREDENTIAL")
         .map_err(|_| Error::MissingEnvironment("CARRACK_OPERATOR_CREDENTIAL"))?;
     Ok(AdminClient::new(
         &endpoint,
+        OperatorAccount::parse(&account)?,
         OperatorCredential::parse(&encoded)?,
     )?)
 }

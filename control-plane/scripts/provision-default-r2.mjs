@@ -64,12 +64,18 @@ const carrackctl = path.resolve(
 fs.accessSync(carrackctl, fs.constants.X_OK);
 
 function runCarrackctl(arguments_) {
-    const childEnvironment = { ...process.env, CARRACK_CONTROL_URL: profile.controlUrl };
+    const childEnvironment = {
+        ...process.env,
+        CARRACK_CONTROL_URL: profile.controlUrl,
+        CARRACK_OPERATOR_ACCOUNT: profile.operatorAccount,
+    };
     delete childEnvironment.CLOUDFLARE_TOKEN_FACTORY_API_TOKEN;
     delete childEnvironment.CLOUDFLARE_API_TOKEN;
     if (arguments_[0] === "vfs") {
+        delete childEnvironment.CARRACK_OPERATOR_ACCOUNT;
         delete childEnvironment.CARRACK_OPERATOR_CREDENTIAL;
     } else if (arguments_[0] === "compatibility") {
+        delete childEnvironment.CARRACK_OPERATOR_ACCOUNT;
         delete childEnvironment.CARRACK_OPERATOR_CREDENTIAL;
         delete childEnvironment.CARRACK_VFS_TOKEN;
     } else {

@@ -37,8 +37,9 @@ pub use admin::{
     DriverRegistrationValidation, DriverStateReceipt, DriverStateValidation, ManagementBreadcrumb,
     ManagementDirectory, ManagementDirectoryEntry, ManagementDirectoryIdentity, ManagementDriver,
     ManagementEvent, ManagementEventPage, ManagementFilesystem, ManagementSnapshot,
-    ManagementToken, OperatorCredential, QuotaLimits, QuotaReceipt, QuotaValidation,
-    TokenAnnotationReceipt, TokenAnnotationValidation, TransferMetricRow, TransferMetrics,
+    ManagementToken, OperatorAccount, OperatorCredential, QuotaLimits, QuotaReceipt,
+    QuotaValidation, TokenAnnotationReceipt, TokenAnnotationValidation, TransferMetricRow,
+    TransferMetrics,
 };
 
 pub use download::{GetOptions, GetResult};
@@ -236,21 +237,7 @@ impl Client {
             .send()
             .await?;
         if response.status() == StatusCode::UPGRADE_REQUIRED {
-            let failure =
-                decode_json::<UpgradeRequired>(response, MAXIMUM_COMPATIBILITY_BODY_BYTES, true)
-                    .await?;
-            if failure.schema != ERROR_SCHEMA
-                || failure.code != "sdk_upgrade_required"
-                || failure.protocol_epoch == 0
-                || failure.minimum_sdk_version.is_empty()
-                || failure.server_version.is_empty()
-                || failure.upgrade_command.is_empty()
-            {
-                return Err(Error::InvalidCompatibility(
-                    "HTTP 426 did not contain the required error identity".to_owned(),
-                ));
-            }
-            return Err(Error::UpgradeRequired(Box::new(failure)));
+            return Err(decode_upgrade_required(response).await?);
         }
         let response = decode_json::<ProtocolCompatibility>(
             response.error_for_status()?,
@@ -375,6 +362,23 @@ impl Client {
             body,
         }))
     }
+}
+
+pub(crate) async fn decode_upgrade_required(response: reqwest::Response) -> Result<Error, Error> {
+    let failure =
+        decode_json::<UpgradeRequired>(response, MAXIMUM_COMPATIBILITY_BODY_BYTES, true).await?;
+    if failure.schema != ERROR_SCHEMA
+        || failure.code != "sdk_upgrade_required"
+        || failure.protocol_epoch == 0
+        || failure.minimum_sdk_version.is_empty()
+        || failure.server_version.is_empty()
+        || failure.upgrade_command.is_empty()
+    {
+        return Err(Error::InvalidCompatibility(
+            "HTTP 426 did not contain the required error identity".to_owned(),
+        ));
+    }
+    Ok(Error::UpgradeRequired(Box::new(failure)))
 }
 
 async fn decode_json<T: DeserializeOwned>(
@@ -558,7 +562,7 @@ mod tests {
             let request = String::from_utf8_lossy(&request[..length]).to_ascii_lowercase();
             assert!(request.starts_with("get /api/compatibility http/1.1"));
             assert!(request.contains("carrack-protocol-epoch: 2"));
-            assert!(request.contains("carrack-sdk-version: 0.3.5"));
+            assert!(request.contains("carrack-sdk-version: 0.3.6"));
             let body = r#"{"schema":"carrack.protocol-compatibility.v1","protocol_epoch":2,"minimum_sdk_version":"0.3.0","server_version":"0.3.2","enforcement":"required","upgrade_command":"upgrade carrack"}"#;
             stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.expect("write response");
         });

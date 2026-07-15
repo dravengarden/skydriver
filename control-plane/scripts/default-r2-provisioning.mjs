@@ -12,12 +12,14 @@ export function environmentProfile(config, environmentName, accountId) {
     }
     const environment = config.env?.[environmentName];
     const endpoint = environment?.vars?.CARRACK_R2_ENDPOINT;
+    const operatorAccount = environment?.vars?.CARRACK_OPERATOR_ACCOUNT;
     const payloadBindings = environment?.r2_buckets?.filter(
         ({ binding }) => binding === "CARRACK_PAYLOAD",
     );
     const hostname = environment?.routes?.[0]?.pattern;
     if (
         typeof endpoint !== "string" ||
+        !/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/.test(operatorAccount ?? "") ||
         payloadBindings?.length !== 1 ||
         typeof payloadBindings[0].bucket_name !== "string" ||
         typeof hostname !== "string"
@@ -32,6 +34,7 @@ export function environmentProfile(config, environmentName, accountId) {
         environment: environmentName,
         controlUrl: `https://${hostname}`,
         endpoint,
+        operatorAccount,
         bucket: payloadBindings[0].bucket_name,
         tokenName: `carrack-${DEFAULT_R2_DRIVER_ID}-${environmentName}`,
     };

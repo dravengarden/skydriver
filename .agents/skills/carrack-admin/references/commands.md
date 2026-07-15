@@ -4,11 +4,12 @@
 
 | Surface | Environment variable | Authority |
 |---|---|---|
-| `carrackctl snapshot`, `metrics`, `watch`, `directory`, `driver`, `quota`, `token annotate` | `CARRACK_OPERATOR_CREDENTIAL` | Redacted environment management |
+| `carrackctl snapshot`, `metrics`, `watch`, `directory`, `driver`, `quota`, `token annotate` | `CARRACK_OPERATOR_ACCOUNT`, `CARRACK_OPERATOR_CREDENTIAL` | Redacted environment management |
 | `carrackctl vfs acl`, `vfs placement`, `vfs token` | `CARRACK_VFS_TOKEN` | Explicit token actions and directory scope |
 
-Both credentials are canonical unpadded base64url values encoding 32 bytes.
-Keep them out of argv and output.
+`CARRACK_OPERATOR_ACCOUNT` is a canonical non-secret lowercase identifier.
+Both credentials are canonical unpadded base64url values encoding 32 bytes;
+keep them out of argv and output.
 
 ## Read commands
 
@@ -116,7 +117,9 @@ Dev and production materialize the disabled `r2-default` identity automatically.
 Do not register or manually rotate that identity. During environment creation,
 use `just check-r2-dev` and then `CARRACK_PROVISION_R2=1 just provision-r2-dev`
 with separately injected `CLOUDFLARE_TOKEN_FACTORY_API_TOKEN`,
-`CARRACK_OPERATOR_CREDENTIAL`, and `CARRACK_VFS_TOKEN`. Production also
+`CARRACK_OPERATOR_CREDENTIAL`, and `CARRACK_VFS_TOKEN`. The provisioner reads
+the committed `CARRACK_OPERATOR_ACCOUNT` from the selected environment.
+Production also
 requires `CARRACK_PROVISION_PROD=1`. The setup tool creates or rolls only the
 deterministically named, exact-bucket Cloudflare token, moves its derived S3
 credential through a private temporary file, calls the same `carrackctl`

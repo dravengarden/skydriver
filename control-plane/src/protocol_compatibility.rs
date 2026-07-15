@@ -3,6 +3,7 @@ use worker::{Request, Response, ResponseBuilder, Result};
 
 pub(crate) const PROTOCOL_EPOCH: u64 = 2;
 pub(crate) const MINIMUM_SDK_VERSION: &str = "0.3.0";
+const MINIMUM_MANAGEMENT_LOGIN_VERSION: &str = "0.3.6";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const COMPATIBILITY_SCHEMA: &str = "carrack.protocol-compatibility.v1";
 const ERROR_SCHEMA: &str = "carrack.protocol-error.v1";
@@ -51,6 +52,20 @@ pub(crate) fn enforce(request: &Request) -> Result<Option<Response>> {
         return Ok(None);
     }
 
+    upgrade_required(MINIMUM_SDK_VERSION)
+}
+
+/// Rejects legacy management clients before parsing the account-aware login body.
+pub(crate) fn enforce_management_login(request: &Request) -> Result<Option<Response>> {
+    let epoch = request.headers().get(PROTOCOL_EPOCH_HEADER)?;
+    let compatible = epoch.as_deref() == Some("2") && sdk_version_at_least(request, (0, 3, 6))?;
+    if compatible {
+        return Ok(None);
+    }
+    upgrade_required(MINIMUM_MANAGEMENT_LOGIN_VERSION)
+}
+
+fn upgrade_required(minimum_sdk_version: &'static str) -> Result<Option<Response>> {
     let response = ResponseBuilder::new()
         .with_status(426)
         .with_header("Cache-Control", "no-store")?
@@ -59,7 +74,7 @@ pub(crate) fn enforce(request: &Request) -> Result<Option<Response>> {
             code: "sdk_upgrade_required",
             message: "Carrack protocol or SDK version is incompatible",
             protocol_epoch: PROTOCOL_EPOCH,
-            minimum_sdk_version: MINIMUM_SDK_VERSION,
+            minimum_sdk_version,
             server_version: SERVER_VERSION,
             upgrade_command: "upgrade Carrack with the package manager that installed it",
         })?;

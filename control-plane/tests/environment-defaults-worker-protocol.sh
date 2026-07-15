@@ -4,7 +4,7 @@ set -euo pipefail
 curl() {
   command curl \
     --header "Carrack-Protocol-Epoch: 2" \
-    --header "Carrack-SDK-Version: 0.3.5" \
+    --header "Carrack-SDK-Version: 0.3.6" \
     "$@"
 }
 
@@ -51,6 +51,7 @@ wrangler=(
    );" >/dev/null
 
 admin_token=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA
+operator_account=draven
 r2_endpoint=https://0123456789abcdef.r2.cloudflarestorage.com
 
 "${wrangler[@]}" dev \
@@ -59,6 +60,7 @@ r2_endpoint=https://0123456789abcdef.r2.cloudflarestorage.com
   --port "$port" \
   --inspector-port 0 \
   --var CARRACK_ENVIRONMENT:dev \
+  --var CARRACK_OPERATOR_ACCOUNT:"$operator_account" \
   --var CARRACK_DEFAULT_R2_MAX_PHYSICAL_BYTES:107374182400 \
   --var CARRACK_R2_ENDPOINT:"$r2_endpoint" \
   --var CARRACK_VFS_MASTER_KEY_V1:"$admin_token" \
@@ -81,7 +83,8 @@ base_url="http://127.0.0.1:$port"
 json='Content-Type: application/json'
 curl --silent --show-error --fail-with-body \
   -c "$cookie_jar" -H "$json" \
-  --data "$(jq -cn --arg password "$admin_token" '{password: $password}')" \
+  --data "$(jq -cn --arg account "$operator_account" --arg password "$admin_token" \
+    '{account: $account, password: $password}')" \
   "$base_url/api/auth/login" >/dev/null
 
 snapshot=$(curl --silent --show-error --fail-with-body \

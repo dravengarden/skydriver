@@ -41,7 +41,7 @@ tested offline recovery copy. It must be generated independently from
 `CARRACK_ADMIN_TOKEN`. No archive-root compatibility secret participates in VFS bootstrap.
 
 The caller first authenticates through `POST /api/auth/login` with the
-environment's operator credential and sends the resulting revocable session
+environment's operator account and credential and sends the resulting revocable session
 cookie. External maintenance mode rejects the mutation. A VFS bearer token
 cannot invoke bootstrap.
 

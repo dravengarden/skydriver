@@ -38,6 +38,7 @@ fs.appendFileSync(logFile, JSON.stringify({
   factory: Boolean(process.env.CLOUDFLARE_TOKEN_FACTORY_API_TOKEN),
   deploy: Boolean(process.env.CLOUDFLARE_API_TOKEN),
   operator: Boolean(process.env.CARRACK_OPERATOR_CREDENTIAL),
+  operatorAccount: process.env.CARRACK_OPERATOR_ACCOUNT ?? null,
   vfs: Boolean(process.env.CARRACK_VFS_TOKEN),
 }) + "\\n");
 const value = (name) => args[args.indexOf(name) + 1];
@@ -134,17 +135,20 @@ if (args[0] === "compatibility") {
         assert.ok(
             calls
                 .filter(({ command }) => command[0] === "snapshot")
-                .every(({ operator, vfs }) => operator && !vfs),
+                .every(({ operator, operatorAccount, vfs }) =>
+                    operator && operatorAccount === "draven" && !vfs),
         );
         assert.ok(
             calls
                 .filter(({ command }) => command[0] === "vfs")
-                .every(({ operator, vfs }) => !operator && vfs),
+                .every(({ operator, operatorAccount, vfs }) =>
+                    !operator && operatorAccount === null && vfs),
         );
         assert.ok(
             calls
                 .filter(({ command }) => command[0] === "compatibility")
-                .every(({ operator, vfs }) => !operator && !vfs),
+                .every(({ operator, operatorAccount, vfs }) =>
+                    !operator && operatorAccount === null && !vfs),
         );
     } finally {
         fs.rmSync(stateDirectory, { recursive: true, force: true });

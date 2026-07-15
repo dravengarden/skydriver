@@ -33,18 +33,19 @@ describe("operator session", () => {
         await expect(fetchSession()).resolves.toEqual({ authenticated: false });
     });
 
-    it("sends only the operator credential during login", async () => {
+    it("sends the operator account and credential during login", async () => {
         const fetchMock = vi
             .fn<typeof fetch>()
             .mockResolvedValue(Response.json({ authenticated: true }, { status: 200 }));
         vi.stubGlobal("fetch", fetchMock);
 
-        await expect(login("operator-secret")).resolves.toEqual({
+        await expect(login({ account: "draven", password: "operator-secret" })).resolves.toEqual({
             authenticated: true,
         });
         const call = fetchMock.mock.calls[0];
         expect(call?.[0]).toBe("/api/auth/login");
         expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+            account: "draven",
             password: "operator-secret",
         });
     });
@@ -140,7 +141,7 @@ describe("driver configuration", () => {
         });
         const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
         expect(headers.get("Carrack-Protocol-Epoch")).toBe("2");
-        expect(headers.get("Carrack-SDK-Version")).toBe("0.3.5");
+        expect(headers.get("Carrack-SDK-Version")).toBe("0.3.6");
         expect(JSON.stringify(validation)).not.toContain("refresh-private");
     });
 

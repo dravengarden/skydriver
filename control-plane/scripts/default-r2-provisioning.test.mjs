@@ -25,6 +25,7 @@ test("derives an exact environment profile and bucket-only policy", () => {
                     routes: [{ pattern: "dev.carrack.example" }],
                     vars: {
                         CARRACK_R2_ENDPOINT: `https://${accountId}.r2.cloudflarestorage.com`,
+                        CARRACK_OPERATOR_ACCOUNT: "draven",
                     },
                     r2_buckets: [{ binding: "CARRACK_PAYLOAD", bucket_name: bucket }],
                 },
@@ -37,6 +38,7 @@ test("derives an exact environment profile and bucket-only policy", () => {
         environment: "dev",
         controlUrl: "https://dev.carrack.example",
         endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+        operatorAccount: "draven",
         bucket,
         tokenName: "carrack-r2-default-dev",
     });

@@ -87,6 +87,11 @@ pub async fn main(request: Request, env: Env, context: Context) -> Result<Respon
     {
         return Ok(response);
     }
+    if request.path() == "/api/auth/login"
+        && let Some(response) = protocol_compatibility::enforce_management_login(&request)?
+    {
+        return Ok(response);
+    }
 
     Router::with_data(context)
         .get("/api/compatibility", |_, _| {

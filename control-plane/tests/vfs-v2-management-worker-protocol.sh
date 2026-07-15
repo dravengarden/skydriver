@@ -4,7 +4,7 @@ set -euo pipefail
 curl() {
   command curl \
     --header "Carrack-Protocol-Epoch: 2" \
-    --header "Carrack-SDK-Version: 0.3.5" \
+    --header "Carrack-SDK-Version: 0.3.6" \
     "$@"
 }
 
@@ -45,6 +45,8 @@ wrangler=(
   --persist-to "$state_directory" >/dev/null
 
 admin_token=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA
+operator_account=draven
+export CARRACK_OPERATOR_ACCOUNT="$operator_account"
 
 "${wrangler[@]}" dev \
   --local \
@@ -52,6 +54,7 @@ admin_token=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA
   --port "$port" \
   --inspector-port 0 \
   --var CARRACK_VFS_MASTER_KEY_V1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
+  --var CARRACK_OPERATOR_ACCOUNT:"$operator_account" \
   --var CARRACK_ADMIN_TOKEN:"$admin_token" \
   --show-interactive-dev-session=false >"$server_log" 2>&1 &
 server_pid=$!
@@ -105,7 +108,8 @@ done
 
 curl --silent --show-error --fail-with-body \
   -c "$cookie_jar" -H "$json" \
-  --data "$(jq -cn --arg password "$admin_token" '{password: $password}')" \
+  --data "$(jq -cn --arg account "$operator_account" --arg password "$admin_token" \
+    '{account: $account, password: $password}')" \
   "$base_url/api/auth/login" >/dev/null
 
 bootstrap_request=$(jq -cn \

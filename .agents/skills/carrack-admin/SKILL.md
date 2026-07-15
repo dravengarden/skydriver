@@ -47,6 +47,9 @@ or handling a failure.
 
 ## Keep credentials separate
 
+- Read the non-secret canonical account from `CARRACK_OPERATOR_ACCOUNT`.
+  Dev and production currently use `draven`; do not guess a different account
+  from a URL, token label, or local username.
 - Read `CARRACK_OPERATOR_CREDENTIAL` only from the environment or an approved
   private secret injection. Never pass it in argv, print it, persist it in a
   plan, or write it to Git.
