@@ -59,6 +59,7 @@ r2_endpoint=https://0123456789abcdef.r2.cloudflarestorage.com
   --persist-to "$state_directory" \
   --port "$port" \
   --inspector-port 0 \
+  --test-scheduled \
   --var CARRACK_ENVIRONMENT:dev \
   --var CARRACK_OPERATOR_ACCOUNT:"$operator_account" \
   --var CARRACK_DEFAULT_R2_MAX_PHYSICAL_BYTES:107374182400 \
@@ -169,6 +170,169 @@ root_directory_id=$(jq -r '.root_directory_id' <<<"$bootstrapped")
 directory=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" "$base_url/api/admin/directories/$root_directory_id")
 [[ "$(jq -r '.placements | length' <<<"$directory")" == 0 ]]
+
+# Hosted inventory is conservative under provider drift: an object that has no
+# D1 identity becomes quarantine evidence and remains physically present.
+unknown_source="$state_directory/unknown-provider-object"
+unknown_readback="$state_directory/unknown-provider-readback"
+printf 'unowned-provider-object\n' >"$unknown_source"
+"${wrangler[@]}" r2 object put \
+  carrack-payload-local/inventory-fault-injection/unknown \
+  --local --persist-to "$state_directory" --file "$unknown_source" >/dev/null
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" --command \
+  "UPDATE driver_instances SET enabled = 1, revision = revision + 1,
+       updated_at = unixepoch() WHERE id = 'r2-default';" >/dev/null
+curl --silent --show-error --fail-with-body \
+  "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
+inventory=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" "$base_url/api/admin/provider-inventory")
+if ! jq -e '
+  .drivers[] | select(.driver_id == "r2-default") |
+  .state == "complete" and .scanned_objects == 1 and
+  .unknown_objects == 1 and .quarantined_objects == 1 and
+  .quarantined_bytes == 24 and .last_error_code == null
+' <<<"$inventory" >/dev/null; then
+  jq . <<<"$inventory" >&2
+  exit 1
+fi
+"${wrangler[@]}" r2 object get \
+  carrack-payload-local/inventory-fault-injection/unknown \
+  --local --persist-to "$state_directory" --file "$unknown_readback" >/dev/null
+cmp "$unknown_source" "$unknown_readback"
+
+# Hosted physical GC must fail closed when its immutable driver-revision fence
+# changes, while deleting an independently fenced object once every identity
+# and reachability check still matches.
+filesystem_id=$(jq -r '.filesystem_id' <<<"$bootstrapped")
+blocked_source="$state_directory/lifecycle-blocked-object"
+blocked_readback="$state_directory/lifecycle-blocked-readback"
+deleted_source="$state_directory/lifecycle-deleted-object"
+printf 'revision-fenced-object\n' >"$blocked_source"
+printf 'safe-to-delete-object\n' >"$deleted_source"
+blocked_bytes=$(wc -c <"$blocked_source" | tr -d ' ')
+deleted_bytes=$(wc -c <"$deleted_source" | tr -d ' ')
+blocked_sha=$(sha256sum "$blocked_source" | cut -d ' ' -f 1)
+deleted_sha=$(sha256sum "$deleted_source" | cut -d ' ' -f 1)
+"${wrangler[@]}" r2 object put \
+  carrack-payload-local/lifecycle-fault-injection/blocked \
+  --local --persist-to "$state_directory" --file "$blocked_source" >/dev/null
+"${wrangler[@]}" r2 object put \
+  carrack-payload-local/lifecycle-fault-injection/deleted \
+  --local --persist-to "$state_directory" --file "$deleted_source" >/dev/null
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" --command \
+  "INSERT INTO vfs_files (id, filesystem_id, created_at, updated_at)
+   VALUES ('a1111111111111111111111111111111', '$filesystem_id', unixepoch(), unixepoch());
+   INSERT INTO vfs_file_versions (
+     id, file_id, plaintext_bytes, verification_block_bytes,
+     verification_block_count, file_root, block_manifest_sha256,
+     block_manifest_bytes, block_manifest_r2_key, block_manifest_r2_version,
+     crypto_suite, key_epoch, encryption_frame_bytes, encoded_bytes,
+     encoded_sha256, created_at
+   ) VALUES (
+     'b1111111111111111111111111111111', 'a1111111111111111111111111111111',
+     $blocked_bytes, 4096, 1,
+     '1111111111111111111111111111111111111111111111111111111111111111',
+     '2111111111111111111111111111111111111111111111111111111111111111',
+     1, 'fault/manifests/blocked', 'fault-manifest-blocked', 'plaintext/v1',
+     1, 4096, $blocked_bytes, '$blocked_sha', unixepoch()
+   );
+   INSERT INTO vfs_locations (
+     id, version_id, driver_id, storage_key, size_bytes, object_sha256,
+     created_at, updated_at
+   ) VALUES (
+     'c1111111111111111111111111111111', 'b1111111111111111111111111111111',
+     'r2-default', 'lifecycle-fault-injection/blocked', $blocked_bytes,
+     '$blocked_sha', unixepoch(), unixepoch()
+   );
+   UPDATE vfs_locations
+   SET state = 'verified', verified_at = unixepoch(), revision = revision + 1,
+       updated_at = unixepoch()
+   WHERE id = 'c1111111111111111111111111111111';
+   UPDATE vfs_locations
+   SET state = 'tombstoned', delete_after = unixepoch() - 1,
+       revision = revision + 1, updated_at = unixepoch()
+   WHERE id = 'c1111111111111111111111111111111';
+   INSERT INTO vfs_location_delete_tasks (
+     id, expected_location_revision, driver_id, driver_revision, storage_key,
+     native_id, provider_version, etag, size_bytes, delete_after,
+     created_at, updated_at
+   )
+   SELECT location.id, location.revision, location.driver_id, driver.revision,
+          location.storage_key, location.native_id, location.provider_version,
+          location.etag, location.size_bytes, location.delete_after,
+          unixepoch(), unixepoch()
+   FROM vfs_locations AS location
+   JOIN driver_instances AS driver ON driver.id = location.driver_id
+   WHERE location.id = 'c1111111111111111111111111111111';
+   UPDATE driver_instances
+   SET revision = revision + 1, updated_at = unixepoch()
+   WHERE id = 'r2-default';
+   INSERT INTO vfs_files (id, filesystem_id, created_at, updated_at)
+   VALUES ('a2222222222222222222222222222222', '$filesystem_id', unixepoch(), unixepoch());
+   INSERT INTO vfs_file_versions (
+     id, file_id, plaintext_bytes, verification_block_bytes,
+     verification_block_count, file_root, block_manifest_sha256,
+     block_manifest_bytes, block_manifest_r2_key, block_manifest_r2_version,
+     crypto_suite, key_epoch, encryption_frame_bytes, encoded_bytes,
+     encoded_sha256, created_at
+   ) VALUES (
+     'b2222222222222222222222222222222', 'a2222222222222222222222222222222',
+     $deleted_bytes, 4096, 1,
+     '1222222222222222222222222222222222222222222222222222222222222222',
+     '2222222222222222222222222222222222222222222222222222222222222222',
+     1, 'fault/manifests/deleted', 'fault-manifest-deleted', 'plaintext/v1',
+     1, 4096, $deleted_bytes, '$deleted_sha', unixepoch()
+   );
+   INSERT INTO vfs_locations (
+     id, version_id, driver_id, storage_key, size_bytes, object_sha256,
+     created_at, updated_at
+   ) VALUES (
+     'c2222222222222222222222222222222', 'b2222222222222222222222222222222',
+     'r2-default', 'lifecycle-fault-injection/deleted', $deleted_bytes,
+     '$deleted_sha', unixepoch(), unixepoch()
+   );
+   UPDATE vfs_locations
+   SET state = 'verified', verified_at = unixepoch(), revision = revision + 1,
+       updated_at = unixepoch()
+   WHERE id = 'c2222222222222222222222222222222';
+   UPDATE vfs_locations
+   SET state = 'tombstoned', delete_after = unixepoch() - 1,
+       revision = revision + 1, updated_at = unixepoch()
+   WHERE id = 'c2222222222222222222222222222222';" >/dev/null
+
+curl --silent --show-error --fail-with-body \
+  "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" --command \
+  "SELECT CASE WHEN state = 'blocked' AND last_error_code = 'revalidation_failed'
+     THEN 1 ELSE 0 END AS accepted
+   FROM vfs_location_delete_tasks
+   WHERE id = 'c1111111111111111111111111111111';" --json |
+  jq -e '.[0].results == [{"accepted":1}]' >/dev/null
+"${wrangler[@]}" r2 object get \
+  carrack-payload-local/lifecycle-fault-injection/blocked \
+  --local --persist-to "$state_directory" --file "$blocked_readback" >/dev/null
+cmp "$blocked_source" "$blocked_readback"
+
+curl --silent --show-error --fail-with-body \
+  "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" --command \
+  "SELECT CASE WHEN location.state = 'deleted' AND task.state = 'deleted'
+     THEN 1 ELSE 0 END AS accepted
+   FROM vfs_locations AS location
+   JOIN vfs_location_delete_tasks AS task ON task.id = location.id
+   WHERE location.id = 'c2222222222222222222222222222222';" --json |
+  jq -e '.[0].results == [{"accepted":1}]' >/dev/null
+if "${wrangler[@]}" r2 object get \
+  carrack-payload-local/lifecycle-fault-injection/deleted \
+  --local --persist-to "$state_directory" \
+  --file "$state_directory/unexpected-deleted-readback" >/dev/null 2>&1; then
+  echo "fenced lifecycle object remained in R2 after committed deletion" >&2
+  exit 1
+fi
 
 "${wrangler[@]}" d1 execute CARRACK_INDEX \
   --local --persist-to "$state_directory" --command \
