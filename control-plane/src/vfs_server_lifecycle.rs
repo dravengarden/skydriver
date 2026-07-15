@@ -8,7 +8,8 @@ use worker::{
 use zeroize::Zeroize as _;
 
 use crate::{
-    driver_credentials::AliyunCredential, r2_signing, vfs_envelopes::open_driver_credential,
+    driver_credentials::AliyunCredential, environment_defaults, r2_signing,
+    vfs_envelopes::open_driver_credential,
 };
 
 const MAXIMUM_MARKS_PER_RUN: u64 = 100;
@@ -41,12 +42,12 @@ struct R2CleanupTask {
     upload_id: Option<String>,
     fencing_token: u64,
     config_json: String,
-    credential_id: String,
-    credential_algorithm: String,
-    credential_key_version: String,
-    credential_nonce: Vec<u8>,
-    credential_ciphertext: Vec<u8>,
-    credential_revision: u64,
+    credential_id: Option<String>,
+    credential_algorithm: Option<String>,
+    credential_key_version: Option<String>,
+    credential_nonce: Option<Vec<u8>>,
+    credential_ciphertext: Option<Vec<u8>>,
+    credential_revision: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -134,7 +135,7 @@ async fn cleanup_one_r2_upload(env: &Env, database: &D1Database, now: u64) -> Re
              FROM vfs_r2_upload_cleanup_tasks AS task
              JOIN vfs_put_intents AS intent ON intent.id = task.intent_id
              JOIN driver_instances AS driver ON driver.id = intent.driver_id
-             JOIN credential_envelopes AS credential ON credential.id = driver.credential_ref
+             LEFT JOIN credential_envelopes AS credential ON credential.id = driver.credential_ref
              WHERE task.intent_id = ?1 AND task.state = 'cleaning'
                AND task.lease_expires_at > ?2
                AND task.intent_id IN (
@@ -147,23 +148,7 @@ async fn cleanup_one_r2_upload(env: &Env, database: &D1Database, now: u64) -> Re
     let Some(task) = task else {
         return Ok(());
     };
-    let mut plaintext = open_driver_credential(
-        env,
-        &task.credential_id,
-        task.credential_revision,
-        &task.credential_algorithm,
-        &task.credential_key_version,
-        &task.credential_nonce,
-        &task.credential_ciphertext,
-    )?;
-    let result = r2_signing::cleanup_upload_from_plaintext(
-        &task.config_json,
-        &task.storage_key,
-        task.upload_id.as_deref(),
-        &plaintext,
-    )
-    .await;
-    plaintext.zeroize();
+    let result = cleanup_r2_upload(env, &task).await;
     let (state, error, completed_at) = if result.is_ok() {
         ("cleaned", JsValue::NULL, integer(now))
     } else {
@@ -624,6 +609,15 @@ async fn delete_aliyun(env: &Env, task: &DeleteTask) -> Result<()> {
 }
 
 async fn delete_r2(env: &Env, task: &DeleteTask) -> Result<()> {
+    let config =
+        serde_json::from_str::<r2_signing::Config>(&task.config_json).map_err(|error| {
+            worker::Error::RustError(format!("decode R2 lifecycle configuration: {error}"))
+        })?;
+    let key = r2_signing::object_key(&config, &task.storage_key)
+        .ok_or_else(|| worker::Error::RustError("invalid R2 lifecycle storage key".to_owned()))?;
+    if environment_defaults::is_managed_r2_config(env, &config)? {
+        return env.bucket("CARRACK_PAYLOAD")?.delete(key).await;
+    }
     let (Some(id), Some(algorithm), Some(version), Some(nonce), Some(ciphertext), Some(revision)) = (
         task.credential_id.as_deref(),
         task.credential_algorithm.as_deref(),
@@ -642,6 +636,58 @@ async fn delete_r2(env: &Env, task: &DeleteTask) -> Result<()> {
         r2_signing::delete_from_plaintext(&task.config_json, &task.storage_key, &plaintext).await;
     plaintext.zeroize();
     result
+}
+
+async fn cleanup_r2_upload(env: &Env, task: &R2CleanupTask) -> Result<()> {
+    let config =
+        serde_json::from_str::<r2_signing::Config>(&task.config_json).map_err(|error| {
+            worker::Error::RustError(format!("decode R2 cleanup configuration: {error}"))
+        })?;
+    let key = r2_signing::object_key(&config, &task.storage_key)
+        .ok_or_else(|| worker::Error::RustError("invalid R2 cleanup storage key".to_owned()))?;
+    if environment_defaults::is_managed_r2_config(env, &config)? {
+        let bucket = env.bucket("CARRACK_PAYLOAD")?;
+        if let Some(upload_id) = task.upload_id.as_deref() {
+            let upload = bucket.resume_multipart_upload(&key, upload_id)?;
+            if let Err(error) = upload.abort().await {
+                let rendered = format!("{error:?}");
+                if !missing_multipart_upload(&rendered) {
+                    return Err(error);
+                }
+            }
+        }
+        return bucket.delete(key).await;
+    }
+
+    let (Some(id), Some(algorithm), Some(version), Some(nonce), Some(ciphertext), Some(revision)) = (
+        task.credential_id.as_deref(),
+        task.credential_algorithm.as_deref(),
+        task.credential_key_version.as_deref(),
+        task.credential_nonce.as_deref(),
+        task.credential_ciphertext.as_deref(),
+        task.credential_revision,
+    ) else {
+        return Err(worker::Error::RustError(
+            "R2 cleanup credential is incomplete".to_owned(),
+        ));
+    };
+    let mut plaintext =
+        open_driver_credential(env, id, revision, algorithm, version, nonce, ciphertext)?;
+    let result = r2_signing::cleanup_upload_from_plaintext(
+        &task.config_json,
+        &task.storage_key,
+        task.upload_id.as_deref(),
+        &plaintext,
+    )
+    .await;
+    plaintext.zeroize();
+    result
+}
+
+fn missing_multipart_upload(rendered_error: &str) -> bool {
+    rendered_error.contains("NoSuchUpload")
+        || (rendered_error.contains("multipart upload")
+            && rendered_error.contains("does not exist"))
 }
 
 async fn aliyun_post<T: for<'de> Deserialize<'de>>(
@@ -800,4 +846,16 @@ fn integer(value: u64) -> JsValue {
 
 fn changes(meta: Option<worker::D1ResultMeta>) -> usize {
     meta.and_then(|value| value.changes).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_only_idempotent_missing_multipart_errors() {
+        assert!(missing_multipart_upload("R2Error: NoSuchUpload"));
+        assert!(missing_multipart_upload("multipart upload does not exist"));
+        assert!(!missing_multipart_upload("R2Error: AccessDenied"));
+    }
 }

@@ -612,7 +612,7 @@ async fn load_driver(database: &worker::D1Database, driver_id: &str) -> Result<O
                     driver.revision
              FROM driver_instances AS driver
              LEFT JOIN credential_envelopes AS credential ON credential.id = driver.credential_ref
-             WHERE driver.id = ?1",
+             WHERE driver.id = ?1 AND driver.retired_at IS NULL",
         )
         .bind(&[JsValue::from_str(driver_id)])?
         .first::<DriverRow>(None)

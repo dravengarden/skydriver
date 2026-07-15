@@ -14,11 +14,9 @@ import {
     DialogContent,
     DialogTitle,
     Divider,
-    FormControlLabel,
     MenuItem,
     Paper,
     Stack,
-    Switch,
     TextField,
     Typography,
 } from "@mui/material";
@@ -159,7 +157,6 @@ export function DriversPage({
     const [r2Endpoint, setR2Endpoint] = useState("");
     const [r2Bucket, setR2Bucket] = useState("");
     const [r2Prefix, setR2Prefix] = useState("");
-    const [r2Managed, setR2Managed] = useState(true);
     const [registrationValidation, setRegistrationValidation] =
         useState<DriverRegistrationValidation | null>(null);
     const validationMutation = useMutation({
@@ -221,8 +218,8 @@ export function DriversPage({
                     ? {
                           endpoint: r2Endpoint,
                           bucket: r2Bucket,
-                          prefix: r2Managed ? "" : r2Prefix,
-                          managed: r2Managed,
+                          prefix: r2Prefix,
+                          managed: false,
                       }
                     : {
                           api_base_url: "https://openapi.alipan.com",
@@ -338,7 +335,6 @@ export function DriversPage({
         setR2Endpoint("");
         setR2Bucket("");
         setR2Prefix("");
-        setR2Managed(true);
         setRegistrationValidation(null);
         registrationValidationMutation.reset();
         registrationApplyMutation.reset();
@@ -350,8 +346,6 @@ export function DriversPage({
             return;
         }
         setRegistrationOpen(true);
-        const environment = window.location.hostname.startsWith("dev.") ? "dev" : "prod";
-        setR2Bucket(`carrack-payload-${environment}`);
     }
 
     if (management.isPending) {
@@ -395,6 +389,14 @@ export function DriversPage({
                                             {driver.id}
                                         </Typography>
                                         <Chip label={driver.kind} size="small" variant="outlined" />
+                                        {driver.lifecycle_owner === "environment" && (
+                                            <Chip
+                                                label="DEFAULT"
+                                                size="small"
+                                                color="info"
+                                                variant="outlined"
+                                            />
+                                        )}
                                         <Chip
                                             label={driver.enabled ? "ENABLED" : "DISABLED"}
                                             size="small"
@@ -456,6 +458,16 @@ export function DriversPage({
                                     </Button>
                                 </Stack>
                             </Stack>
+
+                            {driver.lifecycle_owner === "environment" &&
+                                !driver.credential_present && (
+                                    <Alert severity="info" sx={{ mt: 3 }}>
+                                        This environment-owned R2 bucket is ready for setup. Connect
+                                        one bucket-scoped R2 access key, then enable it and add it
+                                        to the desired collection placements. Server-side cleanup
+                                        uses the Worker binding and does not depend on that key.
+                                    </Alert>
+                                )}
 
                             <Box
                                 sx={{
@@ -616,27 +628,11 @@ export function DriversPage({
                     </TextField>
                     {registrationKind === "r2/v1" && (
                         <Stack spacing={2} sx={{ mt: 2 }}>
-                            <FormControlLabel
-                                control={
-                                    <Switch
-                                        checked={r2Managed}
-                                        disabled={registrationValidation !== null}
-                                        onChange={(event) => {
-                                            const managed = event.target.checked;
-                                            setR2Managed(managed);
-                                            if (managed) {
-                                                const environment =
-                                                    window.location.hostname.startsWith("dev.")
-                                                        ? "dev"
-                                                        : "prod";
-                                                setR2Bucket(`carrack-payload-${environment}`);
-                                                setR2Prefix("");
-                                            }
-                                        }}
-                                    />
-                                }
-                                label="Environment-managed default R2 bucket"
-                            />
+                            <Alert severity="info">
+                                The built-in environment R2 bucket is materialized automatically as
+                                <strong> r2-default</strong>. Register here only when connecting an
+                                additional Cloudflare R2 bucket.
+                            </Alert>
                             <TextField
                                 label="R2 S3 endpoint"
                                 value={r2Endpoint}
@@ -648,18 +644,13 @@ export function DriversPage({
                                 label="Bucket"
                                 value={r2Bucket}
                                 disabled={registrationValidation !== null}
-                                helperText={
-                                    r2Managed
-                                        ? "Locked to this control-plane environment."
-                                        : "Third-party Cloudflare R2 bucket."
-                                }
-                                slotProps={{ htmlInput: { readOnly: r2Managed } }}
+                                helperText="Additional Cloudflare R2 bucket."
                                 onChange={(event) => setR2Bucket(event.target.value)}
                             />
                             <TextField
                                 label="Object prefix (optional, end with /)"
                                 value={r2Prefix}
-                                disabled={registrationValidation !== null || r2Managed}
+                                disabled={registrationValidation !== null}
                                 onChange={(event) => setR2Prefix(event.target.value)}
                             />
                         </Stack>

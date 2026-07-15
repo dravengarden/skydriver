@@ -320,19 +320,13 @@ fn normalize_registration(requested: RegistrationRequest) -> Result<Registration
     })
 }
 
-fn valid_environment_registration(request: &RegistrationRequest, env: &Env) -> Result<bool> {
+fn valid_environment_registration(request: &RegistrationRequest, _env: &Env) -> Result<bool> {
     if request.kind != R2_KIND {
         return Ok(true);
     }
     let config = serde_json::from_value::<r2_signing::Config>(request.config.clone())
         .map_err(|error| json_error(&error))?;
-    if !config.managed {
-        return Ok(true);
-    }
-    let environment = env.var("CARRACK_ENVIRONMENT")?.to_string();
-    Ok(matches!(environment.as_str(), "dev" | "prod")
-        && config.bucket == format!("carrack-payload-{environment}")
-        && config.prefix.is_empty())
+    Ok(!config.managed)
 }
 
 fn valid_aliyun_config(config: &AliyunDriveConfig) -> bool {

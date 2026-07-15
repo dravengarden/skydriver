@@ -67,6 +67,7 @@ impl OperatorCredential {
 pub struct ManagementDriver {
     pub id: String,
     pub kind: String,
+    pub lifecycle_owner: String,
     pub config: Value,
     pub enabled: bool,
     pub revision: u64,

@@ -65,6 +65,8 @@ const expected = {
         hostname: "carrack.stormbird.xyz",
     },
 };
+const expectedR2Endpoint =
+    "https://cf92459eee422bed7c7a8337316e8b15.r2.cloudflarestorage.com";
 
 const identities = [];
 for (const [name, wanted] of Object.entries(expected)) {
@@ -93,6 +95,9 @@ for (const [name, wanted] of Object.entries(expected)) {
     }
     if (environment.vars?.CARRACK_ENVIRONMENT !== name) {
         fail(`${name} must identify itself through CARRACK_ENVIRONMENT`);
+    }
+    if (environment.vars?.CARRACK_R2_ENDPOINT !== expectedR2Endpoint) {
+        fail(`${name} must pin the account R2 S3 endpoint used for direct grants`);
     }
 
     const database = requireSingleBinding(environment, "d1_databases", "CARRACK_INDEX");

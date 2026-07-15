@@ -175,12 +175,15 @@ environments. After deployment, verify that `/api/health` reports the expected
 `environment`, sign in with the environment's operator credential, and confirm
 `/api/summary` can read only that environment's D1 database.
 
-Deployment and VFS bootstrap are separate operations. Keep a new environment
-unbootstrapped until its initial payload-driver topology is decided: bootstrap
-is intentionally one-shot. The currently implemented bootstrap creates a
-`local-filesystem/v2` driver and placement. Register a hosted driver through
-the validated management API, install its write-only credential, enable it,
-and then atomically replace the root placement before payload use. The native
+Deployment and VFS bootstrap are separate operations. Bootstrap is
+intentionally one-shot. Every dev or production Worker materializes one
+disabled, immutable `r2-default` identity from its `CARRACK_PAYLOAD` binding,
+account S3 endpoint, and environment-specific `carrack-payload-<environment>`
+bucket. A new bootstrap selects that identity but creates no placement while
+it is disabled. Install one bucket-scoped R2 access-key pair through the
+write-only management flow, enable the driver, and then add it to the intended
+directory placements. Additional R2 buckets remain operator-registered with
+`managed:false`. The native
 `aliyundrive-open/v2` adapter has completed this dev canary with encrypted
 complete-object upload, concurrent exact-range download, interrupted resume,
 hash verification, and logical removal.
@@ -213,7 +216,10 @@ maintenance invocation from monopolizing D1; later invocations drain any
 backlog. When an expired intent has immutable upload evidence, the same
 transaction idempotently plans a fenced delete task with an additional one-day
 grace. Provider `Stat` and deletion are server-internal and run only through a
-typed hosted-driver adapter after final reachability and fence validation.
+typed hosted-driver adapter after final reachability and fence validation. For
+`r2-default`, object deletion and multipart abort use the `CARRACK_PAYLOAD`
+Worker binding, so physical cleanup remains available after the client signing
+key is rotated. Third-party R2 uses its sealed credential.
 There is no client or operator GC command. A driver without stable identity,
 exact Stat, and idempotent Delete retains its candidates for later retry;
 capability and identity errors require investigation, not manual deletion.

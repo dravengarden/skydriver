@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 
-use crate::operator_sessions;
+use crate::{environment_defaults, operator_sessions};
 
 const DATABASE_BINDING: &str = "CARRACK_INDEX";
 
@@ -10,6 +10,7 @@ const DATABASE_BINDING: &str = "CARRACK_INDEX";
 struct DriverRow {
     id: String,
     kind: String,
+    lifecycle_owner: String,
     config_json: String,
     enabled: u64,
     revision: u64,
@@ -38,6 +39,7 @@ struct DriverRow {
 struct DriverView {
     id: String,
     kind: String,
+    lifecycle_owner: String,
     config: Value,
     enabled: bool,
     revision: u64,
@@ -249,9 +251,12 @@ pub(crate) async fn snapshot(request: &Request, env: &Env) -> Result<Response> {
     }
 
     let database = env.d1(DATABASE_BINDING)?;
+    let now = Date::now().as_millis() / 1_000;
+    environment_defaults::ensure(env, &database, now).await?;
     let driver_rows = database
         .prepare(
-            r"SELECT driver.id, driver.kind, driver.config_json, driver.enabled, driver.revision,
+            r"SELECT driver.id, driver.kind, driver.lifecycle_owner, driver.config_json,
+                    driver.enabled, driver.revision,
                     CASE WHEN driver.credential_ref IS NULL THEN 0 ELSE 1 END AS credential_present,
                     credential.rotated_at AS credential_rotated_at,
                     credential.expires_at AS credential_expires_at,
@@ -305,6 +310,7 @@ pub(crate) async fn snapshot(request: &Request, env: &Env) -> Result<Response> {
              LEFT JOIN driver_credential_refreshes AS refresh
                ON refresh.credential_id = credential.id
              JOIN driver_quota_policies AS quota ON quota.driver_id = driver.id
+             WHERE driver.retired_at IS NULL
              ORDER BY driver.id",
         )
         .all()
@@ -315,6 +321,7 @@ pub(crate) async fn snapshot(request: &Request, env: &Env) -> Result<Response> {
         .map(|row| DriverView {
             id: row.id,
             kind: row.kind,
+            lifecycle_owner: row.lifecycle_owner,
             config: redact_config(&row.config_json),
             enabled: row.enabled == 1,
             revision: row.revision,

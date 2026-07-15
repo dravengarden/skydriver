@@ -273,8 +273,10 @@ async fn load_policy(
          FROM vfs_directory_quota_policies WHERE directory_id = ?1"
     } else {
         "SELECT NULL AS max_file_bytes, NULL AS max_logical_bytes, NULL AS max_file_count,
-                max_physical_bytes, max_object_count, revision
-         FROM driver_quota_policies WHERE driver_id = ?1"
+                quota.max_physical_bytes, quota.max_object_count, quota.revision
+         FROM driver_quota_policies AS quota
+         JOIN driver_instances AS driver ON driver.id = quota.driver_id
+         WHERE quota.driver_id = ?1 AND driver.retired_at IS NULL"
     };
     database
         .prepare(sql)
@@ -313,7 +315,11 @@ fn policy_update(
             "UPDATE driver_quota_policies
              SET max_physical_bytes = ?1, max_object_count = ?2,
                  revision = revision + 1, updated_at = ?3
-             WHERE driver_id = ?4 AND revision = ?5",
+             WHERE driver_id = ?4 AND revision = ?5
+               AND EXISTS (
+                   SELECT 1 FROM driver_instances AS driver
+                   WHERE driver.id = ?4 AND driver.retired_at IS NULL
+               )",
         )
         .bind(&[
             optional_number(limits.max_physical_bytes),

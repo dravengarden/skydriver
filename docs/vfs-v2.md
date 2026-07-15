@@ -12,8 +12,8 @@ compaction instead of adapting them into the filesystem.
 The current implemented V2 slice includes:
 
 - the complete-object driver contract, capability warnings, native Rust local
-  filesystem and Aliyun Drive Open drivers, durable private transfer journals,
-  and shared Go/Rust Merkle conformance vectors;
+  filesystem, Aliyun Drive Open, and Cloudflare R2 drivers, durable private
+  transfer journals, and shared Go/Rust Merkle conformance vectors;
 - D1 identities, entries, versions, locations, roots, ACLs, attenuated tokens,
   optimistic Put intents and receipts, and catalog mutation/outbox records;
 - one-shot encrypted or plaintext bootstrap, sealed directory-key epochs, and
@@ -29,8 +29,11 @@ The current implemented V2 slice includes:
   bounded concurrent prefetch, durable verified nodes and range journals,
   subtree reuse, and final live-root revalidation; and
 - durable read leases, reachability marking, tombstone grace, server-owned
-  fenced GC, idempotent Aliyun deletion, and conservative retention for
-  drivers the Worker cannot reach.
+  fenced GC, idempotent Aliyun and R2 deletion, and conservative retention for
+  drivers the Worker cannot reach; and
+- environment-owned default R2 identities, direct SigV4 client grants,
+  resumable multipart upload, concurrent exact-range download, and
+  binding-owned server cleanup independent of client signing-key rotation.
 
 Remaining expansion work is explicit: R2 checkpoint/delta acceleration,
 additional hosted drivers, production fault-injection for every lifecycle
@@ -527,8 +530,10 @@ lifecycle adapter. Agent-local paths are not reachable by Cloudflare, so their
 tasks become durably server-blocked and remain tombstoned; use S3, R2, or
 Aliyun when automatic physical cleanup is required.
 
-The control plane's R2 binding is used for control metadata such as catalogs
-and audit recovery, not for ordinary VFS file payloads.
+Ordinary VFS payload bytes still bypass the Worker. For `r2-default`, clients
+use short-lived SigV4 URLs while the control plane uses the `CARRACK_PAYLOAD`
+binding only for fenced physical deletion and multipart abort. Control metadata
+continues to use its separate binding and object namespace.
 
 ## Initial implementation order
 
@@ -543,8 +548,9 @@ and audit recovery, not for ordinary VFS file payloads.
    local planning.
 6. Implement high-level `put`, `get`, `push`, and `pull` APIs and AI-stable CLI
    JSON contracts.
-7. Add S3 and R2 drivers, then Google Drive and WebDAV behind the same contract
-   tests; keep the existing Aliyun Drive Open adapter in the shared suite.
+7. Add the completed R2 driver, then generic S3, Google Drive, and WebDAV behind
+   the same contract tests; keep the existing Aliyun Drive Open adapter in the
+   shared suite.
 8. Build the location mark/task protocol on the implemented fail-closed
    snapshot reachability and abandoned-Put janitor foundations.
 9. Remove legacy packs, extents, bundles, compaction, and operation protocols

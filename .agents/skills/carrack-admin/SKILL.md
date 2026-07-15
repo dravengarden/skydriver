@@ -82,7 +82,10 @@ matches the receipt.
 
 Register a driver with `carrackctl driver register` and `--check` before
 apply. Registration is typed, creates revision 1 in the disabled state, and
-never accepts credentials in the non-secret config. For Aliyun Drive, then run
+never accepts credentials in the non-secret config. The environment-owned
+`r2-default` is the exception: it is materialized by the server and must not be
+registered or edited; connect its bucket-scoped key, enable it, and place it
+through the same validate/apply/readback sequence. For Aliyun Drive, then run
 `carrackctl driver credential set` with `--check`, using a private regular
 JSON file readable only by its owner, and apply the same file before enabling
 the driver. Aliyun authorization input contains only `refresh_token` and

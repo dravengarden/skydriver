@@ -24,7 +24,7 @@ impl Drop for Credential {
     }
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Config {
     pub(crate) endpoint: String,

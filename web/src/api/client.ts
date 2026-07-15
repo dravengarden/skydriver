@@ -94,6 +94,7 @@ const IntegrityFindingsSchema = v.object({
 const DriverViewSchema = v.object({
     id: v.string(),
     kind: v.string(),
+    lifecycle_owner: v.string(),
     config: v.unknown(),
     enabled: v.boolean(),
     revision: v.number(),

@@ -8,6 +8,7 @@ use worker::{
 use zeroize::Zeroize as _;
 
 use crate::{
+    environment_defaults,
     vfs_envelopes::{
         ENCRYPTED_SUITE, ENVELOPE_ALGORITHM, MASTER_KEY_VERSION, PLAINTEXT_SUITE, blob_binding,
         derive_bootstrap_token, seal_directory_key,
@@ -47,8 +48,8 @@ const ACTIONS: [&str; 12] = [
 struct BootstrapRequest {
     filesystem_name: String,
     principal_display_name: String,
-    local_driver_id: String,
-    local_root: String,
+    local_driver_id: Option<String>,
+    local_root: Option<String>,
     crypto_suite: Option<String>,
     token_lifetime_seconds: Option<u64>,
     idempotency_key: String,
@@ -63,6 +64,24 @@ struct BootstrapIdentity<'a> {
     crypto_suite: &'a str,
     token_lifetime_seconds: u64,
     idempotency_key: &'a str,
+}
+
+#[derive(Serialize)]
+struct EnvironmentBootstrapIdentity<'a> {
+    filesystem_name: &'a str,
+    principal_display_name: &'a str,
+    driver_id: &'a str,
+    crypto_suite: &'a str,
+    token_lifetime_seconds: u64,
+    idempotency_key: &'a str,
+}
+
+struct BootstrapDriver {
+    id: String,
+    kind: &'static str,
+    config_json: String,
+    create: bool,
+    place: bool,
 }
 
 #[derive(Deserialize)]
@@ -118,18 +137,14 @@ pub(crate) async fn bootstrap(
         return Response::error("invalid VFS bootstrap request", 400);
     }
 
-    let identity = BootstrapIdentity {
-        filesystem_name: &requested.filesystem_name,
-        principal_display_name: &requested.principal_display_name,
-        local_driver_id: &requested.local_driver_id,
-        local_root: &requested.local_root,
-        crypto_suite,
-        token_lifetime_seconds,
-        idempotency_key: &requested.idempotency_key,
-    };
-    let request_digest = request_identity(&identity)?;
-    let request_sha256 = lowercase_hex(&request_digest)?;
     let database = env.d1("CARRACK_INDEX")?;
+    let now = current_unix_seconds();
+    let Some(driver) = resolve_driver(env, &database, &requested, now).await? else {
+        return Response::error("invalid VFS bootstrap driver selection", 400);
+    };
+    let request_digest =
+        request_identity(&requested, &driver, crypto_suite, token_lifetime_seconds)?;
+    let request_sha256 = lowercase_hex(&request_digest)?;
 
     if let Some(receipt) = load_receipt(&database).await? {
         return replay_response(
@@ -149,13 +164,11 @@ pub(crate) async fn bootstrap(
     let empty_root = lowercase_hex(&directory_root(&[]).map_err(|error| {
         worker::Error::RustError(format!("compute empty VFS root: {error:?}"))
     })?)?;
-    let now = current_unix_seconds();
     let token_expires_at = now.checked_add(token_lifetime_seconds).ok_or_else(|| {
         worker::Error::RustError("VFS bootstrap token expiry overflows".to_owned())
     })?;
     let token = derive_bootstrap_token(env, &request_digest, &requested.idempotency_key)?;
     let verifier = token_verifier(&token);
-    let config_json = serde_json::json!({ "root": requested.local_root }).to_string();
     let mut directory_key = [0_u8; 32];
     let envelope = if crypto_suite == ENCRYPTED_SUITE {
         getrandom::fill(&mut directory_key).map_err(|error| {
@@ -176,6 +189,7 @@ pub(crate) async fn bootstrap(
     let statements = bootstrap_statements(
         &database,
         &requested,
+        &driver,
         admin_subject,
         crypto_suite,
         &request_sha256,
@@ -184,7 +198,6 @@ pub(crate) async fn bootstrap(
         &root_directory_id,
         &token_id,
         &verifier,
-        &config_json,
         &empty_root,
         envelope.as_ref(),
         now,
@@ -216,6 +229,7 @@ pub(crate) async fn bootstrap(
 fn bootstrap_statements(
     database: &D1Database,
     requested: &BootstrapRequest,
+    driver: &BootstrapDriver,
     admin_subject: &str,
     crypto_suite: &str,
     request_sha256: &str,
@@ -224,7 +238,6 @@ fn bootstrap_statements(
     root_directory_id: &str,
     token_id: &str,
     verifier: &str,
-    config_json: &str,
     empty_root: &str,
     envelope: Option<&crate::vfs_envelopes::SealedEnvelope>,
     now: u64,
@@ -276,33 +289,40 @@ fn bootstrap_statements(
         envelope,
         now,
     )?);
-    statements.extend([
-        database
-            .prepare(
-                "INSERT INTO driver_instances (\
-                     id, kind, config_json, credential_ref, created_at, updated_at\
-                 ) VALUES (?1, ?2, ?3, NULL, ?4, ?4)",
-            )
-            .bind(&[
-                JsValue::from_str(&requested.local_driver_id),
-                JsValue::from_str(LOCAL_FILESYSTEM_KIND),
-                JsValue::from_str(config_json),
-                number_binding(now),
-            ])?,
-        database
-            .prepare(
-                "INSERT INTO vfs_directory_drivers (\
-                     directory_id, driver_id, write_priority, created_by,\
-                     created_at, updated_at\
-                 ) VALUES (?1, ?2, 0, ?3, ?4, ?4)",
-            )
-            .bind(&[
-                JsValue::from_str(root_directory_id),
-                JsValue::from_str(&requested.local_driver_id),
-                JsValue::from_str(principal_id),
-                number_binding(now),
-            ])?,
-    ]);
+    if driver.create {
+        statements.push(
+            database
+                .prepare(
+                    "INSERT INTO driver_instances (\
+                         id, kind, config_json, credential_ref, created_at, updated_at,\
+                         lifecycle_owner\
+                     ) VALUES (?1, ?2, ?3, NULL, ?4, ?4, 'legacy-bootstrap')",
+                )
+                .bind(&[
+                    JsValue::from_str(&driver.id),
+                    JsValue::from_str(driver.kind),
+                    JsValue::from_str(&driver.config_json),
+                    number_binding(now),
+                ])?,
+        );
+    }
+    if driver.place {
+        statements.push(
+            database
+                .prepare(
+                    "INSERT INTO vfs_directory_drivers (\
+                         directory_id, driver_id, write_priority, created_by,\
+                         created_at, updated_at\
+                     ) VALUES (?1, ?2, 0, ?3, ?4, ?4)",
+                )
+                .bind(&[
+                    JsValue::from_str(root_directory_id),
+                    JsValue::from_str(&driver.id),
+                    JsValue::from_str(principal_id),
+                    number_binding(now),
+                ])?,
+        );
+    }
 
     for action in ACTIONS {
         statements.push(
@@ -355,7 +375,7 @@ fn bootstrap_statements(
     let audit_details = serde_json::json!({
         "admin_subject": admin_subject,
         "crypto_suite": crypto_suite,
-        "driver_id": requested.local_driver_id,
+        "driver_id": driver.id,
     })
     .to_string();
     statements.extend([
@@ -389,7 +409,7 @@ fn bootstrap_statements(
                 JsValue::from_str(principal_id),
                 JsValue::from_str(root_directory_id),
                 JsValue::from_str(token_id),
-                JsValue::from_str(&requested.local_driver_id),
+                JsValue::from_str(&driver.id),
                 JsValue::from_str(crypto_suite),
                 number_binding(token_expires_at),
                 number_binding(now),
@@ -496,10 +516,16 @@ fn valid_request(
     crypto_suite: &str,
     token_lifetime_seconds: u64,
 ) -> bool {
+    let valid_driver = match (&request.local_driver_id, &request.local_root) {
+        (Some(driver_id), Some(root)) => {
+            valid_string(driver_id, MAXIMUM_DRIVER_ID_BYTES) && valid_local_root(root)
+        }
+        (None, None) => true,
+        _ => false,
+    };
     valid_string(&request.filesystem_name, MAXIMUM_NAME_BYTES)
         && valid_string(&request.principal_display_name, MAXIMUM_NAME_BYTES)
-        && valid_string(&request.local_driver_id, MAXIMUM_DRIVER_ID_BYTES)
-        && valid_local_root(&request.local_root)
+        && valid_driver
         && matches!(crypto_suite, ENCRYPTED_SUITE | PLAINTEXT_SUITE)
         && (MINIMUM_TOKEN_LIFETIME_SECONDS..=MAXIMUM_TOKEN_LIFETIME_SECONDS)
             .contains(&token_lifetime_seconds)
@@ -520,10 +546,81 @@ fn valid_string(value: &str, maximum_bytes: usize) -> bool {
     !value.is_empty() && value.trim() == value && value.len() <= maximum_bytes
 }
 
-fn request_identity(identity: &BootstrapIdentity<'_>) -> Result<[u8; 32]> {
-    let encoded = serde_json::to_vec(identity)?;
+async fn resolve_driver(
+    env: &Env,
+    database: &D1Database,
+    requested: &BootstrapRequest,
+    now: u64,
+) -> Result<Option<BootstrapDriver>> {
+    match (&requested.local_driver_id, &requested.local_root) {
+        (Some(driver_id), Some(root)) => Ok(Some(BootstrapDriver {
+            id: driver_id.clone(),
+            kind: LOCAL_FILESYSTEM_KIND,
+            config_json: serde_json::json!({ "root": root }).to_string(),
+            create: true,
+            place: true,
+        })),
+        (None, None) => {
+            environment_defaults::ensure(env, database, now).await?;
+            let Some(config) = environment_defaults::configured_r2(env)? else {
+                return Ok(None);
+            };
+            Ok(Some(BootstrapDriver {
+                id: environment_defaults::DEFAULT_R2_DRIVER_ID.to_owned(),
+                kind: "r2/v1",
+                config_json: serde_json::to_string(&config)?,
+                create: false,
+                place: false,
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn request_identity(
+    requested: &BootstrapRequest,
+    driver: &BootstrapDriver,
+    crypto_suite: &str,
+    token_lifetime_seconds: u64,
+) -> Result<[u8; 32]> {
+    let (domain, encoded) = if driver.kind == LOCAL_FILESYSTEM_KIND {
+        let (Some(local_driver_id), Some(local_root)) = (
+            requested.local_driver_id.as_deref(),
+            requested.local_root.as_deref(),
+        ) else {
+            return Err(worker::Error::RustError(
+                "local bootstrap identity is incomplete".to_owned(),
+            ));
+        };
+        let identity = BootstrapIdentity {
+            filesystem_name: &requested.filesystem_name,
+            principal_display_name: &requested.principal_display_name,
+            local_driver_id,
+            local_root,
+            crypto_suite,
+            token_lifetime_seconds,
+            idempotency_key: &requested.idempotency_key,
+        };
+        (
+            b"carrack.vfs.bootstrap.v1\0".as_slice(),
+            serde_json::to_vec(&identity)?,
+        )
+    } else {
+        let identity = EnvironmentBootstrapIdentity {
+            filesystem_name: &requested.filesystem_name,
+            principal_display_name: &requested.principal_display_name,
+            driver_id: &driver.id,
+            crypto_suite,
+            token_lifetime_seconds,
+            idempotency_key: &requested.idempotency_key,
+        };
+        (
+            b"carrack.vfs.bootstrap.environment.v2\0".as_slice(),
+            serde_json::to_vec(&identity)?,
+        )
+    };
     let mut hasher = Sha256::new();
-    hasher.update(b"carrack.vfs.bootstrap.v1\0");
+    hasher.update(domain);
     hasher.update(encoded);
     Ok(hasher.finalize().into())
 }
@@ -553,8 +650,8 @@ mod tests {
         BootstrapRequest {
             filesystem_name: "Carrack".to_owned(),
             principal_display_name: "Operator".to_owned(),
-            local_driver_id: "local-main".to_owned(),
-            local_root: "/srv/carrack".to_owned(),
+            local_driver_id: Some("local-main".to_owned()),
+            local_root: Some("/srv/carrack".to_owned()),
             crypto_suite: None,
             token_lifetime_seconds: None,
             idempotency_key: "bootstrap-production-v1".to_owned(),
@@ -575,7 +672,7 @@ mod tests {
     fn rejects_ambiguous_or_relative_local_roots() {
         for root in ["relative", "/srv/../secret", "/srv/carrack/"] {
             let request = BootstrapRequest {
-                local_root: root.to_owned(),
+                local_root: Some(root.to_owned()),
                 ..request()
             };
             assert!(!valid_request(
@@ -584,23 +681,60 @@ mod tests {
                 DEFAULT_TOKEN_LIFETIME_SECONDS
             ));
         }
+        let request = BootstrapRequest {
+            local_root: None,
+            ..request()
+        };
+        assert!(!valid_request(
+            &request,
+            ENCRYPTED_SUITE,
+            DEFAULT_TOKEN_LIFETIME_SECONDS
+        ));
+    }
+
+    #[test]
+    fn accepts_environment_driver_selection() {
+        let request = BootstrapRequest {
+            local_driver_id: None,
+            local_root: None,
+            ..request()
+        };
+        assert!(valid_request(
+            &request,
+            ENCRYPTED_SUITE,
+            DEFAULT_TOKEN_LIFETIME_SECONDS
+        ));
     }
 
     #[test]
     fn bootstrap_identity_includes_normalized_defaults() {
         let request = request();
-        let identity = BootstrapIdentity {
-            filesystem_name: &request.filesystem_name,
-            principal_display_name: &request.principal_display_name,
-            local_driver_id: &request.local_driver_id,
-            local_root: &request.local_root,
-            crypto_suite: ENCRYPTED_SUITE,
-            token_lifetime_seconds: DEFAULT_TOKEN_LIFETIME_SECONDS,
-            idempotency_key: &request.idempotency_key,
+        let driver = BootstrapDriver {
+            id: "local-main".to_owned(),
+            kind: LOCAL_FILESYSTEM_KIND,
+            config_json: r#"{"root":"/srv/carrack"}"#.to_owned(),
+            create: true,
+            place: true,
         };
-        let first = request_identity(&identity).expect("hash bootstrap");
-        let second = request_identity(&identity).expect("rehash bootstrap");
+        let first = request_identity(
+            &request,
+            &driver,
+            ENCRYPTED_SUITE,
+            DEFAULT_TOKEN_LIFETIME_SECONDS,
+        )
+        .expect("hash bootstrap");
+        let second = request_identity(
+            &request,
+            &driver,
+            ENCRYPTED_SUITE,
+            DEFAULT_TOKEN_LIFETIME_SECONDS,
+        )
+        .expect("rehash bootstrap");
         assert_eq!(first, second);
         assert_ne!(first, [0; 32]);
+        assert_eq!(
+            lowercase_hex(&first).expect("encode digest"),
+            "f9d269ed0033a26536b360960738a6d80e782e870cdc336b61db8cb7c85b9450"
+        );
     }
 }

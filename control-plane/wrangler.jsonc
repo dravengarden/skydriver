@@ -50,7 +50,8 @@
         }
       ],
       "vars": {
-        "CARRACK_ENVIRONMENT": "dev"
+        "CARRACK_ENVIRONMENT": "dev",
+        "CARRACK_R2_ENDPOINT": "https://cf92459eee422bed7c7a8337316e8b15.r2.cloudflarestorage.com"
       },
       "d1_databases": [
         {
@@ -85,7 +86,8 @@
         }
       ],
       "vars": {
-        "CARRACK_ENVIRONMENT": "prod"
+        "CARRACK_ENVIRONMENT": "prod",
+        "CARRACK_R2_ENDPOINT": "https://cf92459eee422bed7c7a8337316e8b15.r2.cloudflarestorage.com"
       },
       "d1_databases": [
         {

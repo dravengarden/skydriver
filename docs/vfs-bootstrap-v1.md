@@ -9,11 +9,13 @@ payload API. In one D1 batch it creates:
 - the filesystem and empty root directory;
 - the first user principal and root ACL grants;
 - a sealed root-directory key epoch, or an explicit plaintext epoch;
-- one `local-filesystem/v2` driver instance and root placement;
+- the environment-owned `r2-default` identity, without an active placement;
 - an all-actions root administration token; and
 - an immutable bootstrap receipt and audit record.
 
-The Cloudflare Worker stores only the token verifier and authenticated key
+The default R2 identity is derived from the Worker environment and begins
+disabled until a bucket-scoped S3 key is validated and sealed. The Cloudflare
+Worker stores only the token verifier and authenticated key
 envelope. It never stores the bearer token or plaintext directory key in D1 and
 never opens the configured local filesystem path.
 
@@ -45,8 +47,6 @@ The JSON request is strict and rejects unknown fields:
 {
   "filesystem_name": "Carrack VFS",
   "principal_display_name": "VFS operator",
-  "local_driver_id": "local-main",
-  "local_root": "/srv/carrack/vfs",
   "crypto_suite": "carrack-vfs-aes256gcm-hkdfsha256-v1",
   "token_lifetime_seconds": 2592000,
   "idempotency_key": "production-bootstrap-v1"
@@ -56,13 +56,14 @@ The JSON request is strict and rejects unknown fields:
 `crypto_suite` defaults to
 `carrack-vfs-aes256gcm-hkdfsha256-v1`; the only alternative is the explicit
 `plaintext/v1` suite. `token_lifetime_seconds` defaults to 30 days and must be
-between one hour and 365 days. `local_root` must be an absolute, canonical
-client-side path without `.` or `..` components or a trailing slash, except
-that `/` itself is valid.
+between one hour and 365 days. Dev and production select `r2-default`. The
+response does not imply that the disabled driver is a placement; credential,
+enablement, and placement remain separately validated operations.
 
-The driver root is configuration distributed to an authorized Go client. It
-must exist on that client with the intended access controls. It is not a path
-inside the Worker or R2.
+Local conformance environments may explicitly provide both `local_driver_id`
+and `local_root`. That compatibility path preserves the original V1 request
+digest and creates a `local-filesystem/v2` placement. Providing only one field
+is invalid. Hosted environments should omit both fields.
 
 ## Response and replay
 
@@ -75,7 +76,7 @@ The successful response uses schema `carrack.vfs.bootstrap-receipt.v1`:
   "principal_id": "32 lowercase hex",
   "root_directory_id": "32 lowercase hex",
   "token_id": "32 lowercase hex",
-  "driver_id": "local-main",
+  "driver_id": "r2-default",
   "crypto_suite": "carrack-vfs-aes256gcm-hkdfsha256-v1",
   "key_epoch": 1,
   "token_expires_at": 0,

@@ -7,6 +7,7 @@ mod clients;
 mod compaction;
 mod copying;
 mod driver_credentials;
+mod environment_defaults;
 mod garbage_collection;
 mod integrity;
 mod inventory;

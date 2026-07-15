@@ -93,23 +93,32 @@ refresh time, and `credential_refresh_token_expires_at`. Thereafter the control
 plane owns all access-token generation and renewal; only repeat this command if
 the server reports `reauth_required`.
 
-For R2, use the same register and credential commands with private JSON files:
-
-```json
-{"endpoint":"https://ACCOUNT_ID.r2.cloudflarestorage.com","bucket":"carrack-payload-dev","prefix":"","managed":true}
-```
+Dev and production materialize the disabled `r2-default` identity automatically.
+Do not register or edit that identity. Read its current revision from
+`carrackctl snapshot`, then connect the environment bucket's private
+credential file:
 
 ```json
 {"access_key_id":"...","secret_access_key":"..."}
 ```
 
-Managed bucket names must match the control-plane environment. Use
-`managed:false` for a third-party R2 bucket. The server validates the key with
-a temporary object and stores it sealed; never print or commit either file.
-R2 multipart journals and abandoned-object cleanup are internal. Agents should
-retry the same VFS Put idempotency key and staging directory to resume; never
-manually list, complete, abort, or delete multipart uploads through provider
-tools.
+Run `carrackctl driver credential set r2-default --check` first, apply with the
+same private file and a stable idempotency key, re-read the snapshot, then
+validate and enable the next exact driver revision. Add directory placement
+only after enablement succeeds.
+
+For an additional R2 bucket, register this configuration first:
+
+```json
+{"endpoint":"https://ACCOUNT_ID.r2.cloudflarestorage.com","bucket":"third-party-bucket","prefix":"carrack/","managed":false}
+```
+
+The server validates each key with a temporary object and stores it sealed;
+never print or commit either file. R2 multipart journals and abandoned-object
+cleanup are internal. The built-in driver's server cleanup uses the Worker
+binding and does not depend on the signing key. Agents should retry the same
+VFS Put idempotency key and staging directory to resume; never manually list,
+complete, abort, or delete multipart uploads through provider tools.
 
 Validate a token annotation without changing state:
 

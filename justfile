@@ -32,6 +32,7 @@ test:
     control-plane/tests/vfs-v2-worker-protocol.sh
     control-plane/tests/vfs-v2-bootstrap-worker-protocol.sh
     control-plane/tests/vfs-v2-management-worker-protocol.sh
+    control-plane/tests/environment-defaults-worker-protocol.sh
     control-plane/tests/worker-protocol.sh
     control-plane/tests/cloudflare-environments.sh
 

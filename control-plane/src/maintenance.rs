@@ -1,6 +1,6 @@
 use worker::{Env, Result, wasm_bindgen::JsValue};
 
-use crate::{driver_credentials, vfs_server_lifecycle};
+use crate::{driver_credentials, environment_defaults, vfs_server_lifecycle};
 
 const DATABASE_BINDING: &str = "CARRACK_INDEX";
 const MAXIMUM_EXPIRED_SESSIONS_PER_RUN: u64 = 500;
@@ -21,6 +21,7 @@ const R2_CLEANUP_EVIDENCE_SECONDS: u64 = 30 * 86_400;
 pub(crate) async fn run(env: &Env) -> Result<()> {
     let now = worker::Date::now().as_millis() / 1_000;
     let database = env.d1(DATABASE_BINDING)?;
+    environment_defaults::ensure(env, &database, now).await?;
     delete_expired_authorization_claims(&database, now).await?;
 
     database
