@@ -110,9 +110,19 @@ jq -e '.code == "sdk_upgrade_required" and .minimum_sdk_version == "0.3.6"' \
 wrong_account_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   -H "$json" \
   --data "$(jq -cn --arg password "$admin_token" \
-    '{account: "someone-else", password: $password}')" \
+    '{account: "draven@prod", password: $password}')" \
   "$base_url/api/auth/login")
 [[ "$wrong_account_status" == 401 ]]
+
+alias_cookie_jar="$state_directory/alias-cookies.txt"
+curl --silent --show-error --fail-with-body \
+  -c "$alias_cookie_jar" -H "$json" \
+  --data "$(jq -cn --arg password "$admin_token" \
+    '{account: "draven@local", password: $password}')" \
+  "$base_url/api/auth/login" | jq -e '.authenticated == true' >/dev/null
+curl --silent --show-error --fail-with-body \
+  -b "$alias_cookie_jar" -X POST "$base_url/api/auth/logout" \
+  | jq -e '.authenticated == false' >/dev/null
 
 curl --silent --show-error --fail-with-body \
   -c "$cookie_jar" -H "$json" \

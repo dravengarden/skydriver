@@ -112,7 +112,9 @@ The unauthenticated health response exposes the non-secret account so the UI
 can present an environment-qualified password-manager identity. Safari stores
 `draven@dev` and `draven@prod`, while the UI submits only the canonical
 `draven` account to the Worker. The password-manager suffix is not an account,
-principal, or authorization input.
+principal, or authorization input. The login endpoint also accepts only the
+exact alias for its own environment so an older cached UI cannot lock the
+operator out; a dev alias is always rejected by production and vice versa.
 
 Set independent operator and VFS-master secrets for each environment:
 

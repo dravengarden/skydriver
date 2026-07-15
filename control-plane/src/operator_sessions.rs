@@ -48,6 +48,7 @@ struct ConfigurationSessionResponse {
 pub(crate) async fn login(request: &mut Request, env: &Env) -> Result<Response> {
     let credentials = request.json::<LoginRequest>().await?;
     let configured_account = env.var(OPERATOR_ACCOUNT_BINDING)?.to_string();
+    let environment = env.var("CARRACK_ENVIRONMENT")?.to_string();
     if !canonical_account(&configured_account) {
         return Err(worker::Error::RustError(
             "CARRACK_OPERATOR_ACCOUNT must be a canonical account name".to_owned(),
@@ -64,7 +65,9 @@ pub(crate) async fn login(request: &mut Request, env: &Env) -> Result<Response> 
     } else {
         ""
     };
-    if credentials.account != configured_account || !credential_matches(candidate, &configured) {
+    if !account_matches(&credentials.account, &configured_account, &environment)
+        || !credential_matches(candidate, &configured)
+    {
         return Response::error("invalid credentials", 401);
     }
 
@@ -336,6 +339,10 @@ fn canonical_account(account: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(byte))
 }
 
+fn account_matches(candidate: &str, configured: &str, environment: &str) -> bool {
+    candidate == configured || candidate == format!("{configured}@{environment}")
+}
+
 fn credential_matches(candidate: &str, configured: &str) -> bool {
     let Ok(mut expected_mac) = HmacSha256::new_from_slice(configured.as_bytes()) else {
         return false;
@@ -391,7 +398,8 @@ fn now_seconds() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_account, canonical_token, cookie_value, credential_matches, token_verifier,
+        account_matches, canonical_account, canonical_token, cookie_value, credential_matches,
+        token_verifier,
     };
 
     const TOKEN: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
@@ -410,6 +418,14 @@ mod tests {
         assert!(!canonical_account(""));
         assert!(!canonical_account("Draven"));
         assert!(!canonical_account("-operator"));
+    }
+
+    #[test]
+    fn accepts_only_the_canonical_or_exact_environment_identity() {
+        assert!(account_matches("draven", "draven", "dev"));
+        assert!(account_matches("draven@dev", "draven", "dev"));
+        assert!(!account_matches("draven@prod", "draven", "dev"));
+        assert!(!account_matches("other@dev", "draven", "dev"));
     }
 
     #[test]
