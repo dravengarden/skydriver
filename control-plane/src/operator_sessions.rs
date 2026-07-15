@@ -16,10 +16,41 @@ const CONFIGURATION_SESSION_LIFETIME_SECONDS: u64 = 15 * 60;
 const MAXIMUM_CREDENTIAL_BYTES: usize = 1_024;
 const TOKEN_BYTES: usize = 32;
 const ADMIN_TOKEN_COMPARISON_DOMAIN: &[u8] = b"carrack.operator-credential.v1\0";
+const RATE_LIMIT_COMPARISON_DOMAIN: &[u8] = b"carrack.operator-rate-limit.v1\0";
+const RATE_LIMIT_WINDOW_SECONDS: u64 = 15 * 60;
+const LOGIN_IP_MAXIMUM_FAILURES: u64 = 10;
+const LOGIN_IP_BLOCK_SECONDS: u64 = 15 * 60;
+const LOGIN_ACCOUNT_MAXIMUM_FAILURES: u64 = 100;
+const LOGIN_ACCOUNT_BLOCK_SECONDS: u64 = 30 * 60;
+const CONFIGURATION_IP_MAXIMUM_FAILURES: u64 = 10;
+const CONFIGURATION_IP_BLOCK_SECONDS: u64 = 15 * 60;
 
 pub(crate) const OPERATOR_SUBJECT: &str = "operator";
 
 type HmacSha256 = Hmac<Sha256>;
+
+#[derive(Clone, Copy)]
+struct RateLimitPolicy {
+    scope: &'static str,
+    maximum_failures: u64,
+    block_seconds: u64,
+}
+
+const LOGIN_IP_POLICY: RateLimitPolicy = RateLimitPolicy {
+    scope: "login_ip",
+    maximum_failures: LOGIN_IP_MAXIMUM_FAILURES,
+    block_seconds: LOGIN_IP_BLOCK_SECONDS,
+};
+const LOGIN_ACCOUNT_POLICY: RateLimitPolicy = RateLimitPolicy {
+    scope: "login_account",
+    maximum_failures: LOGIN_ACCOUNT_MAXIMUM_FAILURES,
+    block_seconds: LOGIN_ACCOUNT_BLOCK_SECONDS,
+};
+const CONFIGURATION_IP_POLICY: RateLimitPolicy = RateLimitPolicy {
+    scope: "configuration_ip",
+    maximum_failures: CONFIGURATION_IP_MAXIMUM_FAILURES,
+    block_seconds: CONFIGURATION_IP_BLOCK_SECONDS,
+};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -65,23 +96,33 @@ pub(crate) async fn login(request: &mut Request, env: &Env) -> Result<Response> 
     } else {
         ""
     };
-    if !account_matches(&credentials.account, &configured_account, &environment)
-        || !credential_matches(candidate, &configured)
-    {
-        return Response::error("invalid credentials", 401);
+    let database = env.d1(DATABASE_BINDING)?;
+    let now = now_seconds();
+    let ip = client_ip(request)?;
+    let ip_subject = rate_limit_subject(&configured, LOGIN_IP_POLICY.scope, &ip)?;
+    let account_is_valid = account_matches(&credentials.account, &configured_account, &environment);
+    let account_subject = account_is_valid
+        .then(|| rate_limit_subject(&configured, LOGIN_ACCOUNT_POLICY.scope, &configured_account))
+        .transpose()?;
+    let mut policies = vec![(LOGIN_IP_POLICY, ip_subject.as_str())];
+    if let Some(subject) = account_subject.as_deref() {
+        policies.push((LOGIN_ACCOUNT_POLICY, subject));
+    }
+    if let Some(retry_after) = retry_after(&database, &policies, now).await? {
+        return rate_limited_response(retry_after);
+    }
+    if !account_is_valid || !credential_matches(candidate, &configured) {
+        if let Some(retry_after) = record_failures(&database, &policies, now).await? {
+            return rate_limited_response(retry_after);
+        }
+        return invalid_credentials_response();
     }
 
     let token = random_token()?;
     let verifier = token_verifier(&token).ok_or_else(|| {
         worker::Error::RustError("generated an invalid operator session token".to_owned())
     })?;
-    let now = now_seconds();
     let expires_at = now + SESSION_LIFETIME_SECONDS;
-    let database = env.d1(DATABASE_BINDING)?;
-    let ip = request
-        .headers()
-        .get("CF-Connecting-IP")?
-        .unwrap_or_default();
     let user_agent = request.headers().get("User-Agent")?.unwrap_or_default();
     database
         .batch(vec![
@@ -147,17 +188,31 @@ pub(crate) async fn enable_configuration(request: &mut Request, env: &Env) -> Re
     } else {
         ""
     };
-    if !canonical_token(&configured) || !credential_matches(candidate, &configured) {
-        return Response::error("invalid credentials", 401);
+    if !canonical_token(&configured) {
+        return Err(worker::Error::RustError(
+            "CARRACK_ADMIN_TOKEN must encode exactly 32 bytes".to_owned(),
+        ));
+    }
+    let database = env.d1(DATABASE_BINDING)?;
+    let now = now_seconds();
+    let ip = client_ip(request)?;
+    let subject = rate_limit_subject(&configured, CONFIGURATION_IP_POLICY.scope, &ip)?;
+    let policies = [(CONFIGURATION_IP_POLICY, subject.as_str())];
+    if let Some(retry_after) = retry_after(&database, &policies, now).await? {
+        return rate_limited_response(retry_after);
+    }
+    if !credential_matches(candidate, &configured) {
+        if let Some(retry_after) = record_failures(&database, &policies, now).await? {
+            return rate_limited_response(retry_after);
+        }
+        return invalid_credentials_response();
     }
 
     let token = random_token()?;
     let verifier = token_verifier(&token).ok_or_else(|| {
         worker::Error::RustError("generated an invalid configuration session token".to_owned())
     })?;
-    let now = now_seconds();
     let expires_at = now + CONFIGURATION_SESSION_LIFETIME_SECONDS;
-    let database = env.d1(DATABASE_BINDING)?;
     database
         .batch(vec![
             database
@@ -355,6 +410,111 @@ fn credential_matches(candidate: &str, configured: &str) -> bool {
     };
     candidate_mac.update(ADMIN_TOKEN_COMPARISON_DOMAIN);
     candidate_mac.verify_slice(&expected).is_ok()
+}
+
+fn client_ip(request: &Request) -> Result<String> {
+    Ok(request
+        .headers()
+        .get("CF-Connecting-IP")?
+        .unwrap_or_else(|| "unknown".to_owned()))
+}
+
+fn rate_limit_subject(configured: &str, scope: &str, value: &str) -> Result<String> {
+    let mut mac = HmacSha256::new_from_slice(configured.as_bytes())
+        .map_err(|error| worker::Error::RustError(error.to_string()))?;
+    mac.update(RATE_LIMIT_COMPARISON_DOMAIN);
+    mac.update(scope.as_bytes());
+    mac.update(b"\0");
+    mac.update(value.as_bytes());
+    Ok(lowercase_hex(&mac.finalize().into_bytes()))
+}
+
+async fn retry_after(
+    database: &worker::D1Database,
+    policies: &[(RateLimitPolicy, &str)],
+    now: u64,
+) -> Result<Option<u64>> {
+    let mut maximum = None;
+    for (policy, subject) in policies {
+        let blocked_until = database
+            .prepare(
+                "SELECT blocked_until FROM operator_auth_rate_limits
+                 WHERE scope = ?1 AND subject = ?2 AND blocked_until > ?3",
+            )
+            .bind(&[
+                JsValue::from_str(policy.scope),
+                JsValue::from_str(subject),
+                JsValue::from_str(&now.to_string()),
+            ])?
+            .first::<u64>(Some("blocked_until"))
+            .await?;
+        if let Some(blocked_until) = blocked_until {
+            maximum =
+                Some(maximum.map_or(blocked_until, |current: u64| current.max(blocked_until)));
+        }
+    }
+    Ok(maximum.map(|blocked_until| blocked_until.saturating_sub(now).max(1)))
+}
+
+async fn record_failures(
+    database: &worker::D1Database,
+    policies: &[(RateLimitPolicy, &str)],
+    now: u64,
+) -> Result<Option<u64>> {
+    let window_cutoff = now.saturating_sub(RATE_LIMIT_WINDOW_SECONDS);
+    for (policy, subject) in policies {
+        database
+            .prepare(
+                "INSERT INTO operator_auth_rate_limits (
+                     scope, subject, window_started_at, attempts, blocked_until, updated_at
+                 ) VALUES (?1, ?2, ?3, 1, 0, ?3)
+                 ON CONFLICT(scope, subject) DO UPDATE SET
+                     attempts = CASE
+                         WHEN window_started_at <= ?4 THEN 1 ELSE attempts + 1
+                     END,
+                     window_started_at = CASE
+                         WHEN window_started_at <= ?4 THEN ?3 ELSE window_started_at
+                     END,
+                     blocked_until = CASE
+                         WHEN blocked_until > ?3 THEN blocked_until
+                         WHEN (CASE
+                             WHEN window_started_at <= ?4 THEN 1 ELSE attempts + 1
+                         END) >= CAST(?5 AS INTEGER) THEN ?3 + ?6
+                         ELSE 0
+                     END,
+                     updated_at = ?3",
+            )
+            .bind(&[
+                JsValue::from_str(policy.scope),
+                JsValue::from_str(subject),
+                JsValue::from_str(&now.to_string()),
+                JsValue::from_str(&window_cutoff.to_string()),
+                JsValue::from_str(&policy.maximum_failures.to_string()),
+                JsValue::from_str(&policy.block_seconds.to_string()),
+            ])?
+            .run()
+            .await?;
+    }
+    retry_after(database, policies, now).await
+}
+
+fn invalid_credentials_response() -> Result<Response> {
+    let mut response = Response::error("invalid credentials", 401)?;
+    response
+        .headers_mut()
+        .set("Cache-Control", "no-store, max-age=0")?;
+    Ok(response)
+}
+
+fn rate_limited_response(retry_after: u64) -> Result<Response> {
+    let mut response = Response::error("too many authentication attempts", 429)?;
+    response
+        .headers_mut()
+        .set("Cache-Control", "no-store, max-age=0")?;
+    response
+        .headers_mut()
+        .set("Retry-After", &retry_after.to_string())?;
+    Ok(response)
 }
 
 fn cookie_value<'a>(header: &'a str, name: &str) -> Option<&'a str> {

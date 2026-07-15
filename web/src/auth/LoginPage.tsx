@@ -62,6 +62,8 @@ export function LoginPage({
             <OceanBackdrop />
             <Paper
                 component="form"
+                autoComplete="on"
+                name={`carrack-${environment}-login`}
                 onSubmit={submit}
                 elevation={0}
                 sx={{
@@ -147,7 +149,12 @@ export function LoginPage({
                                 : `Carrack account ${operatorAccount}; qualified so Safari keeps environments separate.`
                         }
                         slotProps={{
-                            htmlInput: { autoCapitalize: "none", spellCheck: false },
+                            htmlInput: {
+                                id: `carrack-${environment}-username`,
+                                name: "username",
+                                autoCapitalize: "none",
+                                spellCheck: false,
+                            },
                         }}
                     />
 
@@ -159,6 +166,12 @@ export function LoginPage({
                         onChange={(event) => setPassword(event.target.value)}
                         required
                         fullWidth
+                        slotProps={{
+                            htmlInput: {
+                                id: `carrack-${environment}-password`,
+                                name: "password",
+                            },
+                        }}
                         sx={{
                             "& .MuiInputLabel-root": { color: "#58717e" },
                             "& .MuiOutlinedInput-root": {

@@ -75,6 +75,11 @@ assert_uses_index read-lease-retirement idx_vfs_read_leases_retirement \
    WHERE COALESCE(completed_at, expires_at) <= 1
    ORDER BY COALESCE(completed_at, expires_at), id LIMIT 1000"
 
+assert_uses_index auth-rate-limit-retirement idx_operator_auth_rate_limits_retirement \
+  "SELECT scope, subject FROM operator_auth_rate_limits
+   WHERE updated_at <= 1
+   ORDER BY updated_at, scope, subject LIMIT 500"
+
 # Transfer observability is sampled, but its rollups are still a write-heavy
 # path. Keep exactly one history index and prove that both UI reads and bounded
 # retirement avoid table scans before accepting a migration.

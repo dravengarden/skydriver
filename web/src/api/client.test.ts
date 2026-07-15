@@ -29,10 +29,12 @@ describe("parseSession", () => {
 
 describe("operator session", () => {
     it("keeps saved identities separate while preserving the server account", () => {
-        expect(passwordManagerIdentity("draven", "dev")).toBe("draven@dev");
-        expect(passwordManagerIdentity("draven", "prod")).toBe("draven@prod");
-        expect(resolvePasswordManagerIdentity("draven@dev", "draven", "dev")).toBe("draven");
-        expect(resolvePasswordManagerIdentity("draven@prod", "draven", "dev")).toBeNull();
+        expect(passwordManagerIdentity("draven", "dev")).toBe("draven@carrack-dev");
+        expect(passwordManagerIdentity("draven", "prod")).toBe("draven@carrack-prod");
+        expect(resolvePasswordManagerIdentity("draven@carrack-dev", "draven", "dev")).toBe(
+            "draven",
+        );
+        expect(resolvePasswordManagerIdentity("draven@carrack-prod", "draven", "dev")).toBeNull();
     });
 
     it("maps an unauthorized status to a logged-out session", async () => {

@@ -109,12 +109,20 @@ deletes expired operator and configuration sessions, so cleanup does not depend
 on a later login.
 
 The unauthenticated health response exposes the non-secret account so the UI
-can present an environment-qualified password-manager identity. Safari stores
-`draven@dev` and `draven@prod`, while the UI submits only the canonical
-`draven` account to the Worker. The password-manager suffix is not an account,
-principal, or authorization input. The login endpoint also accepts only the
-exact alias for its own environment so an older cached UI cannot lock the
-operator out; a dev alias is always rejected by production and vice versa.
+can present a site-qualified password-manager identity. Safari stores
+`draven@carrack-dev` and `draven@carrack-prod`, while the UI submits only the
+canonical `draven` account to the Worker. The
+password-manager suffix is not an account, principal, or authorization input.
+The login endpoint also accepts only the exact legacy alias for its own
+environment so an older cached UI cannot lock the operator out; a dev alias is
+always rejected by production and vice versa.
+
+Authentication failures are throttled in D1 by a keyed source-IP digest and,
+for the known operator, a higher-threshold account digest. Raw IP addresses and
+submitted account names are never retained in throttle state. The same
+source-IP protection covers the credential recheck that enables a configuration
+session. Limits fail closed with `429` and `Retry-After`; bounded Cron cleanup
+retires inactive throttle rows after one day.
 
 Set independent operator and VFS-master secrets for each environment:
 

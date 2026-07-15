@@ -1123,3 +1123,30 @@ boundary_sync_status=$(CARRACK_VFS_TOKEN="$projected_token" "$rust_carrack" sync
 revoked_grant_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   -X POST -H "$authorization" "$base_url/api/v2/puts/$intent_id/key-grant")
 [[ "$revoked_grant_status" == 403 ]]
+
+# Authentication throttling is server-enforced and survives successful logins.
+# The earlier wrong-environment login counts against the same local source-IP
+# window, so this loop reaches the ten-failure threshold within ten attempts.
+rate_limit_headers="$state_directory/rate-limit-headers.txt"
+rate_limited_status=
+for _ in $(seq 1 10); do
+  rate_limited_status=$(curl --silent --show-error \
+    --output /dev/null --dump-header "$rate_limit_headers" --write-out '%{http_code}' \
+    -H "$json" \
+    --data "$(jq -cn --arg account "$operator_account" \
+      '{account: $account, password: "wrong-operator-credential"}')" \
+    "$base_url/api/auth/login")
+  if [[ "$rate_limited_status" == 429 ]]; then
+    break
+  fi
+  [[ "$rate_limited_status" == 401 ]]
+done
+[[ "$rate_limited_status" == 429 ]]
+grep -Eiq '^retry-after: [1-9][0-9]*' "$rate_limit_headers"
+
+blocked_correct_login=$(curl --silent --show-error \
+  --output /dev/null --write-out '%{http_code}' -H "$json" \
+  --data "$(jq -cn --arg account "$operator_account" --arg password "$admin_token" \
+    '{account: $account, password: $password}')" \
+  "$base_url/api/auth/login")
+[[ "$blocked_correct_login" == 429 ]]

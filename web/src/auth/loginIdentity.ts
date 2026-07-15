@@ -1,5 +1,5 @@
 export function passwordManagerIdentity(account: string, environment: string): string {
-    return account === "" || environment === "unknown" ? "" : `${account}@${environment}`;
+    return account === "" || environment === "unknown" ? "" : `${account}@carrack-${environment}`;
 }
 
 export function resolvePasswordManagerIdentity(

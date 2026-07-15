@@ -16,6 +16,8 @@ const R2_CLEANUP_EVIDENCE_SECONDS: u64 = 30 * 86_400;
 const TRANSFER_METRICS_RETENTION_SECONDS: u64 = 400 * 86_400;
 const MAXIMUM_TRANSFER_METRIC_ROWS_PER_RUN: u64 = 1_000;
 const MAXIMUM_ACCESS_AUDIT_ROWS_PER_RUN: u64 = 1_000;
+const AUTH_RATE_LIMIT_RETENTION_SECONDS: u64 = 86_400;
+const MAXIMUM_AUTH_RATE_LIMIT_ROWS_PER_RUN: u64 = 500;
 
 /// Performs bounded metadata hygiene without touching provider objects.
 ///
@@ -28,6 +30,7 @@ pub(crate) async fn run(env: &Env) -> Result<()> {
     let database = env.d1(DATABASE_BINDING)?;
     environment_defaults::ensure(env, &database, now).await?;
     delete_expired_authorization_claims(&database, now).await?;
+    delete_expired_auth_rate_limits(&database, now).await?;
 
     database
         .batch(vec![
@@ -186,6 +189,28 @@ async fn delete_expired_r2_cleanup_evidence(database: &worker::D1Database, now: 
         .bind(&[
             JsValue::from_str(&now.saturating_sub(R2_CLEANUP_EVIDENCE_SECONDS).to_string()),
             JsValue::from_str(&MAXIMUM_R2_CLEANUP_EVIDENCE_PER_RUN.to_string()),
+        ])?
+        .run()
+        .await?;
+    Ok(())
+}
+
+async fn delete_expired_auth_rate_limits(database: &worker::D1Database, now: u64) -> Result<()> {
+    database
+        .prepare(
+            "DELETE FROM operator_auth_rate_limits
+             WHERE (scope, subject) IN (
+                 SELECT scope, subject FROM operator_auth_rate_limits
+                 WHERE updated_at <= ?1
+                 ORDER BY updated_at, scope, subject LIMIT ?2
+             )",
+        )
+        .bind(&[
+            JsValue::from_str(
+                &now.saturating_sub(AUTH_RATE_LIMIT_RETENTION_SECONDS)
+                    .to_string(),
+            ),
+            JsValue::from_str(&MAXIMUM_AUTH_RATE_LIMIT_ROWS_PER_RUN.to_string()),
         ])?
         .run()
         .await?;
