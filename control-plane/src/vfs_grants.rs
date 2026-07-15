@@ -4,7 +4,7 @@ use worker::{D1Database, Date, Env, Response, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
 
 use crate::{
-    driver_credentials,
+    driver_credentials, r2_signing,
     vfs_envelopes::{
         DirectoryEnvelopeRef, PLAINTEXT_SUITE, open_directory_key, open_driver_credential,
     },
@@ -24,6 +24,7 @@ struct PutGrantRow {
     directory_id: String,
     version_id: String,
     driver_id: String,
+    storage_key: String,
     crypto_suite: String,
     key_epoch: u64,
     state: String,
@@ -49,6 +50,7 @@ struct PutDeleteGrantRow {
     task_id: String,
     filesystem_id: String,
     driver_id: String,
+    storage_key: String,
     driver_kind: String,
     driver_config_json: String,
     driver_revision: u64,
@@ -195,7 +197,12 @@ pub(crate) async fn grant_put_driver(
             worker::Error::RustError(format!("decode stored VFS driver configuration: {error}"))
         },
     )?;
-    let credential = decrypt_credential(env, &context)?;
+    let credential = decrypt_credential(
+        env,
+        &context,
+        "PUT",
+        context.expires_at.min(token.expires_at),
+    )?;
     record_audit(
         &database,
         token,
@@ -256,7 +263,12 @@ pub(crate) async fn grant_put_delete_driver(
             worker::Error::RustError(format!("decode stored VFS driver configuration: {error}"))
         },
     )?;
-    let credential = decrypt_put_delete_credential(env, &context)?;
+    let credential = decrypt_put_delete_credential(
+        env,
+        &context,
+        "DELETE",
+        context.lease_expires_at.min(token.expires_at),
+    )?;
     record_put_delete_audit(
         &database,
         token,
@@ -308,7 +320,12 @@ fn directory_envelope(context: &PutGrantRow) -> Result<(&str, &str, &[u8], &[u8]
     }
 }
 
-fn decrypt_credential(env: &Env, context: &PutGrantRow) -> Result<Option<serde_json::Value>> {
+fn decrypt_credential(
+    env: &Env,
+    context: &PutGrantRow,
+    method: &str,
+    expires_at: u64,
+) -> Result<Option<serde_json::Value>> {
     let Some(credential_id) = context.credential_id.as_deref() else {
         return Ok(None);
     };
@@ -333,10 +350,20 @@ fn decrypt_credential(env: &Env, context: &PutGrantRow) -> Result<Option<serde_j
         nonce,
         ciphertext,
     )?;
-    let decoded = driver_credentials::access_grant_from_plaintext(&context.driver_kind, &plaintext)
-        .map_err(|error| {
-            worker::Error::RustError(format!("decode VFS driver credential JSON: {error}"))
-        });
+    let decoded = if context.driver_kind == "r2/v1" {
+        r2_signing::access_grant_from_plaintext(
+            method,
+            &context.driver_config_json,
+            &context.storage_key,
+            &plaintext,
+            expires_at,
+        )
+        .ok_or_else(|| worker::Error::RustError("sign R2 VFS driver grant".to_owned()))
+    } else {
+        driver_credentials::access_grant_from_plaintext(&context.driver_kind, &plaintext).map_err(
+            |error| worker::Error::RustError(format!("decode VFS driver credential JSON: {error}")),
+        )
+    };
     plaintext.zeroize();
     Ok(Some(decoded?))
 }
@@ -344,6 +371,8 @@ fn decrypt_credential(env: &Env, context: &PutGrantRow) -> Result<Option<serde_j
 fn decrypt_put_delete_credential(
     env: &Env,
     context: &PutDeleteGrantRow,
+    method: &str,
+    expires_at: u64,
 ) -> Result<Option<serde_json::Value>> {
     let Some(credential_id) = context.credential_id.as_deref() else {
         return Ok(None);
@@ -368,10 +397,20 @@ fn decrypt_put_delete_credential(
         nonce,
         ciphertext,
     )?;
-    let decoded = driver_credentials::access_grant_from_plaintext(&context.driver_kind, &plaintext)
-        .map_err(|error| {
-            worker::Error::RustError(format!("decode VFS driver credential JSON: {error}"))
-        });
+    let decoded = if context.driver_kind == "r2/v1" {
+        r2_signing::access_grant_from_plaintext(
+            method,
+            &context.driver_config_json,
+            &context.storage_key,
+            &plaintext,
+            expires_at,
+        )
+        .ok_or_else(|| worker::Error::RustError("sign R2 delete driver grant".to_owned()))
+    } else {
+        driver_credentials::access_grant_from_plaintext(&context.driver_kind, &plaintext).map_err(
+            |error| worker::Error::RustError(format!("decode VFS driver credential JSON: {error}")),
+        )
+    };
     plaintext.zeroize();
     Ok(Some(decoded?))
 }
@@ -380,7 +419,7 @@ async fn load_context(database: &D1Database, intent_id: &str) -> Result<Option<P
     database
         .prepare(
             "SELECT intent.id AS intent_id, intent.filesystem_id, intent.principal_id,\
-                    intent.directory_id, intent.version_id, intent.driver_id,\
+                    intent.directory_id, intent.version_id, intent.driver_id, intent.storage_key,\
                     intent.crypto_suite, intent.key_epoch, intent.state, intent.expires_at,\
                     key_epoch.envelope_algorithm AS key_envelope_algorithm,\
                     key_epoch.master_key_version AS key_master_version,\
@@ -417,7 +456,7 @@ async fn load_put_delete_context(
     database
         .prepare(
             "SELECT task.id AS task_id, intent.filesystem_id,\
-                    intent.driver_id, driver.kind AS driver_kind,\
+                    intent.driver_id, intent.storage_key, driver.kind AS driver_kind,\
                     driver.config_json AS driver_config_json,\
                     task.driver_revision, task.lease_expires_at,\
                     credential.id AS credential_id,\

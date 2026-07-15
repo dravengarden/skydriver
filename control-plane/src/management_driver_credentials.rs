@@ -9,7 +9,7 @@ use zeroize::Zeroize as _;
 
 use crate::{
     driver_credentials::{self, RefreshFailure},
-    management_driver_registration, operator_sessions,
+    management_driver_registration, operator_sessions, r2_signing,
     vfs_envelopes::{ENVELOPE_ALGORITHM, MASTER_KEY_VERSION, blob_binding, seal_driver_credential},
     vfs_identifiers,
 };
@@ -21,13 +21,14 @@ const CREDENTIAL_KIND: &str = "driver.credential";
 const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.driver-credential.v1\0";
 const ALIYUN_DRIVE_KIND: &str = "aliyundrive-open/v2";
 const AUTHORIZATION_CLAIM_SECONDS: u64 = 5 * 60;
+const LONG_LIVED_CREDENTIAL_EXPIRES_AT: u64 = 253_402_300_799;
 
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CredentialRequest {
-    credential: RefreshAuthorization,
+    credential: CredentialAuthorization,
     expected_revision: u64,
 }
 
@@ -38,10 +39,17 @@ struct RefreshAuthorization {
     refresh_issuer: String,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(untagged)]
+enum CredentialAuthorization {
+    Aliyun(RefreshAuthorization),
+    R2(r2_signing::Credential),
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ApplyRequest {
-    credential: RefreshAuthorization,
+    credential: CredentialAuthorization,
     expected_revision: u64,
     validation_expires_at: u64,
     validation_digest: String,
@@ -113,18 +121,6 @@ pub(crate) async fn validate(
         return Response::error("valid driver ID is required", 400);
     };
     let requested = request.json::<CredentialRequest>().await?;
-    let Some(refresh_claims) =
-        driver_credentials::refresh_claims(&requested.credential.refresh_token)
-    else {
-        return Response::error("refresh token is invalid", 400);
-    };
-    if requested.credential.refresh_issuer != driver_credentials::OPENLIST_ONLINE_ISSUER {
-        return Response::error("refresh token issuer is unsupported", 400);
-    }
-    if refresh_claims.exp <= now_seconds() {
-        return Response::error("refresh token is expired", 400);
-    }
-
     let database = env.d1(DATABASE_BINDING)?;
     let Some(driver) = load_driver(&database, driver_id).await? else {
         return Response::error("driver not found", 404);
@@ -132,32 +128,59 @@ pub(crate) async fn validate(
     if driver.revision != requested.expected_revision {
         return Response::error("driver revision conflict", 409);
     }
-    if driver.kind != ALIYUN_DRIVE_KIND
-        || !management_driver_registration::valid_stored_configuration(
-            &driver.kind,
-            &driver.config_json,
-            true,
-        )
-    {
+    if !management_driver_registration::valid_stored_configuration(
+        &driver.kind,
+        &driver.config_json,
+        true,
+    ) {
         return Response::error("driver kind does not accept this credential", 400);
     }
+    let refresh_token_expires_at = match (&driver.kind[..], &requested.credential) {
+        (ALIYUN_DRIVE_KIND, CredentialAuthorization::Aliyun(authorization)) => {
+            if authorization.refresh_issuer != driver_credentials::OPENLIST_ONLINE_ISSUER {
+                return Response::error("refresh token issuer is unsupported", 400);
+            }
+            let Some(claims) = driver_credentials::refresh_claims(&authorization.refresh_token)
+            else {
+                return Response::error("refresh token is invalid", 400);
+            };
+            if claims.exp <= now_seconds() {
+                return Response::error("refresh token is expired", 400);
+            }
+            claims.exp
+        }
+        (management_driver_registration::R2_KIND, CredentialAuthorization::R2(credential))
+            if r2_signing::valid_credential(credential) =>
+        {
+            LONG_LIVED_CREDENTIAL_EXPIRES_AT
+        }
+        _ => return Response::error("credential does not match driver kind", 400),
+    };
 
     let validation_expires_at = now_seconds() + VALIDATION_LIFETIME_SECONDS;
     let validation_digest = validation_digest(env, driver_id, &requested, validation_expires_at)?;
+    let is_r2 = driver.kind == management_driver_registration::R2_KIND;
     no_store_json(&ValidationResponse {
         schema: "carrack.management.driver-credential-validation.v1",
         driver_id: driver_id.to_owned(),
         kind: driver.kind,
         current_credential_present: driver.credential_id.is_some(),
         credential_revision: driver.credential_revision.unwrap_or(0) + 1,
-        refresh_token_expires_at: refresh_claims.exp,
+        refresh_token_expires_at,
         expected_revision: requested.expected_revision,
         validation_expires_at,
         validation_digest,
-        warnings: vec![
-            "The refresh token is write-only and remains encrypted in the control plane.",
-            "Applying this validation exchanges and verifies the token with the provider.",
-        ],
+        warnings: if is_r2 {
+            vec![
+                "The R2 access key is write-only and remains encrypted in the control plane.",
+                "Applying this validation verifies the key against the configured R2 bucket.",
+            ]
+        } else {
+            vec![
+                "The refresh token is write-only and remains encrypted in the control plane.",
+                "Applying this validation exchanges and verifies the token with the provider.",
+            ]
+        },
     })
 }
 
@@ -181,22 +204,11 @@ pub(crate) async fn apply(
         credential: requested.credential,
         expected_revision: requested.expected_revision,
     };
-    let Some(refresh_claims) =
-        driver_credentials::refresh_claims(&desired.credential.refresh_token)
-    else {
-        return Response::error("refresh token is invalid", 400);
-    };
-    if desired.credential.refresh_issuer != driver_credentials::OPENLIST_ONLINE_ISSUER {
-        return Response::error("refresh token issuer is unsupported", 400);
-    }
     if !valid_string(&requested.idempotency_key, 256) {
         return Response::error("driver credential apply is invalid", 400);
     }
 
     let now = now_seconds();
-    if refresh_claims.exp <= now {
-        return Response::error("refresh token is expired", 409);
-    }
     if requested.validation_expires_at < now
         || requested.validation_expires_at > now + VALIDATION_LIFETIME_SECONDS
     {
@@ -228,13 +240,11 @@ pub(crate) async fn apply(
     if driver.revision != desired.expected_revision {
         return Response::error("driver revision conflict", 409);
     }
-    if driver.kind != ALIYUN_DRIVE_KIND
-        || !management_driver_registration::valid_stored_configuration(
-            &driver.kind,
-            &driver.config_json,
-            true,
-        )
-    {
+    if !management_driver_registration::valid_stored_configuration(
+        &driver.kind,
+        &driver.config_json,
+        true,
+    ) {
         return Response::error("driver kind does not accept this credential", 409);
     }
 
@@ -251,45 +261,93 @@ pub(crate) async fn apply(
         return Response::error("driver authorization is already in progress", 409);
     };
 
-    let credential = match driver_credentials::authorize_refresh_token(
-        &desired.credential.refresh_token,
-        &desired.credential.refresh_issuer,
-    )
-    .await
-    {
-        Ok(credential) => credential,
-        Err(RefreshFailure::Reauthenticate(_)) => {
-            release_authorization(
-                &database,
-                driver_id,
-                authorization_fence,
-                &requested.idempotency_key,
-            )
-            .await?;
-            return Response::error("refresh token was rejected by the provider", 400);
-        }
-        Err(RefreshFailure::Retry(_)) => {
-            release_authorization(
-                &database,
-                driver_id,
-                authorization_fence,
-                &requested.idempotency_key,
-            )
-            .await?;
-            return Response::error("provider authorization is temporarily unavailable", 503);
-        }
-    };
-    let credential_expires_at = credential.access_expiry().ok_or_else(|| {
-        worker::Error::RustError("provider access token has no expiry".to_owned())
-    })?;
-    let refresh_token_expires_at = credential
-        .refresh_token
-        .as_deref()
-        .and_then(driver_credentials::refresh_claims)
-        .map(|claims| claims.exp)
-        .ok_or_else(|| {
-            worker::Error::RustError("provider refresh token has no expiry".to_owned())
-        })?;
+    let (mut plaintext, credential_expires_at, refresh_token_expires_at, managed_issuer) =
+        match desired.credential {
+            CredentialAuthorization::Aliyun(authorization) if driver.kind == ALIYUN_DRIVE_KIND => {
+                let Some(refresh_claims) =
+                    driver_credentials::refresh_claims(&authorization.refresh_token)
+                else {
+                    return Response::error("refresh token is invalid", 400);
+                };
+                if refresh_claims.exp <= now
+                    || authorization.refresh_issuer != driver_credentials::OPENLIST_ONLINE_ISSUER
+                {
+                    return Response::error("refresh authorization is invalid or expired", 409);
+                }
+                let credential = match driver_credentials::authorize_refresh_token(
+                    &authorization.refresh_token,
+                    &authorization.refresh_issuer,
+                )
+                .await
+                {
+                    Ok(credential) => credential,
+                    Err(RefreshFailure::Reauthenticate(_)) => {
+                        release_authorization(
+                            &database,
+                            driver_id,
+                            authorization_fence,
+                            &requested.idempotency_key,
+                        )
+                        .await?;
+                        return Response::error("refresh token was rejected by the provider", 400);
+                    }
+                    Err(RefreshFailure::Retry(_)) => {
+                        release_authorization(
+                            &database,
+                            driver_id,
+                            authorization_fence,
+                            &requested.idempotency_key,
+                        )
+                        .await?;
+                        return Response::error(
+                            "provider authorization is temporarily unavailable",
+                            503,
+                        );
+                    }
+                };
+                let access_expiry = credential.access_expiry().ok_or_else(|| {
+                    worker::Error::RustError("provider access token has no expiry".to_owned())
+                })?;
+                let refresh_expiry = credential
+                    .refresh_token
+                    .as_deref()
+                    .and_then(driver_credentials::refresh_claims)
+                    .map(|claims| claims.exp)
+                    .ok_or_else(|| {
+                        worker::Error::RustError("provider refresh token has no expiry".to_owned())
+                    })?;
+                let issuer = credential.managed_issuer().map(str::to_owned);
+                let bytes = serde_json::to_vec(&credential).map_err(|error| json_error(&error))?;
+                (bytes, access_expiry, refresh_expiry, issuer)
+            }
+            CredentialAuthorization::R2(credential)
+                if driver.kind == management_driver_registration::R2_KIND =>
+            {
+                let config = serde_json::from_str::<r2_signing::Config>(&driver.config_json)
+                    .map_err(|error| json_error(&error))?;
+                if !r2_signing::verify(&config, &credential).await {
+                    release_authorization(
+                        &database,
+                        driver_id,
+                        authorization_fence,
+                        &requested.idempotency_key,
+                    )
+                    .await?;
+                    return Response::error(
+                        "R2 credential was rejected by the configured bucket",
+                        400,
+                    );
+                }
+                let bytes = serde_json::to_vec(&credential).map_err(|error| json_error(&error))?;
+                (
+                    bytes,
+                    LONG_LIVED_CREDENTIAL_EXPIRES_AT,
+                    LONG_LIVED_CREDENTIAL_EXPIRES_AT,
+                    None,
+                )
+            }
+            _ => return Response::error("credential does not match driver kind", 409),
+        };
 
     let credential_id = match driver.credential_id {
         Some(value) => value,
@@ -297,7 +355,6 @@ pub(crate) async fn apply(
     };
     let credential_revision = driver.credential_revision.unwrap_or(0) + 1;
     let final_revision = driver.revision + 1;
-    let mut plaintext = serde_json::to_vec(&credential).map_err(|error| json_error(&error))?;
     let sealed = seal_driver_credential(env, &credential_id, credential_revision, &plaintext);
     plaintext.zeroize();
     let sealed = sealed?;
@@ -354,7 +411,7 @@ pub(crate) async fn apply(
             ])?
     };
 
-    let refresh_statement = if let Some(issuer) = credential.managed_issuer() {
+    let refresh_statement = if let Some(issuer) = managed_issuer.as_deref() {
         database
             .prepare(
                 r"INSERT INTO driver_credential_refreshes (

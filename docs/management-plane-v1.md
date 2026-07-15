@@ -157,10 +157,16 @@ normalizes a typed non-secret configuration and creates a disabled revision-1
 driver. `local-filesystem/v2` requires an exact `{root}` configuration, no
 credential, a canonical absolute root, and a successful local probe from the
 CLI host. `aliyundrive-open/v2` accepts only its documented endpoint, drive,
-root-folder, and upload-part fields; its write-only credential accepts exactly
-one access token, is sealed with AES-256-GCM, and is never returned. Refresh
-tokens remain rejected until durable provider-token rotation can CAS the new
-secret back into the envelope. Disablement is allowed even
+root-folder, and upload-part fields; its write-only refresh authorization is
+sealed with AES-256-GCM and is never returned. The control plane exchanges and
+renews access tokens with fenced CAS updates. `r2/v1` accepts an exact
+`{endpoint,bucket,prefix,managed}` configuration. Managed instances are bound
+to the current environment's `carrack-payload-dev` or `carrack-payload-prod`
+bucket; external instances may use another Cloudflare R2 bucket. Its write-only
+credential is `{access_key_id,secret_access_key}`. Validation performs a
+temporary PUT and DELETE before commit, and VFS clients receive only
+object-scoped signed URLs valid for at most 15 minutes. Single PUT fails closed
+above 5 GiB until multipart is available. Disablement is allowed even
 when placements or available locations exist, but those counts and warnings
 are covered by the signed validation. Disabling does not delete locations or
 provider objects; it makes them unavailable through that driver until a later

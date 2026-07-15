@@ -93,6 +93,20 @@ refresh time, and `credential_refresh_token_expires_at`. Thereafter the control
 plane owns all access-token generation and renewal; only repeat this command if
 the server reports `reauth_required`.
 
+For R2, use the same register and credential commands with private JSON files:
+
+```json
+{"endpoint":"https://ACCOUNT_ID.r2.cloudflarestorage.com","bucket":"carrack-payload-dev","prefix":"","managed":true}
+```
+
+```json
+{"access_key_id":"...","secret_access_key":"..."}
+```
+
+Managed bucket names must match the control-plane environment. Use
+`managed:false` for a third-party R2 bucket. The server validates the key with
+a temporary object and stores it sealed; never print or commit either file.
+
 Validate a token annotation without changing state:
 
 ```bash

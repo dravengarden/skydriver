@@ -25,6 +25,7 @@ mod aliyun;
 mod crypto;
 mod download;
 mod integrity;
+mod r2;
 mod sync;
 mod transfer;
 mod vfs;

@@ -599,7 +599,7 @@ export function applyDriverRegistration(
 
 export function validateDriverCredential(
     driverId: string,
-    refreshToken: string,
+    credential: unknown,
     expectedRevision: number,
 ): Promise<DriverCredentialValidation> {
     return requestJson(
@@ -608,10 +608,7 @@ export function validateDriverCredential(
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-                credential: {
-                    refresh_token: refreshToken,
-                    refresh_issuer: "openlist-online/v1",
-                },
+                credential,
                 expected_revision: expectedRevision,
             }),
         },
@@ -621,7 +618,7 @@ export function validateDriverCredential(
 
 export function applyDriverCredential(
     validation: DriverCredentialValidation,
-    refreshToken: string,
+    credential: unknown,
 ): Promise<DriverCredentialReceipt> {
     return requestJson(
         `/api/admin/drivers/${encodeURIComponent(validation.driver_id)}/credential/apply`,
@@ -629,10 +626,7 @@ export function applyDriverCredential(
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-                credential: {
-                    refresh_token: refreshToken,
-                    refresh_issuer: "openlist-online/v1",
-                },
+                credential,
                 expected_revision: validation.expected_revision,
                 validation_expires_at: validation.validation_expires_at,
                 validation_digest: validation.validation_digest,
@@ -654,7 +648,10 @@ export function validateQuota(
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ limits, expected_revision: expectedRevision }),
+            body: JSON.stringify({
+                limits,
+                expected_revision: expectedRevision,
+            }),
         },
         QuotaValidationSchema,
     );

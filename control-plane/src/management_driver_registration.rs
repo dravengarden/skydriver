@@ -7,7 +7,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 
-use crate::{operator_sessions, vfs_identifiers};
+use crate::{operator_sessions, r2_signing, vfs_identifiers};
 
 const ADMIN_TOKEN_BINDING: &str = "CARRACK_ADMIN_TOKEN";
 const DATABASE_BINDING: &str = "CARRACK_INDEX";
@@ -16,6 +16,7 @@ const REGISTRATION_KIND: &str = "driver.register";
 const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.driver-registration.v1\0";
 const LOCAL_FILESYSTEM_KIND: &str = "local-filesystem/v2";
 const ALIYUN_DRIVE_KIND: &str = "aliyundrive-open/v2";
+pub(crate) const R2_KIND: &str = "r2/v1";
 const DEFAULT_ALIYUN_API_BASE_URL: &str = "https://openapi.alipan.com";
 const DEFAULT_ALIYUN_UPLOAD_PART_BYTES: u64 = 20 << 20;
 const MAXIMUM_ALIYUN_UPLOAD_PART_BYTES: u64 = 512 << 20;
@@ -111,6 +112,9 @@ pub(crate) async fn validate(request: &mut Request, env: &Env) -> Result<Respons
     let Ok(normalized) = normalize_registration(requested) else {
         return Response::error("driver registration is invalid", 400);
     };
+    if !valid_environment_registration(&normalized, env)? {
+        return Response::error("driver registration does not match this environment", 400);
+    }
     let database = env.d1(DATABASE_BINDING)?;
     if driver_exists(&database, &normalized.driver_id).await? {
         return Response::error("driver already exists", 409);
@@ -120,7 +124,7 @@ pub(crate) async fn validate(request: &mut Request, env: &Env) -> Result<Respons
     let validation_digest = validation_digest(env, &normalized, validation_expires_at)?;
     no_store_json(&ValidationResponse {
         schema: "carrack.management.driver-registration-validation.v1",
-        requires_credential: normalized.kind == ALIYUN_DRIVE_KIND,
+        requires_credential: matches!(normalized.kind.as_str(), ALIYUN_DRIVE_KIND | R2_KIND),
         warnings: registration_warnings(&normalized.kind),
         driver_id: normalized.driver_id,
         kind: normalized.kind,
@@ -152,6 +156,9 @@ pub(crate) async fn apply(request: &mut Request, env: &Env) -> Result<Response> 
     }) else {
         return Response::error("driver registration is invalid", 400);
     };
+    if !valid_environment_registration(&normalized, env)? {
+        return Response::error("driver registration does not match this environment", 400);
+    }
     let now = now_seconds();
     if requested.validation_expires_at < now
         || requested.validation_expires_at > now + VALIDATION_LIFETIME_SECONDS
@@ -290,6 +297,16 @@ fn normalize_registration(requested: RegistrationRequest) -> Result<Registration
             }
             serde_json::to_value(config).map_err(|error| json_error(&error))?
         }
+        R2_KIND => {
+            let config: r2_signing::Config =
+                serde_json::from_value(requested.config).map_err(|error| json_error(&error))?;
+            if !r2_signing::valid_config(&config) {
+                return Err(worker::Error::RustError(
+                    "R2 configuration is invalid".to_owned(),
+                ));
+            }
+            serde_json::to_value(config).map_err(|error| json_error(&error))?
+        }
         _ => {
             return Err(worker::Error::RustError(
                 "driver kind is not compiled by this Carrack release".to_owned(),
@@ -301,6 +318,21 @@ fn normalize_registration(requested: RegistrationRequest) -> Result<Registration
         config,
         ..requested
     })
+}
+
+fn valid_environment_registration(request: &RegistrationRequest, env: &Env) -> Result<bool> {
+    if request.kind != R2_KIND {
+        return Ok(true);
+    }
+    let config = serde_json::from_value::<r2_signing::Config>(request.config.clone())
+        .map_err(|error| json_error(&error))?;
+    if !config.managed {
+        return Ok(true);
+    }
+    let environment = env.var("CARRACK_ENVIRONMENT")?.to_string();
+    Ok(matches!(environment.as_str(), "dev" | "prod")
+        && config.bucket == format!("carrack-payload-{environment}")
+        && config.prefix.is_empty())
 }
 
 fn valid_aliyun_config(config: &AliyunDriveConfig) -> bool {
@@ -328,11 +360,23 @@ pub(crate) fn valid_stored_configuration(
             .is_ok_and(|config| valid_local_root(&config.root) && !credential_present),
         ALIYUN_DRIVE_KIND => serde_json::from_str::<AliyunDriveConfig>(config_json)
             .is_ok_and(|config| valid_aliyun_config(&config) && credential_present),
+        R2_KIND => serde_json::from_str::<r2_signing::Config>(config_json)
+            .is_ok_and(|config| r2_signing::valid_config(&config) && credential_present),
         _ => false,
     }
 }
 
 fn registration_warnings(kind: &str) -> Vec<String> {
+    if kind == R2_KIND {
+        return vec![
+            "The driver is registered disabled and requires a write-only R2 access-key credential before enablement."
+                .to_owned(),
+            "Payload bytes transfer directly between the client and R2 through short-lived object-scoped signed URLs; long-lived keys never leave the control plane."
+                .to_owned(),
+            "This release supports complete-object PUT, GET, range GET, and delayed fenced deletion; oversized objects fail closed until multipart upload is available."
+                .to_owned(),
+        ];
+    }
     if kind == ALIYUN_DRIVE_KIND {
         return vec![
             "The driver is registered disabled and requires a write-only access-token credential before enablement."
@@ -504,7 +548,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        ALIYUN_DRIVE_KIND, RegistrationRequest, normalize_registration, valid_stored_configuration,
+        ALIYUN_DRIVE_KIND, R2_KIND, RegistrationRequest, normalize_registration,
+        valid_stored_configuration,
     };
 
     #[test]
@@ -550,5 +595,24 @@ mod tests {
             r#"{"api_base_url":"https://openapi.alipan.com","drive_type":"resource","root_folder_id":"root","upload_part_bytes":20971520}"#,
             false,
         ));
+        let r2 = r#"{"endpoint":"https://0123456789abcdef.r2.cloudflarestorage.com","bucket":"carrack-payload-dev","prefix":"","managed":true}"#;
+        assert!(valid_stored_configuration(R2_KIND, r2, true));
+        assert!(!valid_stored_configuration(R2_KIND, r2, false));
+    }
+
+    #[test]
+    fn normalizes_strict_r2_configuration() {
+        let normalized = normalize_registration(RegistrationRequest {
+            driver_id: "r2-default".to_owned(),
+            kind: R2_KIND.to_owned(),
+            config: json!({
+                "endpoint": "https://0123456789abcdef.r2.cloudflarestorage.com",
+                "bucket": "carrack-payload-dev",
+                "managed": true
+            }),
+        })
+        .expect("normalize R2 registration");
+        assert_eq!(normalized.config["prefix"], "");
+        assert_eq!(normalized.config["managed"], true);
     }
 }

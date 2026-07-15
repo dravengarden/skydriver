@@ -484,6 +484,24 @@ async fn upload_driver(
             etag: object.etag,
         });
     }
+    if driver.driver_kind == "r2/v1" {
+        let credential = driver.credential.take().ok_or_else(|| {
+            Error::InvalidResponse("R2 driver omitted its signed grant".to_owned())
+        })?;
+        let (native_id, provider_version, etag) = crate::r2::upload(
+            http,
+            credential,
+            &staged.path,
+            staged.encoded_bytes,
+            &staged.encoded_sha256,
+        )
+        .await?;
+        return Ok(ProviderObject {
+            native_id,
+            provider_version,
+            etag,
+        });
+    }
     if driver.driver_kind != "local-filesystem/v2" {
         return Err(Error::InvalidResponse(format!(
             "unsupported native driver kind {}",

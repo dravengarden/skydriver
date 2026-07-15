@@ -30,6 +30,7 @@ mod protocol_compatibility;
 mod publication;
 mod quarantine;
 mod quarantine_deletion;
+mod r2_signing;
 mod reconciliation;
 mod repairing;
 mod restoration;

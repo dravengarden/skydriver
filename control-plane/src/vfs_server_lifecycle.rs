@@ -7,7 +7,9 @@ use worker::{
 };
 use zeroize::Zeroize as _;
 
-use crate::{driver_credentials::AliyunCredential, vfs_envelopes::open_driver_credential};
+use crate::{
+    driver_credentials::AliyunCredential, r2_signing, vfs_envelopes::open_driver_credential,
+};
 
 const MAXIMUM_MARKS_PER_RUN: u64 = 100;
 const MAXIMUM_TASKS_PER_RUN: u64 = 100;
@@ -20,6 +22,7 @@ struct DeleteTask {
     id: String,
     expected_location_revision: u64,
     native_id: Option<String>,
+    storage_key: String,
     fencing_token: u64,
     kind: String,
     config_json: String,
@@ -62,6 +65,10 @@ pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
     delete_one_abandoned_put(env, &database, now).await
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "claim, final safety reload, provider dispatch, and fenced outcome form one lifecycle transaction"
+)]
 async fn delete_one_abandoned_put(env: &Env, database: &D1Database, now: u64) -> Result<()> {
     let candidate = database
         .prepare(
@@ -133,7 +140,7 @@ async fn delete_one_abandoned_put(env: &Env, database: &D1Database, now: u64) ->
         .await?;
         return Ok(());
     }
-    if task.kind != "aliyundrive-open/v2" {
+    if !matches!(task.kind.as_str(), "aliyundrive-open/v2" | "r2/v1") {
         fail_abandoned_put(
             database,
             &id,
@@ -145,7 +152,12 @@ async fn delete_one_abandoned_put(env: &Env, database: &D1Database, now: u64) ->
         .await?;
         return Ok(());
     }
-    match delete_aliyun(env, &task).await {
+    let outcome = if task.kind == "r2/v1" {
+        delete_r2(env, &task).await
+    } else {
+        delete_aliyun(env, &task).await
+    };
+    match outcome {
         Ok(()) => complete_abandoned_put(database, &task, now).await,
         Err(error) => {
             worker::console_error!("server abandoned-Put delete {} failed: {error:?}", task.id);
@@ -170,7 +182,7 @@ async fn load_abandoned_put(
     database
         .prepare(
             "SELECT task.id, 1 AS expected_location_revision,
-                    evidence.native_id, task.fencing_token,
+                    evidence.native_id, intent.storage_key, task.fencing_token,
                     driver.kind, driver.config_json,
                     credential.id AS credential_id,
                     credential.envelope_algorithm AS credential_algorithm,
@@ -355,7 +367,7 @@ async fn delete_one(env: &Env, database: &D1Database, now: u64) -> Result<()> {
         .await?;
         return Ok(());
     }
-    if task.kind != "aliyundrive-open/v2" {
+    if !matches!(task.kind.as_str(), "aliyundrive-open/v2" | "r2/v1") {
         fail(
             database,
             &id,
@@ -367,7 +379,11 @@ async fn delete_one(env: &Env, database: &D1Database, now: u64) -> Result<()> {
         .await?;
         return Ok(());
     }
-    let outcome = delete_aliyun(env, &task).await;
+    let outcome = if task.kind == "r2/v1" {
+        delete_r2(env, &task).await
+    } else {
+        delete_aliyun(env, &task).await
+    };
     match outcome {
         Ok(()) => complete(database, &task, now).await,
         Err(error) => {
@@ -388,7 +404,7 @@ async fn delete_one(env: &Env, database: &D1Database, now: u64) -> Result<()> {
 async fn load_revalidated(database: &D1Database, id: &str, now: u64) -> Result<Option<DeleteTask>> {
     database
         .prepare(
-            "SELECT task.id, task.expected_location_revision, task.native_id,
+            "SELECT task.id, task.expected_location_revision, task.native_id, task.storage_key,
                     task.fencing_token, driver.kind, driver.config_json,
                     credential.id AS credential_id,
                     credential.envelope_algorithm AS credential_algorithm,
@@ -476,6 +492,27 @@ async fn delete_aliyun(env: &Env, task: &DeleteTask) -> Result<()> {
     .await;
     credential.access_token.zeroize();
     result.map(|_| ())
+}
+
+async fn delete_r2(env: &Env, task: &DeleteTask) -> Result<()> {
+    let (Some(id), Some(algorithm), Some(version), Some(nonce), Some(ciphertext), Some(revision)) = (
+        task.credential_id.as_deref(),
+        task.credential_algorithm.as_deref(),
+        task.credential_key_version.as_deref(),
+        task.credential_nonce.as_deref(),
+        task.credential_ciphertext.as_deref(),
+        task.credential_revision,
+    ) else {
+        return Err(worker::Error::RustError(
+            "R2 lifecycle credential is incomplete".to_owned(),
+        ));
+    };
+    let mut plaintext =
+        open_driver_credential(env, id, revision, algorithm, version, nonce, ciphertext)?;
+    let result =
+        r2_signing::delete_from_plaintext(&task.config_json, &task.storage_key, &plaintext).await;
+    plaintext.zeroize();
+    result
 }
 
 async fn aliyun_post<T: for<'de> Deserialize<'de>>(

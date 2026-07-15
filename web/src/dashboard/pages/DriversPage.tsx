@@ -15,6 +15,7 @@ import {
     DialogTitle,
     Divider,
     Paper,
+    MenuItem,
     Stack,
     TextField,
     Typography,
@@ -145,11 +146,17 @@ export function DriversPage({
     const [credentialTarget, setCredentialTarget] = useState<DriverView | null>(null);
     const [quotaTarget, setQuotaTarget] = useState<DriverView | null>(null);
     const [refreshToken, setRefreshToken] = useState("");
+    const [r2AccessKeyId, setR2AccessKeyId] = useState("");
+    const [r2SecretAccessKey, setR2SecretAccessKey] = useState("");
     const [clipboardError, setClipboardError] = useState(false);
     const [credentialValidation, setCredentialValidation] =
         useState<DriverCredentialValidation | null>(null);
     const [registrationOpen, setRegistrationOpen] = useState(false);
     const [registrationId, setRegistrationId] = useState("");
+    const [registrationKind, setRegistrationKind] = useState("aliyundrive-open/v2");
+    const [r2Endpoint, setR2Endpoint] = useState("");
+    const [r2Bucket, setR2Bucket] = useState("");
+    const [r2Prefix, setR2Prefix] = useState("");
     const [registrationValidation, setRegistrationValidation] =
         useState<DriverRegistrationValidation | null>(null);
     const validationMutation = useMutation({
@@ -177,12 +184,13 @@ export function DriversPage({
     });
     const credentialValidationMutation = useMutation({
         mutationFn: (driver: DriverView) =>
-            validateDriverCredential(driver.id, refreshToken, driver.revision),
+            validateDriverCredential(driver.id, credentialInput(driver), driver.revision),
         onSuccess: setCredentialValidation,
     });
     const credentialApplyMutation = useMutation({
         mutationFn: async (desired: DriverCredentialValidation) => {
-            const receipt = await applyDriverCredential(desired, refreshToken);
+            if (credentialTarget === null) throw new Error("Credential target disappeared.");
+            const receipt = await applyDriverCredential(desired, credentialInput(credentialTarget));
             const refreshed = await queryClient.fetchQuery({
                 queryKey: ["management-snapshot"],
                 queryFn: fetchManagementSnapshot,
@@ -203,12 +211,23 @@ export function DriversPage({
     });
     const registrationValidationMutation = useMutation({
         mutationFn: () =>
-            validateDriverRegistration(registrationId, "aliyundrive-open/v2", {
-                api_base_url: "https://openapi.alipan.com",
-                drive_type: "resource",
-                root_folder_id: "root",
-                upload_part_bytes: 20 * 1024 * 1024,
-            }),
+            validateDriverRegistration(
+                registrationId,
+                registrationKind,
+                registrationKind === "r2/v1"
+                    ? {
+                          endpoint: r2Endpoint,
+                          bucket: r2Bucket,
+                          prefix: r2Prefix,
+                          managed: false,
+                      }
+                    : {
+                          api_base_url: "https://openapi.alipan.com",
+                          drive_type: "resource",
+                          root_folder_id: "root",
+                          upload_part_bytes: 20 * 1024 * 1024,
+                      },
+            ),
         onSuccess: setRegistrationValidation,
     });
     const registrationApplyMutation = useMutation({
@@ -252,10 +271,24 @@ export function DriversPage({
     function closeCredentialDialog() {
         setCredentialTarget(null);
         setRefreshToken("");
+        setR2AccessKeyId("");
+        setR2SecretAccessKey("");
         setClipboardError(false);
         setCredentialValidation(null);
         credentialValidationMutation.reset();
         credentialApplyMutation.reset();
+    }
+
+    function credentialInput(driver: DriverView) {
+        return driver.kind === "r2/v1"
+            ? {
+                  access_key_id: r2AccessKeyId,
+                  secret_access_key: r2SecretAccessKey,
+              }
+            : {
+                  refresh_token: refreshToken,
+                  refresh_issuer: "openlist-online/v1",
+              };
     }
 
     function openCredentialChange(driver: DriverView) {
@@ -284,9 +317,24 @@ export function DriversPage({
         }
     }
 
+    async function pasteR2Secret() {
+        try {
+            const value = (await navigator.clipboard.readText()).trim();
+            if (value.length === 0) throw new Error("clipboard is empty");
+            setR2SecretAccessKey(value);
+            setClipboardError(false);
+        } catch {
+            setClipboardError(true);
+        }
+    }
+
     function closeRegistrationDialog() {
         setRegistrationOpen(false);
         setRegistrationId("");
+        setRegistrationKind("aliyundrive-open/v2");
+        setR2Endpoint("");
+        setR2Bucket("");
+        setR2Prefix("");
         setRegistrationValidation(null);
         registrationValidationMutation.reset();
         registrationApplyMutation.reset();
@@ -360,7 +408,10 @@ export function DriversPage({
                                     direction="row"
                                     spacing={1}
                                     useFlexGap
-                                    sx={{ alignItems: "center", flexWrap: "wrap" }}
+                                    sx={{
+                                        alignItems: "center",
+                                        flexWrap: "wrap",
+                                    }}
                                 >
                                     <Chip
                                         icon={status.icon}
@@ -368,7 +419,7 @@ export function DriversPage({
                                         color={status.color}
                                         size="small"
                                     />
-                                    {driver.kind === "aliyundrive-open/v2" && (
+                                    {driver.kind !== "local-filesystem/v2" && (
                                         <Button
                                             size="small"
                                             variant="outlined"
@@ -446,7 +497,10 @@ export function DriversPage({
                                 <Box
                                     sx={{
                                         display: "grid",
-                                        gridTemplateColumns: { xs: "1fr", sm: "repeat(3, 1fr)" },
+                                        gridTemplateColumns: {
+                                            xs: "1fr",
+                                            sm: "repeat(3, 1fr)",
+                                        },
                                         gap: 2,
                                         mt: 3,
                                         p: 2,
@@ -527,11 +581,11 @@ export function DriversPage({
                 fullWidth
                 maxWidth="sm"
             >
-                <DialogTitle>Register Aliyun Drive</DialogTitle>
+                <DialogTitle>Register storage driver</DialogTitle>
                 <DialogContent>
                     <Alert severity="info" sx={{ mb: 2 }}>
-                        Registration creates a disabled driver with the conservative Aliyun Drive
-                        defaults. Set its write-only credential and validate enablement afterward.
+                        Registration creates a disabled driver. Provider credentials are added
+                        separately and remain write-only.
                     </Alert>
                     <TextField
                         autoFocus
@@ -542,6 +596,41 @@ export function DriversPage({
                         disabled={registrationValidation !== null}
                         onChange={(event) => setRegistrationId(event.target.value)}
                     />
+                    <TextField
+                        select
+                        fullWidth
+                        label="Driver kind"
+                        value={registrationKind}
+                        disabled={registrationValidation !== null}
+                        onChange={(event) => setRegistrationKind(event.target.value)}
+                        sx={{ mt: 2 }}
+                    >
+                        <MenuItem value="aliyundrive-open/v2">Aliyun Drive</MenuItem>
+                        <MenuItem value="r2/v1">Cloudflare R2</MenuItem>
+                    </TextField>
+                    {registrationKind === "r2/v1" && (
+                        <Stack spacing={2} sx={{ mt: 2 }}>
+                            <TextField
+                                label="R2 S3 endpoint"
+                                value={r2Endpoint}
+                                disabled={registrationValidation !== null}
+                                onChange={(event) => setR2Endpoint(event.target.value)}
+                                placeholder="https://ACCOUNT_ID.r2.cloudflarestorage.com"
+                            />
+                            <TextField
+                                label="Bucket"
+                                value={r2Bucket}
+                                disabled={registrationValidation !== null}
+                                onChange={(event) => setR2Bucket(event.target.value)}
+                            />
+                            <TextField
+                                label="Object prefix (optional, end with /)"
+                                value={r2Prefix}
+                                disabled={registrationValidation !== null}
+                                onChange={(event) => setR2Prefix(event.target.value)}
+                            />
+                        </Stack>
+                    )}
                     {(registrationValidationMutation.isError ||
                         registrationApplyMutation.isError) && (
                         <Alert severity="error" sx={{ mt: 2 }}>
@@ -590,6 +679,8 @@ export function DriversPage({
                             variant="contained"
                             disabled={
                                 registrationId.trim() === "" ||
+                                (registrationKind === "r2/v1" &&
+                                    (r2Endpoint.trim() === "" || r2Bucket.trim() === "")) ||
                                 registrationValidationMutation.isPending
                             }
                             onClick={() => registrationValidationMutation.mutate()}
@@ -712,59 +803,99 @@ export function DriversPage({
             >
                 <DialogTitle>
                     {credentialTarget?.credential_present
-                        ? "Replace refresh authorization"
-                        : "Connect refresh authorization"}
+                        ? "Replace credential"
+                        : "Connect credential"}
                 </DialogTitle>
                 <DialogContent>
                     <Alert severity="warning" sx={{ mb: 2 }}>
-                        Enter only the refresh token obtained from OAuth. Carrack verifies it with
-                        the provider, encrypts it, and owns access-token generation and renewal.
+                        Carrack validates this credential with the provider and stores it encrypted.
+                        Filesystem clients receive only short-lived, object-scoped grants.
                     </Alert>
                     <Typography sx={{ fontWeight: 800 }}>{credentialTarget?.id}</Typography>
                     <Typography color="text.secondary" variant="body2" sx={{ mb: 2 }}>
                         {credentialTarget?.kind} · revision{" "}
                         {String(credentialTarget?.revision ?? 0)}
                     </Typography>
-                    <TextField
-                        autoFocus
-                        fullWidth
-                        label="Aliyun Drive refresh token"
-                        type="text"
-                        autoComplete="off"
-                        value={redactSecret(refreshToken)}
-                        disabled={credentialValidation !== null}
-                        slotProps={{ htmlInput: { readOnly: true } }}
-                        helperText={
-                            refreshToken.length === 0
-                                ? "Paste from the clipboard; the full token is never rendered."
-                                : `Captured ${String(refreshToken.length)} characters; only its prefix and suffix are shown.`
-                        }
-                    />
-                    <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-                        <Button
-                            size="small"
-                            variant="outlined"
-                            disabled={credentialValidation !== null}
-                            onClick={() => void pasteRefreshToken()}
-                        >
-                            Paste token
-                        </Button>
-                        <Button
-                            size="small"
-                            disabled={refreshToken.length === 0 || credentialValidation !== null}
-                            onClick={() => {
-                                setRefreshToken("");
-                                setClipboardError(false);
-                            }}
-                        >
-                            Clear
-                        </Button>
-                    </Stack>
-                    {clipboardError && (
-                        <Alert severity="warning" sx={{ mt: 1 }}>
-                            Clipboard access was denied. Allow clipboard access for this site and
-                            try again.
-                        </Alert>
+                    {credentialTarget?.kind === "r2/v1" ? (
+                        <Stack spacing={2}>
+                            <TextField
+                                autoFocus
+                                fullWidth
+                                label="R2 access key ID"
+                                autoComplete="off"
+                                value={r2AccessKeyId}
+                                disabled={credentialValidation !== null}
+                                onChange={(event) => setR2AccessKeyId(event.target.value)}
+                            />
+                            <TextField
+                                fullWidth
+                                label="R2 secret access key"
+                                type="text"
+                                autoComplete="off"
+                                value={redactSecret(r2SecretAccessKey)}
+                                disabled={credentialValidation !== null}
+                                slotProps={{ htmlInput: { readOnly: true } }}
+                                helperText={
+                                    r2SecretAccessKey.length === 0
+                                        ? "Paste from the clipboard; the full secret is never rendered."
+                                        : `Captured ${String(r2SecretAccessKey.length)} characters; only its prefix and suffix are shown.`
+                                }
+                            />
+                            <Button
+                                size="small"
+                                variant="outlined"
+                                disabled={credentialValidation !== null}
+                                onClick={() => void pasteR2Secret()}
+                            >
+                                Paste secret
+                            </Button>
+                        </Stack>
+                    ) : (
+                        <>
+                            <TextField
+                                autoFocus
+                                fullWidth
+                                label="Aliyun Drive refresh token"
+                                type="text"
+                                autoComplete="off"
+                                value={redactSecret(refreshToken)}
+                                disabled={credentialValidation !== null}
+                                slotProps={{ htmlInput: { readOnly: true } }}
+                                helperText={
+                                    refreshToken.length === 0
+                                        ? "Paste from the clipboard; the full token is never rendered."
+                                        : `Captured ${String(refreshToken.length)} characters; only its prefix and suffix are shown.`
+                                }
+                            />
+                            <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+                                <Button
+                                    size="small"
+                                    variant="outlined"
+                                    disabled={credentialValidation !== null}
+                                    onClick={() => void pasteRefreshToken()}
+                                >
+                                    Paste token
+                                </Button>
+                                <Button
+                                    size="small"
+                                    disabled={
+                                        refreshToken.length === 0 || credentialValidation !== null
+                                    }
+                                    onClick={() => {
+                                        setRefreshToken("");
+                                        setClipboardError(false);
+                                    }}
+                                >
+                                    Clear
+                                </Button>
+                            </Stack>
+                            {clipboardError && (
+                                <Alert severity="warning" sx={{ mt: 1 }}>
+                                    Clipboard access was denied. Allow clipboard access for this
+                                    site and try again.
+                                </Alert>
+                            )}
+                        </>
                     )}
                     {(credentialValidationMutation.isError || credentialApplyMutation.isError) && (
                         <Alert severity="error" sx={{ mt: 2 }}>
@@ -782,8 +913,14 @@ export function DriversPage({
                                 Driver revision {String(credentialValidation.expected_revision)} →{" "}
                                 {String(credentialValidation.expected_revision + 1)} · credential
                                 revision {String(credentialValidation.credential_revision)} ·
-                                refresh authority expires{" "}
-                                {formatDate(credentialValidation.refresh_token_expires_at)}
+                                {credentialTarget?.kind === "r2/v1" ? (
+                                    "long-lived provider key"
+                                ) : (
+                                    <>
+                                        refresh authority expires{" "}
+                                        {formatDate(credentialValidation.refresh_token_expires_at)}
+                                    </>
+                                )}
                             </Typography>
                             {credentialValidation.warnings.map((warning) => (
                                 <Alert key={warning} severity="warning" sx={{ mt: 2 }}>
@@ -805,7 +942,9 @@ export function DriversPage({
                             variant="contained"
                             disabled={
                                 credentialTarget === null ||
-                                refreshToken.length === 0 ||
+                                (credentialTarget?.kind === "r2/v1"
+                                    ? r2AccessKeyId.length === 0 || r2SecretAccessKey.length === 0
+                                    : refreshToken.length === 0) ||
                                 credentialValidationMutation.isPending
                             }
                             onClick={() =>

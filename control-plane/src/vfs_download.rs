@@ -4,7 +4,7 @@ use worker::{Date, Env, Response, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
 
 use crate::{
-    driver_credentials, vfs_access,
+    driver_credentials, r2_signing, vfs_access,
     vfs_envelopes::{
         DirectoryEnvelopeRef, PLAINTEXT_SUITE, open_directory_key, open_driver_credential,
     },
@@ -166,7 +166,7 @@ pub(crate) async fn plan(
     let config = serde_json::from_str(&row.driver_config_json).map_err(|error| {
         worker::Error::RustError(format!("decode stored VFS driver configuration: {error}"))
     })?;
-    let credential = decrypt_credential(env, &row)?;
+    let credential = decrypt_credential(env, &row, lease_expires_at)?;
     let mut directory_key = decrypt_directory_key(env, &row)?;
     let encoded_key = directory_key
         .as_ref()
@@ -355,7 +355,11 @@ fn decrypt_directory_key(env: &Env, row: &DownloadRow) -> Result<Option<[u8; 32]
     .map(Some)
 }
 
-fn decrypt_credential(env: &Env, row: &DownloadRow) -> Result<Option<serde_json::Value>> {
+fn decrypt_credential(
+    env: &Env,
+    row: &DownloadRow,
+    expires_at: u64,
+) -> Result<Option<serde_json::Value>> {
     let Some(id) = row.credential_id.as_deref() else {
         return Ok(None);
     };
@@ -372,10 +376,20 @@ fn decrypt_credential(env: &Env, row: &DownloadRow) -> Result<Option<serde_json:
     };
     let mut plaintext =
         open_driver_credential(env, id, revision, algorithm, version, nonce, ciphertext)?;
-    let decoded = driver_credentials::access_grant_from_plaintext(&row.driver_kind, &plaintext)
-        .map_err(|error| {
-            worker::Error::RustError(format!("decode download driver credential: {error}"))
-        });
+    let decoded = if row.driver_kind == "r2/v1" {
+        r2_signing::access_grant_from_plaintext(
+            "GET",
+            &row.driver_config_json,
+            &row.storage_key,
+            &plaintext,
+            expires_at,
+        )
+        .ok_or_else(|| worker::Error::RustError("sign R2 download grant".to_owned()))
+    } else {
+        driver_credentials::access_grant_from_plaintext(&row.driver_kind, &plaintext).map_err(
+            |error| worker::Error::RustError(format!("decode download driver credential: {error}")),
+        )
+    };
     plaintext.zeroize();
     Ok(Some(decoded?))
 }

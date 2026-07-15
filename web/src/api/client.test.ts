@@ -124,7 +124,14 @@ describe("driver configuration", () => {
         vi.stubGlobal("fetch", fetchMock);
 
         await expect(
-            validateDriverCredential("aliyun-main", "refresh-private", 1),
+            validateDriverCredential(
+                "aliyun-main",
+                {
+                    refresh_token: "refresh-private",
+                    refresh_issuer: "openlist-online/v1",
+                },
+                1,
+            ),
         ).resolves.toEqual(validation);
         const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
         expect(body.credential).toEqual({

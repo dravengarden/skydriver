@@ -274,6 +274,20 @@ async fn fetch_provider(
         )
         .await;
     }
+    if plan.driver_kind == "r2/v1" {
+        let credential = plan.credential.take().ok_or_else(|| {
+            Error::InvalidResponse("R2 download omitted its signed grant".to_owned())
+        })?;
+        return crate::r2::download(
+            http,
+            credential,
+            &options.staging_directory,
+            &plan.version_id,
+            plan.encoded_bytes,
+            &plan.encoded_sha256,
+        )
+        .await;
+    }
     if plan.driver_kind != "local-filesystem/v2" {
         return Err(Error::InvalidResponse(format!(
             "native Rust download does not yet support driver kind {}",
