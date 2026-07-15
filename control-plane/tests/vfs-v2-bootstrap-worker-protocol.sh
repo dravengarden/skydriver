@@ -1126,10 +1126,10 @@ revoked_grant_status=$(curl --silent --output /dev/null --write-out '%{http_code
 
 # Authentication throttling is server-enforced and survives successful logins.
 # The earlier wrong-environment login counts against the same local source-IP
-# window, so this loop reaches the ten-failure threshold within ten attempts.
+# window, so this loop reaches the twenty-failure threshold within twenty attempts.
 rate_limit_headers="$state_directory/rate-limit-headers.txt"
 rate_limited_status=
-for _ in $(seq 1 10); do
+for _ in $(seq 1 20); do
   rate_limited_status=$(curl --silent --show-error \
     --output /dev/null --dump-header "$rate_limit_headers" --write-out '%{http_code}' \
     -H "$json" \

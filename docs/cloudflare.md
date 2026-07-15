@@ -121,8 +121,11 @@ Authentication failures are throttled in D1 by a keyed source-IP digest and,
 for the known operator, a higher-threshold account digest. Raw IP addresses and
 submitted account names are never retained in throttle state. The same
 source-IP protection covers the credential recheck that enables a configuration
-session. Limits fail closed with `429` and `Retry-After`; bounded Cron cleanup
-retires inactive throttle rows after one day.
+session. Login and configuration source-IP scopes allow 20 failures per
+15-minute window and block for 15 minutes; the distributed account scope allows
+200 failures and blocks for 30 minutes. Limits fail closed with `429` and
+`Retry-After`; bounded Cron cleanup retires inactive throttle rows after one
+day.
 
 Set independent operator and VFS-master secrets for each environment:
 
