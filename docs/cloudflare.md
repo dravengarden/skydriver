@@ -62,12 +62,14 @@ remote deployment, verify that no other Worker is bound to either environment:
 just audit-cloudflare
 ```
 
-`CARRACK_MANIFESTS` carries only small portable recovery metadata.
+`CARRACK_MANIFESTS` carries only immutable control metadata: verification-block
+manifests plus full and delta catalog artifacts. It never stores user payload
+bytes.
 `CARRACK_PAYLOAD` gives server-side lifecycle and reconciliation code access to
 the environment's built-in payload bucket. Payload bytes still flow directly
 between SDK clients and storage; the Worker never relays file bodies.
 
-Create all four storage resources once before the first deployment:
+Create all six isolated storage resources once before the first deployment:
 
 ```bash
 pnpm exec wrangler d1 create carrack-index-dev
@@ -100,13 +102,10 @@ verifier; logout deletes it. A 15-minute metadata-hygiene Cron Trigger also
 deletes expired operator and configuration sessions, so cleanup does not depend
 on a later login.
 
-Set independent operator, archive-root, and VFS-master secrets for each environment:
+Set independent operator and VFS-master secrets for each environment:
 
 ```bash
 pnpm exec wrangler secret put CARRACK_ADMIN_TOKEN \
-  --env dev \
-  --config control-plane/wrangler.jsonc
-pnpm exec wrangler secret put CARRACK_ROOT_KEY_V1 \
   --env dev \
   --config control-plane/wrangler.jsonc
 pnpm exec wrangler secret put CARRACK_VFS_MASTER_KEY_V1 \
@@ -114,9 +113,6 @@ pnpm exec wrangler secret put CARRACK_VFS_MASTER_KEY_V1 \
   --config control-plane/wrangler.jsonc
 
 pnpm exec wrangler secret put CARRACK_ADMIN_TOKEN \
-  --env prod \
-  --config control-plane/wrangler.jsonc
-pnpm exec wrangler secret put CARRACK_ROOT_KEY_V1 \
   --env prod \
   --config control-plane/wrangler.jsonc
 pnpm exec wrangler secret put CARRACK_VFS_MASTER_KEY_V1 \
@@ -127,11 +123,8 @@ pnpm exec wrangler secret put CARRACK_VFS_MASTER_KEY_V1 \
 `CARRACK_ADMIN_TOKEN` must be the unpadded base64url encoding of exactly 32
 random bytes. It is an operator credential, not a VFS principal or capability
 token, and development and production must never share it.
-`CARRACK_ROOT_KEY_V1` must be the unpadded base64url encoding of exactly 32
-random bytes with a tested offline recovery copy. Add a new versioned binding
-for rotation; never replace an old root while published manifests reference it.
 `CARRACK_VFS_MASTER_KEY_V1` is also an unpadded base64url encoding of exactly
-32 random bytes, generated independently from both legacy secrets. It seals V2
+32 random bytes, generated independently from the operator credential. It seals V2
 directory keys and derives the recoverable one-shot bootstrap token. Preserve
 the version while either V2 envelopes or the bootstrap receipt depend on it;
 see `vfs-bootstrap-v1.md`.
@@ -201,7 +194,8 @@ The stable UI endpoints are:
 The workers.dev subdomain and version preview URLs are disabled for both
 environments. After deployment, verify that `/api/health` reports the expected
 `environment`, sign in with the environment's operator credential, and confirm
-`/api/summary` can read only that environment's D1 database.
+`/api/admin/snapshot` and `/api/admin/activity` read only that environment's D1
+database.
 
 Deployment and VFS bootstrap are separate operations. Bootstrap is
 intentionally one-shot. Every dev or production Worker materializes one
@@ -344,10 +338,10 @@ unused indexes only through a new append-only migration.
 ## Provider inventory
 
 The current Rust V2 product does not expose provider-wide inventory, adoption,
-quarantine, or delete-task execution in either CLI. The former Go command and
-archive implementations have been removed. Historical D1 tables remain only as
-migration and fault-model evidence; no agent may synthesize their old HTTP
-protocols or mutate them directly.
+or quarantine in either filesystem CLI. Physical object deletion is internal,
+server-owned lifecycle work. The former archive commands, Worker routes, Rust
+modules, and D1 tables have been removed; no agent may reconstruct their old
+HTTP protocol.
 
 A future hosted inventory pass must remain read-only, bounded, fenced, and
 conservative: an unknown object is quarantined rather than adopted or deleted,
@@ -356,63 +350,36 @@ review and physical deletion stages belong to the control plane, require the
 same final reachability and identity fences as normal lifecycle GC, and must
 pass production fault-injection before Cron enables them.
 
-## Integrity findings
+## Activity and lifecycle health
 
-The authenticated dashboard polls open integrity findings every 15 seconds. It
-shows the server-projected namespace, manifest and root-key identities, provider
-location, last successful verification, independently available repair sources,
-raw evidence, and the required conservative operator action. `REPAIRABLE` is a
-server decision: it is set only for a currently missing location with at least
-one other available location for the same extent. It does not start a repair.
+The authenticated dashboard polls `GET /api/admin/activity`. Its bounded V2
+projection contains current upload intents, read leases, server-owned delete
+and cleanup work, credential renewal failures, and the newest immutable
+`vfs_audit_events`. Retry, blocked, and reauthorization states are explicitly
+marked as needing attention.
 
-Operators and diagnostic clients can read the same projection directly:
-
-```text
-GET /api/integrity/findings?state=open&condition=missing&limit=50
-```
-
-The endpoint requires an administrator session. `state` defaults to `open` and
-accepts `open`, `acknowledged`, `tombstoned`, or `resolved`; `condition` is
-optional. The response's `next_cursor` is opaque. Pass it back as `cursor` to
-load the next page and do not persist or decode it. A resolved finding remains
-queryable for audit, but never reports as repairable after its location has
-returned to `available`.
+Direct transfers do not proxy bytes through the Worker, so byte progress is
+intentionally absent from this endpoint. The client that owns a transfer may
+show local progress, while the dashboard reports only durable checkpoints and
+server-side lifecycle state. The response is `Cache-Control: no-store`, returns
+at most 100 active items and 100 newest events, and requires an operator
+session.
 
 ## D1 backup and recovery
 
-D1 Time Travel is a short-window rollback mechanism, not Carrack's only data
-recovery source. Export D1 to R2 on a schedule and mirror those exports off the
-Cloudflare account. Published portable recovery manifests are also stored in
-the manifest R2 bucket and as destination-driver sidecars. Root seeds have a
-separate offline backup.
+D1 Time Travel is a short-window rollback mechanism, not a complete provider
+reconciliation system. Export D1 on a schedule, keep the export outside the
+Cloudflare account, and preserve offline copies of every active VFS master-key
+version. Immutable catalog checkpoints in `CARRACK_MANIFESTS` provide an
+additional content-hashed recovery input.
 
-Never restore D1 while mutation traffic is enabled. The recovery sequence is:
-
-1. Set the `CARRACK_MAINTENANCE` Worker secret to `1`. Confirm `/api/health`
-   reports `external_maintenance: true` and `mutations_allowed: false`.
-2. Record the current Time Travel bookmark or export before overwriting D1.
-3. Restore D1 and apply every repository migration newer than the restored
-   point.
-4. Generate a new random 128-bit lowercase hexadecimal incarnation.
-5. Call `POST /api/recovery/begin` with the new `incarnation` and the current
-   `expected_revision`. This moves D1 to `recovering` and invalidates all old
-   operations, attempts, leases, and GC epochs.
-6. Verify the configured root-seed canary, scan the R2 manifest archive and
-   destination sidecars, inventory providers, rebuild unindexed metadata, and
-   classify every unresolved discrepancy.
-7. Call `POST /api/recovery/complete` with the same incarnation and latest
-   revision. This changes D1 back to `active`, but external maintenance still
-   blocks mutations.
-8. Remove or set `CARRACK_MAINTENANCE` to `0`, then verify health and run a
-   canary restore before resuming automatic work.
-
-The recovery endpoints require an authenticated administrator session and are
-idempotent for the same incarnation. They deliberately require the external
-maintenance binding because a D1 rollback can also roll back an in-database
-maintenance flag. A client holding a pre-restore lease cannot commit after the
-incarnation change even if its old fencing token numerically collides with a
-restored counter.
-
-Do not automatically clean up `key_unavailable`, `unsupported_suite`,
-ambiguous `orphan`, or `unrecoverable` findings. Permanent cleanup requires an
-operator acknowledgement, tombstone, grace period, and final fenced recheck.
+Never restore D1 while mutation traffic is enabled. Set the external
+`CARRACK_MAINTENANCE` secret first and confirm health reports
+`mutations_allowed: false`. Carrack deliberately exposes no generic browser,
+filesystem CLI, or public HTTP "recovery complete" switch: a rollback may
+resurrect revoked tokens or metadata for provider objects deleted after the
+bookmark. Keep the environment fail-closed until a release-specific recovery
+runbook has reapplied migrations, rotated affected credentials, invalidated
+stale capabilities and intents, reconciled every referenced provider object,
+verified catalog and file roots, and passed a read-only canary. Only then may
+the operator remove external maintenance mode.

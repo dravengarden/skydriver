@@ -14,9 +14,9 @@ ingestion schedules, trading semantics, or other consumer-specific behavior.
   behavior.
 - `control-plane/`: Rust Cloudflare Worker for auth, index, jobs, and status.
 - `web/`: strict TypeScript SPA using React, TanStack, and MUI.
-- `schemas/`: language-neutral wire contracts.
+- `docs/vfs-*.md`: language-neutral wire contracts and correctness invariants.
 
-V1 supports direct transfer only. Data bytes flow between a Carrack agent and
+V2 supports direct transfer only. Data bytes flow between a Carrack agent and
 storage providers. The Worker is a control plane and must never relay object or
 block payloads.
 
@@ -31,9 +31,9 @@ agent processes are SDK consumers, not a third architectural component.
 - Go uses the Columbus maximum-strictness golangci-lint profile.
 - TypeScript is strict: no `any`, no unchecked boundary casts.
 - Secrets and credentials never enter Git. D1 stores only password hashes,
-  token verifiers, and encrypted provider-credential envelopes. Pack keys are
-  derived rather than stored. Root seeds stay in Cloudflare secrets or Secrets
-  Store and have offline recovery copies.
+  token verifiers, encrypted provider-credential envelopes, and wrapped VFS
+  directory keys. VFS master keys stay in Cloudflare secrets or Secrets Store
+  and have tested offline recovery copies.
 - The pinned Nix development shell owns the Go, Rust, Node, Worker, and lint
   toolchains. From the repository root, run project commands as
   `nix develop -c <command>`; never use the host Rustup/Cargo toolchain for a

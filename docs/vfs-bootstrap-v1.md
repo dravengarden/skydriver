@@ -38,7 +38,7 @@ pnpm exec wrangler secret put CARRACK_VFS_MASTER_KEY_V1 \
 
 The value is the unpadded base64url encoding of exactly 32 random bytes. Keep a
 tested offline recovery copy. It must be generated independently from
-`CARRACK_ADMIN_TOKEN` and the legacy `CARRACK_ROOT_KEY_V1`.
+`CARRACK_ADMIN_TOKEN`. No archive-root compatibility secret participates in VFS bootstrap.
 
 The caller first authenticates through `POST /api/auth/login` with the
 environment's operator credential and sends the resulting revocable session

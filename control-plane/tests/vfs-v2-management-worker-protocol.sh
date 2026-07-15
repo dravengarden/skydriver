@@ -51,7 +51,6 @@ admin_token=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA
   --persist-to "$state_directory" \
   --port "$port" \
   --inspector-port 0 \
-  --var CARRACK_ROOT_KEY_V1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
   --var CARRACK_VFS_MASTER_KEY_V1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
   --var CARRACK_ADMIN_TOKEN:"$admin_token" \
   --show-interactive-dev-session=false >"$server_log" 2>&1 &
@@ -75,6 +74,28 @@ old_admin_sdk=$(command curl --silent --output /dev/null --write-out '%{http_cod
   --header 'Carrack-Protocol-Epoch: 2' --header 'Carrack-SDK-Version: 0.1.0' \
   "$base_url/api/admin/snapshot")
 [[ "$old_admin_sdk" == 426 ]]
+
+unauthenticated_activity=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  "$base_url/api/admin/activity")
+[[ "$unauthenticated_activity" == 401 ]]
+
+for retired_get_route in \
+  /api/client/session \
+  /api/summary \
+  /api/components/live \
+  /api/integrity/findings; do
+  retired_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+    "$base_url$retired_get_route")
+  [[ "$retired_status" == 404 ]]
+done
+for retired_post_route in \
+  /api/clients \
+  /api/v1/operations \
+  /api/recovery/begin; do
+  retired_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+    -X POST "$base_url$retired_post_route")
+  [[ "$retired_status" == 404 ]]
+done
 
 curl --silent --show-error --fail-with-body \
   -c "$cookie_jar" -H "$json" \
@@ -457,6 +478,17 @@ acl_denied_status=$(curl --silent --output /dev/null --write-out '%{http_code}' 
 [[ "$acl_denied_status" == 403 ]]
 
 child_verifier=$(printf '%s' "$child_token" | sha256sum | cut -d' ' -f1)
+
+activity_headers="$state_directory/activity-headers.txt"
+activity=$(curl --silent --show-error --fail-with-body \
+  -D "$activity_headers" -b "$cookie_jar" "$base_url/api/admin/activity")
+grep -iq '^cache-control: no-store, max-age=0' "$activity_headers"
+[[ "$(jq -r '.schema' <<<"$activity")" == carrack.management.activity.v1 ]]
+[[ "$(jq -r '.event_cursor > 0' <<<"$activity")" == true ]]
+[[ "$(jq -r '.active_items | type' <<<"$activity")" == array ]]
+[[ "$(jq -r '[.events[].event_kind] | index("directory_created") != null' <<<"$activity")" == true ]]
+[[ "$(jq -r '[.events[].event_kind] | index("token_issued") != null' <<<"$activity")" == true ]]
+
 "${wrangler[@]}" d1 execute CARRACK_INDEX \
   --local \
   --persist-to "$state_directory" \

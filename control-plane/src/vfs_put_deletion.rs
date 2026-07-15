@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
-use worker::{D1Database, Env, Request, Response, Result, wasm_bindgen::JsValue};
+use worker::{D1Database, Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 
-use crate::{copying, vfs_tokens::AuthenticatedVfsToken};
+use crate::vfs_tokens::AuthenticatedVfsToken;
 
 const TASK_SCHEMA: &str = "carrack.vfs.put-delete-task.v1";
 const DEFAULT_LEASE_SECONDS: u64 = 60;
@@ -81,7 +81,7 @@ pub(crate) async fn claim(
     }
 
     let database = env.d1("CARRACK_INDEX")?;
-    let now = copying::current_unix_seconds();
+    let now = current_unix_seconds();
     if let Some(task) = load_owned_task(&database, token, None, now).await? {
         return claim_response(Some(task));
     }
@@ -148,7 +148,7 @@ pub(crate) async fn revalidate(
     }
 
     let database = env.d1("CARRACK_INDEX")?;
-    let now = copying::current_unix_seconds();
+    let now = current_unix_seconds();
     if !authorized(&database, token, task_id).await? {
         return Response::error("VFS put-delete revalidation is not authorized", 403);
     }
@@ -217,7 +217,7 @@ pub(crate) async fn complete(
         }
         return task_response(&terminal);
     }
-    let now = copying::current_unix_seconds();
+    let now = current_unix_seconds();
     let update = database
         .prepare(
             "UPDATE vfs_put_delete_tasks
@@ -271,7 +271,7 @@ pub(crate) async fn fail(
     if !authorized(&database, token, task_id).await? {
         return Response::error("VFS put-delete failure is not authorized", 403);
     }
-    let now = copying::current_unix_seconds();
+    let now = current_unix_seconds();
     let update = database
         .prepare(
             "UPDATE vfs_put_delete_tasks
@@ -586,6 +586,10 @@ fn valid_lease_seconds(value: u64) -> bool {
 
 fn valid_task_id(value: &str) -> bool {
     value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn current_unix_seconds() -> u64 {
+    Date::now().as_millis() / 1_000
 }
 
 fn valid_error_code(value: &str) -> bool {

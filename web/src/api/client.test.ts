@@ -3,7 +3,7 @@ import {
     fetchSession,
     login,
     parseHealth,
-    parseIntegrityFindings,
+    parseManagementActivity,
     parseSession,
     validateDriverCredential,
     validateDriverRegistration,
@@ -191,56 +191,52 @@ describe("parseHealth", () => {
     });
 });
 
-describe("parseIntegrityFindings", () => {
-    it("accepts a server-classified repairable finding", () => {
-        const parsed = parseIntegrityFindings({
+describe("parseManagementActivity", () => {
+    it("accepts durable lifecycle work and audit events", () => {
+        const parsed = parseManagementActivity({
+            schema: "carrack.management.activity.v1",
             observed_at: 10,
-            next_cursor: "cursor",
-            findings: [
+            event_cursor: 7,
+            active_items: [
                 {
-                    id: "finding-1",
-                    namespace_id: "namespace-1",
-                    namespace_name: "archive",
-                    subject_kind: "location",
-                    subject_id: "location-1",
-                    condition: "missing",
-                    state: "open",
-                    evidence: { condition: "missing" },
-                    first_observed_at: 1,
-                    last_observed_at: 9,
-                    resolved_at: null,
-                    revision: 1,
-                    manifest_sha256: "a".repeat(64),
-                    root_version: 1,
-                    extent_sha256: "b".repeat(64),
-                    driver_id: "mirror",
-                    storage_key: "objects/one",
-                    location_state: "missing",
-                    last_verified_at: 2,
-                    quarantine_revision: null,
-                    quarantine_until: null,
-                    acknowledgement_reason: null,
-                    acknowledged_at: null,
-                    tombstone_reason: null,
-                    tombstoned_at: null,
-                    delete_after: null,
-                    available_repair_sources: 1,
-                    repairable: true,
-                    required_action: "Repair from a separately verified replica.",
+                    kind: "credential_refresh",
+                    id: "credential-1",
+                    subject_kind: "driver_credential",
+                    subject_id: "aliyun-main",
+                    state: "reauth_required",
+                    driver_id: "aliyun-main",
+                    created_at: 1,
+                    updated_at: 9,
+                    deadline_at: null,
+                    attempt_count: 2,
+                    last_error_code: "invalid_grant",
+                    attention_required: true,
+                },
+            ],
+            events: [
+                {
+                    id: 7,
+                    filesystem_id: null,
+                    principal_id: null,
+                    token_id: null,
+                    event_kind: "driver.credential.refreshed",
+                    subject_kind: "driver",
+                    subject_id: "aliyun-main",
+                    details: { source: "control_plane" },
+                    created_at: 8,
                 },
             ],
         });
 
-        expect(parsed.findings[0]?.repairable).toBe(true);
-        expect(parsed.next_cursor).toBe("cursor");
+        expect(parsed.active_items[0]?.attention_required).toBe(true);
+        expect(parsed.events[0]?.event_kind).toBe("driver.credential.refreshed");
     });
 
-    it("rejects an unclassified finding payload", () => {
+    it("rejects legacy archive activity payloads", () => {
         expect(() =>
-            parseIntegrityFindings({
+            parseManagementActivity({
                 observed_at: 10,
-                next_cursor: null,
-                findings: [{}],
+                components: [],
             }),
         ).toThrow();
     });

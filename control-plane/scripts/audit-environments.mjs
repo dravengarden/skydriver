@@ -7,11 +7,7 @@ if (accountId === undefined || apiToken === undefined) {
 }
 
 const config = JSON.parse(fs.readFileSync("control-plane/wrangler.jsonc", "utf8"));
-const requiredSecrets = [
-    "CARRACK_ADMIN_TOKEN",
-    "CARRACK_ROOT_KEY_V1",
-    "CARRACK_VFS_MASTER_KEY_V1",
-];
+const requiredSecrets = ["CARRACK_ADMIN_TOKEN", "CARRACK_VFS_MASTER_KEY_V1"];
 const forbiddenSecrets = ["CARRACK_SESSION_KEY"];
 
 async function api(path) {

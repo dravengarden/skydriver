@@ -32,14 +32,12 @@ test:
     go test -race ./...
     cargo test --workspace --all-features
     pnpm --filter @carrack/web test
-    control-plane/tests/core-protocol.sh
     control-plane/tests/vfs-v2-protocol.sh
     control-plane/tests/vfs-v2-put-protocol.sh
     control-plane/tests/vfs-v2-worker-protocol.sh
     control-plane/tests/vfs-v2-bootstrap-worker-protocol.sh
     control-plane/tests/vfs-v2-management-worker-protocol.sh
     control-plane/tests/environment-defaults-worker-protocol.sh
-    control-plane/tests/worker-protocol.sh
     control-plane/tests/cloudflare-environments.sh
 
 build:

@@ -61,7 +61,6 @@ r2_endpoint=https://0123456789abcdef.r2.cloudflarestorage.com
   --var CARRACK_ENVIRONMENT:dev \
   --var CARRACK_DEFAULT_R2_MAX_PHYSICAL_BYTES:107374182400 \
   --var CARRACK_R2_ENDPOINT:"$r2_endpoint" \
-  --var CARRACK_ROOT_KEY_V1:"$admin_token" \
   --var CARRACK_VFS_MASTER_KEY_V1:"$admin_token" \
   --var CARRACK_ADMIN_TOKEN:"$admin_token" \
   --show-interactive-dev-session=false >"$server_log" 2>&1 &

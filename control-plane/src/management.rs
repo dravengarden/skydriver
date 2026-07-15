@@ -143,6 +143,73 @@ struct SnapshotResponse {
     tokens: Vec<TokenView>,
 }
 
+#[derive(Deserialize)]
+struct ActivityItemRow {
+    kind: String,
+    id: String,
+    subject_kind: String,
+    subject_id: String,
+    state: String,
+    driver_id: Option<String>,
+    created_at: u64,
+    updated_at: u64,
+    deadline_at: Option<u64>,
+    attempt_count: u64,
+    last_error_code: Option<String>,
+    attention_required: u64,
+}
+
+#[derive(Serialize)]
+struct ActivityItemView {
+    kind: String,
+    id: String,
+    subject_kind: String,
+    subject_id: String,
+    state: String,
+    driver_id: Option<String>,
+    created_at: u64,
+    updated_at: u64,
+    deadline_at: Option<u64>,
+    attempt_count: u64,
+    last_error_code: Option<String>,
+    attention_required: bool,
+}
+
+#[derive(Deserialize)]
+struct ActivityEventRow {
+    id: u64,
+    filesystem_id: Option<String>,
+    principal_id: Option<String>,
+    token_id: Option<String>,
+    event_kind: String,
+    subject_kind: String,
+    subject_id: String,
+    details_json: String,
+    created_at: u64,
+}
+
+#[derive(Serialize)]
+struct ActivityEventView {
+    id: u64,
+    filesystem_id: Option<String>,
+    principal_id: Option<String>,
+    token_id: Option<String>,
+    event_kind: String,
+    subject_kind: String,
+    subject_id: String,
+    details: Value,
+    created_at: u64,
+}
+
+#[derive(Serialize)]
+struct ActivityResponse {
+    schema: &'static str,
+    observed_at: u64,
+    event_cursor: u64,
+    active_items: Vec<ActivityItemView>,
+    events: Vec<ActivityEventView>,
+}
+
 #[derive(Deserialize, Serialize)]
 struct DirectoryRow {
     id: String,
@@ -461,6 +528,182 @@ pub(crate) async fn event_cursor(request: &Request, env: &Env) -> Result<Respons
         schema: "carrack.management.event-cursor.v1",
         observed_at: now_seconds(),
         event_cursor: cursor,
+    })
+}
+
+/// Returns bounded, current VFS lifecycle work and the newest audit events.
+///
+/// Direct provider payload progress remains client-local by design. This view
+/// exposes only durable control-plane state, so an empty response never implies
+/// that a direct transfer has stopped or failed.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one bounded union keeps the complete VFS lifecycle projection and its attention classification visible"
+)]
+pub(crate) async fn activity(request: &Request, env: &Env) -> Result<Response> {
+    if !operator_sessions::authorized(request, env).await? {
+        return Response::error("authentication required", 401);
+    }
+
+    let database = env.d1(DATABASE_BINDING)?;
+    let now = now_seconds();
+    let binding = [JsValue::from_str(&now.to_string())];
+    let mut item_rows = database
+        .prepare(
+            r"SELECT kind, id, subject_kind, subject_id, state, driver_id,
+                     created_at, updated_at, deadline_at, attempt_count,
+                     last_error_code, attention_required
+              FROM (
+                  SELECT 'upload' AS kind, intent.id, 'put_intent' AS subject_kind,
+                         intent.id AS subject_id, intent.state, intent.driver_id,
+                         intent.created_at, intent.created_at AS updated_at,
+                         intent.expires_at AS deadline_at, 0 AS attempt_count,
+                         NULL AS last_error_code, 0 AS attention_required
+                  FROM vfs_put_intents AS intent
+                  WHERE intent.state = 'prepared' AND intent.expires_at > CAST(?1 AS INTEGER)
+                  UNION ALL
+                  SELECT 'download' AS kind, lease.id, 'read_lease' AS subject_kind,
+                         lease.version_id AS subject_id, 'active' AS state,
+                         location.driver_id, lease.created_at, lease.created_at AS updated_at,
+                         lease.expires_at AS deadline_at, 0 AS attempt_count,
+                         NULL AS last_error_code, 0 AS attention_required
+                  FROM vfs_read_leases AS lease
+                  JOIN vfs_locations AS location ON location.id = lease.location_id
+                  WHERE lease.completed_at IS NULL
+                    AND lease.expires_at > CAST(?1 AS INTEGER)
+                  UNION ALL
+                  SELECT 'location_delete' AS kind, task.id,
+                         'location_delete_task' AS subject_kind, task.id AS subject_id,
+                         task.state, task.driver_id, task.created_at, task.updated_at,
+                         task.delete_after AS deadline_at, task.attempt_count,
+                         task.last_error_code,
+                         CASE WHEN task.state IN ('retry', 'blocked') THEN 1 ELSE 0 END
+                             AS attention_required
+                  FROM vfs_location_delete_tasks AS task
+                  WHERE task.state IN ('pending', 'claimed', 'retry', 'blocked')
+              )
+              ORDER BY attention_required DESC, updated_at DESC, id
+              LIMIT 100",
+        )
+        .bind(&binding)?
+        .all()
+        .await?
+        .results::<ActivityItemRow>()?;
+    item_rows.extend(
+        database
+            .prepare(
+                r"SELECT kind, id, subject_kind, subject_id, state, driver_id,
+                         created_at, updated_at, deadline_at, attempt_count,
+                         last_error_code, attention_required
+                  FROM (
+                  SELECT 'put_cleanup' AS kind, task.id,
+                         'put_delete_task' AS subject_kind, task.id AS subject_id,
+                         CASE WHEN task.server_blocked_at IS NULL THEN task.state
+                              ELSE 'blocked' END AS state,
+                         intent.driver_id, task.created_at, task.updated_at,
+                         task.delete_after AS deadline_at, task.attempt_count,
+                         task.last_error_code,
+                         CASE WHEN task.state = 'failed' OR task.server_blocked_at IS NOT NULL
+                              THEN 1 ELSE 0 END AS attention_required
+                  FROM vfs_put_delete_tasks AS task
+                  JOIN vfs_put_intents AS intent ON intent.id = task.id
+                  WHERE task.state IN ('pending', 'claimed', 'failed')
+                  UNION ALL
+                  SELECT 'r2_upload_cleanup' AS kind, task.intent_id AS id,
+                         'r2_upload_cleanup_task' AS subject_kind,
+                         task.intent_id AS subject_id, task.state, intent.driver_id,
+                         task.created_at, task.updated_at,
+                         task.lease_expires_at AS deadline_at, task.attempt_count,
+                         task.last_error_code,
+                         CASE WHEN task.state = 'failed' THEN 1 ELSE 0 END
+                             AS attention_required
+                  FROM vfs_r2_upload_cleanup_tasks AS task
+                  JOIN vfs_put_intents AS intent ON intent.id = task.intent_id
+                  WHERE task.state IN ('cleaning', 'failed')
+                     OR (task.state = 'active' AND intent.state IN ('expired', 'abandoned'))
+                  UNION ALL
+                  SELECT 'credential_refresh' AS kind, refresh.credential_id AS id,
+                         'driver_credential' AS subject_kind,
+                         refresh.driver_id AS subject_id, refresh.state,
+                         refresh.driver_id, refresh.created_at, refresh.updated_at,
+                         COALESCE(refresh.retry_at, refresh.lease_expires_at,
+                                  refresh.refresh_after) AS deadline_at,
+                         refresh.attempt_count, refresh.last_error_code,
+                         CASE WHEN refresh.state IN ('retry', 'reauth_required')
+                              THEN 1 ELSE 0 END AS attention_required
+                  FROM driver_credential_refreshes AS refresh
+                  WHERE refresh.state IN ('claimed', 'retry', 'reauth_required')
+                  )
+                  ORDER BY attention_required DESC, updated_at DESC, id
+                  LIMIT 100",
+            )
+            .all()
+            .await?
+            .results::<ActivityItemRow>()?,
+    );
+    item_rows.sort_by(|left, right| {
+        right
+            .attention_required
+            .cmp(&left.attention_required)
+            .then_with(|| right.updated_at.cmp(&left.updated_at))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    item_rows.truncate(100);
+    let active_items = item_rows
+        .into_iter()
+        .map(|row| ActivityItemView {
+            kind: row.kind,
+            id: row.id,
+            subject_kind: row.subject_kind,
+            subject_id: row.subject_id,
+            state: row.state,
+            driver_id: row.driver_id,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            deadline_at: row.deadline_at,
+            attempt_count: row.attempt_count,
+            last_error_code: row.last_error_code,
+            attention_required: row.attention_required == 1,
+        })
+        .collect();
+
+    let event_rows = database
+        .prepare(
+            r"SELECT id, filesystem_id, principal_id, token_id, event_kind,
+                     subject_kind, subject_id, details_json, created_at
+              FROM vfs_audit_events
+              ORDER BY id DESC
+              LIMIT 100",
+        )
+        .all()
+        .await?
+        .results::<ActivityEventRow>()?;
+    let event_cursor = event_rows.first().map_or(0, |row| row.id);
+    let events = event_rows
+        .into_iter()
+        .map(|row| {
+            let mut details = serde_json::from_str(&row.details_json).unwrap_or(Value::Null);
+            redact_value(&mut details);
+            ActivityEventView {
+                id: row.id,
+                filesystem_id: row.filesystem_id,
+                principal_id: row.principal_id,
+                token_id: row.token_id,
+                event_kind: row.event_kind,
+                subject_kind: row.subject_kind,
+                subject_id: row.subject_id,
+                details,
+                created_at: row.created_at,
+            }
+        })
+        .collect();
+
+    no_store_json(&ActivityResponse {
+        schema: "carrack.management.activity.v1",
+        observed_at: now,
+        event_cursor,
+        active_items,
+        events,
     })
 }
 

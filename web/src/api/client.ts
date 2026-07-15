@@ -20,77 +20,6 @@ const HealthSchema = v.object({
     mutations_allowed: v.boolean(),
 });
 
-const SummarySchema = v.object({
-    operations: v.number(),
-    objects: v.number(),
-    packs: v.number(),
-    verified_locations: v.number(),
-});
-
-const LiveComponentSchema = v.object({
-    component_id: v.string(),
-    operation_id: v.string(),
-    operation_kind: v.string(),
-    operation_phase: v.string(),
-    component_kind: v.string(),
-    component_state: v.string(),
-    client_name: v.nullable(v.string()),
-    useful_bytes_total: v.nullable(v.number()),
-    useful_bytes_verified: v.number(),
-    wire_bytes_read: v.number(),
-    wire_bytes_written: v.number(),
-    retry_count: v.number(),
-    throttle_count: v.number(),
-    last_sample_at: v.nullable(v.number()),
-    rate_1m_bps: v.number(),
-    rate_5m_bps: v.number(),
-    rate_15m_bps: v.number(),
-    lifetime_active_bps: v.number(),
-});
-
-const LiveComponentsSchema = v.object({
-    observed_at: v.number(),
-    components: v.array(LiveComponentSchema),
-});
-
-const IntegrityFindingSchema = v.object({
-    id: v.string(),
-    namespace_id: v.nullable(v.string()),
-    namespace_name: v.nullable(v.string()),
-    subject_kind: v.string(),
-    subject_id: v.string(),
-    condition: v.string(),
-    state: v.string(),
-    evidence: v.unknown(),
-    first_observed_at: v.number(),
-    last_observed_at: v.number(),
-    resolved_at: v.nullable(v.number()),
-    revision: v.number(),
-    manifest_sha256: v.nullable(v.string()),
-    root_version: v.nullable(v.number()),
-    extent_sha256: v.nullable(v.string()),
-    driver_id: v.nullable(v.string()),
-    storage_key: v.nullable(v.string()),
-    location_state: v.nullable(v.string()),
-    last_verified_at: v.nullable(v.number()),
-    quarantine_revision: v.nullable(v.number()),
-    quarantine_until: v.nullable(v.number()),
-    acknowledgement_reason: v.nullable(v.string()),
-    acknowledged_at: v.nullable(v.number()),
-    tombstone_reason: v.nullable(v.string()),
-    tombstoned_at: v.nullable(v.number()),
-    delete_after: v.nullable(v.number()),
-    available_repair_sources: v.number(),
-    repairable: v.boolean(),
-    required_action: v.string(),
-});
-
-const IntegrityFindingsSchema = v.object({
-    observed_at: v.number(),
-    next_cursor: v.nullable(v.string()),
-    findings: v.array(IntegrityFindingSchema),
-});
-
 const DriverViewSchema = v.object({
     id: v.string(),
     kind: v.string(),
@@ -166,6 +95,41 @@ const ManagementEventCursorSchema = v.object({
     schema: v.literal("carrack.management.event-cursor.v1"),
     observed_at: v.number(),
     event_cursor: v.number(),
+});
+
+const ManagementActivityItemSchema = v.object({
+    kind: v.string(),
+    id: v.string(),
+    subject_kind: v.string(),
+    subject_id: v.string(),
+    state: v.string(),
+    driver_id: v.nullable(v.string()),
+    created_at: v.number(),
+    updated_at: v.number(),
+    deadline_at: v.nullable(v.number()),
+    attempt_count: v.number(),
+    last_error_code: v.nullable(v.string()),
+    attention_required: v.boolean(),
+});
+
+const ManagementActivityEventSchema = v.object({
+    id: v.number(),
+    filesystem_id: v.nullable(v.string()),
+    principal_id: v.nullable(v.string()),
+    token_id: v.nullable(v.string()),
+    event_kind: v.string(),
+    subject_kind: v.string(),
+    subject_id: v.string(),
+    details: v.unknown(),
+    created_at: v.number(),
+});
+
+const ManagementActivitySchema = v.object({
+    schema: v.literal("carrack.management.activity.v1"),
+    observed_at: v.number(),
+    event_cursor: v.number(),
+    active_items: v.array(ManagementActivityItemSchema),
+    events: v.array(ManagementActivityEventSchema),
 });
 
 const ManagementDirectorySchema = v.object({
@@ -344,16 +308,14 @@ const QuotaReceiptSchema = v.object({
 export type Session = v.InferOutput<typeof SessionSchema>;
 export type ConfigurationSession = v.InferOutput<typeof ConfigurationSessionSchema>;
 export type Health = v.InferOutput<typeof HealthSchema>;
-export type Summary = v.InferOutput<typeof SummarySchema>;
-export type LiveComponent = v.InferOutput<typeof LiveComponentSchema>;
-export type LiveComponents = v.InferOutput<typeof LiveComponentsSchema>;
-export type IntegrityFinding = v.InferOutput<typeof IntegrityFindingSchema>;
-export type IntegrityFindings = v.InferOutput<typeof IntegrityFindingsSchema>;
 export type DriverView = v.InferOutput<typeof DriverViewSchema>;
 export type FilesystemView = v.InferOutput<typeof FilesystemViewSchema>;
 export type TokenView = v.InferOutput<typeof TokenViewSchema>;
 export type ManagementSnapshot = v.InferOutput<typeof ManagementSnapshotSchema>;
 export type ManagementEventCursor = v.InferOutput<typeof ManagementEventCursorSchema>;
+export type ManagementActivityItem = v.InferOutput<typeof ManagementActivityItemSchema>;
+export type ManagementActivityEvent = v.InferOutput<typeof ManagementActivityEventSchema>;
+export type ManagementActivity = v.InferOutput<typeof ManagementActivitySchema>;
 export type ManagementDirectory = v.InferOutput<typeof ManagementDirectorySchema>;
 export type TokenAnnotationValidation = v.InferOutput<typeof TokenAnnotationValidationSchema>;
 export type TokenAnnotationReceipt = v.InferOutput<typeof TokenAnnotationReceiptSchema>;
@@ -375,8 +337,8 @@ export function parseHealth(input: unknown): Health {
     return v.parse(HealthSchema, input);
 }
 
-export function parseIntegrityFindings(input: unknown): IntegrityFindings {
-    return v.parse(IntegrityFindingsSchema, input);
+export function parseManagementActivity(input: unknown): ManagementActivity {
+    return v.parse(ManagementActivitySchema, input);
 }
 
 async function requestJson<TSchema extends v.BaseSchema<unknown, unknown, v.BaseIssue<unknown>>>(
@@ -682,23 +644,6 @@ function newIdempotencyKey(): string {
     return `ui-${Array.from(entropy, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-export function fetchSummary(): Promise<Summary> {
-    return requestJson("/api/summary", undefined, SummarySchema);
-}
-
-export function fetchLiveComponents(): Promise<LiveComponents> {
-    return requestJson("/api/components/live", undefined, LiveComponentsSchema);
-}
-
-export function fetchIntegrityFindings(cursor: string | null): Promise<IntegrityFindings> {
-    const parameters = new URLSearchParams({ state: "open", limit: "50" });
-    if (cursor !== null) {
-        parameters.set("cursor", cursor);
-    }
-
-    return requestJson(
-        `/api/integrity/findings?${parameters.toString()}`,
-        undefined,
-        IntegrityFindingsSchema,
-    );
+export function fetchManagementActivity(): Promise<ManagementActivity> {
+    return requestJson("/api/admin/activity", undefined, ManagementActivitySchema);
 }

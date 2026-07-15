@@ -44,7 +44,35 @@ if rg --line-number \
   exit 1
 fi
 
-if test -e schemas/bundle.v1.schema.json || test -e schemas/bundle-plan.v1.schema.json; then
-  echo "bundle schemas are forbidden by the complete-object V2 model" >&2
+legacy_schemas=(
+  schemas/bundle.v1.schema.json
+  schemas/bundle-plan.v1.schema.json
+  schemas/manifest.v1.schema.json
+  schemas/recovery-manifest.v1.schema.json
+  schemas/crypto-v1-vectors.json
+)
+for legacy_schema in "${legacy_schemas[@]}"; do
+  if test -e "$legacy_schema"; then
+    echo "legacy archive schema is forbidden: $legacy_schema" >&2
+    exit 1
+  fi
+done
+
+legacy_rust_modules=(
+  clients compaction copying garbage_collection integrity inventory key_grants keys
+  manifest_archive manifests move_deletion moving operations protocol publication
+  quarantine quarantine_deletion reconciliation repairing restoration telemetry verification
+)
+for legacy_module in "${legacy_rust_modules[@]}"; do
+  if test -e "control-plane/src/$legacy_module.rs"; then
+    echo "legacy archive Worker module is forbidden: $legacy_module" >&2
+    exit 1
+  fi
+done
+
+if rg --line-number \
+  '/api/v1/|/api/(clients|client/session|summary|components/live|integrity/findings|recovery/)' \
+  control-plane/src web/src; then
+  echo "legacy archive HTTP routes are forbidden" >&2
   exit 1
 fi
