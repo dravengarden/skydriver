@@ -217,6 +217,74 @@ configuration_enabled=$(curl --silent --show-error --fail-with-body \
 [[ "$(jq -r '.enabled' <<<"$configuration_enabled")" == true ]]
 [[ "$(jq -r '.expires_at > 0' <<<"$configuration_enabled")" == true ]]
 
+recovery_headers="$state_directory/recovery-headers.txt"
+recovered=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" -D "$recovery_headers" -H "$json" --data '{}' \
+  "$base_url/api/admin/vfs/authority/recover")
+grep -iq '^cache-control: no-store, max-age=0' "$recovery_headers"
+[[ "$(jq -r '.token' <<<"$recovered")" == "$token" ]]
+[[ "$(jq -r '.token_id' <<<"$recovered")" == "$token_id" ]]
+
+authority_directory="$state_directory/private-authority"
+mkdir -m 700 "$authority_directory"
+authority_file="$authority_directory/root.json"
+authority_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  "$rust_carrackctl" authority recover --control-url "$base_url" \
+  --output-file "$authority_file" --format json)
+[[ "$(jq -r '.schema' <<<"$authority_receipt")" == carrack.authority-file-receipt.v1 ]]
+[[ "$(jq -r '.token_id' <<<"$authority_receipt")" == "$token_id" ]]
+[[ "$(jq -r '.token' "$authority_file")" == "$token" ]]
+[[ "$(stat -c '%a' "$authority_file")" == 600 ]]
+[[ "$(grep -c "$token" <<<"$authority_receipt")" == 0 ]]
+
+access_snapshot=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  "$rust_carrackctl" access show --control-url "$base_url" --format json)
+[[ "$(jq -r '.schema' <<<"$access_snapshot")" == carrack.management.access.v1 ]]
+[[ "$(jq -r '.principals[0].id' <<<"$access_snapshot")" == "$principal_id" ]]
+service_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  "$rust_carrackctl" access principal create --control-url "$base_url" \
+  --kind service --display-name 'Acceptance agent' \
+  --idempotency-key access-service-create-v1 --format json)
+service_principal_id=$(jq -r '.resource_id' <<<"$service_receipt")
+[[ "$(jq -r '.final_revision' <<<"$service_receipt")" == 1 ]]
+group_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  "$rust_carrackctl" access group create "$filesystem_id" --control-url "$base_url" \
+  --name 'Acceptance publishers' --idempotency-key access-group-create-v1 --format json)
+group_id=$(jq -r '.resource_id' <<<"$group_receipt")
+member_added=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  "$rust_carrackctl" access group add-member "$group_id" "$service_principal_id" \
+  --control-url "$base_url" --filesystem-id "$filesystem_id" --expected-revision 1 \
+  --idempotency-key access-member-add-v1 --format json)
+[[ "$(jq -r '.final_revision' <<<"$member_added")" == 2 ]]
+group_acl_revision=$(CARRACK_VFS_TOKEN="$token" "$rust_carrackctl" vfs acl show / \
+  --control-url "$base_url" --format json | jq -r '.acl_revision')
+group_acl_receipt=$(CARRACK_VFS_TOKEN="$token" "$rust_carrackctl" vfs acl replace / \
+  --control-url "$base_url" --group-id "$group_id" --action directory.list,content.read \
+  --expected-revision "$group_acl_revision" --idempotency-key access-group-acl-v1 --format json)
+[[ "$(jq -r --arg group_id "$group_id" '.policy.group_id == $group_id' \
+  <<<"$group_acl_receipt")" == true ]]
+member_removed=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  "$rust_carrackctl" access group remove-member "$group_id" "$service_principal_id" \
+  --control-url "$base_url" --filesystem-id "$filesystem_id" --expected-revision 2 \
+  --idempotency-key access-member-remove-v1 --format json)
+[[ "$(jq -r '.final_revision' <<<"$member_removed")" == 3 ]]
+group_updated=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  "$rust_carrackctl" access group update "$group_id" --control-url "$base_url" \
+  --filesystem-id "$filesystem_id" --name 'Acceptance readers' --expected-revision 3 \
+  --idempotency-key access-group-update-v1 --format json)
+[[ "$(jq -r '.final_revision' <<<"$group_updated")" == 4 ]]
+principal_disabled=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  "$rust_carrackctl" access principal update "$service_principal_id" \
+  --control-url "$base_url" --kind service --display-name 'Acceptance agent' \
+  --state disabled --expected-revision 1 \
+  --idempotency-key access-service-disable-v1 --format json)
+[[ "$(jq -r '.final_revision' <<<"$principal_disabled")" == 2 ]]
+group_deleted=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  "$rust_carrackctl" access group delete "$group_id" --control-url "$base_url" \
+  --filesystem-id "$filesystem_id" --expected-revision 4 \
+  --idempotency-key access-group-delete-v1 --format json)
+[[ "$(jq -r '.operation' <<<"$group_deleted")" == group.delete ]]
+
 annotation_validation=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" -H "$json" \
   --data '{"label":"Release agent","note":"Publishes verified releases.","expected_revision":1}' \
@@ -751,6 +819,13 @@ projected_authorization="Authorization: Bearer $projected_token"
              WHERE id = '$cli_location_id' AND state = 'tombstoned';" >/dev/null
 curl --silent --show-error --fail-with-body \
   "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
+provider_inventory=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+  "$rust_carrackctl" inventory --control-url "$base_url" --format json)
+[[ "$(jq -r '.schema' <<<"$provider_inventory")" == carrack.management.provider-inventory.v1 ]]
+[[ "$(jq -r '.drivers[] | select(.driver_id == "local-main") | .state' \
+  <<<"$provider_inventory")" == unsupported ]]
+[[ "$(jq -r '.drivers[] | select(.driver_id == "local-main") | .last_error_code' \
+  <<<"$provider_inventory")" == inventory_runs_on_agent_host ]]
 "${wrangler[@]}" d1 execute CARRACK_INDEX \
   --local --persist-to "$state_directory" \
   --command "CREATE TABLE vfs_catalog_checkpoint_assertions (

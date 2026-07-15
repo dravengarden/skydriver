@@ -29,6 +29,180 @@ const DRIVER_CREDENTIAL_VALIDATION_SCHEMA: &str =
 const DRIVER_CREDENTIAL_RECEIPT_SCHEMA: &str = "carrack.management.driver-credential-receipt.v1";
 const QUOTA_VALIDATION_SCHEMA: &str = "carrack.management.quota-validation.v1";
 const QUOTA_RECEIPT_SCHEMA: &str = "carrack.management.quota-receipt.v1";
+const BOOTSTRAP_AUTHORITY_SCHEMA: &str = "carrack.vfs.bootstrap-receipt.v1";
+const ACCESS_SCHEMA: &str = "carrack.management.access.v1";
+const ACCESS_VALIDATION_SCHEMA: &str = "carrack.management.access-validation.v1";
+const ACCESS_RECEIPT_SCHEMA: &str = "carrack.management.access-receipt.v1";
+const PROVIDER_INVENTORY_SCHEMA: &str = "carrack.management.provider-inventory.v1";
+
+/// Strict one-shot VFS bootstrap request used by the operator CLI.
+#[derive(Clone, Debug, Serialize)]
+pub struct BootstrapAuthorityRequest {
+    /// Human-readable first filesystem name.
+    pub filesystem_name: String,
+    /// Human-readable root principal name.
+    pub principal_display_name: String,
+    /// Initial directory encryption suite.
+    pub crypto_suite: String,
+    /// Root bearer validity in seconds.
+    pub token_lifetime_seconds: u64,
+    /// Stable identity for an exact bootstrap replay.
+    pub idempotency_key: String,
+}
+
+/// Recoverable root authority returned only to a reauthenticated operator.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(
+    missing_docs,
+    reason = "wire fields retain the documented bootstrap schema names"
+)]
+pub struct BootstrapAuthority {
+    pub schema: String,
+    pub filesystem_id: String,
+    pub principal_id: String,
+    pub root_directory_id: String,
+    pub token_id: String,
+    pub driver_id: String,
+    pub crypto_suite: String,
+    pub key_epoch: u64,
+    pub token_expires_at: u64,
+    pub token: String,
+}
+
+impl Zeroize for BootstrapAuthority {
+    fn zeroize(&mut self) {
+        self.token.zeroize();
+    }
+}
+
+impl Drop for BootstrapAuthority {
+    fn drop(&mut self) {
+        self.token.zeroize();
+    }
+}
+
+/// One principal visible to the operator management surface.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(missing_docs, reason = "wire fields preserve management schema names")]
+pub struct ManagementPrincipal {
+    pub id: String,
+    pub kind: String,
+    pub display_name: String,
+    pub state: String,
+    pub revision: u64,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+/// One VFS group visible to the operator management surface.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(missing_docs, reason = "wire fields preserve management schema names")]
+pub struct ManagementGroup {
+    pub id: String,
+    pub filesystem_id: String,
+    pub name: String,
+    pub revision: u64,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+/// One group membership visible to the operator management surface.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(missing_docs, reason = "wire fields preserve management schema names")]
+pub struct ManagementMembership {
+    pub group_id: String,
+    pub principal_id: String,
+    pub created_at: u64,
+}
+
+/// Complete redacted access-management snapshot.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(missing_docs, reason = "wire fields preserve management schema names")]
+pub struct ManagementAccess {
+    pub schema: String,
+    pub observed_at: u64,
+    pub principals: Vec<ManagementPrincipal>,
+    pub groups: Vec<ManagementGroup>,
+    pub memberships: Vec<ManagementMembership>,
+}
+
+/// Exact desired access mutation signed by server-side validation.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(missing_docs, reason = "wire fields preserve management schema names")]
+pub struct AccessMutationDesired {
+    pub operation: String,
+    pub resource_id: Option<String>,
+    pub filesystem_id: Option<String>,
+    pub principal_id: Option<String>,
+    pub group_id: Option<String>,
+    pub kind: Option<String>,
+    pub display_name: Option<String>,
+    pub state: Option<String>,
+    pub name: Option<String>,
+    pub expected_revision: u64,
+}
+
+/// Short-lived server validation for an exact access mutation.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(missing_docs, reason = "wire fields preserve management schema names")]
+pub struct AccessMutationValidation {
+    pub schema: String,
+    pub desired: AccessMutationDesired,
+    pub validation_expires_at: u64,
+    pub validation_digest: String,
+    pub warnings: Vec<String>,
+}
+
+/// Durable receipt for one committed access mutation.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(missing_docs, reason = "wire fields preserve management schema names")]
+pub struct AccessMutationReceipt {
+    pub schema: String,
+    pub operation_id: String,
+    pub operation: String,
+    pub resource_id: String,
+    pub final_revision: u64,
+    pub committed_at: u64,
+    pub state: String,
+}
+
+/// Redacted status for one server-owned provider inventory loop.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(missing_docs, reason = "wire fields preserve management schema names")]
+pub struct ProviderInventoryStatus {
+    pub driver_id: String,
+    pub driver_kind: String,
+    pub generation: u64,
+    pub state: String,
+    pub scanned_objects: u64,
+    pub unknown_objects: u64,
+    pub quarantined_objects: u64,
+    pub quarantined_bytes: u64,
+    pub oldest_quarantined_at: Option<u64>,
+    pub last_started_at: Option<u64>,
+    pub last_completed_at: Option<u64>,
+    pub last_error_code: Option<String>,
+    pub updated_at: u64,
+}
+
+/// Redacted provider inventory and quarantine summary.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(missing_docs, reason = "wire fields preserve management schema names")]
+pub struct ProviderInventory {
+    pub schema: String,
+    pub observed_at: u64,
+    pub drivers: Vec<ProviderInventoryStatus>,
+}
 
 /// Canonical non-secret operator account identity.
 #[derive(Clone, Debug)]
@@ -612,6 +786,153 @@ impl AdminClient {
             ));
         }
         Ok(snapshot)
+    }
+
+    /// Reads all principals, groups, and memberships without bearer secrets.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on authentication, transport, schema, or identity errors.
+    pub async fn access(&self) -> Result<ManagementAccess, Error> {
+        let cookie = self.login().await?;
+        let access: ManagementAccess = self.request("api/admin/access", &cookie).await?;
+        if access.schema != ACCESS_SCHEMA
+            || access.observed_at == 0
+            || access.principals.iter().any(|principal| {
+                !valid_identifier(&principal.id)
+                    || principal.revision == 0
+                    || !matches!(principal.kind.as_str(), "human" | "service")
+                    || !matches!(principal.state.as_str(), "active" | "disabled")
+            })
+            || access.groups.iter().any(|group| {
+                !valid_identifier(&group.id)
+                    || !valid_identifier(&group.filesystem_id)
+                    || group.revision == 0
+            })
+        {
+            return Err(Error::InvalidResponse(
+                "invalid management access snapshot".to_owned(),
+            ));
+        }
+        Ok(access)
+    }
+
+    /// Reads bounded server-owned provider inventory and quarantine status.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on authentication, transport, schema, or identity errors.
+    pub async fn provider_inventory(&self) -> Result<ProviderInventory, Error> {
+        let cookie = self.login().await?;
+        let inventory: ProviderInventory = self
+            .request("api/admin/provider-inventory", &cookie)
+            .await?;
+        if inventory.schema != PROVIDER_INVENTORY_SCHEMA
+            || inventory.observed_at == 0
+            || inventory.drivers.iter().any(|driver| {
+                !valid_identifier(&driver.driver_id)
+                    || driver.driver_kind.is_empty()
+                    || driver.updated_at == 0
+                    || !matches!(
+                        driver.state.as_str(),
+                        "idle" | "scanning" | "complete" | "unsupported" | "error"
+                    )
+            })
+        {
+            return Err(Error::InvalidResponse(
+                "invalid provider inventory response".to_owned(),
+            ));
+        }
+        Ok(inventory)
+    }
+
+    /// Validates one exact principal, group, or membership mutation.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on invalid input, authentication, or response identity.
+    pub async fn validate_access_mutation(
+        &self,
+        desired: &AccessMutationDesired,
+    ) -> Result<AccessMutationValidation, Error> {
+        let validation: AccessMutationValidation = self
+            .post_authenticated("api/admin/access/validate", desired)
+            .await?;
+        if validation.schema != ACCESS_VALIDATION_SCHEMA
+            || validation.validation_expires_at == 0
+            || validation.validation_digest.is_empty()
+            || validation.desired.operation.is_empty()
+            || validation
+                .desired
+                .resource_id
+                .as_deref()
+                .is_none_or(|value| !valid_identifier(value))
+        {
+            return Err(Error::InvalidResponse(
+                "invalid access validation response".to_owned(),
+            ));
+        }
+        Ok(validation)
+    }
+
+    /// Applies a previously validated access mutation under reauthentication.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on stale validation, CAS conflict, authentication, or replay mismatch.
+    pub async fn apply_access_mutation(
+        &self,
+        validation: &AccessMutationValidation,
+        idempotency_key: &str,
+    ) -> Result<AccessMutationReceipt, Error> {
+        let request = serde_json::json!({
+            "desired": validation.desired,
+            "validation_expires_at": validation.validation_expires_at,
+            "validation_digest": validation.validation_digest,
+            "idempotency_key": idempotency_key,
+        });
+        let receipt: AccessMutationReceipt = self
+            .post_configured("api/admin/access/apply", &request)
+            .await?;
+        if receipt.schema != ACCESS_RECEIPT_SCHEMA
+            || receipt.state != "committed"
+            || !valid_identifier(&receipt.operation_id)
+            || !valid_identifier(&receipt.resource_id)
+            || receipt.final_revision == 0
+            || receipt.committed_at == 0
+        {
+            return Err(Error::InvalidResponse(
+                "invalid access mutation receipt".to_owned(),
+            ));
+        }
+        Ok(receipt)
+    }
+
+    /// Creates the first VFS authority and returns its bearer exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on invalid request identity, authentication, or response.
+    pub async fn bootstrap_authority(
+        &self,
+        request: &BootstrapAuthorityRequest,
+    ) -> Result<BootstrapAuthority, Error> {
+        let response: BootstrapAuthority =
+            self.post_authenticated("api/v2/bootstrap", request).await?;
+        validate_bootstrap_authority(response)
+    }
+
+    /// Re-derives the current unexpired bootstrap bearer from its immutable receipt.
+    ///
+    /// # Errors
+    ///
+    /// Requires configuration reauthentication and fails if the receipt, master
+    /// key, verifier, or returned authority does not match.
+    pub async fn recover_bootstrap_authority(&self) -> Result<BootstrapAuthority, Error> {
+        let response: BootstrapAuthority = self
+            .post_configured("api/admin/vfs/authority/recover", &serde_json::json!({}))
+            .await?;
+        validate_bootstrap_authority(response)
     }
 
     /// Reads sampled transfer performance for a global, driver, token, or directory scope.
@@ -1334,6 +1655,26 @@ fn valid_identifier(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn validate_bootstrap_authority(
+    authority: BootstrapAuthority,
+) -> Result<BootstrapAuthority, Error> {
+    if authority.schema != BOOTSTRAP_AUTHORITY_SCHEMA
+        || !valid_identifier(&authority.filesystem_id)
+        || !valid_identifier(&authority.principal_id)
+        || !valid_identifier(&authority.root_directory_id)
+        || !valid_identifier(&authority.token_id)
+        || !valid_identifier(&authority.driver_id)
+        || authority.key_epoch == 0
+        || authority.token_expires_at == 0
+        || crate::VfsToken::parse(&authority.token).is_err()
+    {
+        return Err(Error::InvalidResponse(
+            "invalid bootstrap authority response".to_owned(),
+        ));
+    }
+    Ok(authority)
 }
 
 fn validate_event_page(page: &ManagementEventPage, after: u64, limit: u64) -> Result<(), Error> {

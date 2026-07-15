@@ -221,6 +221,71 @@ pub(crate) async fn bootstrap(
     )
 }
 
+/// Re-derives the current unexpired bootstrap authority from immutable receipt
+/// identity. The bearer remains absent from D1 and is returned only to an
+/// explicitly reauthenticated operator recovery request.
+pub(crate) async fn recover(env: &Env, admin_subject: &str) -> Result<Response> {
+    let database = env.d1("CARRACK_INDEX")?;
+    let Some(receipt) = load_receipt(&database).await? else {
+        return Response::error("VFS has not been bootstrapped", 404);
+    };
+    if receipt.admin_subject != admin_subject {
+        return Response::error("bootstrap authority subject mismatch", 403);
+    }
+    if receipt.token_expires_at <= current_unix_seconds() {
+        return Response::error("bootstrap authority has expired", 409);
+    }
+    let digest = hex::decode(&receipt.request_sha256)
+        .ok()
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+        .ok_or_else(|| worker::Error::RustError("invalid bootstrap receipt digest".to_owned()))?;
+    let token = derive_bootstrap_token(env, &digest, &receipt.idempotency_key)?;
+    let stored_verifier = database
+        .prepare("SELECT verifier_sha256 FROM vfs_token_verifiers WHERE id = ?1")
+        .bind(&[JsValue::from_str(&receipt.token_id)])?
+        .first::<String>(Some("verifier_sha256"))
+        .await?;
+    if stored_verifier.as_deref() != Some(&token_verifier(&token)) {
+        return Err(worker::Error::RustError(
+            "bootstrap authority master key does not match the immutable receipt".to_owned(),
+        ));
+    }
+    let now = current_unix_seconds();
+    database
+        .prepare(
+            "INSERT INTO vfs_audit_events (
+                 filesystem_id, principal_id, token_id, event_kind, subject_kind,
+                 subject_id, details_json, created_at
+             ) VALUES (?1, ?2, ?3, 'bootstrap_authority_recovered', 'token', ?3, ?4, ?5)",
+        )
+        .bind(&[
+            JsValue::from_str(&receipt.filesystem_id),
+            JsValue::from_str(&receipt.principal_id),
+            JsValue::from_str(&receipt.token_id),
+            JsValue::from_str(&serde_json::json!({ "admin_subject": admin_subject }).to_string()),
+            number_binding(now),
+        ])?
+        .run()
+        .await?;
+    let mut response = Response::from_json(&BootstrapResponse {
+        schema: BOOTSTRAP_SCHEMA,
+        filesystem_id: receipt.filesystem_id,
+        principal_id: receipt.principal_id,
+        root_directory_id: receipt.root_directory_id,
+        token_id: receipt.token_id,
+        driver_id: receipt.driver_id,
+        crypto_suite: receipt.crypto_suite,
+        key_epoch: receipt.key_epoch,
+        token_expires_at: receipt.token_expires_at,
+        token,
+    })?;
+    response
+        .headers_mut()
+        .set("Cache-Control", "no-store, max-age=0")?;
+    response.headers_mut().set("Pragma", "no-cache")?;
+    Ok(response)
+}
+
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,

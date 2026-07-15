@@ -926,7 +926,40 @@ impl VfsClient {
                 Some(&token),
                 &[],
                 Some(&ReplaceAclRequest {
-                    principal_id,
+                    principal_id: Some(principal_id),
+                    group_id: None,
+                    actions,
+                    expected_acl_revision,
+                    idempotency_key,
+                }),
+            )
+            .await
+    }
+
+    /// Atomically replaces one group's complete direct ACL grant set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unavailable group, insufficient authority, or a revision conflict.
+    pub async fn replace_group_acl(
+        &self,
+        path: &str,
+        group_id: &str,
+        actions: Vec<String>,
+        expected_acl_revision: u64,
+        idempotency_key: &str,
+    ) -> Result<PolicyMutationReceipt, Error> {
+        let directory_id = self.resolve_directory_id(path).await?;
+        let token = self.token.encode();
+        self.control
+            .send_json(
+                Method::POST,
+                &format!("api/v2/directories/{directory_id}/acl/replace"),
+                Some(&token),
+                &[],
+                Some(&ReplaceAclRequest {
+                    principal_id: None,
+                    group_id: Some(group_id),
                     actions,
                     expected_acl_revision,
                     idempotency_key,
@@ -1185,7 +1218,8 @@ struct RenameRequest {
 
 #[derive(Serialize)]
 struct ReplaceAclRequest<'a> {
-    principal_id: &'a str,
+    principal_id: Option<&'a str>,
+    group_id: Option<&'a str>,
     actions: Vec<String>,
     expected_acl_revision: u64,
     idempotency_key: &'a str,

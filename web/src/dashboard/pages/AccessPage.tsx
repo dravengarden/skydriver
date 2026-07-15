@@ -9,17 +9,23 @@ import {
     DialogContent,
     DialogTitle,
     Divider,
+    MenuItem,
     Paper,
     Stack,
     TextField,
     Typography,
 } from "@mui/material";
-import { useMutation, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { useState } from "react";
 import {
     applyTokenAnnotation,
+    applyAccessMutation,
+    fetchManagementAccess,
     fetchManagementSnapshot,
+    validateAccessMutation,
     validateTokenAnnotation,
+    type AccessMutationDesired,
+    type AccessMutationValidation,
     type ManagementSnapshot,
     type TokenAnnotationValidation,
     type TokenView,
@@ -51,13 +57,24 @@ interface AnnotationDraft {
     readonly note: string;
 }
 
+interface AccessDraft {
+    readonly title: string;
+    readonly desired: AccessMutationDesired;
+}
+
 export function AccessPage({
     management,
     configurationEnabled,
     onRequestConfiguration,
 }: AccessPageProps) {
     const queryClient = useQueryClient();
+    const access = useQuery({
+        queryKey: ["management-access"],
+        queryFn: fetchManagementAccess,
+    });
     const [draft, setDraft] = useState<AnnotationDraft | null>(null);
+    const [accessDraft, setAccessDraft] = useState<AccessDraft | null>(null);
+    const [accessValidation, setAccessValidation] = useState<AccessMutationValidation | null>(null);
     const [performanceTokenId, setPerformanceTokenId] = useState<string | null>(null);
     const [validation, setValidation] = useState<TokenAnnotationValidation | null>(null);
     const validationMutation = useMutation({
@@ -92,6 +109,24 @@ export function AccessPage({
             setValidation(null);
         },
     });
+    const accessValidationMutation = useMutation({
+        mutationFn: (value: AccessDraft) => validateAccessMutation(value.desired),
+        onSuccess: setAccessValidation,
+    });
+    const accessApplyMutation = useMutation({
+        mutationFn: async (desired: AccessMutationValidation) => {
+            const receipt = await applyAccessMutation(desired);
+            await queryClient.fetchQuery({
+                queryKey: ["management-access"],
+                queryFn: fetchManagementAccess,
+            });
+            return receipt;
+        },
+        onSuccess: () => {
+            setAccessDraft(null);
+            setAccessValidation(null);
+        },
+    });
 
     if (management.isPending) {
         return <LoadingState />;
@@ -116,14 +151,311 @@ export function AccessPage({
         validationMutation.reset();
         applyMutation.reset();
     };
+    const openAccessDraft = (value: AccessDraft) => {
+        if (!configurationEnabled) {
+            onRequestConfiguration();
+            return;
+        }
+        setAccessDraft(value);
+        setAccessValidation(null);
+        accessValidationMutation.reset();
+        accessApplyMutation.reset();
+    };
+    const updateAccessDesired = (change: Partial<AccessMutationDesired>) => {
+        setAccessDraft((current) =>
+            current === null ? null : { ...current, desired: { ...current.desired, ...change } },
+        );
+        setAccessValidation(null);
+        accessValidationMutation.reset();
+        accessApplyMutation.reset();
+    };
 
     return (
         <>
             <PageHeading
                 title="Access"
-                description="Explicit token authority, directory boundaries, driver restrictions, and expiry."
+                description="Principals, groups, explicit token authority, and revocable directory boundaries."
             />
             <Stack spacing={2}>
+                <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+                    <Paper variant="outlined" sx={{ p: 3, flex: 1 }}>
+                        <Stack direction="row" sx={{ justifyContent: "space-between", gap: 2 }}>
+                            <Box>
+                                <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                                    Principals
+                                </Typography>
+                                <Typography color="text.secondary" variant="body2">
+                                    Human and service identities. Disabling one rejects every token
+                                    immediately.
+                                </Typography>
+                            </Box>
+                            <Button
+                                onClick={() =>
+                                    openAccessDraft({
+                                        title: "Create principal",
+                                        desired: {
+                                            operation: "principal.create",
+                                            resource_id: null,
+                                            filesystem_id: null,
+                                            principal_id: null,
+                                            group_id: null,
+                                            kind: "service",
+                                            display_name: "",
+                                            state: "active",
+                                            name: null,
+                                            expected_revision: 0,
+                                        },
+                                    })
+                                }
+                            >
+                                New principal
+                            </Button>
+                        </Stack>
+                        <Divider sx={{ my: 2 }} />
+                        {access.isPending && <LoadingState />}
+                        {access.isError && <ErrorState message="Unable to load principals." />}
+                        <Stack spacing={1.5}>
+                            {access.data?.principals.map((principal) => (
+                                <Stack
+                                    key={principal.id}
+                                    direction="row"
+                                    sx={{
+                                        justifyContent: "space-between",
+                                        gap: 2,
+                                    }}
+                                >
+                                    <Box sx={{ minWidth: 0 }}>
+                                        <Typography sx={{ fontWeight: 700 }}>
+                                            {principal.display_name}
+                                        </Typography>
+                                        <Typography color="text.secondary" variant="caption">
+                                            {principal.kind} · rev {String(principal.revision)} ·{" "}
+                                            {principal.id}
+                                        </Typography>
+                                    </Box>
+                                    <Stack
+                                        direction="row"
+                                        spacing={1}
+                                        sx={{ alignItems: "center" }}
+                                    >
+                                        <Chip
+                                            label={principal.state.toUpperCase()}
+                                            color={
+                                                principal.state === "active" ? "success" : "default"
+                                            }
+                                            size="small"
+                                        />
+                                        <Button
+                                            size="small"
+                                            onClick={() =>
+                                                openAccessDraft({
+                                                    title:
+                                                        principal.state === "active"
+                                                            ? "Disable principal"
+                                                            : "Enable principal",
+                                                    desired: {
+                                                        operation: "principal.update",
+                                                        resource_id: principal.id,
+                                                        filesystem_id: null,
+                                                        principal_id: null,
+                                                        group_id: null,
+                                                        kind: principal.kind,
+                                                        display_name: principal.display_name,
+                                                        state:
+                                                            principal.state === "active"
+                                                                ? "disabled"
+                                                                : "active",
+                                                        name: null,
+                                                        expected_revision: principal.revision,
+                                                    },
+                                                })
+                                            }
+                                        >
+                                            {principal.state === "active" ? "Disable" : "Enable"}
+                                        </Button>
+                                    </Stack>
+                                </Stack>
+                            ))}
+                        </Stack>
+                    </Paper>
+                    <Paper variant="outlined" sx={{ p: 3, flex: 1 }}>
+                        <Stack direction="row" sx={{ justifyContent: "space-between", gap: 2 }}>
+                            <Box>
+                                <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                                    Groups
+                                </Typography>
+                                <Typography color="text.secondary" variant="body2">
+                                    Filesystem-scoped ACL subjects with revisioned membership.
+                                </Typography>
+                            </Box>
+                            <Button
+                                disabled={management.data.filesystems.length === 0}
+                                onClick={() => {
+                                    const filesystem = management.data.filesystems[0];
+                                    if (filesystem !== undefined) {
+                                        openAccessDraft({
+                                            title: "Create group",
+                                            desired: {
+                                                operation: "group.create",
+                                                resource_id: null,
+                                                filesystem_id: filesystem.id,
+                                                principal_id: null,
+                                                group_id: null,
+                                                kind: null,
+                                                display_name: null,
+                                                state: null,
+                                                name: "",
+                                                expected_revision: 0,
+                                            },
+                                        });
+                                    }
+                                }}
+                            >
+                                New group
+                            </Button>
+                        </Stack>
+                        <Divider sx={{ my: 2 }} />
+                        <Stack spacing={2}>
+                            {access.data?.groups.map((group) => {
+                                const members = access.data.memberships.filter(
+                                    (membership) => membership.group_id === group.id,
+                                );
+                                return (
+                                    <Box key={group.id}>
+                                        <Stack
+                                            direction="row"
+                                            sx={{
+                                                justifyContent: "space-between",
+                                                gap: 2,
+                                            }}
+                                        >
+                                            <Box>
+                                                <Typography sx={{ fontWeight: 700 }}>
+                                                    {group.name}
+                                                </Typography>
+                                                <Typography
+                                                    color="text.secondary"
+                                                    variant="caption"
+                                                >
+                                                    rev {String(group.revision)} ·{" "}
+                                                    {String(members.length)} members
+                                                </Typography>
+                                            </Box>
+                                            <Stack direction="row" spacing={1}>
+                                                <Button
+                                                    size="small"
+                                                    disabled={
+                                                        access.data.principals.filter(
+                                                            (principal) =>
+                                                                principal.state === "active" &&
+                                                                !members.some(
+                                                                    (membership) =>
+                                                                        membership.principal_id ===
+                                                                        principal.id,
+                                                                ),
+                                                        ).length === 0
+                                                    }
+                                                    onClick={() =>
+                                                        openAccessDraft({
+                                                            title: "Add group member",
+                                                            desired: {
+                                                                operation: "membership.add",
+                                                                resource_id: group.id,
+                                                                filesystem_id: group.filesystem_id,
+                                                                principal_id: null,
+                                                                group_id: group.id,
+                                                                kind: null,
+                                                                display_name: null,
+                                                                state: null,
+                                                                name: null,
+                                                                expected_revision: group.revision,
+                                                            },
+                                                        })
+                                                    }
+                                                >
+                                                    Add member
+                                                </Button>
+                                                <Button
+                                                    size="small"
+                                                    color="error"
+                                                    onClick={() =>
+                                                        openAccessDraft({
+                                                            title: "Delete group",
+                                                            desired: {
+                                                                operation: "group.delete",
+                                                                resource_id: group.id,
+                                                                filesystem_id: group.filesystem_id,
+                                                                principal_id: null,
+                                                                group_id: null,
+                                                                kind: null,
+                                                                display_name: null,
+                                                                state: null,
+                                                                name: null,
+                                                                expected_revision: group.revision,
+                                                            },
+                                                        })
+                                                    }
+                                                >
+                                                    Delete
+                                                </Button>
+                                            </Stack>
+                                        </Stack>
+                                        <Stack
+                                            direction="row"
+                                            useFlexGap
+                                            sx={{ mt: 1, flexWrap: "wrap" }}
+                                        >
+                                            {members.map((membership) => {
+                                                const principal = access.data.principals.find(
+                                                    (candidate) =>
+                                                        candidate.id === membership.principal_id,
+                                                );
+                                                return (
+                                                    <Chip
+                                                        key={membership.principal_id}
+                                                        label={
+                                                            principal?.display_name ??
+                                                            membership.principal_id
+                                                        }
+                                                        onDelete={() =>
+                                                            openAccessDraft({
+                                                                title: "Remove group member",
+                                                                desired: {
+                                                                    operation: "membership.remove",
+                                                                    resource_id: group.id,
+                                                                    filesystem_id:
+                                                                        group.filesystem_id,
+                                                                    principal_id:
+                                                                        membership.principal_id,
+                                                                    group_id: group.id,
+                                                                    kind: null,
+                                                                    display_name: null,
+                                                                    state: null,
+                                                                    name: null,
+                                                                    expected_revision:
+                                                                        group.revision,
+                                                                },
+                                                            })
+                                                        }
+                                                        size="small"
+                                                    />
+                                                );
+                                            })}
+                                        </Stack>
+                                    </Box>
+                                );
+                            })}
+                            {access.data?.groups.length === 0 && (
+                                <Typography color="text.secondary">
+                                    No groups configured.
+                                </Typography>
+                            )}
+                        </Stack>
+                    </Paper>
+                </Stack>
+                <Typography variant="h5" sx={{ fontWeight: 800, pt: 2 }}>
+                    Tokens
+                </Typography>
                 {management.data.tokens.map((token) => {
                     const state = tokenState(token, management.data.observed_at);
                     return (
@@ -253,6 +585,170 @@ export function AccessPage({
                     </Paper>
                 )}
             </Stack>
+
+            <Dialog
+                open={accessDraft !== null}
+                onClose={() => !accessApplyMutation.isPending && setAccessDraft(null)}
+                fullWidth
+                maxWidth="sm"
+            >
+                <DialogTitle>{accessDraft?.title ?? "Access change"}</DialogTitle>
+                <DialogContent>
+                    <Alert severity="info" sx={{ mb: 2 }}>
+                        The server validates this exact desired state and its observed revision
+                        before configuration reauthentication can apply it.
+                    </Alert>
+                    {accessDraft?.desired.operation === "principal.create" && (
+                        <Stack spacing={2}>
+                            <TextField
+                                select
+                                label="Principal kind"
+                                value={accessDraft.desired.kind ?? "service"}
+                                onChange={(event) =>
+                                    updateAccessDesired({
+                                        kind: event.target.value,
+                                    })
+                                }
+                            >
+                                <MenuItem value="human">Human</MenuItem>
+                                <MenuItem value="service">Service / agent</MenuItem>
+                            </TextField>
+                            <TextField
+                                autoFocus
+                                label="Display name"
+                                value={accessDraft.desired.display_name ?? ""}
+                                slotProps={{ htmlInput: { maxLength: 256 } }}
+                                onChange={(event) =>
+                                    updateAccessDesired({
+                                        display_name: event.target.value,
+                                    })
+                                }
+                            />
+                        </Stack>
+                    )}
+                    {accessDraft?.desired.operation === "group.create" && (
+                        <Stack spacing={2}>
+                            <TextField
+                                select
+                                label="Filesystem"
+                                value={accessDraft.desired.filesystem_id ?? ""}
+                                onChange={(event) =>
+                                    updateAccessDesired({
+                                        filesystem_id: event.target.value,
+                                    })
+                                }
+                            >
+                                {management.data.filesystems.map((filesystem) => (
+                                    <MenuItem key={filesystem.id} value={filesystem.id}>
+                                        {filesystem.name}
+                                    </MenuItem>
+                                ))}
+                            </TextField>
+                            <TextField
+                                autoFocus
+                                label="Group name"
+                                value={accessDraft.desired.name ?? ""}
+                                slotProps={{ htmlInput: { maxLength: 256 } }}
+                                onChange={(event) =>
+                                    updateAccessDesired({
+                                        name: event.target.value,
+                                    })
+                                }
+                            />
+                        </Stack>
+                    )}
+                    {accessDraft?.desired.operation === "membership.add" && (
+                        <TextField
+                            select
+                            fullWidth
+                            label="Active principal"
+                            value={accessDraft.desired.principal_id ?? ""}
+                            onChange={(event) =>
+                                updateAccessDesired({
+                                    principal_id: event.target.value,
+                                })
+                            }
+                        >
+                            {access.data?.principals
+                                .filter((principal) => principal.state === "active")
+                                .map((principal) => (
+                                    <MenuItem key={principal.id} value={principal.id}>
+                                        {principal.display_name} · {principal.kind}
+                                    </MenuItem>
+                                ))}
+                        </TextField>
+                    )}
+                    {accessDraft !== null &&
+                        !["principal.create", "group.create", "membership.add"].includes(
+                            accessDraft.desired.operation,
+                        ) && (
+                            <Typography>
+                                {accessDraft.desired.operation} · revision{" "}
+                                {String(accessDraft.desired.expected_revision)} →{" "}
+                                {String(accessDraft.desired.expected_revision + 1)}
+                            </Typography>
+                        )}
+                    {(accessValidationMutation.isError || accessApplyMutation.isError) && (
+                        <Alert severity="error" sx={{ mt: 2 }}>
+                            The server rejected this access change or the committed state could not
+                            be re-read. Refresh before retrying.
+                        </Alert>
+                    )}
+                    {accessValidation !== null && (
+                        <Paper variant="outlined" sx={{ p: 2, mt: 2 }}>
+                            <Typography sx={{ fontWeight: 800 }}>
+                                Server-validated change
+                            </Typography>
+                            <Typography color="text.secondary" variant="body2">
+                                {accessValidation.desired.operation} · expires{" "}
+                                {formatDate(accessValidation.validation_expires_at)}
+                            </Typography>
+                            {accessValidation.warnings.map((warning) => (
+                                <Alert key={warning} severity="warning" sx={{ mt: 2 }}>
+                                    {warning}
+                                </Alert>
+                            ))}
+                        </Paper>
+                    )}
+                </DialogContent>
+                <DialogActions>
+                    <Button
+                        onClick={() => setAccessDraft(null)}
+                        disabled={accessApplyMutation.isPending}
+                    >
+                        Cancel
+                    </Button>
+                    {accessValidation === null ? (
+                        <Button
+                            variant="contained"
+                            disabled={
+                                accessDraft === null ||
+                                accessValidationMutation.isPending ||
+                                (accessDraft.desired.operation === "principal.create" &&
+                                    (accessDraft.desired.display_name?.trim().length ?? 0) === 0) ||
+                                (accessDraft.desired.operation === "group.create" &&
+                                    (accessDraft.desired.name?.trim().length ?? 0) === 0) ||
+                                (accessDraft.desired.operation === "membership.add" &&
+                                    accessDraft.desired.principal_id === null)
+                            }
+                            onClick={() =>
+                                accessDraft !== null && accessValidationMutation.mutate(accessDraft)
+                            }
+                        >
+                            Validate changes
+                        </Button>
+                    ) : (
+                        <Button
+                            variant="contained"
+                            color="warning"
+                            disabled={accessApplyMutation.isPending}
+                            onClick={() => accessApplyMutation.mutate(accessValidation)}
+                        >
+                            Apply validated change
+                        </Button>
+                    )}
+                </DialogActions>
+            </Dialog>
 
             <Dialog
                 open={draft !== null}

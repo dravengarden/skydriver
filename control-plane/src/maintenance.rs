@@ -1,7 +1,8 @@
 use worker::{Env, Result, wasm_bindgen::JsValue};
 
 use crate::{
-    driver_credentials, environment_defaults, vfs_catalog_materialization, vfs_server_lifecycle,
+    driver_credentials, environment_defaults, vfs_catalog_materialization, vfs_provider_inventory,
+    vfs_server_lifecycle,
 };
 
 const DATABASE_BINDING: &str = "CARRACK_INDEX";
@@ -29,6 +30,7 @@ pub(crate) async fn run(env: &Env) -> Result<()> {
     let now = worker::Date::now().as_millis() / 1_000;
     let database = env.d1(DATABASE_BINDING)?;
     environment_defaults::ensure(env, &database, now).await?;
+    vfs_provider_inventory::run(env, now).await?;
     delete_expired_authorization_claims(&database, now).await?;
     delete_expired_auth_rate_limits(&database, now).await?;
 

@@ -1,8 +1,9 @@
 //! Shared command surface for the native Carrack binaries.
 
 use carrack_client::{
-    AdminClient, Client, EntryKind, GetOptions, OperatorAccount, OperatorCredential, Placement,
-    ProtocolCompatibility, PutOptions, QuotaLimits, SyncOptions, VfsClient, VfsToken,
+    AccessMutationDesired, AdminClient, BootstrapAuthority, BootstrapAuthorityRequest, Client,
+    EntryKind, GetOptions, OperatorAccount, OperatorCredential, Placement, ProtocolCompatibility,
+    PutOptions, QuotaLimits, SyncOptions, VfsClient, VfsToken,
 };
 use clap::{Parser, Subcommand, ValueEnum, error::ErrorKind};
 use serde::Serialize;
@@ -122,6 +123,21 @@ enum ManagementCommand {
         #[arg(long = "format", value_enum, default_value_t = Output::Json)]
         output: Output,
     },
+    /// Bootstrap or recover the root VFS authority into a new owner-private file.
+    Authority {
+        #[command(subcommand)]
+        command: AuthorityCommand,
+    },
+    /// Manage VFS principals, groups, and group memberships.
+    Access {
+        #[command(subcommand)]
+        command: AccessCommand,
+    },
+    /// Read server-owned provider inventory and quarantine status.
+    Inventory {
+        #[arg(long = "format", value_enum, default_value_t = Output::Json)]
+        output: Output,
+    },
     /// Manage token metadata.
     Token {
         #[command(subcommand)]
@@ -141,6 +157,164 @@ enum ManagementCommand {
     Vfs {
         #[command(subcommand)]
         command: VfsManagementCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AccessCommand {
+    /// Read every principal, group, and membership.
+    Show {
+        #[arg(long = "format", value_enum, default_value_t = Output::Json)]
+        output: Output,
+    },
+    /// Manage human and service principals.
+    Principal {
+        #[command(subcommand)]
+        command: PrincipalCommand,
+    },
+    /// Manage filesystem groups and membership.
+    Group {
+        #[command(subcommand)]
+        command: GroupCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PrincipalCommand {
+    /// Create one active principal.
+    Create {
+        #[arg(long)]
+        kind: String,
+        #[arg(long)]
+        display_name: String,
+        #[arg(long)]
+        idempotency_key: Option<String>,
+        #[arg(long)]
+        check: bool,
+        #[arg(long = "format", value_enum, default_value_t = Output::Json)]
+        output: Output,
+    },
+    /// Replace one principal's kind, display name, and active state under CAS.
+    Update {
+        principal_id: String,
+        #[arg(long)]
+        kind: String,
+        #[arg(long)]
+        display_name: String,
+        #[arg(long)]
+        state: String,
+        #[arg(long)]
+        expected_revision: u64,
+        #[arg(long)]
+        idempotency_key: Option<String>,
+        #[arg(long)]
+        check: bool,
+        #[arg(long = "format", value_enum, default_value_t = Output::Json)]
+        output: Output,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum GroupCommand {
+    /// Create one group in a filesystem.
+    Create {
+        filesystem_id: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        idempotency_key: Option<String>,
+        #[arg(long)]
+        check: bool,
+        #[arg(long = "format", value_enum, default_value_t = Output::Json)]
+        output: Output,
+    },
+    /// Rename one group under CAS.
+    Update {
+        group_id: String,
+        #[arg(long)]
+        filesystem_id: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        expected_revision: u64,
+        #[arg(long)]
+        idempotency_key: Option<String>,
+        #[arg(long)]
+        check: bool,
+        #[arg(long = "format", value_enum, default_value_t = Output::Json)]
+        output: Output,
+    },
+    /// Delete one group and its inherited grants under CAS.
+    Delete {
+        group_id: String,
+        #[arg(long)]
+        filesystem_id: String,
+        #[arg(long)]
+        expected_revision: u64,
+        #[arg(long)]
+        idempotency_key: Option<String>,
+        #[arg(long)]
+        check: bool,
+        #[arg(long = "format", value_enum, default_value_t = Output::Json)]
+        output: Output,
+    },
+    /// Add one active principal to a group under group CAS.
+    AddMember {
+        group_id: String,
+        principal_id: String,
+        #[arg(long)]
+        filesystem_id: String,
+        #[arg(long)]
+        expected_revision: u64,
+        #[arg(long)]
+        idempotency_key: Option<String>,
+        #[arg(long)]
+        check: bool,
+        #[arg(long = "format", value_enum, default_value_t = Output::Json)]
+        output: Output,
+    },
+    /// Remove one principal from a group under group CAS.
+    RemoveMember {
+        group_id: String,
+        principal_id: String,
+        #[arg(long)]
+        filesystem_id: String,
+        #[arg(long)]
+        expected_revision: u64,
+        #[arg(long)]
+        idempotency_key: Option<String>,
+        #[arg(long)]
+        check: bool,
+        #[arg(long = "format", value_enum, default_value_t = Output::Json)]
+        output: Output,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AuthorityCommand {
+    /// Create the first VFS and save its root authority without printing it.
+    Bootstrap {
+        #[arg(long)]
+        filesystem_name: String,
+        #[arg(long)]
+        principal_display_name: String,
+        #[arg(long, default_value = "carrack-vfs-aes256gcm-hkdfsha256-v1")]
+        crypto_suite: String,
+        #[arg(long, default_value_t = 365 * 24 * 60 * 60)]
+        token_lifetime_seconds: u64,
+        #[arg(long)]
+        idempotency_key: String,
+        #[arg(long)]
+        output_file: std::path::PathBuf,
+        #[arg(long = "format", value_enum, default_value_t = Output::Json)]
+        output: Output,
+    },
+    /// Recover the current unexpired root authority into a new owner-private file.
+    Recover {
+        #[arg(long)]
+        output_file: std::path::PathBuf,
+        #[arg(long = "format", value_enum, default_value_t = Output::Json)]
+        output: Output,
     },
 }
 
@@ -217,8 +391,18 @@ enum VfsAclCommand {
     /// Replace all direct actions for one principal under an ACL CAS.
     Replace {
         path: String,
-        #[arg(long)]
-        principal_id: String,
+        #[arg(
+            long,
+            conflicts_with = "group_id",
+            required_unless_present = "group_id"
+        )]
+        principal_id: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "principal_id",
+            required_unless_present = "principal_id"
+        )]
+        group_id: Option<String>,
         #[arg(long, value_delimiter = ',', num_args = 0..)]
         action: Vec<String>,
         #[arg(long)]
@@ -558,6 +742,17 @@ struct ErrorOutput<'a> {
     message: String,
 }
 
+#[derive(Serialize)]
+struct AuthorityFileReceipt<'a> {
+    schema: &'a str,
+    path: String,
+    filesystem_id: &'a str,
+    principal_id: &'a str,
+    root_directory_id: &'a str,
+    token_id: &'a str,
+    token_expires_at: u64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ErrorDisposition {
     code: &'static str,
@@ -627,6 +822,21 @@ async fn run_management() -> Result<(), Error> {
             client.check_compatibility().await?;
             write_json(output, &client.directory(&id).await?)?;
         }
+        ManagementCommand::Authority { command } => {
+            let client = admin_client(arguments.control_url)?;
+            client.check_compatibility().await?;
+            run_authority_command(&client, command).await?;
+        }
+        ManagementCommand::Access { command } => {
+            let client = admin_client(arguments.control_url)?;
+            client.check_compatibility().await?;
+            run_access_command(&client, command).await?;
+        }
+        ManagementCommand::Inventory { output } => {
+            let client = admin_client(arguments.control_url)?;
+            client.check_compatibility().await?;
+            write_json(output, &client.provider_inventory().await?)?;
+        }
         ManagementCommand::Token { command } => {
             let client = admin_client(arguments.control_url)?;
             client.check_compatibility().await?;
@@ -649,6 +859,340 @@ async fn run_management() -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "each access mutation remains explicit for agents"
+)]
+async fn run_access_command(client: &AdminClient, command: AccessCommand) -> Result<(), Error> {
+    let command = match command {
+        AccessCommand::Show { output } => return write_json(output, &client.access().await?),
+        command => command,
+    };
+    let (desired, idempotency_key, check, output) = match command {
+        AccessCommand::Show { .. } => unreachable!("handled above"),
+        AccessCommand::Principal { command } => match command {
+            PrincipalCommand::Create {
+                kind,
+                display_name,
+                idempotency_key,
+                check,
+                output,
+            } => (
+                AccessMutationDesired {
+                    operation: "principal.create".to_owned(),
+                    resource_id: None,
+                    filesystem_id: None,
+                    principal_id: None,
+                    group_id: None,
+                    kind: Some(kind),
+                    display_name: Some(display_name),
+                    state: Some("active".to_owned()),
+                    name: None,
+                    expected_revision: 0,
+                },
+                idempotency_key,
+                check,
+                output,
+            ),
+            PrincipalCommand::Update {
+                principal_id,
+                kind,
+                display_name,
+                state,
+                expected_revision,
+                idempotency_key,
+                check,
+                output,
+            } => (
+                AccessMutationDesired {
+                    operation: "principal.update".to_owned(),
+                    resource_id: Some(principal_id),
+                    filesystem_id: None,
+                    principal_id: None,
+                    group_id: None,
+                    kind: Some(kind),
+                    display_name: Some(display_name),
+                    state: Some(state),
+                    name: None,
+                    expected_revision,
+                },
+                idempotency_key,
+                check,
+                output,
+            ),
+        },
+        AccessCommand::Group { command } => match command {
+            GroupCommand::Create {
+                filesystem_id,
+                name,
+                idempotency_key,
+                check,
+                output,
+            } => (
+                access_group_desired("group.create", None, filesystem_id, None, name, 0),
+                idempotency_key,
+                check,
+                output,
+            ),
+            GroupCommand::Update {
+                group_id,
+                filesystem_id,
+                name,
+                expected_revision,
+                idempotency_key,
+                check,
+                output,
+            } => (
+                access_group_desired(
+                    "group.update",
+                    Some(group_id),
+                    filesystem_id,
+                    None,
+                    name,
+                    expected_revision,
+                ),
+                idempotency_key,
+                check,
+                output,
+            ),
+            GroupCommand::Delete {
+                group_id,
+                filesystem_id,
+                expected_revision,
+                idempotency_key,
+                check,
+                output,
+            } => (
+                access_group_desired(
+                    "group.delete",
+                    Some(group_id),
+                    filesystem_id,
+                    None,
+                    String::new(),
+                    expected_revision,
+                ),
+                idempotency_key,
+                check,
+                output,
+            ),
+            GroupCommand::AddMember {
+                group_id,
+                principal_id,
+                filesystem_id,
+                expected_revision,
+                idempotency_key,
+                check,
+                output,
+            } => (
+                access_group_desired(
+                    "membership.add",
+                    Some(group_id),
+                    filesystem_id,
+                    Some(principal_id),
+                    String::new(),
+                    expected_revision,
+                ),
+                idempotency_key,
+                check,
+                output,
+            ),
+            GroupCommand::RemoveMember {
+                group_id,
+                principal_id,
+                filesystem_id,
+                expected_revision,
+                idempotency_key,
+                check,
+                output,
+            } => (
+                access_group_desired(
+                    "membership.remove",
+                    Some(group_id),
+                    filesystem_id,
+                    Some(principal_id),
+                    String::new(),
+                    expected_revision,
+                ),
+                idempotency_key,
+                check,
+                output,
+            ),
+        },
+    };
+    let validation = client.validate_access_mutation(&desired).await?;
+    if check {
+        return write_json(output, &validation);
+    }
+    let idempotency_key = require_idempotency_key(idempotency_key)?;
+    let receipt = client
+        .apply_access_mutation(&validation, &idempotency_key)
+        .await?;
+    let effective = client.access().await?;
+    let valid = if receipt.operation.starts_with("principal.") {
+        effective.principals.iter().any(|principal| {
+            principal.id == receipt.resource_id && principal.revision == receipt.final_revision
+        })
+    } else if receipt.operation == "group.delete" {
+        effective
+            .groups
+            .iter()
+            .all(|group| group.id != receipt.resource_id)
+    } else if receipt.operation.starts_with("group.") {
+        effective.groups.iter().any(|group| {
+            group.id == receipt.resource_id && group.revision == receipt.final_revision
+        })
+    } else {
+        let principal_id = validation
+            .desired
+            .principal_id
+            .as_deref()
+            .unwrap_or_default();
+        let member = effective.memberships.iter().any(|membership| {
+            membership.group_id == receipt.resource_id && membership.principal_id == principal_id
+        });
+        member == (receipt.operation == "membership.add")
+            && effective.groups.iter().any(|group| {
+                group.id == receipt.resource_id && group.revision == receipt.final_revision
+            })
+    };
+    if !valid {
+        return Err(Error::Verification(format!(
+            "access mutation {} did not match receipt {}",
+            receipt.resource_id, receipt.operation_id
+        )));
+    }
+    write_json(output, &receipt)
+}
+
+fn access_group_desired(
+    operation: &str,
+    group_id: Option<String>,
+    filesystem_id: String,
+    principal_id: Option<String>,
+    name: String,
+    expected_revision: u64,
+) -> AccessMutationDesired {
+    let is_membership = operation.starts_with("membership.");
+    let resource_id = group_id.clone();
+    AccessMutationDesired {
+        operation: operation.to_owned(),
+        resource_id,
+        filesystem_id: Some(filesystem_id),
+        principal_id,
+        group_id: is_membership.then_some(group_id).flatten(),
+        kind: None,
+        display_name: None,
+        state: None,
+        name: (!name.is_empty()).then_some(name),
+        expected_revision,
+    }
+}
+
+async fn run_authority_command(
+    client: &AdminClient,
+    command: AuthorityCommand,
+) -> Result<(), Error> {
+    let (mut authority, output_file, output) = match command {
+        AuthorityCommand::Bootstrap {
+            filesystem_name,
+            principal_display_name,
+            crypto_suite,
+            token_lifetime_seconds,
+            idempotency_key,
+            output_file,
+            output,
+        } => {
+            let request = BootstrapAuthorityRequest {
+                filesystem_name,
+                principal_display_name,
+                crypto_suite,
+                token_lifetime_seconds,
+                idempotency_key,
+            };
+            (
+                client.bootstrap_authority(&request).await?,
+                output_file,
+                output,
+            )
+        }
+        AuthorityCommand::Recover {
+            output_file,
+            output,
+        } => (
+            client.recover_bootstrap_authority().await?,
+            output_file,
+            output,
+        ),
+    };
+    write_authority_file(&output_file, &authority)?;
+    write_json(
+        output,
+        &AuthorityFileReceipt {
+            schema: "carrack.authority-file-receipt.v1",
+            path: output_file.display().to_string(),
+            filesystem_id: &authority.filesystem_id,
+            principal_id: &authority.principal_id,
+            root_directory_id: &authority.root_directory_id,
+            token_id: &authority.token_id,
+            token_expires_at: authority.token_expires_at,
+        },
+    )?;
+    authority.zeroize();
+    Ok(())
+}
+
+fn write_authority_file(
+    path: &std::path::Path,
+    authority: &BootstrapAuthority,
+) -> Result<(), Error> {
+    use std::io::Write as _;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    if let Some(parent) = parent {
+        let existed = parent.exists();
+        std::fs::create_dir_all(parent)
+            .map_err(|error| Error::Input(format!("create {}: {error}", parent.display())))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            if existed {
+                let metadata = std::fs::symlink_metadata(parent).map_err(|error| {
+                    Error::Input(format!("inspect {}: {error}", parent.display()))
+                })?;
+                if !metadata.file_type().is_dir() || metadata.permissions().mode() & 0o077 != 0 {
+                    return Err(Error::Input(format!(
+                        "authority directory {} must be a private real directory",
+                        parent.display()
+                    )));
+                }
+            } else {
+                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).map_err(
+                    |error| Error::Input(format!("protect {}: {error}", parent.display())),
+                )?;
+            }
+        }
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|error| Error::Input(format!("create {}: {error}", path.display())))?;
+    let mut bytes = serde_json::to_vec_pretty(authority)?;
+    bytes.push(b'\n');
+    let result = file
+        .write_all(&bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|error| Error::Input(format!("write {}: {error}", path.display())));
+    bytes.zeroize();
+    result
 }
 
 async fn run_quota_command(client: &AdminClient, command: QuotaCommand) -> Result<(), Error> {
@@ -723,22 +1267,39 @@ async fn run_vfs_management_command(
             VfsAclCommand::Replace {
                 path,
                 principal_id,
+                group_id,
                 action,
                 expected_revision,
                 idempotency_key,
                 output,
-            } => write_json(
-                output,
-                &client
-                    .replace_acl(
-                        &path,
-                        &principal_id,
-                        action,
-                        expected_revision,
-                        &idempotency_key,
-                    )
-                    .await?,
-            )?,
+            } => {
+                let receipt = if let Some(principal_id) = principal_id {
+                    client
+                        .replace_acl(
+                            &path,
+                            &principal_id,
+                            action,
+                            expected_revision,
+                            &idempotency_key,
+                        )
+                        .await?
+                } else if let Some(group_id) = group_id {
+                    client
+                        .replace_group_acl(
+                            &path,
+                            &group_id,
+                            action,
+                            expected_revision,
+                            &idempotency_key,
+                        )
+                        .await?
+                } else {
+                    return Err(Error::Arguments(
+                        "exactly one ACL principal or group is required".to_owned(),
+                    ));
+                };
+                write_json(output, &receipt)?;
+            }
         },
         VfsManagementCommand::Placement { command } => match command {
             VfsPlacementCommand::Show { path, output } => {

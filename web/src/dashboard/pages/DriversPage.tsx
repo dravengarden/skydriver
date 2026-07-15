@@ -20,13 +20,14 @@ import {
     TextField,
     Typography,
 } from "@mui/material";
-import { useMutation, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { useState } from "react";
 import {
     applyDriverCredential,
     applyDriverRegistration,
     applyDriverState,
     fetchManagementSnapshot,
+    fetchProviderInventory,
     validateDriverCredential,
     validateDriverRegistration,
     validateDriverState,
@@ -151,6 +152,11 @@ export function DriversPage({
     onRequestConfiguration,
 }: DriversPageProps) {
     const queryClient = useQueryClient();
+    const inventory = useQuery({
+        queryKey: ["provider-inventory"],
+        queryFn: fetchProviderInventory,
+        refetchInterval: 60_000,
+    });
     const [selected, setSelected] = useState<DriverView | null>(null);
     const [validation, setValidation] = useState<DriverStateValidation | null>(null);
     const [credentialTarget, setCredentialTarget] = useState<DriverView | null>(null);
@@ -383,6 +389,9 @@ export function DriversPage({
             <Stack spacing={2}>
                 {management.data.drivers.map((driver) => {
                     const status = credentialStatus(driver, management.data.observed_at);
+                    const inventoryStatus = inventory.data?.drivers.find(
+                        (candidate) => candidate.driver_id === driver.id,
+                    );
                     return (
                         <Paper key={driver.id} variant="outlined" sx={{ p: 3 }}>
                             <Stack
@@ -521,6 +530,68 @@ export function DriversPage({
                                         <Typography sx={{ fontWeight: 750 }}>{value}</Typography>
                                     </Box>
                                 ))}
+                            </Box>
+
+                            <Box
+                                sx={{
+                                    mt: 3,
+                                    p: 2,
+                                    borderRadius: 1.5,
+                                    bgcolor:
+                                        inventoryStatus?.quarantined_objects === 0
+                                            ? "#f2f8f7"
+                                            : "#fff6e8",
+                                }}
+                            >
+                                <Stack
+                                    direction={{ xs: "column", sm: "row" }}
+                                    sx={{
+                                        justifyContent: "space-between",
+                                        gap: 2,
+                                    }}
+                                >
+                                    <Box>
+                                        <Typography color="text.secondary" variant="caption">
+                                            PROVIDER INVENTORY
+                                        </Typography>
+                                        <Typography sx={{ fontWeight: 750 }}>
+                                            {inventoryStatus === undefined
+                                                ? "Awaiting scheduled scan"
+                                                : inventoryStatus.state.toUpperCase()}
+                                        </Typography>
+                                        <Typography color="text.secondary" variant="body2">
+                                            {inventoryStatus?.last_completed_at === null ||
+                                            inventoryStatus?.last_completed_at === undefined
+                                                ? "No completed provider scan"
+                                                : `Last completed ${formatDate(inventoryStatus.last_completed_at)}`}
+                                        </Typography>
+                                    </Box>
+                                    <Box sx={{ textAlign: { sm: "right" } }}>
+                                        <Typography sx={{ fontWeight: 750 }}>
+                                            {inventoryStatus?.quarantined_objects.toLocaleString() ??
+                                                "0"}{" "}
+                                            quarantined ·{" "}
+                                            {formatBytes(inventoryStatus?.quarantined_bytes ?? 0)}
+                                        </Typography>
+                                        <Typography color="text.secondary" variant="body2">
+                                            Unknown objects are evidence only; Carrack never adopts
+                                            or deletes them automatically.
+                                        </Typography>
+                                    </Box>
+                                </Stack>
+                                {inventoryStatus?.last_error_code !== null &&
+                                    inventoryStatus?.last_error_code !== undefined && (
+                                        <Alert
+                                            severity={
+                                                inventoryStatus.state === "unsupported"
+                                                    ? "info"
+                                                    : "warning"
+                                            }
+                                            sx={{ mt: 2 }}
+                                        >
+                                            {inventoryStatus.last_error_code}
+                                        </Alert>
+                                    )}
                             </Box>
 
                             {driver.kind === "aliyundrive-open/v2" && (

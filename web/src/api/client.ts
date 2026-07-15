@@ -341,6 +341,92 @@ const QuotaReceiptSchema = v.object({
     state: v.literal("committed"),
 });
 
+const AccessMutationDesiredSchema = v.object({
+    operation: v.string(),
+    resource_id: v.nullable(v.string()),
+    filesystem_id: v.nullable(v.string()),
+    principal_id: v.nullable(v.string()),
+    group_id: v.nullable(v.string()),
+    kind: v.nullable(v.string()),
+    display_name: v.nullable(v.string()),
+    state: v.nullable(v.string()),
+    name: v.nullable(v.string()),
+    expected_revision: v.number(),
+});
+
+const ManagementAccessSchema = v.object({
+    schema: v.literal("carrack.management.access.v1"),
+    observed_at: v.number(),
+    principals: v.array(
+        v.object({
+            id: v.string(),
+            kind: v.picklist(["human", "service"]),
+            display_name: v.string(),
+            state: v.picklist(["active", "disabled"]),
+            revision: v.number(),
+            created_at: v.number(),
+            updated_at: v.number(),
+        }),
+    ),
+    groups: v.array(
+        v.object({
+            id: v.string(),
+            filesystem_id: v.string(),
+            name: v.string(),
+            revision: v.number(),
+            created_at: v.number(),
+            updated_at: v.number(),
+        }),
+    ),
+    memberships: v.array(
+        v.object({
+            group_id: v.string(),
+            principal_id: v.string(),
+            created_at: v.number(),
+        }),
+    ),
+});
+
+const AccessMutationValidationSchema = v.object({
+    schema: v.literal("carrack.management.access-validation.v1"),
+    desired: AccessMutationDesiredSchema,
+    validation_expires_at: v.number(),
+    validation_digest: v.string(),
+    warnings: v.array(v.string()),
+});
+
+const AccessMutationReceiptSchema = v.object({
+    schema: v.literal("carrack.management.access-receipt.v1"),
+    operation_id: v.string(),
+    operation: v.string(),
+    resource_id: v.string(),
+    final_revision: v.number(),
+    committed_at: v.number(),
+    state: v.literal("committed"),
+});
+
+const ProviderInventorySchema = v.object({
+    schema: v.literal("carrack.management.provider-inventory.v1"),
+    observed_at: v.number(),
+    drivers: v.array(
+        v.object({
+            driver_id: v.string(),
+            driver_kind: v.string(),
+            generation: v.number(),
+            state: v.picklist(["idle", "scanning", "complete", "unsupported", "error"]),
+            scanned_objects: v.number(),
+            unknown_objects: v.number(),
+            quarantined_objects: v.number(),
+            quarantined_bytes: v.number(),
+            oldest_quarantined_at: v.nullable(v.number()),
+            last_started_at: v.nullable(v.number()),
+            last_completed_at: v.nullable(v.number()),
+            last_error_code: v.nullable(v.string()),
+            updated_at: v.number(),
+        }),
+    ),
+});
+
 export type Session = v.InferOutput<typeof SessionSchema>;
 export type ConfigurationSession = v.InferOutput<typeof ConfigurationSessionSchema>;
 export type Health = v.InferOutput<typeof HealthSchema>;
@@ -366,6 +452,11 @@ export type DriverCredentialReceipt = v.InferOutput<typeof DriverCredentialRecei
 export type QuotaLimits = v.InferOutput<typeof QuotaLimitsSchema>;
 export type QuotaValidation = v.InferOutput<typeof QuotaValidationSchema>;
 export type QuotaReceipt = v.InferOutput<typeof QuotaReceiptSchema>;
+export type ManagementAccess = v.InferOutput<typeof ManagementAccessSchema>;
+export type AccessMutationDesired = v.InferOutput<typeof AccessMutationDesiredSchema>;
+export type AccessMutationValidation = v.InferOutput<typeof AccessMutationValidationSchema>;
+export type AccessMutationReceipt = v.InferOutput<typeof AccessMutationReceiptSchema>;
+export type ProviderInventory = v.InferOutput<typeof ProviderInventorySchema>;
 
 export function parseSession(input: unknown): Session {
     return v.parse(SessionSchema, input);
@@ -473,6 +564,47 @@ export function disableConfiguration(): Promise<ConfigurationSession> {
 
 export function fetchManagementSnapshot(): Promise<ManagementSnapshot> {
     return requestJson("/api/admin/snapshot", undefined, ManagementSnapshotSchema);
+}
+
+export function fetchManagementAccess(): Promise<ManagementAccess> {
+    return requestJson("/api/admin/access", undefined, ManagementAccessSchema);
+}
+
+export function fetchProviderInventory(): Promise<ProviderInventory> {
+    return requestJson("/api/admin/provider-inventory", undefined, ProviderInventorySchema);
+}
+
+export function validateAccessMutation(
+    desired: AccessMutationDesired,
+): Promise<AccessMutationValidation> {
+    return requestJson(
+        "/api/admin/access/validate",
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(desired),
+        },
+        AccessMutationValidationSchema,
+    );
+}
+
+export function applyAccessMutation(
+    validation: AccessMutationValidation,
+): Promise<AccessMutationReceipt> {
+    return requestJson(
+        "/api/admin/access/apply",
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                desired: validation.desired,
+                validation_expires_at: validation.validation_expires_at,
+                validation_digest: validation.validation_digest,
+                idempotency_key: newIdempotencyKey(),
+            }),
+        },
+        AccessMutationReceiptSchema,
+    );
 }
 
 export function fetchManagementEventCursor(): Promise<ManagementEventCursor> {

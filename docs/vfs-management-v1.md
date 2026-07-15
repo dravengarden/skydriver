@@ -23,7 +23,9 @@ The currently implemented management surface is:
 | Direct ACL inspection and principal replacement | Yes | `acl`, `replace_acl` | `carrackctl vfs acl show`, `carrackctl vfs acl replace` |
 | Placement inspection and replace-all | Yes | `placements`, `replace_placements` | `carrackctl vfs placement show`, `carrackctl vfs placement replace` |
 | Recursive verified namespace prefetch | Existing directory pages | Filesystem catalog cache | `carrack sync` uses it internally |
-| Group membership management | No | No | No |
+| Principal lifecycle | Yes | `AdminClient::access`, validated access mutation | `carrackctl access principal` |
+| Group lifecycle and membership | Yes | `AdminClient::access`, validated access mutation | `carrackctl access group` |
+| Group ACL replacement | Yes | `replace_group_acl` | `carrackctl vfs acl replace --group-id` |
 | Typed driver registration or credential rotation | Operator API | `AdminClient` | `carrackctl driver register`, `carrackctl driver credential set` |
 | Snapshot-pinned metadata reads | No | No | No |
 

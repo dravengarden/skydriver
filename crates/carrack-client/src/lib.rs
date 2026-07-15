@@ -33,13 +33,16 @@ mod transfer;
 mod vfs;
 
 pub use admin::{
-    AdminClient, DriverCredentialReceipt, DriverCredentialValidation, DriverRegistrationReceipt,
-    DriverRegistrationValidation, DriverStateReceipt, DriverStateValidation, ManagementBreadcrumb,
+    AccessMutationDesired, AccessMutationReceipt, AccessMutationValidation, AdminClient,
+    BootstrapAuthority, BootstrapAuthorityRequest, DriverCredentialReceipt,
+    DriverCredentialValidation, DriverRegistrationReceipt, DriverRegistrationValidation,
+    DriverStateReceipt, DriverStateValidation, ManagementAccess, ManagementBreadcrumb,
     ManagementDirectory, ManagementDirectoryEntry, ManagementDirectoryIdentity, ManagementDriver,
-    ManagementEvent, ManagementEventPage, ManagementFilesystem, ManagementSnapshot,
-    ManagementToken, OperatorAccount, OperatorCredential, QuotaLimits, QuotaReceipt,
-    QuotaValidation, TokenAnnotationReceipt, TokenAnnotationValidation, TransferMetricRow,
-    TransferMetrics,
+    ManagementEvent, ManagementEventPage, ManagementFilesystem, ManagementGroup,
+    ManagementMembership, ManagementPrincipal, ManagementSnapshot, ManagementToken,
+    OperatorAccount, OperatorCredential, ProviderInventory, ProviderInventoryStatus, QuotaLimits,
+    QuotaReceipt, QuotaValidation, TokenAnnotationReceipt, TokenAnnotationValidation,
+    TransferMetricRow, TransferMetrics,
 };
 
 pub use download::{GetOptions, GetResult};

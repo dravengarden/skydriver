@@ -62,8 +62,8 @@ or handling a failure.
 ## Apply supported changes
 
 For token annotation, typed driver registration, write-only driver credential,
-driver state, directory or driver quota, ACL, placement, child-token issue,
-and child-token revocation:
+driver state, directory or driver quota, principal/group lifecycle, group
+membership, ACL, placement, child-token issue, and child-token revocation:
 
 1. Read current state and its exact revision.
 2. Build the complete desired replacement locally.
@@ -121,9 +121,18 @@ cannot change principals or widen directory, action, driver, or expiry scope.
 Capture its one-time bearer directly into the approved secret store and redact
 command output from logs. Use `carrackctl vfs token revoke` for revocation.
 
-Do not claim support for principal or group lifecycle or global settings until
-the installed CLI exposes their validated commands. Report the missing surface
-instead of editing D1, calling Wrangler D1 directly, or crafting HTTP.
+Use `carrackctl access show` before principal or group changes. Principal
+deletion is deliberately unsupported: disable a principal under its exact
+revision to reject all of its tokens immediately. Group creation, rename,
+membership add/remove, and deletion use the same signed validation,
+configuration reauthentication, idempotent receipt, and readback protocol.
+Use `carrackctl vfs acl replace --group-id` only after the group exists in the
+same filesystem as the directory.
+
+Bootstrap and recover root authority only with `carrackctl authority` and a
+new path inside an owner-private directory. The CLI writes mode 0600 and emits
+only a redacted receipt. Never open, print, parse into a plan, or copy that file
+unless an approved VFS operation needs secret injection.
 
 ## Handle races and ambiguous outcomes
 

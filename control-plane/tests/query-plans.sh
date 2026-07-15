@@ -119,6 +119,21 @@ assert_uses_index credential-refresh-claim idx_driver_credential_refreshes_claim
        OR (state = 'claimed' AND lease_expires_at <= 1))
    ORDER BY COALESCE(retry_at, refresh_after), driver_id LIMIT 1"
 
+assert_uses_index provider-inventory-due vfs_provider_inventory_due \
+  "SELECT driver_id FROM vfs_provider_inventory_state
+   WHERE state IN ('idle', 'scanning', 'complete', 'error')
+   ORDER BY state, updated_at, driver_id LIMIT 1"
+
+assert_uses_index provider-quarantine-driver vfs_provider_quarantine_by_driver_state \
+  "SELECT storage_key FROM vfs_provider_quarantine
+   WHERE driver_id = 'r2-default' AND state = 'observed'
+   ORDER BY last_seen_at, storage_key LIMIT 100"
+
+assert_uses_index group-membership-principal vfs_group_members_by_principal_group \
+  "SELECT group_id FROM vfs_group_members
+   WHERE principal_id = '00000000000000000000000000000001'
+   ORDER BY group_id"
+
 assert_uses_index catalog-outbox-claim idx_vfs_catalog_outbox_claimable \
   "SELECT outbox.revision_id FROM vfs_catalog_outbox AS outbox
    JOIN vfs_catalog_revisions AS revision ON revision.id = outbox.revision_id

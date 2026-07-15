@@ -54,7 +54,8 @@ struct ACLResponse {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReplaceACLRequest {
-    principal_id: String,
+    principal_id: Option<String>,
+    group_id: Option<String>,
     actions: Option<Vec<String>>,
     role: Option<String>,
     expected_acl_revision: u64,
@@ -63,7 +64,8 @@ struct ReplaceACLRequest {
 
 #[derive(Serialize)]
 struct ACLPayload<'a> {
-    principal_id: &'a str,
+    principal_id: Option<&'a str>,
+    group_id: Option<&'a str>,
     actions: &'a [String],
     source_role: Option<&'a str>,
 }
@@ -191,14 +193,22 @@ pub(crate) async fn replace_acl(
     };
     actions.sort();
     actions.dedup();
-    if !valid_identifier(&requested.principal_id)
-        || requested.expected_acl_revision == 0
+    let subject = match (
+        requested.principal_id.as_deref(),
+        requested.group_id.as_deref(),
+    ) {
+        (Some(principal_id), None) if valid_identifier(principal_id) => ("principal", principal_id),
+        (None, Some(group_id)) if valid_identifier(group_id) => ("group", group_id),
+        _ => return Response::error("exactly one valid ACL subject is required", 400),
+    };
+    if requested.expected_acl_revision == 0
         || !valid_string(&requested.idempotency_key, MAXIMUM_IDEMPOTENCY_BYTES)
     {
         return Response::error("invalid VFS ACL replacement", 400);
     }
     let payload = serde_json::to_value(ACLPayload {
-        principal_id: &requested.principal_id,
+        principal_id: requested.principal_id.as_deref(),
+        group_id: requested.group_id.as_deref(),
         actions: &actions,
         source_role,
     })?;
@@ -219,16 +229,21 @@ pub(crate) async fn replace_acl(
     if !vfs_access::authorized(&database, token, directory_id, "acl.manage").await? {
         return Response::error("VFS ACL-management authority required", 403);
     }
-    if !principal_active(&database, &requested.principal_id).await? {
-        return Response::error("VFS ACL principal is unavailable", 400);
-    }
     let Some(policy) = load_policy(&database, directory_id).await? else {
         return Response::error("VFS directory not found", 404);
     };
+    let subject_available = if subject.0 == "principal" {
+        principal_active(&database, subject.1).await?
+    } else {
+        group_available(&database, directory_id, subject.1).await?
+    };
+    if !subject_available {
+        return Response::error("VFS ACL subject is unavailable", 400);
+    }
     if policy.acl_revision != requested.expected_acl_revision {
         return Response::error("VFS ACL revision changed", 409);
     }
-    let old_count = subject_grant_count(&database, directory_id, &requested.principal_id).await?;
+    let old_count = subject_grant_count(&database, directory_id, subject.0, subject.1).await?;
     let final_revision =
         policy.acl_revision + old_count + u64::try_from(actions.len()).unwrap_or(u64::MAX);
     let operation_id = new_uuid_v7_hex()?;
@@ -247,26 +262,33 @@ pub(crate) async fn replace_acl(
         &payload_json,
         now,
     )?];
+    let subject_column = if subject.0 == "principal" {
+        "principal_id"
+    } else {
+        "group_id"
+    };
     statements.push(
         database
-            .prepare("DELETE FROM vfs_acl_grants WHERE directory_id = ?1 AND principal_id = ?2")
+            .prepare(format!(
+                "DELETE FROM vfs_acl_grants WHERE directory_id = ?1 AND {subject_column} = ?2"
+            ))
             .bind(&[
                 JsValue::from_str(directory_id),
-                JsValue::from_str(&requested.principal_id),
+                JsValue::from_str(subject.1),
             ])?,
     );
     for action in &actions {
         statements.push(
             database
-                .prepare(
+                .prepare(format!(
                     "INSERT INTO vfs_acl_grants (
-                 id, directory_id, principal_id, action, source_role, created_by, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                )
+                 id, directory_id, {subject_column}, action, source_role, created_by, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+                ))
                 .bind(&[
                     JsValue::from_str(&new_uuid_v7_hex()?),
                     JsValue::from_str(directory_id),
-                    JsValue::from_str(&requested.principal_id),
+                    JsValue::from_str(subject.1),
                     JsValue::from_str(action),
                     optional_binding(source_role),
                     JsValue::from_str(&token.principal_id),
@@ -693,6 +715,24 @@ fn valid_placements_request(request: &ReplacePlacementsRequest) -> bool {
 async fn principal_active(database: &D1Database, principal_id: &str) -> Result<bool> {
     present(database, "SELECT EXISTS (SELECT 1 FROM vfs_principals WHERE id = ?1 AND state = 'active') AS present", principal_id).await
 }
+async fn group_available(
+    database: &D1Database,
+    directory_id: &str,
+    group_id: &str,
+) -> Result<bool> {
+    let row = database
+        .prepare(
+            "SELECT EXISTS (
+        SELECT 1 FROM vfs_groups AS group_row
+        JOIN vfs_directories AS directory ON directory.filesystem_id = group_row.filesystem_id
+        WHERE group_row.id = ?1 AND directory.id = ?2 AND directory.state = 'active'
+    ) AS present",
+        )
+        .bind(&[JsValue::from_str(group_id), JsValue::from_str(directory_id)])?
+        .first::<PresentRow>(None)
+        .await?;
+    Ok(row.is_some_and(|result| result.present == 1))
+}
 async fn token_is_driver_scoped(
     database: &D1Database,
     token: &AuthenticatedVfsToken,
@@ -715,9 +755,23 @@ async fn present(database: &D1Database, sql: &str, value: &str) -> Result<bool> 
 async fn subject_grant_count(
     database: &D1Database,
     directory_id: &str,
-    principal_id: &str,
+    subject_kind: &str,
+    subject_id: &str,
 ) -> Result<u64> {
-    count(database, "SELECT COUNT(*) AS count FROM vfs_acl_grants WHERE directory_id = ?1 AND principal_id = ?2", directory_id, Some(principal_id)).await
+    let column = if subject_kind == "principal" {
+        "principal_id"
+    } else {
+        "group_id"
+    };
+    count(
+        database,
+        &format!(
+            "SELECT COUNT(*) AS count FROM vfs_acl_grants WHERE directory_id = ?1 AND {column} = ?2"
+        ),
+        directory_id,
+        Some(subject_id),
+    )
+    .await
 }
 async fn placement_count(database: &D1Database, directory_id: &str) -> Result<u64> {
     count(

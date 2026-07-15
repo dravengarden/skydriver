@@ -367,14 +367,15 @@ unused indexes only through a new append-only migration.
 
 ## Provider inventory
 
-The current Rust V2 product does not expose provider-wide inventory, adoption,
-or quarantine in either filesystem CLI. Physical object deletion is internal,
+The control plane runs a bounded server-owned inventory page for the
+environment-owned R2 driver and exposes only aggregate status through the
+management UI and `carrackctl inventory`. Physical object deletion is internal,
 server-owned lifecycle work. The former archive commands, Worker routes, Rust
 modules, and D1 tables have been removed; no agent may reconstruct their old
 HTTP protocol.
 
-A future hosted inventory pass must remain read-only, bounded, fenced, and
-conservative: an unknown object is quarantined rather than adopted or deleted,
+The hosted inventory pass is read-only, bounded, fenced, and conservative: an
+unknown object is quarantined rather than adopted or deleted,
 and a missing listing result is evidence rather than proof of absence. Its
 review and physical deletion stages belong to the control plane, require the
 same final reachability and identity fences as normal lifecycle GC, and must

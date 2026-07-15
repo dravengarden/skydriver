@@ -22,6 +22,8 @@ carrackctl metrics directory "$directory_id" --control-url "$CARRACK_CONTROL_URL
 carrackctl watch --after "$event_cursor" --limit 100 \
   --control-url "$CARRACK_CONTROL_URL" --format json
 carrackctl directory "$directory_id" --control-url "$CARRACK_CONTROL_URL" --format json
+carrackctl access show --control-url "$CARRACK_CONTROL_URL" --format json
+carrackctl inventory --control-url "$CARRACK_CONTROL_URL" --format json
 carrackctl vfs acl show /collection --control-url "$CARRACK_CONTROL_URL" --format json
 carrackctl vfs placement show /collection --control-url "$CARRACK_CONTROL_URL" --format json
 ```
@@ -44,6 +46,29 @@ means the wrong environment was selected or metadata was restored; stop and
 reconcile rather than resetting to zero automatically.
 
 ## Existing mutation commands
+
+Create and manage principals and filesystem groups with server validation:
+
+```bash
+carrackctl access principal create --kind service --display-name "$name" \
+  --control-url "$CARRACK_CONTROL_URL" --check --format json
+carrackctl access group create "$filesystem_id" --name "$name" \
+  --control-url "$CARRACK_CONTROL_URL" --check --format json
+carrackctl access group add-member "$group_id" "$principal_id" \
+  --filesystem-id "$filesystem_id" --expected-revision "$group_revision" \
+  --control-url "$CARRACK_CONTROL_URL" --check --format json
+```
+
+After review, repeat the byte-identical desired state without `--check` and
+with a stable idempotency key. Use `principal update --state disabled` instead
+of deletion. Re-read `access show` after every apply.
+
+Bootstrap or recover the unexpired root authority without stdout exposure:
+
+```bash
+carrackctl authority recover --output-file "$private_new_path" \
+  --control-url "$CARRACK_CONTROL_URL" --format json
+```
 
 Replace one complete hard-quota policy. Omitted limits mean unlimited; first
 use `--check`, then repeat with a stable idempotency key:

@@ -108,3 +108,11 @@ Retain `CARRACK_VFS_MASTER_KEY_V1` while the key envelopes or bootstrap receipt
 depend on it. Rotation requires adding a new versioned binding and rewrapping
 directory epochs; replacing the old value in place would make encrypted data
 and exact bootstrap replay unrecoverable.
+
+`carrackctl authority bootstrap --output-file PATH` is the supported operator
+bootstrap surface. `carrackctl authority recover --output-file PATH` re-derives
+the same unexpired bearer from the immutable receipt after a separate
+configuration reauthentication. Both commands create a new owner-only file;
+they print only a redacted file receipt and never print the bearer. Recovery
+fails closed when the receipt expired, the master key changed, or the stored
+verifier does not match.

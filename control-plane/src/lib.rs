@@ -7,6 +7,7 @@ mod driver_credentials;
 mod environment_defaults;
 mod maintenance;
 mod management;
+mod management_access;
 mod management_configuration;
 mod management_driver_configuration;
 mod management_driver_credentials;
@@ -30,6 +31,7 @@ mod vfs_identifiers;
 mod vfs_merkle;
 mod vfs_namespace_mutation;
 mod vfs_policy_management;
+mod vfs_provider_inventory;
 mod vfs_put;
 mod vfs_put_commit;
 mod vfs_put_deletion;
@@ -145,6 +147,17 @@ pub async fn main(request: Request, env: Env, context: Context) -> Result<Respon
             }
             response
         })
+        .post_async(
+            "/api/admin/vfs/authority/recover",
+            |request, context| async move {
+                if !operator_sessions::authorized(&request, &context.env).await?
+                    || !operator_sessions::configuration_authorized(&request, &context.env).await?
+                {
+                    return Response::error("configuration authentication required", 401);
+                }
+                vfs_bootstrap::recover(&context.env, operator_sessions::OPERATOR_SUBJECT).await
+            },
+        )
         .get_async("/api/v2/session", |request, context| async move {
             let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
                 return Response::error("VFS token authentication required", 401);
@@ -513,6 +526,27 @@ pub async fn main(request: Request, env: Env, context: Context) -> Result<Respon
         .get_async("/api/admin/snapshot", |request, context| async move {
             management::snapshot(&request, &context.env).await
         })
+        .get_async("/api/admin/access", |request, context| async move {
+            management_access::snapshot(request, &context.env).await
+        })
+        .get_async(
+            "/api/admin/provider-inventory",
+            |request, context| async move {
+                vfs_provider_inventory::snapshot(request, &context.env).await
+            },
+        )
+        .post_async(
+            "/api/admin/access/validate",
+            |mut request, context| async move {
+                management_access::validate(&mut request, &context.env).await
+            },
+        )
+        .post_async(
+            "/api/admin/access/apply",
+            |mut request, context| async move {
+                management_access::apply(&mut request, &context.env).await
+            },
+        )
         .get_async("/api/admin/activity", |request, context| async move {
             management::activity(&request, &context.env).await
         })
