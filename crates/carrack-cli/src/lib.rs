@@ -534,7 +534,14 @@ struct MkdirOutput<'a> {
 struct ErrorOutput<'a> {
     schema: &'a str,
     code: &'a str,
+    exit_status: u8,
     message: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ErrorDisposition {
+    code: &'static str,
+    exit_status: u8,
 }
 
 /// Runs one native Carrack command with a stable binary identity.
@@ -1276,38 +1283,77 @@ fn read_json_object(path: &std::path::Path, secret: bool) -> Result<Value, Error
 ///
 /// This function never returns.
 pub fn exit_with_error(error: &Error) -> ! {
-    let code = match error {
-        Error::Arguments(_) => "invalid_arguments",
-        Error::Input(_) => "invalid_input",
-        Error::Client(carrack_client::Error::InvalidEndpoint(_)) => "invalid_control_plane",
-        Error::Client(carrack_client::Error::UpgradeRequired(_)) => "sdk_upgrade_required",
-        Error::Client(
-            carrack_client::Error::InvalidCompatibility(_)
-            | carrack_client::Error::InvalidResponse(_),
-        ) => "invalid_control_plane_response",
-        Error::Client(carrack_client::Error::Rejected {
-            status: 401 | 403, ..
-        }) => "permission_denied",
-        Error::Client(carrack_client::Error::Rejected { status: 404, .. }) => "not_found",
-        Error::Client(carrack_client::Error::Rejected { status: 409, .. }) => "revision_conflict",
-        Error::Client(carrack_client::Error::Rejected { .. }) => "request_rejected",
-        Error::Client(carrack_client::Error::Transport(_)) => "control_plane_transport_error",
-        Error::Verification(_) => "management_verification_failed",
-        Error::Serialize(_) => "internal_output_error",
-        Error::MissingEnvironment(_) => "missing_environment",
-    };
+    let disposition = error_disposition(error);
     let output = ErrorOutput {
         schema: "carrack.cli-error.v1",
-        code,
+        code: disposition.code,
+        exit_status: disposition.exit_status,
         message: error.to_string(),
     };
     match serde_json::to_string(&output) {
         Ok(encoded) => eprintln!("{encoded}"),
         Err(_) => eprintln!(
-            "{{\"schema\":\"carrack.cli-error.v1\",\"code\":\"internal_output_error\",\"message\":\"encode Carrack CLI error\"}}"
+            "{{\"schema\":\"carrack.cli-error.v1\",\"code\":\"internal_output_error\",\"exit_status\":13,\"message\":\"encode Carrack CLI error\"}}"
         ),
     }
-    std::process::exit(1);
+    std::process::exit(i32::from(disposition.exit_status));
+}
+
+fn error_disposition(error: &Error) -> ErrorDisposition {
+    let (code, exit_status) = match error {
+        Error::Arguments(_) => ("invalid_arguments", 2),
+        Error::Input(_) => ("invalid_input", 3),
+        Error::Client(carrack_client::Error::InvalidEndpoint(_)) => ("invalid_control_plane", 4),
+        Error::Client(carrack_client::Error::UpgradeRequired(_)) => ("sdk_upgrade_required", 5),
+        Error::Client(
+            carrack_client::Error::InvalidCompatibility(_)
+            | carrack_client::Error::InvalidResponse(_),
+        ) => ("invalid_control_plane_response", 6),
+        Error::Client(carrack_client::Error::Rejected {
+            status: 401 | 403, ..
+        }) => ("permission_denied", 7),
+        Error::Client(carrack_client::Error::Rejected { status: 404, .. }) => ("not_found", 8),
+        Error::Client(carrack_client::Error::Rejected { status: 409, .. }) => {
+            ("revision_conflict", 9)
+        }
+        Error::Client(carrack_client::Error::Rejected { .. }) => ("request_rejected", 10),
+        Error::Client(carrack_client::Error::Transport(_)) => ("control_plane_transport_error", 11),
+        Error::Verification(_) => ("management_verification_failed", 12),
+        Error::Serialize(_) => ("internal_output_error", 13),
+        Error::MissingEnvironment(_) => ("missing_environment", 14),
+    };
+    ErrorDisposition { code, exit_status }
+}
+
+#[cfg(test)]
+fn error_json(error: &Error) -> Result<String, serde_json::Error> {
+    let disposition = error_disposition(error);
+    serde_json::to_string(&ErrorOutput {
+        schema: "carrack.cli-error.v1",
+        code: disposition.code,
+        exit_status: disposition.exit_status,
+        message: error.to_string(),
+    })
+}
+
+#[cfg(test)]
+fn rejected_error(status: u16) -> Error {
+    Error::Client(carrack_client::Error::Rejected {
+        status,
+        message: "test rejection".to_owned(),
+    })
+}
+
+#[cfg(test)]
+fn assert_error_disposition(error: &Error, code: &str, exit_status: u8) {
+    let disposition = error_disposition(error);
+    assert_eq!(disposition.code, code);
+    assert_eq!(disposition.exit_status, exit_status);
+    let encoded = error_json(error).expect("encode CLI error");
+    let decoded: Value = serde_json::from_str(&encoded).expect("decode CLI error");
+    assert_eq!(decoded["schema"], "carrack.cli-error.v1");
+    assert_eq!(decoded["code"], code);
+    assert_eq!(decoded["exit_status"], u64::from(exit_status));
 }
 
 fn write_json<T: Serialize>(output: Output, value: &T) -> Result<(), Error> {
@@ -1368,5 +1414,54 @@ mod tests {
             .map(clap::Command::get_name)
             .collect::<Vec<_>>();
         assert!(names.contains(&"watch"));
+    }
+
+    #[test]
+    fn exposes_stable_machine_readable_exit_statuses() {
+        assert_error_disposition(
+            &Error::Arguments("invalid".to_owned()),
+            "invalid_arguments",
+            2,
+        );
+        assert_error_disposition(&Error::Input("invalid".to_owned()), "invalid_input", 3);
+        assert_error_disposition(
+            &Error::Client(carrack_client::Error::InvalidEndpoint("invalid".to_owned())),
+            "invalid_control_plane",
+            4,
+        );
+        assert_error_disposition(
+            &Error::Client(carrack_client::Error::UpgradeRequired(Box::new(
+                carrack_client::UpgradeRequired {
+                    schema: "carrack.protocol-error.v1".to_owned(),
+                    code: "sdk_upgrade_required".to_owned(),
+                    message: "upgrade".to_owned(),
+                    protocol_epoch: 2,
+                    minimum_sdk_version: "1.0.0".to_owned(),
+                    server_version: "1.0.0".to_owned(),
+                    upgrade_command: "upgrade carrack".to_owned(),
+                },
+            ))),
+            "sdk_upgrade_required",
+            5,
+        );
+        assert_error_disposition(
+            &Error::Client(carrack_client::Error::InvalidResponse("invalid".to_owned())),
+            "invalid_control_plane_response",
+            6,
+        );
+        assert_error_disposition(&rejected_error(401), "permission_denied", 7);
+        assert_error_disposition(&rejected_error(404), "not_found", 8);
+        assert_error_disposition(&rejected_error(409), "revision_conflict", 9);
+        assert_error_disposition(&rejected_error(422), "request_rejected", 10);
+        assert_error_disposition(
+            &Error::Verification("mismatch".to_owned()),
+            "management_verification_failed",
+            12,
+        );
+        assert_error_disposition(
+            &Error::MissingEnvironment("CARRACK_VFS_TOKEN"),
+            "missing_environment",
+            14,
+        );
     }
 }

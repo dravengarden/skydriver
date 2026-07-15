@@ -185,8 +185,28 @@ The CLI treats any local validation, authorization, server validation,
 revision, transport, or receipt mismatch as failure. It verifies every
 response schema, identity, revision, validation digest, and receipt before
 reporting success. Configuration mutations also re-read the redacted effective
-snapshot and require it to match the receipt before printing success. More
-granular stable exit codes remain a future surface.
+snapshot and require it to match the receipt before printing success. Every
+failure writes exactly one `carrack.cli-error.v1` JSON object to stderr. Its
+string `code` and numeric `exit_status` carry the same stable classification:
+
+| Exit status | Code | Agent action |
+|---:|---|---|
+| `2` | `invalid_arguments` | Correct the command before retrying. |
+| `3` | `invalid_input` | Correct or replace the local input. |
+| `4` | `invalid_control_plane` | Select a canonical HTTPS control URL. |
+| `5` | `sdk_upgrade_required` | Upgrade before any further operation. |
+| `6` | `invalid_control_plane_response` | Stop; do not trust or mutate through this peer. |
+| `7` | `permission_denied` | Obtain the intended narrower authority. |
+| `8` | `not_found` | Re-read state and verify the environment and identity. |
+| `9` | `revision_conflict` | Re-read, decide again, and use a new idempotency key. |
+| `10` | `request_rejected` | Inspect the bounded server message; do not blind-retry. |
+| `11` | `control_plane_transport_error` | Retry only with the same idempotency key and desired state. |
+| `12` | `management_verification_failed` | Treat the outcome as ambiguous and reconcile by readback. |
+| `13` | `internal_output_error` | Stop because the structured result was not emitted safely. |
+| `14` | `missing_environment` | Inject the named private input without placing it in argv. |
+
+Status `0` remains the only success status. No other nonzero value is part of
+the Carrack CLI contract.
 
 ## Change observation
 
