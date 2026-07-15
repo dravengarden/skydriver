@@ -33,7 +33,13 @@ agent processes are SDK consumers, not a third architectural component.
   token verifiers, and encrypted provider-credential envelopes. Pack keys are
   derived rather than stored. Root seeds stay in Cloudflare secrets or Secrets
   Store and have offline recovery copies.
-- Run `just verify` before committing.
+- The pinned Nix development shell owns the Go, Rust, Node, Worker, and lint
+  toolchains. From the repository root, run project commands as
+  `nix develop -c <command>`; never use the host Rustup/Cargo toolchain for a
+  preliminary check. If a compiler or linker resolves through `~/.rustup` or a
+  missing Nix-store wrapper, stop and correct the shell rather than changing
+  code or the host toolchain.
+- Run `nix develop -c just verify` before committing.
 - Use `.agents/skills/carrack-admin` for Carrack management inspection and
   supported VFS policy changes. Agents must not bypass its CLI validation with
   direct D1 writes or reconstructed management HTTP requests.
