@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 
 use crate::{DirectoryMerkleEntry, Error, directory_merkle_root};
 
@@ -31,6 +32,56 @@ pub fn catalog_checkpoint_etag(sha256: &str) -> Result<String, Error> {
         return Err(Error::InvalidInput("catalog checkpoint SHA-256 is invalid"));
     }
     Ok(format!("\"sha256:{sha256}\""))
+}
+
+/// Constructs the strong entity tag for one deterministic authorized subtree
+/// view of an immutable complete checkpoint.
+///
+/// The returned tag intentionally differs from the encoded subtree SHA-256:
+/// a Worker can reauthorize an unchanged view and answer HTTP 304 without
+/// reading and projecting the complete checkpoint from object storage.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidInput`] when either identity is malformed.
+pub fn catalog_checkpoint_view_etag(
+    checkpoint_sha256: &str,
+    root_directory_id: &str,
+) -> Result<String, Error> {
+    let checkpoint_digest =
+        decode_hex::<32>(checkpoint_sha256, "catalog checkpoint SHA-256 is invalid")?;
+    let root = decode_hex::<16>(
+        root_directory_id,
+        "catalog root directory identity is invalid",
+    )?;
+    let mut digest = Sha256::new();
+    digest.update(b"carrack.vfs.catalog-checkpoint-view-etag.v1\0");
+    digest.update(checkpoint_digest);
+    digest.update(root);
+    catalog_checkpoint_etag(&hex::encode(digest.finalize()))
+}
+
+/// Validates the exact strong entity-tag syntax accepted for catalog
+/// checkpoint receipts.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidInput`] for a weak, unquoted, or noncanonical tag.
+pub fn validate_catalog_checkpoint_etag(etag: &str) -> Result<(), Error> {
+    let Some(digest) = etag
+        .strip_prefix("\"sha256:")
+        .and_then(|value| value.strip_suffix('"'))
+    else {
+        return Err(Error::InvalidInput(
+            "catalog checkpoint entity tag is invalid",
+        ));
+    };
+    if catalog_checkpoint_etag(digest)? != etag {
+        return Err(Error::InvalidInput(
+            "catalog checkpoint entity tag is invalid",
+        ));
+    }
+    Ok(())
 }
 
 /// One complete immutable filesystem catalog checkpoint.
@@ -101,6 +152,87 @@ pub enum CatalogCheckpointEntryKind {
     File,
     /// Child directory node.
     Directory,
+}
+
+/// Produces the complete Merkle closure rooted at one directory from an
+/// already verified immutable checkpoint.
+///
+/// The selected directory becomes the logical root without changing its
+/// content root; its original parent and name are authorization-external
+/// navigation metadata and are removed from the projected view.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidInput`] when the source checkpoint is invalid or
+/// the requested directory is absent from its authenticated tree.
+pub fn project_catalog_checkpoint(
+    checkpoint: &CatalogCheckpoint,
+    root_directory_id: &str,
+) -> Result<CatalogCheckpoint, Error> {
+    validate_catalog_checkpoint(checkpoint)?;
+    decode_hex::<16>(
+        root_directory_id,
+        "catalog projection root identity is invalid",
+    )?;
+
+    let by_id = checkpoint
+        .directories
+        .iter()
+        .map(|directory| (directory.directory_id.as_str(), directory))
+        .collect::<HashMap<_, _>>();
+    let root = by_id
+        .get(root_directory_id)
+        .copied()
+        .ok_or(Error::InvalidInput("catalog projection root is missing"))?;
+    let mut selected = HashSet::new();
+    let mut pending = vec![root_directory_id];
+    while let Some(directory_id) = pending.pop() {
+        if !selected.insert(directory_id) {
+            return Err(Error::InvalidInput("catalog projection is not a tree"));
+        }
+        let directory = by_id
+            .get(directory_id)
+            .copied()
+            .ok_or(Error::InvalidInput("catalog projection child is missing"))?;
+        for entry in &directory.entries {
+            if entry.kind == CatalogCheckpointEntryKind::Directory {
+                pending.push(
+                    entry
+                        .child_directory_id
+                        .as_deref()
+                        .ok_or(Error::InvalidInput(
+                            "catalog projection child identity is missing",
+                        ))?,
+                );
+            }
+        }
+    }
+
+    let mut directories = checkpoint
+        .directories
+        .iter()
+        .filter(|directory| selected.contains(directory.directory_id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let projected_root = directories
+        .iter_mut()
+        .find(|directory| directory.directory_id == root_directory_id)
+        .ok_or(Error::InvalidInput("catalog projection root is missing"))?;
+    projected_root.parent_directory_id = None;
+    projected_root.name.clear();
+
+    let projected = CatalogCheckpoint {
+        schema: checkpoint.schema.clone(),
+        filesystem_id: checkpoint.filesystem_id.clone(),
+        revision_id: checkpoint.revision_id,
+        parent_revision_id: checkpoint.parent_revision_id,
+        root_directory_id: root_directory_id.to_owned(),
+        root_data_root: root.data_root.clone(),
+        created_at: checkpoint.created_at,
+        directories,
+    };
+    validate_catalog_checkpoint(&projected)?;
+    Ok(projected)
 }
 
 /// Verifies every identity, bound, directory Merkle root, and tree edge in a
@@ -341,6 +473,106 @@ mod tests {
             "\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\""
         );
         assert!(catalog_checkpoint_etag("AA").is_err());
+        validate_catalog_checkpoint_etag(
+            "\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+        )
+        .expect("valid checkpoint entity tag");
+        assert!(validate_catalog_checkpoint_etag("W/\"sha256:aa\"").is_err());
+    }
+
+    #[test]
+    fn constructs_stable_authorized_view_etag() {
+        let tag = catalog_checkpoint_view_etag(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "202122232425262728292a2b2c2d2e2f",
+        )
+        .expect("checkpoint view entity tag");
+        assert_eq!(
+            tag,
+            "\"sha256:c512d6569dbc3c3393c8c12c6c25fff666eae28a91c25ce2b12b353ec601d3cd\""
+        );
+        validate_catalog_checkpoint_etag(&tag).expect("valid view entity tag");
+        assert_ne!(
+            tag,
+            catalog_checkpoint_etag(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            )
+            .expect("artifact entity tag")
+        );
+    }
+
+    #[test]
+    fn projects_one_authenticated_subtree() {
+        let mut checkpoint = empty_checkpoint();
+        let child_id = "303132333435363738393a3b3c3d3e3f";
+        let grandchild_id = "404142434445464748494a4b4c4d4e4f";
+        let empty_root = hex::encode(directory_merkle_root(&[]).expect("empty directory root"));
+        let child_entries = vec![CatalogCheckpointEntry {
+            name: "nested".to_owned(),
+            kind: CatalogCheckpointEntryKind::Directory,
+            file_id: None,
+            version_id: None,
+            child_directory_id: Some(grandchild_id.to_owned()),
+            size_bytes: 0,
+            data_root: empty_root.clone(),
+            metadata_root: None,
+        }];
+        let child_root = hex::encode(
+            directory_merkle_root(
+                &child_entries
+                    .iter()
+                    .map(merkle_entry)
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("child Merkle entries"),
+            )
+            .expect("child directory root"),
+        );
+        checkpoint.directories[0].entries = vec![CatalogCheckpointEntry {
+            name: "allowed".to_owned(),
+            kind: CatalogCheckpointEntryKind::Directory,
+            file_id: None,
+            version_id: None,
+            child_directory_id: Some(child_id.to_owned()),
+            size_bytes: 0,
+            data_root: child_root.clone(),
+            metadata_root: None,
+        }];
+        checkpoint.directories[0].data_root = hex::encode(
+            directory_merkle_root(
+                &checkpoint.directories[0]
+                    .entries
+                    .iter()
+                    .map(merkle_entry)
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("root Merkle entries"),
+            )
+            .expect("root directory root"),
+        );
+        checkpoint.root_data_root = checkpoint.directories[0].data_root.clone();
+        checkpoint.directories.push(CatalogCheckpointDirectory {
+            directory_id: child_id.to_owned(),
+            parent_directory_id: Some(checkpoint.root_directory_id.clone()),
+            name: "allowed".to_owned(),
+            data_root: child_root.clone(),
+            entries: child_entries,
+        });
+        checkpoint.directories.push(CatalogCheckpointDirectory {
+            directory_id: grandchild_id.to_owned(),
+            parent_directory_id: Some(child_id.to_owned()),
+            name: "nested".to_owned(),
+            data_root: empty_root,
+            entries: Vec::new(),
+        });
+        validate_catalog_checkpoint(&checkpoint).expect("source checkpoint");
+
+        let projected =
+            project_catalog_checkpoint(&checkpoint, child_id).expect("projected checkpoint");
+        assert_eq!(projected.root_directory_id, child_id);
+        assert_eq!(projected.root_data_root, child_root);
+        assert_eq!(projected.directories.len(), 2);
+        assert!(projected.directories[0].parent_directory_id.is_none());
+        assert!(projected.directories[0].name.is_empty());
+        validate_catalog_checkpoint(&projected).expect("valid projected checkpoint");
     }
 
     #[test]

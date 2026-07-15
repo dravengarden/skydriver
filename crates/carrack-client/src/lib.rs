@@ -126,6 +126,12 @@ pub(crate) struct BoundedResponse {
     pub(crate) body: Vec<u8>,
 }
 
+pub(crate) enum OptionalBytesResponse {
+    Unavailable,
+    NotModified,
+    Body(BoundedResponse),
+}
+
 impl Client {
     /// Creates a client for an HTTPS endpoint. Plain HTTP is limited to loopback tests.
     ///
@@ -243,7 +249,7 @@ impl Client {
         token: &str,
         maximum_bytes: usize,
         if_none_match: Option<&str>,
-    ) -> Result<Option<BoundedResponse>, Error> {
+    ) -> Result<OptionalBytesResponse, Error> {
         if path.contains("..") || !path.starts_with("api/") {
             return Err(Error::InvalidEndpoint("invalid API path".to_owned()));
         }
@@ -269,7 +275,7 @@ impl Client {
             return Err(Error::UpgradeRequired(Box::new(failure)));
         }
         if response.status() == StatusCode::NO_CONTENT {
-            return Ok(None);
+            return Ok(OptionalBytesResponse::Unavailable);
         }
         if response.status() == StatusCode::NOT_MODIFIED {
             let Some(expected) = if_none_match else {
@@ -287,7 +293,7 @@ impl Client {
                     "catalog checkpoint 304 entity tag differs".to_owned(),
                 ));
             }
-            return Ok(None);
+            return Ok(OptionalBytesResponse::NotModified);
         }
         if !response.status().is_success() {
             let status = response.status().as_u16();
@@ -297,7 +303,10 @@ impl Client {
         }
         let headers = response.headers().clone();
         let body = read_bounded(response, maximum_bytes, false).await?;
-        Ok(Some(BoundedResponse { headers, body }))
+        Ok(OptionalBytesResponse::Body(BoundedResponse {
+            headers,
+            body,
+        }))
     }
 }
 
@@ -454,8 +463,8 @@ mod tests {
             let request = String::from_utf8_lossy(&request[..length]).to_ascii_lowercase();
             assert!(request.starts_with("get /api/compatibility http/1.1"));
             assert!(request.contains("carrack-protocol-epoch: 2"));
-            assert!(request.contains("carrack-sdk-version: 0.3.0"));
-            let body = r#"{"schema":"carrack.protocol-compatibility.v1","protocol_epoch":2,"minimum_sdk_version":"0.3.0","server_version":"0.3.0","enforcement":"required","upgrade_command":"upgrade carrack"}"#;
+            assert!(request.contains("carrack-sdk-version: 0.3.1"));
+            let body = r#"{"schema":"carrack.protocol-compatibility.v1","protocol_epoch":2,"minimum_sdk_version":"0.3.0","server_version":"0.3.1","enforcement":"required","upgrade_command":"upgrade carrack"}"#;
             stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.expect("write response");
         });
         let client = Client::new(&format!("http://{address}")).expect("construct client");

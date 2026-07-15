@@ -28,9 +28,10 @@ The current implemented V2 slice includes:
 - a private local namespace and transfer catalog keyed by authenticated roots,
   bounded concurrent prefetch, durable verified nodes and range journals,
   subtree reuse, and final live-root revalidation; and
-- server-materialized complete catalog checkpoints, delivered only to current
-  full-root tokens with list/read authority and no ACL inheritance boundary,
-  with shared native/WASM verification and transparent page fallback; and
+- server-materialized complete catalog checkpoints, directly streamed to safe
+  full-root tokens or projected to a safe narrow token's exact Merkle subtree,
+  with shared native/WASM verification and transparent ACL-boundary fallback;
+  and
 - durable read leases, reachability marking, tombstone grace, server-owned
   fenced GC, idempotent Aliyun and R2 deletion, and conservative retention for
   drivers the Worker cannot reach; and
@@ -38,12 +39,11 @@ The current implemented V2 slice includes:
   resumable multipart upload, concurrent exact-range download, and
   binding-owned server cleanup independent of client signing-key rotation.
 
-Remaining expansion work is explicit: subtree-specific checkpoints and
-hash-chained delta acceleration, additional hosted drivers, production
-fault-injection for every lifecycle class, and final removal of the
-compatibility-only Go archive surface. Durable Aliyun credential rotation is
-already server-owned and does not change the public complete-object filesystem
-contract.
+Remaining expansion work is explicit: hash-chained delta or content-addressed
+page acceleration, additional hosted drivers, production fault-injection for
+every lifecycle class, and final removal of the compatibility-only Go archive
+surface. Durable Aliyun credential rotation is already server-owned and does
+not change the public complete-object filesystem contract.
 
 ## Product boundary
 
@@ -224,26 +224,34 @@ for local incremental planning. Unchanged verified files require no provider
 read, and changed files request grants directly by immutable version rather
 than resolving every path again.
 
-The Worker streams the current checkpoint only when the authenticated token is
-rooted at the physical filesystem root, is live and nonsnapshot, has both
-`directory.list` and `content.read`, passes the current ACL checks, and the
-filesystem has no active descendant with an ACL inheritance break. The R2 key,
-version, byte length, SHA-256, revision, and root are matched against the exact
-published D1 head before streaming. The native client bounds the response at 32
-MiB, verifies its transport receipt, canonical JSON, every directory root, and
-the complete reachable tree through the same portable SDK used by Worker WASM,
-then publishes token-scoped content-addressed local nodes. A narrow token, ACL
-boundary, absent checkpoint, or concurrent newer root transparently uses the
-authenticated paginated API; corrupt metadata fails closed. A future
-subtree-specific checkpoint or content-addressed page tree may optimize those
-fallbacks without changing directory roots or the CLI planning model.
+The Worker delivers the current checkpoint when the authenticated token is live
+and nonsnapshot, has both `directory.list` and `content.read`, passes its current
+inherited ACL checks, and has no descendant ACL inheritance break. A physical
+filesystem-root view streams directly from R2. A narrow view is projected from
+the verified immutable source into only the token root's complete Merkle
+closure; the new logical root omits its original parent and name. The R2 key,
+version, byte length, SHA-256, revision, and physical root are matched against
+the exact published D1 head before either path. The native client bounds the
+response at 32 MiB, verifies its independent body receipt, canonical JSON,
+every directory root, and the complete reachable tree through the same portable
+SDK used by Worker WASM, then publishes token-scoped content-addressed local
+nodes. An ACL boundary, snapshot, absent checkpoint, or concurrent newer root
+transparently uses the authenticated paginated API; corrupt metadata fails
+closed.
+
+The client distinguishes an authenticated 304 from an unavailable 204. Only a
+200/304 bulk proof permits cache-only child traversal. After 204, every cached
+directory requires a fresh authorized page before reuse, so a newly introduced
+ACL boundary cannot be hidden by an older local Merkle node.
 
 The client persists only a canonical SHA-256-enveloped checkpoint head after
-all nodes are durable. Subsequent syncs send that strong entity tag. The Worker
-repeats the complete authorization and head proof, but returns HTTP 304 before
-opening R2 when the current artifact SHA-256 is unchanged. This keeps unchanged
-sync metadata cost to one bounded D1 proof plus the existing live-root fences;
-the local hint never bypasses authorization or Merkle verification.
+all nodes are durable. Subsequent syncs send that strong entity tag. Full views
+bind it to the body/object SHA-256; narrow views bind it to a domain-separated
+digest of the immutable source and authorized root. The Worker repeats the
+complete authorization and head proof, but returns HTTP 304 before opening R2
+when the view is unchanged. This keeps unchanged sync metadata cost to one
+bounded D1 proof plus the existing live-root fences; the local hint never
+bypasses authorization or Merkle verification.
 
 Catalog publication uses a D1 outbox and idempotent materialization. A head
 never advertises an R2 revision until its immutable objects exist and verify.

@@ -1,8 +1,8 @@
 //! Private content-addressed directory catalog used by incremental sync.
 
 use carrack_sdk_core::{
-    CatalogCheckpoint, CatalogCheckpointEntryKind, DirectoryMerkleEntry, catalog_checkpoint_etag,
-    directory_merkle_root, validate_catalog_checkpoint,
+    CatalogCheckpoint, CatalogCheckpointEntryKind, DirectoryMerkleEntry, directory_merkle_root,
+    validate_catalog_checkpoint, validate_catalog_checkpoint_etag,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -160,8 +160,14 @@ impl CatalogStore {
         self.publish_node(node)
     }
 
-    pub(crate) fn publish_checkpoint(&self, checkpoint: &CatalogCheckpoint) -> Result<(), Error> {
+    pub(crate) fn publish_checkpoint(
+        &self,
+        checkpoint: &CatalogCheckpoint,
+        etag: &str,
+    ) -> Result<(), Error> {
         validate_catalog_checkpoint(checkpoint)
+            .map_err(|error| Error::InvalidResponse(error.to_string()))?;
+        validate_catalog_checkpoint_etag(etag)
             .map_err(|error| Error::InvalidResponse(error.to_string()))?;
         for directory in &checkpoint.directories {
             self.publish_node(CatalogNode {
@@ -197,8 +203,7 @@ impl CatalogStore {
             revision_id: checkpoint.revision_id,
             root_directory_id: checkpoint.root_directory_id.clone(),
             root_data_root: checkpoint.root_data_root.clone(),
-            etag: catalog_checkpoint_etag(&checkpoint_sha256)
-                .map_err(|error| Error::InvalidResponse(error.to_string()))?,
+            etag: etag.to_owned(),
             checkpoint_sha256,
         })?;
         Ok(())
@@ -466,12 +471,9 @@ fn validate_head(head: &CatalogHead) -> Result<(), Error> {
     )?;
     validate_hex::<32>(&head.root_data_root, "catalog head root")?;
     validate_hex::<32>(&head.checkpoint_sha256, "catalog head checkpoint SHA-256")?;
-    if head.schema != HEAD_SCHEMA
-        || head.revision_id == 0
-        || catalog_checkpoint_etag(&head.checkpoint_sha256)
-            .map_err(|error| Error::InvalidResponse(error.to_string()))?
-            != head.etag
-    {
+    validate_catalog_checkpoint_etag(&head.etag)
+        .map_err(|error| Error::InvalidResponse(error.to_string()))?;
+    if head.schema != HEAD_SCHEMA || head.revision_id == 0 {
         return Err(Error::InvalidResponse(
             "catalog head identity differs".to_owned(),
         ));
@@ -635,10 +637,10 @@ mod tests {
         let checkpoint_sha256 = hex::encode(Sha256::digest(
             serde_json::to_vec(&checkpoint).expect("encode checkpoint"),
         ));
-        let expected = catalog_checkpoint_etag(&checkpoint_sha256).expect("checkpoint entity tag");
+        let expected = format!("\"sha256:{checkpoint_sha256}\"");
 
         store
-            .publish_checkpoint(&checkpoint)
+            .publish_checkpoint(&checkpoint, &expected)
             .expect("publish checkpoint");
         assert_eq!(
             store.checkpoint_etag().expect("read checkpoint head"),

@@ -4,7 +4,7 @@ set -euo pipefail
 curl() {
   command curl \
     --header "Carrack-Protocol-Epoch: 2" \
-    --header "Carrack-SDK-Version: 0.3.0" \
+    --header "Carrack-SDK-Version: 0.3.1" \
     "$@"
 }
 
@@ -170,7 +170,7 @@ fi
 wasm_sdk_proof=$(command curl --silent --show-error --fail-with-body \
   "http://127.0.0.1:$port/api/acceptance/wasm-sdk")
 [[ "$(jq -r '.schema' <<<"$wasm_sdk_proof")" == carrack.sdk.wasm-acceptance.v1 ]]
-[[ "$(jq -r '.sdk_version' <<<"$wasm_sdk_proof")" == 0.3.0 ]]
+[[ "$(jq -r '.sdk_version' <<<"$wasm_sdk_proof")" == 0.3.1 ]]
 [[ "$(jq -r '.plaintext_merkle_root' <<<"$wasm_sdk_proof")" == \
   d60042cf44d28c3a12f278cffde67620f94f1a3e4c82208102da97b96cd5b4d9 ]]
 [[ "$(jq -r '.decoded_sha256' <<<"$wasm_sdk_proof")" == \

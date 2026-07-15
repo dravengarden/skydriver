@@ -2,15 +2,15 @@
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use carrack_sdk_core::{
-    CatalogCheckpoint, MAXIMUM_CATALOG_CHECKPOINT_BYTES, catalog_checkpoint_etag,
-    validate_catalog_checkpoint,
+    CatalogCheckpoint, MAXIMUM_CATALOG_CHECKPOINT_BYTES, validate_catalog_checkpoint,
+    validate_catalog_checkpoint_etag,
 };
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{Client, Error};
+use crate::{Client, Error, OptionalBytesResponse};
 
 const TOKEN_BYTES: usize = 32;
 
@@ -57,6 +57,17 @@ pub struct VfsSession {
     pub root_directory_id: String,
     /// Server-clock expiry.
     pub expires_at: u64,
+}
+
+pub(crate) struct CatalogCheckpointDelivery {
+    pub(crate) checkpoint: CatalogCheckpoint,
+    pub(crate) etag: String,
+}
+
+pub(crate) enum CatalogCheckpointOutcome {
+    Unavailable,
+    Unchanged,
+    Delivered(CatalogCheckpointDelivery),
 }
 
 /// One live directory and its optimistic revisions.
@@ -427,9 +438,9 @@ impl VfsClient {
         &self,
         session: &VfsSession,
         if_none_match: Option<&str>,
-    ) -> Result<Option<CatalogCheckpoint>, Error> {
+    ) -> Result<CatalogCheckpointOutcome, Error> {
         let token = self.token.encode();
-        let Some(response) = self
+        let response = match self
             .control
             .send_optional_bytes(
                 "api/v2/catalog/checkpoint",
@@ -438,8 +449,14 @@ impl VfsClient {
                 if_none_match,
             )
             .await?
-        else {
-            return Ok(None);
+        {
+            OptionalBytesResponse::Unavailable => {
+                return Ok(CatalogCheckpointOutcome::Unavailable);
+            }
+            OptionalBytesResponse::NotModified => {
+                return Ok(CatalogCheckpointOutcome::Unchanged);
+            }
+            OptionalBytesResponse::Body(response) => response,
         };
         let content_type = required_header(&response.headers, "content-type")?;
         let content_length = required_header(&response.headers, "content-length")?
@@ -448,7 +465,8 @@ impl VfsClient {
                 Error::InvalidResponse("catalog checkpoint length header is invalid".to_owned())
             })?;
         let expected_sha256 = required_header(&response.headers, "carrack-catalog-sha256")?;
-        let expected_etag = catalog_checkpoint_etag(expected_sha256)
+        let expected_etag = required_header(&response.headers, "etag")?;
+        validate_catalog_checkpoint_etag(expected_etag)
             .map_err(|error| Error::InvalidResponse(error.to_string()))?;
         let expected_revision = required_header(&response.headers, "carrack-catalog-revision")?
             .parse::<u64>()
@@ -460,7 +478,6 @@ impl VfsClient {
             || content_length != response.body.len()
             || response.body.is_empty()
             || expected_sha256 != hex::encode(Sha256::digest(&response.body))
-            || required_header(&response.headers, "etag")? != expected_etag
         {
             return Err(Error::InvalidResponse(
                 "catalog checkpoint transport receipt differs".to_owned(),
@@ -488,7 +505,12 @@ impl VfsClient {
                 "catalog checkpoint identity differs from its session or receipt".to_owned(),
             ));
         }
-        Ok(Some(checkpoint))
+        Ok(CatalogCheckpointOutcome::Delivered(
+            CatalogCheckpointDelivery {
+                checkpoint,
+                etag: expected_etag.to_owned(),
+            },
+        ))
     }
 
     /// Reads one revision-consistent directory page.
@@ -1144,7 +1166,7 @@ mod tests {
     };
     use httpmock::{Method::GET, MockServer};
 
-    use super::{VfsClient, VfsSession, VfsToken};
+    use super::{CatalogCheckpointOutcome, VfsClient, VfsSession, VfsToken};
     use crate::Error;
 
     fn client(server: &MockServer) -> VfsClient {
@@ -1175,13 +1197,13 @@ mod tests {
                 then.status(204);
             })
             .await;
-        assert!(
+        assert!(matches!(
             client(&server)
                 .catalog_checkpoint(&session(), None)
                 .await
-                .expect("optional checkpoint request")
-                .is_none()
-        );
+                .expect("optional checkpoint request"),
+            CatalogCheckpointOutcome::Unavailable
+        ));
         delivery.assert_hits_async(1).await;
     }
 
@@ -1197,13 +1219,13 @@ mod tests {
                 then.status(304).header("ETag", etag);
             })
             .await;
-        assert!(
+        assert!(matches!(
             client(&server)
                 .catalog_checkpoint(&session(), Some(etag))
                 .await
-                .expect("unchanged checkpoint")
-                .is_none()
-        );
+                .expect("unchanged checkpoint"),
+            CatalogCheckpointOutcome::Unchanged
+        ));
         delivery.assert_hits_async(1).await;
     }
 
@@ -1235,6 +1257,10 @@ mod tests {
                 then.status(200)
                     .header("Content-Type", "application/json")
                     .header("Content-Length", body.len().to_string())
+                    .header(
+                        "ETag",
+                        "\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+                    )
                     .header(
                         "Carrack-Catalog-SHA256",
                         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

@@ -173,27 +173,58 @@ MiB, 5,000 directories, and 20,000 entries. Exceeding a bound fails the optional
 acceleration and leaves the revision retryable; it never weakens the live
 paginated API.
 
-`GET /api/v2/catalog/checkpoint` streams that immutable R2 object only for a
-live nonsnapshot token rooted at the physical filesystem root with both
-`directory.list` and `content.read`, effective root ACL grants, and no active
-descendant ACL inheritance break. Any narrower authority receives HTTP 204 and
-the client transparently keeps the paginated path. Before streaming, the Worker
-matches the key, R2 version, byte length, SHA-256, revision, and Merkle root to
-the exact published D1 head. The client rechecks the bounded SHA-256 receipt,
+`GET /api/v2/catalog/checkpoint` accepts a live nonsnapshot token with both
+`directory.list` and `content.read`, effective inherited ACL grants at its root,
+and no descendant ACL inheritance break. A physical-root token streams the
+immutable R2 object without buffering. A narrower token causes the Worker to
+verify that same immutable source and deterministically project only the
+complete Merkle closure rooted at the token directory. The projected root has
+no parent or original name, so neither sibling entries nor parent-navigation
+metadata cross the authority boundary. Snapshot tokens and subtrees containing
+an ACL boundary receive HTTP 204 and transparently keep the individually
+authorized paginated path. Projection is also conservatively limited to an
+8 MiB source artifact so Worker deserialization cannot approach its memory
+ceiling; larger artifacts retain the same correct page fallback.
+
+HTTP 204 and HTTP 304 are distinct client states. A 304 carries a fresh
+server-side proof that the cached closure is still bulk-authorized. A 204 has
+no such proof, so the client requires one current authorized page from every
+directory before it may reuse that directory's immutable cached node. An ACL
+boundary introduced after an earlier checkpoint therefore fails or narrows the
+next sync immediately, including an otherwise empty cached subtree.
+
+Before either delivery, the Worker matches the key, R2 version, byte length,
+SHA-256, revision, filesystem root, token chain, and current ACL state to the
+exact published D1 head. A projected response also proves that its selected
+root equals the current D1 root. The client rechecks the bounded body SHA-256,
 canonical JSON, every directory Merkle root, the complete reachable tree, and
 the token root using the shared native/WASM SDK validator before hydrating its
 private token-scoped DAG. A concurrent newer live root simply misses those
 content addresses and falls back to pages; corrupt delivery fails closed.
 
+The D1 proof preserves separate bounded cost paths. Physical-root tokens scan
+only the partial active-ACL-boundary index. Narrow tokens walk only their active
+descendants through the active-parent index; the published checkpoint bound
+limits that closure to 5,000 directories. Token parents, grants, memberships,
+head artifacts, and selected directory identities use their existing primary
+or covering indexes.
+
 After every complete hydration, the client atomically stores a small
 SHA-256-enveloped head receipt beside that token's private nodes. A later sync
-sends its exact strong `If-None-Match` tag. The Worker still performs the full
-current token-chain, action, ACL-boundary, and D1 publication proof first, then
-returns HTTP 304 before opening R2 when the SHA-256 is unchanged. A missing,
-partial, noncanonical, or corrupt local receipt cannot create a hit: the client
-requests and revalidates the complete checkpoint instead. The receipt is only
-an acceleration hint and never replaces the live root page and final fence.
+sends its exact strong `If-None-Match` tag. Full views use the immutable object
+SHA-256 as the tag. Projected views use a domain-separated digest of the source
+artifact and authorized root, letting the Worker reauthorize and return HTTP
+304 before opening R2. The response body has a separate exact SHA-256 receipt;
+the two values are intentionally not conflated. A missing, partial,
+noncanonical, or corrupt local receipt cannot create a hit: the client requests
+and revalidates the complete checkpoint instead. The receipt is only an
+acceleration hint and never replaces the live root page and final fence.
 
-Subtree-specific checkpoint projection and hash-chained deltas remain follow-up
-accelerations. They may reduce fallback metadata further, but cannot broaden a
-token's closure or weaken the final live-root fence.
+Projection was added in Rust SDK `0.3.1`. The Worker keeps accepting protocol
+epoch 2 SDK `0.3.0`, but returns HTTP 204 for its narrow roots so rolling or
+offline clients preserve the old correct pagination behavior instead of
+misinterpreting the new view-specific entity tag.
+
+Hash-chained deltas and content-addressed page trees remain follow-up
+accelerations. They may reduce changed-view metadata further, but cannot broaden
+a token's closure or weaken the final live-root fence.

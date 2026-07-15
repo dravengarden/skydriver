@@ -1,15 +1,23 @@
-//! Authenticated delivery of complete, server-materialized VFS catalogs.
+//! Authenticated delivery of complete, server-materialized VFS catalog views.
 
-use carrack_sdk_core::{MAXIMUM_CATALOG_CHECKPOINT_BYTES, catalog_checkpoint_etag};
+use carrack_sdk_core::{
+    CatalogCheckpoint, MAXIMUM_CATALOG_CHECKPOINT_BYTES, catalog_checkpoint_etag,
+    catalog_checkpoint_view_etag, project_catalog_checkpoint, validate_catalog_checkpoint,
+};
 use serde::Deserialize;
+use sha2::{Digest as _, Sha256};
 use worker::{D1Database, Env, Request, Response, Result, wasm_bindgen::JsValue};
 
-use crate::vfs_tokens::AuthenticatedVfsToken;
+use crate::{protocol_compatibility, vfs_tokens::AuthenticatedVfsToken};
+
+const MAXIMUM_PROJECTABLE_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Deserialize)]
 struct DeliveryRow {
     filesystem_id: String,
     revision_id: u64,
+    filesystem_root_directory_id: String,
+    filesystem_root_data_root: String,
     root_directory_id: String,
     root_data_root: String,
     r2_key: String,
@@ -18,10 +26,11 @@ struct DeliveryRow {
     r2_version: String,
 }
 
-/// Streams the current complete checkpoint only when the token has safe
-/// filesystem-wide list and content-read authority. Narrow roots, snapshots,
-/// and filesystems containing an ACL inheritance break receive an empty
-/// success response so clients transparently retain paginated traversal.
+/// Delivers the current complete checkpoint view when the token has safe list
+/// and content-read authority over its complete root closure. A full-root view
+/// streams directly from R2; a narrow root is deterministically projected only
+/// after the immutable source object is verified. Snapshots and subtrees with
+/// descendant ACL inheritance breaks retain the paginated fallback.
 pub(crate) async fn checkpoint(
     request: &Request,
     env: &Env,
@@ -32,8 +41,13 @@ pub(crate) async fn checkpoint(
         return fallback();
     };
     validate_receipt(&delivery)?;
-    let etag = catalog_checkpoint_etag(&delivery.sha256)
-        .map_err(|error| protocol_error(&error.to_string()))?;
+    if delivery.root_directory_id != delivery.filesystem_root_directory_id
+        && (!protocol_compatibility::sdk_version_at_least(request, (0, 3, 1))?
+            || delivery.bytes > MAXIMUM_PROJECTABLE_SOURCE_BYTES)
+    {
+        return fallback();
+    }
+    let etag = delivery_etag(&delivery)?;
     if request.headers().get("If-None-Match")?.as_deref() == Some(etag.as_str()) {
         return not_modified(&delivery, &etag);
     }
@@ -54,22 +68,74 @@ pub(crate) async fn checkpoint(
     }
     let body = object
         .body()
-        .ok_or_else(|| protocol_error("published catalog checkpoint has no R2 body"))?
-        .response_body()?;
-    let mut response = Response::from_body(body)?;
-    response
-        .headers_mut()
-        .set("Content-Type", "application/json")?;
-    response
-        .headers_mut()
-        .set("Content-Length", &delivery.bytes.to_string())?;
-    set_receipt_headers(&mut response, &delivery, &etag)?;
-    response
-        .headers_mut()
-        .set("X-Content-Type-Options", "nosniff")?;
+        .ok_or_else(|| protocol_error("published catalog checkpoint has no R2 body"))?;
+    if delivery.root_directory_id == delivery.filesystem_root_directory_id {
+        let mut response = Response::from_body(body.response_body()?)?;
+        set_body_headers(
+            &mut response,
+            &delivery,
+            &etag,
+            &delivery.sha256,
+            delivery.bytes,
+        )?;
+        return Ok(response);
+    }
+
+    let source = body.bytes().await?;
+    let source_bytes = u64::try_from(source.len())
+        .map_err(|_| protocol_error("catalog checkpoint source size exceeds u64"))?;
+    if source_bytes != delivery.bytes || hex::encode(Sha256::digest(&source)) != delivery.sha256 {
+        return Err(protocol_error(
+            "published catalog checkpoint body receipt differs",
+        ));
+    }
+    let checkpoint: CatalogCheckpoint = serde_json::from_slice(&source)?;
+    if serde_json::to_vec(&checkpoint)? != source {
+        return Err(protocol_error(
+            "published catalog checkpoint is not canonical",
+        ));
+    }
+    validate_catalog_checkpoint(&checkpoint).map_err(|error| protocol_error(&error.to_string()))?;
+    if checkpoint.filesystem_id != delivery.filesystem_id
+        || checkpoint.revision_id != delivery.revision_id
+        || checkpoint.root_directory_id != delivery.filesystem_root_directory_id
+        || checkpoint.root_data_root != delivery.filesystem_root_data_root
+    {
+        return Err(protocol_error(
+            "published catalog checkpoint identity differs",
+        ));
+    }
+    let projected = project_catalog_checkpoint(&checkpoint, &delivery.root_directory_id)
+        .map_err(|error| protocol_error(&error.to_string()))?;
+    if projected.root_data_root != delivery.root_data_root {
+        return Err(protocol_error(
+            "projected catalog checkpoint root differs from D1",
+        ));
+    }
+    let encoded = serde_json::to_vec(&projected)?;
+    if encoded.is_empty() || encoded.len() > MAXIMUM_CATALOG_CHECKPOINT_BYTES {
+        return Err(protocol_error(
+            "projected catalog checkpoint exceeds its byte bound",
+        ));
+    }
+    let encoded_bytes = u64::try_from(encoded.len())
+        .map_err(|_| protocol_error("projected catalog checkpoint size exceeds u64"))?;
+    let encoded_sha256 = hex::encode(Sha256::digest(&encoded));
+    let mut response = Response::from_bytes(encoded)?;
+    set_body_headers(
+        &mut response,
+        &delivery,
+        &etag,
+        &encoded_sha256,
+        encoded_bytes,
+    )?;
     Ok(response)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one D1 statement keeps token-chain, inherited ACL, subtree-boundary, and immutable-head proofs atomic"
+)]
 async fn eligible_checkpoint(
     database: &D1Database,
     token: &AuthenticatedVfsToken,
@@ -86,14 +152,39 @@ async fn eligible_checkpoint(
                         parent.sealed_at, parent.revoked_at, parent.expires_at
                  FROM vfs_token_verifiers AS parent
                  JOIN token_chain AS child ON child.parent_token_id = parent.id
+             ),
+             acl_directories(id, parent_id, acl_inherits) AS (
+                 SELECT id, parent_id, acl_inherits
+                 FROM vfs_directories
+                 WHERE id = ?3 AND state = 'active'
+                 UNION
+                 SELECT parent.id, parent.parent_id, parent.acl_inherits
+                 FROM vfs_directories AS parent
+                 JOIN acl_directories AS child ON child.parent_id = parent.id
+                 WHERE child.acl_inherits = 1 AND parent.state = 'active'
+             ),
+             subtree(id) AS (
+                 SELECT id FROM vfs_directories
+                 WHERE id = ?3 AND parent_id IS NOT NULL AND state = 'active'
+                 UNION ALL
+                 SELECT child.id
+                 FROM vfs_directories AS child
+                      INDEXED BY idx_vfs_directories_active_parent
+                 JOIN subtree AS parent ON child.parent_id = parent.id
+                 WHERE child.parent_id IS NOT NULL AND child.state = 'active'
              )
              SELECT root.filesystem_id, revision.id AS revision_id,
-                    root.id AS root_directory_id, head.root_data_root,
+                    filesystem_root.id AS filesystem_root_directory_id,
+                    head.root_data_root AS filesystem_root_data_root,
+                    root.id AS root_directory_id, root.data_root AS root_data_root,
                     artifact.r2_key, artifact.sha256, artifact.bytes,
                     artifact.r2_version
              FROM vfs_token_verifiers AS token
              JOIN vfs_principals AS principal ON principal.id = token.principal_id
              JOIN vfs_directories AS root ON root.id = token.root_directory_id
+             JOIN vfs_directories AS filesystem_root
+               ON filesystem_root.filesystem_id = root.filesystem_id
+              AND filesystem_root.parent_id IS NULL
              JOIN vfs_catalog_heads AS head ON head.filesystem_id = root.filesystem_id
              JOIN vfs_catalog_revisions AS revision
                ON revision.id = head.revision_id
@@ -110,8 +201,8 @@ async fn eligible_checkpoint(
                AND token.sealed_at IS NOT NULL AND token.revoked_at IS NULL
                AND token.expires_at > unixepoch() AND token.snapshot_id IS NULL
                AND principal.state = 'active'
-               AND root.parent_id IS NULL AND root.state = 'active'
-               AND root.data_root = head.root_data_root
+               AND root.state = 'active' AND filesystem_root.state = 'active'
+               AND filesystem_root.data_root = head.root_data_root
                AND revision.state = 'published' AND artifact.state = 'published'
                AND EXISTS (
                    SELECT 1 FROM vfs_token_actions
@@ -130,8 +221,8 @@ async fn eligible_checkpoint(
                )
                AND EXISTS (
                    SELECT 1 FROM vfs_acl_grants AS grant
-                   WHERE grant.directory_id = root.id
-                     AND grant.action = 'directory.list'
+                   WHERE grant.action = 'directory.list'
+                     AND grant.directory_id IN (SELECT id FROM acl_directories)
                      AND (
                          grant.principal_id = token.principal_id
                          OR EXISTS (
@@ -143,8 +234,8 @@ async fn eligible_checkpoint(
                )
                AND EXISTS (
                    SELECT 1 FROM vfs_acl_grants AS grant
-                   WHERE grant.directory_id = root.id
-                     AND grant.action = 'content.read'
+                   WHERE grant.action = 'content.read'
+                     AND grant.directory_id IN (SELECT id FROM acl_directories)
                      AND (
                          grant.principal_id = token.principal_id
                          OR EXISTS (
@@ -154,12 +245,22 @@ async fn eligible_checkpoint(
                          )
                      )
                )
-               AND NOT EXISTS (
-                   SELECT 1 FROM vfs_directories AS boundary
-                   WHERE boundary.filesystem_id = root.filesystem_id
-                     AND boundary.id != root.id
-                     AND boundary.state = 'active'
-                     AND boundary.acl_inherits = 0
+               AND (
+                   (root.parent_id IS NULL AND NOT EXISTS (
+                       SELECT 1
+                       FROM vfs_directories AS boundary
+                            INDEXED BY idx_vfs_directories_active_acl_boundaries
+                       WHERE boundary.filesystem_id = root.filesystem_id
+                         AND boundary.id != root.id
+                         AND boundary.state = 'active'
+                         AND boundary.acl_inherits = 0
+                   ))
+                   OR
+                   (root.parent_id IS NOT NULL AND NOT EXISTS (
+                       SELECT 1 FROM vfs_directories AS boundary
+                       JOIN subtree ON subtree.id = boundary.id
+                       WHERE boundary.id != root.id AND boundary.acl_inherits = 0
+                   ))
                )",
         )
         .bind(&[
@@ -173,6 +274,7 @@ async fn eligible_checkpoint(
 
 fn validate_receipt(delivery: &DeliveryRow) -> Result<()> {
     if delivery.filesystem_id.len() != 32
+        || delivery.filesystem_root_directory_id.len() != 32
         || delivery.root_directory_id.len() != 32
         || delivery.revision_id == 0
         || delivery.bytes == 0
@@ -183,6 +285,7 @@ fn validate_receipt(delivery: &DeliveryRow) -> Result<()> {
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         || delivery.root_data_root.len() != 64
+        || delivery.filesystem_root_data_root.len() != 64
         || delivery.r2_version.is_empty()
         || !delivery
             .r2_key
@@ -195,6 +298,15 @@ fn validate_receipt(delivery: &DeliveryRow) -> Result<()> {
     Ok(())
 }
 
+fn delivery_etag(delivery: &DeliveryRow) -> Result<String> {
+    let etag = if delivery.root_directory_id == delivery.filesystem_root_directory_id {
+        catalog_checkpoint_etag(&delivery.sha256)
+    } else {
+        catalog_checkpoint_view_etag(&delivery.sha256, &delivery.root_directory_id)
+    };
+    etag.map_err(|error| protocol_error(&error.to_string()))
+}
+
 fn fallback() -> Result<Response> {
     let mut response = Response::empty()?.with_status(204);
     response
@@ -205,15 +317,35 @@ fn fallback() -> Result<Response> {
 
 fn not_modified(delivery: &DeliveryRow, etag: &str) -> Result<Response> {
     let mut response = Response::empty()?.with_status(304);
-    set_receipt_headers(&mut response, delivery, etag)?;
+    set_view_headers(&mut response, delivery, etag)?;
     Ok(response)
 }
 
-fn set_receipt_headers(response: &mut Response, delivery: &DeliveryRow, etag: &str) -> Result<()> {
-    response.headers_mut().set("ETag", etag)?;
+fn set_body_headers(
+    response: &mut Response,
+    delivery: &DeliveryRow,
+    etag: &str,
+    sha256: &str,
+    bytes: u64,
+) -> Result<()> {
     response
         .headers_mut()
-        .set("Carrack-Catalog-SHA256", &delivery.sha256)?;
+        .set("Content-Type", "application/json")?;
+    response
+        .headers_mut()
+        .set("Content-Length", &bytes.to_string())?;
+    response
+        .headers_mut()
+        .set("Carrack-Catalog-SHA256", sha256)?;
+    set_view_headers(response, delivery, etag)?;
+    response
+        .headers_mut()
+        .set("X-Content-Type-Options", "nosniff")?;
+    Ok(())
+}
+
+fn set_view_headers(response: &mut Response, delivery: &DeliveryRow, etag: &str) -> Result<()> {
+    response.headers_mut().set("ETag", etag)?;
     response.headers_mut().set(
         "Carrack-Catalog-Revision",
         &delivery.revision_id.to_string(),
@@ -240,6 +372,9 @@ mod tests {
         let receipt = DeliveryRow {
             filesystem_id: "101112131415161718191a1b1c1d1e1f".to_owned(),
             revision_id: 1,
+            filesystem_root_directory_id: "202122232425262728292a2b2c2d2e2f".to_owned(),
+            filesystem_root_data_root:
+                "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254".to_owned(),
             root_directory_id: "202122232425262728292a2b2c2d2e2f".to_owned(),
             root_data_root: "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254"
                 .to_owned(),
@@ -249,5 +384,29 @@ mod tests {
             r2_version: "version".to_owned(),
         };
         assert!(validate_receipt(&receipt).is_err());
+    }
+
+    #[test]
+    fn narrow_view_has_an_authority_scoped_entity_tag() {
+        let delivery = DeliveryRow {
+            filesystem_id: "101112131415161718191a1b1c1d1e1f".to_owned(),
+            revision_id: 1,
+            filesystem_root_directory_id: "202122232425262728292a2b2c2d2e2f".to_owned(),
+            filesystem_root_data_root:
+                "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254"
+                    .to_owned(),
+            root_directory_id: "303132333435363738393a3b3c3d3e3f".to_owned(),
+            root_data_root:
+                "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254"
+                    .to_owned(),
+            r2_key: "vfs/catalog/checkpoints/fs/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json".to_owned(),
+            sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+            bytes: 1,
+            r2_version: "version".to_owned(),
+        };
+        assert_ne!(
+            delivery_etag(&delivery).expect("view entity tag"),
+            catalog_checkpoint_etag(&delivery.sha256).expect("artifact entity tag")
+        );
     }
 }

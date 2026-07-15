@@ -13,7 +13,7 @@ use crate::{
     catalog::{CatalogNode, CatalogStore},
     download::DownloadExpectation,
     integrity,
-    vfs::canonical_components,
+    vfs::{CatalogCheckpointOutcome, canonical_components},
 };
 
 const STATE_SCHEMA: &str = "carrack.local-sync-state.v1";
@@ -131,12 +131,17 @@ impl VfsClient {
         let session = self.session().await?;
         let catalog = CatalogStore::new(&options.state_directory, &session.token_id)?;
         let checkpoint_etag = catalog.checkpoint_etag()?;
-        if let Some(checkpoint) = self
+        let bulk_catalog_authorized = match self
             .catalog_checkpoint(&session, checkpoint_etag.as_deref())
             .await?
         {
-            catalog.publish_checkpoint(&checkpoint)?;
-        }
+            CatalogCheckpointOutcome::Delivered(delivery) => {
+                catalog.publish_checkpoint(&delivery.checkpoint, &delivery.etag)?;
+                true
+            }
+            CatalogCheckpointOutcome::Unchanged => true,
+            CatalogCheckpointOutcome::Unavailable => false,
+        };
         let state_path = state_path(&options.state_directory, &session.token_id, source);
         let previous = read_state(&state_path, source)?;
         let (directories, files) = self
@@ -146,6 +151,7 @@ impl VfsClient {
                 &catalog,
                 &session,
                 options.maximum_concurrency,
+                bulk_catalog_authorized,
             )
             .await?;
         let mut records = Vec::with_capacity(files.len());
@@ -234,8 +240,11 @@ impl VfsClient {
         catalog: &CatalogStore,
         session: &crate::VfsSession,
         maximum_concurrency: usize,
+        bulk_catalog_authorized: bool,
     ) -> Result<(u64, Vec<PlannedFile>), Error> {
-        let (fence, root) = self.source_catalog(source, catalog, session).await?;
+        let (fence, root) = self
+            .source_catalog(source, catalog, session, bulk_catalog_authorized)
+            .await?;
         let canonical_source = if source == "/" {
             String::new()
         } else {
@@ -258,8 +267,13 @@ impl VfsClient {
                 let node = match task.node.take() {
                     Some(node) => node,
                     None => {
-                        self.load_catalog_node(catalog, &task.directory_id, &task.data_root)
-                            .await?
+                        self.load_catalog_node(
+                            catalog,
+                            &task.directory_id,
+                            &task.data_root,
+                            bulk_catalog_authorized,
+                        )
+                        .await?
                     }
                 };
                 Ok::<_, Error>((task, node))
@@ -321,6 +335,7 @@ impl VfsClient {
         source: &str,
         catalog: &CatalogStore,
         session: &crate::VfsSession,
+        bulk_catalog_authorized: bool,
     ) -> Result<(CatalogFence, CatalogNode), Error> {
         let components = canonical_components(source)?;
         let root_page = self
@@ -359,7 +374,7 @@ impl VfsClient {
             source_root = entry.data_root.clone();
             if index + 1 != components.len() {
                 current = self
-                    .load_catalog_node(catalog, &source_id, &source_root)
+                    .load_catalog_node(catalog, &source_id, &source_root, bulk_catalog_authorized)
                     .await?;
             }
         }
@@ -385,8 +400,9 @@ impl VfsClient {
         catalog: &CatalogStore,
         directory_id: &str,
         data_root: &str,
+        bulk_catalog_authorized: bool,
     ) -> Result<CatalogNode, Error> {
-        if let Some(node) = catalog.load(directory_id, data_root)? {
+        if bulk_catalog_authorized && let Some(node) = catalog.load(directory_id, data_root)? {
             return Ok(node);
         }
         let first = self
@@ -597,7 +613,7 @@ mod tests {
     use carrack_sdk_core::{
         CATALOG_CHECKPOINT_SCHEMA, CatalogCheckpoint, CatalogCheckpointDirectory,
         CatalogCheckpointEntry, CatalogCheckpointEntryKind, DirectoryMerkleEntry,
-        catalog_checkpoint_etag, directory_merkle_root,
+        catalog_checkpoint_view_etag, directory_merkle_root,
     };
     use httpmock::{Method::GET, MockServer};
     use serde_json::json;
@@ -715,8 +731,8 @@ mod tests {
         };
         let checkpoint_body = serde_json::to_vec(&checkpoint).expect("encode checkpoint");
         let checkpoint_sha256 = hex::encode(Sha256::digest(&checkpoint_body));
-        let checkpoint_etag =
-            catalog_checkpoint_etag(&checkpoint_sha256).expect("checkpoint entity tag");
+        let checkpoint_etag = catalog_checkpoint_view_etag(&checkpoint_sha256, root_id)
+            .expect("checkpoint view entity tag");
         let session = server
             .mock_async(|when, then| {
                 when.method(GET).path("/api/v2/session");

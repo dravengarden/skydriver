@@ -62,14 +62,16 @@ carrack remove /releases/latest.tar.zst \
   --idempotency-key remove-latest-2026-07-14
 ```
 
-`sync` first requests a bounded server-materialized catalog checkpoint when the
-token safely covers the complete filesystem, otherwise transparently traverses
-revision-pinned pages. It verifies the complete directory catalog before
-payload work; unchanged verified checkpoint heads use a conditional request and
-transfer no checkpoint body. It also verifies unchanged local files from the
-prior authenticated version/block metadata, and downloads only changed or
-corrupted files. Changed files run concurrently and each retains its own
-resumable range pipeline. Untracked local files are preserved.
+`sync` first requests a bounded server-materialized catalog checkpoint. A
+full-root token streams the immutable checkpoint directly; a safely authorized
+narrow token receives only its projected Merkle subtree. ACL-boundary and
+snapshot cases transparently traverse revision-pinned pages. The client verifies
+the complete authorized catalog before payload work, while an unchanged verified
+view uses a conditional request and transfers no checkpoint body. It also
+verifies unchanged local files from prior authenticated version/block metadata
+and downloads only changed or corrupted files. Changed files run concurrently
+and each retains its own resumable range pipeline. Untracked local files are
+preserved.
 
 Multipart journals, resume, range scheduling, encryption, checksums, and GC
 are internal. Transfer bounds tune the pipeline; they do not alter identity.

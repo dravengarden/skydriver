@@ -140,7 +140,7 @@ describe("driver configuration", () => {
         });
         const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
         expect(headers.get("Carrack-Protocol-Epoch")).toBe("2");
-        expect(headers.get("Carrack-SDK-Version")).toBe("0.3.0");
+        expect(headers.get("Carrack-SDK-Version")).toBe("0.3.1");
         expect(JSON.stringify(validation)).not.toContain("refresh-private");
     });
 

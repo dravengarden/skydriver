@@ -4,7 +4,7 @@ set -euo pipefail
 curl() {
   command curl \
     --header "Carrack-Protocol-Epoch: 2" \
-    --header "Carrack-SDK-Version: 0.3.0" \
+    --header "Carrack-SDK-Version: 0.3.1" \
     "$@"
 }
 
@@ -672,6 +672,28 @@ CARRACK_VFS_TOKEN="$token" "$rust_carrack" remove /releases/nested \
   --control-url "$base_url" --idempotency-key bootstrap-cli-remove-nested-v1 >/dev/null
 CARRACK_VFS_TOKEN="$token" "$rust_carrack" remove /releases \
   --control-url "$base_url" --idempotency-key bootstrap-cli-remove-releases-v1 >/dev/null
+
+# Keep one authorized subtree and one sibling alive in the materialized head.
+# A subtree token must receive only its complete Merkle closure, never the
+# sibling or the filesystem-root navigation metadata.
+projected_directory=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" mkdir /projected \
+  --control-url "$base_url" --idempotency-key bootstrap-projected-root-v1 --format json)
+projected_directory_id=$(jq -r '.directory_id' <<<"$projected_directory")
+projected_nested=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" mkdir /projected/nested \
+  --control-url "$base_url" --idempotency-key bootstrap-projected-nested-v1 --format json)
+projected_nested_id=$(jq -r '.directory_id' <<<"$projected_nested")
+hidden_directory=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" mkdir /hidden \
+  --control-url "$base_url" --idempotency-key bootstrap-hidden-sibling-v1 --format json)
+hidden_directory_id=$(jq -r '.directory_id' <<<"$hidden_directory")
+projected_token_expiry=$(( $(date +%s) + 3600 ))
+projected_token_receipt=$(CARRACK_VFS_TOKEN="$token" "$rust_carrackctl" vfs token issue /projected \
+  --control-url "$base_url" --action directory.list,content.read \
+  --expires-at "$projected_token_expiry" \
+  --idempotency-key bootstrap-projected-token-v1 --format json)
+projected_token=$(jq -r '.token' <<<"$projected_token_receipt")
+[[ "$projected_token" =~ ^[A-Za-z0-9_-]{43}$ ]]
+projected_authorization="Authorization: Bearer $projected_token"
+
 "${wrangler[@]}" d1 execute CARRACK_INDEX \
   --local --persist-to "$state_directory" \
   --command "CREATE TABLE vfs_remove_assertions (
@@ -783,6 +805,7 @@ checkpoint_etag=$(awk '
 jq --exit-status \
   --arg filesystem_id "$filesystem_id" \
   --arg root_directory_id "$root_directory_id" \
+  --arg hidden_directory_id "$hidden_directory_id" \
   --arg revision "$checkpoint_revision" \
   --arg root "$checkpoint_root" \
   '.schema == "carrack.vfs.catalog-checkpoint.v1"
@@ -790,7 +813,8 @@ jq --exit-status \
    and .root_directory_id == $root_directory_id
    and (.revision_id | tostring) == $revision
    and .root_data_root == $root
-   and ([.directories[].directory_id] | length) > 0' \
+   and ([.directories[].directory_id] | length) > 0
+   and any(.directories[]; .directory_id == $hidden_directory_id)' \
   "$checkpoint_body" >/dev/null
 
 unchanged_checkpoint="$state_directory/unchanged-catalog-checkpoint"
@@ -800,6 +824,109 @@ unchanged_status=$(curl --silent --show-error \
   "$base_url/api/v2/catalog/checkpoint")
 [[ "$unchanged_status" == 304 ]]
 [[ ! -s "$unchanged_checkpoint" ]]
+
+projected_headers="$state_directory/projected-checkpoint-headers.txt"
+projected_body="$state_directory/projected-checkpoint.json"
+curl --silent --show-error --fail-with-body \
+  -D "$projected_headers" -H "$projected_authorization" \
+  "$base_url/api/v2/catalog/checkpoint" >"$projected_body"
+projected_sha256=$(awk '
+  tolower($1) == "carrack-catalog-sha256:" {
+    gsub("\\r", "", $2);
+    print $2
+  }
+' "$projected_headers")
+projected_revision=$(awk '
+  tolower($1) == "carrack-catalog-revision:" {
+    gsub("\\r", "", $2);
+    print $2
+  }
+' "$projected_headers")
+projected_root=$(awk '
+  tolower($1) == "carrack-catalog-root:" {
+    gsub("\\r", "", $2);
+    print $2
+  }
+' "$projected_headers")
+projected_etag=$(awk '
+  tolower($1) == "etag:" {
+    gsub("\\r", "", $2);
+    print $2
+  }
+' "$projected_headers")
+[[ "$projected_etag" =~ ^\"sha256:[0-9a-f]{64}\"$ ]]
+[[ "$projected_etag" != "\"sha256:$projected_sha256\"" ]]
+[[ "$(sha256sum "$projected_body" | cut -d' ' -f1)" == "$projected_sha256" ]]
+jq --exit-status \
+  --arg filesystem_id "$filesystem_id" \
+  --arg root_directory_id "$projected_directory_id" \
+  --arg nested_directory_id "$projected_nested_id" \
+  --arg forbidden_root "$root_directory_id" \
+  --arg forbidden_sibling "$hidden_directory_id" \
+  --arg revision "$projected_revision" \
+  --arg root "$projected_root" \
+  '.schema == "carrack.vfs.catalog-checkpoint.v1"
+   and .filesystem_id == $filesystem_id
+   and .root_directory_id == $root_directory_id
+   and (.revision_id | tostring) == $revision
+   and .root_data_root == $root
+   and (.directories | length) == 2
+   and any(.directories[];
+     .directory_id == $root_directory_id
+     and .parent_directory_id == null
+     and .name == "")
+   and any(.directories[];
+     .directory_id == $nested_directory_id
+     and .parent_directory_id == $root_directory_id
+     and .name == "nested")
+   and all(.directories[];
+     .directory_id != $forbidden_root
+     and .directory_id != $forbidden_sibling)' \
+  "$projected_body" >/dev/null
+
+unchanged_projected="$state_directory/unchanged-projected-checkpoint"
+unchanged_projected_status=$(curl --silent --show-error \
+  --output "$unchanged_projected" --write-out '%{http_code}' \
+  -H "$projected_authorization" -H "If-None-Match: $projected_etag" \
+  "$base_url/api/v2/catalog/checkpoint")
+[[ "$unchanged_projected_status" == 304 ]]
+[[ ! -s "$unchanged_projected" ]]
+
+projected_sync_destination="$state_directory/projected-sync"
+projected_sync_state="$state_directory/projected-sync-state"
+projected_sync=$(CARRACK_VFS_TOKEN="$projected_token" "$rust_carrack" sync / \
+  "$projected_sync_destination" --control-url "$base_url" \
+  --state-directory "$projected_sync_state" --format json)
+[[ "$(jq -r '.directories' <<<"$projected_sync")" == 2 ]]
+[[ "$(jq -r '.files' <<<"$projected_sync")" == 0 ]]
+
+legacy_projected_body="$state_directory/legacy-projected-checkpoint"
+legacy_projected_status=$(command curl --silent --show-error \
+  --output "$legacy_projected_body" --write-out '%{http_code}' \
+  --header "Carrack-Protocol-Epoch: 2" \
+  --header "Carrack-SDK-Version: 0.3.0" \
+  -H "$projected_authorization" "$base_url/api/v2/catalog/checkpoint")
+[[ "$legacy_projected_status" == 204 ]]
+[[ ! -s "$legacy_projected_body" ]]
+
+# A newly introduced ACL boundary immediately disables bulk projection. The
+# client must use individually authorized revision-pinned directory pages.
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" \
+  --command "UPDATE vfs_directories
+             SET acl_inherits = 0, revision = revision + 1,
+                 updated_at = MAX(updated_at, unixepoch())
+             WHERE id = '$projected_nested_id' AND state = 'active';" >/dev/null
+boundary_body="$state_directory/boundary-checkpoint"
+boundary_status=$(curl --silent --show-error \
+  --output "$boundary_body" --write-out '%{http_code}' \
+  -H "$projected_authorization" "$base_url/api/v2/catalog/checkpoint")
+[[ "$boundary_status" == 204 ]]
+[[ ! -s "$boundary_body" ]]
+boundary_sync_status=$(CARRACK_VFS_TOKEN="$projected_token" "$rust_carrack" sync / \
+  "$projected_sync_destination" --control-url "$base_url" \
+  --state-directory "$projected_sync_state" --format json >/dev/null 2>&1 && echo 0 || echo 1)
+[[ "$boundary_sync_status" == 1 ]]
 
 "${wrangler[@]}" d1 execute CARRACK_INDEX \
   --local --persist-to "$state_directory" \

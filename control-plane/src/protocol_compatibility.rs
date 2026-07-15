@@ -45,12 +45,7 @@ pub(crate) fn describe() -> Result<Response> {
 /// Rejects V2 calls before authentication, metadata mutation, or provider I/O.
 pub(crate) fn enforce(request: &Request) -> Result<Option<Response>> {
     let epoch = request.headers().get(PROTOCOL_EPOCH_HEADER)?;
-    let sdk_version = request.headers().get(SDK_VERSION_HEADER)?;
-    let compatible = epoch.as_deref() == Some("2")
-        && sdk_version
-            .as_deref()
-            .and_then(parse_version)
-            .is_some_and(|candidate| candidate >= (0, 3, 0));
+    let compatible = epoch.as_deref() == Some("2") && sdk_version_at_least(request, (0, 3, 0))?;
 
     if compatible {
         return Ok(None);
@@ -69,6 +64,16 @@ pub(crate) fn enforce(request: &Request) -> Result<Option<Response>> {
             upgrade_command: "upgrade Carrack with the package manager that installed it",
         })?;
     Ok(Some(response))
+}
+
+/// Checks one additive feature floor after the epoch-wide compatibility gate.
+pub(crate) fn sdk_version_at_least(request: &Request, minimum: (u64, u64, u64)) -> Result<bool> {
+    Ok(request
+        .headers()
+        .get(SDK_VERSION_HEADER)?
+        .as_deref()
+        .and_then(parse_version)
+        .is_some_and(|candidate| candidate >= minimum))
 }
 
 fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
