@@ -167,7 +167,7 @@ pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
              JOIN driver_instances AS driver ON driver.id = state.driver_id
              WHERE driver.enabled = 1 AND driver.retired_at IS NULL
                AND driver.kind IN ('r2/v1', 'aliyundrive-open/v2')
-               AND state.state IN ('idle', 'scanning', 'complete', 'error')
+               AND state.state IN ('idle', 'scanning', 'complete', 'error', 'unsupported')
              ORDER BY CASE WHEN state.state = 'scanning' THEN 0 ELSE 1 END,
                       state.updated_at, driver.id LIMIT 1",
         )
