@@ -52,7 +52,7 @@ assert_uses_index activity-put-cleanup idx_vfs_put_delete_tasks_claimable \
 
 assert_uses_index activity-r2-cleanup idx_vfs_r2_cleanup_activity \
   "SELECT task.intent_id FROM vfs_r2_upload_cleanup_tasks AS task
-   JOIN vfs_put_intents AS intent ON intent.id = task.intent_id
+   CROSS JOIN vfs_put_intents AS intent ON intent.id = task.intent_id
    WHERE task.state IN ('active', 'cleaning', 'failed')
      AND (task.state IN ('cleaning', 'failed')
           OR intent.state IN ('expired', 'abandoned'))

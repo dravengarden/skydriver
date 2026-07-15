@@ -618,7 +618,7 @@ pub(crate) async fn activity(request: &Request, env: &Env) -> Result<Response> {
                          CASE WHEN task.state = 'failed' THEN 1 ELSE 0 END
                              AS attention_required
                   FROM vfs_r2_upload_cleanup_tasks AS task
-                  JOIN vfs_put_intents AS intent ON intent.id = task.intent_id
+                  CROSS JOIN vfs_put_intents AS intent ON intent.id = task.intent_id
                   WHERE task.state IN ('active', 'cleaning', 'failed')
                     AND (task.state IN ('cleaning', 'failed')
                          OR intent.state IN ('expired', 'abandoned'))

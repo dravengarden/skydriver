@@ -76,3 +76,10 @@ if rg --line-number \
   echo "legacy archive HTTP routes are forbidden" >&2
   exit 1
 fi
+
+if ! rg -U -q \
+  'FROM vfs_r2_upload_cleanup_tasks AS task\n\s+CROSS JOIN vfs_put_intents AS intent' \
+  control-plane/src/management.rs; then
+  echo "Activity must keep R2 cleanup as the indexed outer relation" >&2
+  exit 1
+fi
