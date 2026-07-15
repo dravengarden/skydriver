@@ -225,6 +225,29 @@ epoch 2 SDK `0.3.0`, but returns HTTP 204 for its narrow roots so rolling or
 offline clients preserve the old correct pagination behavior instead of
 misinterpreting the new view-specific entity tag.
 
-Hash-chained deltas and content-addressed page trees remain follow-up
-accelerations. They may reduce changed-view metadata further, but cannot broaden
-a token's closure or weaken the final live-root fence.
+Rust SDK `0.3.2` adds an explicitly negotiated full-root delta. During
+materialization, when the previous and target complete checkpoints are both at
+most 8 MiB, Carrack compares their authenticated directory content addresses.
+It stores a delta only when the canonical body is strictly smaller than the
+complete target. The delta commits the exact base and target revision, root,
+and checkpoint SHA-256 and contains only target directory nodes whose
+`(directory_id, data_root)` is absent from the base.
+
+A client advertises all four base receipt dimensions plus its old entity tag.
+The Worker serves a delta only when a published D1 artifact matches every one
+of them and the current full-root authorization proof has already passed. The
+client reconstructs its complete base closure from independently checked local
+nodes, applies the changed nodes, derives navigation metadata from target
+Merkle edges, rejects missing or unreachable changes, revalidates the complete
+target tree, and requires the resulting canonical body to match the target
+checkpoint SHA-256. A missed transition, narrow token, SDK before `0.3.2`,
+oversized source, or absent delta receives the complete checkpoint instead.
+
+Delta availability is never a correctness dependency. Once a catalog head
+moves, its predecessor checkpoint and previous delta are marked orphaned in
+bounded indexed batches. Server maintenance deletes at most one aged delta and
+one aged checkpoint by their exact recorded R2 keys per Cron pass after a
+24-hour grace period; no bucket listing or client GC concept is involved.
+Multi-hop delivery and narrow-view content-addressed pages remain optional
+future accelerations and may not broaden a token closure or weaken the final
+live-root fence.

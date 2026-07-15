@@ -1,12 +1,13 @@
 //! Authenticated delivery of complete, server-materialized VFS catalog views.
 
 use carrack_sdk_core::{
-    CatalogCheckpoint, MAXIMUM_CATALOG_CHECKPOINT_BYTES, catalog_checkpoint_etag,
-    catalog_checkpoint_view_etag, project_catalog_checkpoint, validate_catalog_checkpoint,
+    CatalogCheckpoint, MAXIMUM_CATALOG_CHECKPOINT_BYTES, MAXIMUM_CATALOG_DELTA_BYTES,
+    catalog_checkpoint_etag, catalog_checkpoint_view_etag, project_catalog_checkpoint,
+    validate_catalog_checkpoint,
 };
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
-use worker::{D1Database, Env, Request, Response, Result, wasm_bindgen::JsValue};
+use worker::{Bucket, D1Database, Env, Request, Response, Result, wasm_bindgen::JsValue};
 
 use crate::{protocol_compatibility, vfs_tokens::AuthenticatedVfsToken};
 
@@ -24,6 +25,21 @@ struct DeliveryRow {
     sha256: String,
     bytes: u64,
     r2_version: String,
+    delta_base_revision_id: Option<u64>,
+    delta_base_root_data_root: Option<String>,
+    delta_base_checkpoint_sha256: Option<String>,
+    delta_checkpoint_sha256: Option<String>,
+    delta_r2_key: Option<String>,
+    delta_sha256: Option<String>,
+    delta_bytes: Option<u64>,
+    delta_r2_version: Option<String>,
+}
+
+struct DeltaReceipt<'a> {
+    r2_key: &'a str,
+    sha256: &'a str,
+    bytes: u64,
+    r2_version: &'a str,
 }
 
 /// Delivers the current complete checkpoint view when the token has safe list
@@ -53,6 +69,9 @@ pub(crate) async fn checkpoint(
     }
 
     let bucket = env.bucket("CARRACK_MANIFESTS")?;
+    if let Some(delta) = requested_delta(request, &delivery)? {
+        return deliver_delta(&bucket, &delivery, &etag, &delta).await;
+    }
     let object = bucket
         .get(delivery.r2_key.clone())
         .execute()
@@ -178,7 +197,14 @@ async fn eligible_checkpoint(
                     head.root_data_root AS filesystem_root_data_root,
                     root.id AS root_directory_id, root.data_root AS root_data_root,
                     artifact.r2_key, artifact.sha256, artifact.bytes,
-                    artifact.r2_version
+                    artifact.r2_version,
+                    delta.base_revision_id AS delta_base_revision_id,
+                    delta.base_root_data_root AS delta_base_root_data_root,
+                    delta.base_checkpoint_sha256 AS delta_base_checkpoint_sha256,
+                    delta.checkpoint_sha256 AS delta_checkpoint_sha256,
+                    delta.r2_key AS delta_r2_key, delta.sha256 AS delta_sha256,
+                    delta.bytes AS delta_bytes,
+                    delta.r2_version AS delta_r2_version
              FROM vfs_token_verifiers AS token
              JOIN vfs_principals AS principal ON principal.id = token.principal_id
              JOIN vfs_directories AS root ON root.id = token.root_directory_id
@@ -196,6 +222,10 @@ async fn eligible_checkpoint(
               AND artifact.sha256 = revision.checkpoint_sha256
               AND artifact.r2_version = revision.checkpoint_r2_version
               AND artifact.bytes = revision.checkpoint_bytes
+             LEFT JOIN vfs_catalog_delta_artifacts AS delta
+               ON delta.target_revision_id = revision.id
+              AND delta.checkpoint_sha256 = artifact.sha256
+              AND delta.state = 'published'
              WHERE token.id = ?1 AND token.principal_id = ?2
                AND token.root_directory_id = ?3
                AND token.sealed_at IS NOT NULL AND token.revoked_at IS NULL
@@ -307,6 +337,132 @@ fn delivery_etag(delivery: &DeliveryRow) -> Result<String> {
     etag.map_err(|error| protocol_error(&error.to_string()))
 }
 
+fn requested_delta<'a>(
+    request: &Request,
+    delivery: &'a DeliveryRow,
+) -> Result<Option<DeltaReceipt<'a>>> {
+    if delivery.root_directory_id != delivery.filesystem_root_directory_id
+        || !protocol_compatibility::sdk_version_at_least(request, (0, 3, 2))?
+        || request
+            .headers()
+            .get("Carrack-Catalog-Accept-Delta")?
+            .as_deref()
+            != Some("v1")
+    {
+        return Ok(None);
+    }
+    let (
+        Some(base_revision_id),
+        Some(base_root_data_root),
+        Some(base_checkpoint_sha256),
+        Some(checkpoint_sha256),
+        Some(r2_key),
+        Some(sha256),
+        Some(bytes),
+        Some(r2_version),
+    ) = (
+        delivery.delta_base_revision_id,
+        delivery.delta_base_root_data_root.as_deref(),
+        delivery.delta_base_checkpoint_sha256.as_deref(),
+        delivery.delta_checkpoint_sha256.as_deref(),
+        delivery.delta_r2_key.as_deref(),
+        delivery.delta_sha256.as_deref(),
+        delivery.delta_bytes,
+        delivery.delta_r2_version.as_deref(),
+    )
+    else {
+        return Ok(None);
+    };
+    if checkpoint_sha256 != delivery.sha256
+        || base_revision_id == 0
+        || base_revision_id >= delivery.revision_id
+        || base_root_data_root.len() != 64
+        || base_checkpoint_sha256.len() != 64
+        || sha256.len() != 64
+        || bytes == 0
+        || bytes > MAXIMUM_CATALOG_DELTA_BYTES as u64
+        || r2_version.is_empty()
+        || !r2_key.ends_with(&format!("/{sha256}.json"))
+        || ![base_root_data_root, base_checkpoint_sha256, sha256]
+            .iter()
+            .all(|value| {
+                value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+    {
+        return Ok(None);
+    }
+    let expected_base_etag = catalog_checkpoint_etag(base_checkpoint_sha256)
+        .map_err(|error| protocol_error(&error.to_string()))?;
+    let base_revision = base_revision_id.to_string();
+    if request.headers().get("If-None-Match")?.as_deref() != Some(expected_base_etag.as_str())
+        || request
+            .headers()
+            .get("Carrack-Catalog-Base-Revision")?
+            .as_deref()
+            != Some(base_revision.as_str())
+        || request
+            .headers()
+            .get("Carrack-Catalog-Base-Root")?
+            .as_deref()
+            != Some(base_root_data_root)
+        || request
+            .headers()
+            .get("Carrack-Catalog-Base-SHA256")?
+            .as_deref()
+            != Some(base_checkpoint_sha256)
+    {
+        return Ok(None);
+    }
+    Ok(Some(DeltaReceipt {
+        r2_key,
+        sha256,
+        bytes,
+        r2_version,
+    }))
+}
+
+async fn deliver_delta(
+    bucket: &Bucket,
+    delivery: &DeliveryRow,
+    etag: &str,
+    delta: &DeltaReceipt<'_>,
+) -> Result<Response> {
+    let object = bucket
+        .get(delta.r2_key.to_owned())
+        .execute()
+        .await?
+        .ok_or_else(|| protocol_error("published catalog delta is missing from R2"))?;
+    if object.key() != delta.r2_key
+        || object.version() != delta.r2_version
+        || object.size() != delta.bytes
+    {
+        return Err(protocol_error("published catalog delta R2 receipt differs"));
+    }
+    let body = object
+        .body()
+        .ok_or_else(|| protocol_error("published catalog delta has no R2 body"))?;
+    let mut response = Response::from_body(body.response_body()?)?;
+    response
+        .headers_mut()
+        .set("Content-Type", "application/vnd.carrack.catalog-delta+json")?;
+    response
+        .headers_mut()
+        .set("Content-Length", &delta.bytes.to_string())?;
+    response
+        .headers_mut()
+        .set("Carrack-Catalog-SHA256", &delivery.sha256)?;
+    response
+        .headers_mut()
+        .set("Carrack-Catalog-Delta-SHA256", delta.sha256)?;
+    set_view_headers(&mut response, delivery, etag)?;
+    response
+        .headers_mut()
+        .set("X-Content-Type-Options", "nosniff")?;
+    Ok(response)
+}
+
 fn fallback() -> Result<Response> {
     let mut response = Response::empty()?.with_status(204);
     response
@@ -382,6 +538,14 @@ mod tests {
             sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
             bytes: 1,
             r2_version: "version".to_owned(),
+            delta_base_revision_id: None,
+            delta_base_root_data_root: None,
+            delta_base_checkpoint_sha256: None,
+            delta_checkpoint_sha256: None,
+            delta_r2_key: None,
+            delta_sha256: None,
+            delta_bytes: None,
+            delta_r2_version: None,
         };
         assert!(validate_receipt(&receipt).is_err());
     }
@@ -403,6 +567,14 @@ mod tests {
             sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
             bytes: 1,
             r2_version: "version".to_owned(),
+            delta_base_revision_id: None,
+            delta_base_root_data_root: None,
+            delta_base_checkpoint_sha256: None,
+            delta_checkpoint_sha256: None,
+            delta_r2_key: None,
+            delta_sha256: None,
+            delta_bytes: None,
+            delta_r2_version: None,
         };
         assert_ne!(
             delivery_etag(&delivery).expect("view entity tag"),

@@ -2,15 +2,16 @@
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use carrack_sdk_core::{
-    CatalogCheckpoint, MAXIMUM_CATALOG_CHECKPOINT_BYTES, validate_catalog_checkpoint,
-    validate_catalog_checkpoint_etag,
+    CatalogCheckpoint, CatalogDelta, MAXIMUM_CATALOG_CHECKPOINT_BYTES, MAXIMUM_CATALOG_DELTA_BYTES,
+    catalog_checkpoint_etag, validate_catalog_checkpoint, validate_catalog_checkpoint_etag,
+    validate_catalog_delta,
 };
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{Client, Error, OptionalBytesResponse};
+use crate::{Client, Error, OptionalBytesResponse, catalog::CatalogCheckpointCondition};
 
 const TOKEN_BYTES: usize = 32;
 
@@ -64,10 +65,16 @@ pub(crate) struct CatalogCheckpointDelivery {
     pub(crate) etag: String,
 }
 
+pub(crate) struct CatalogDeltaDelivery {
+    pub(crate) delta: CatalogDelta,
+    pub(crate) etag: String,
+}
+
 pub(crate) enum CatalogCheckpointOutcome {
     Unavailable,
     Unchanged,
     Delivered(CatalogCheckpointDelivery),
+    Delta(CatalogDeltaDelivery),
 }
 
 /// One live directory and its optimistic revisions.
@@ -434,19 +441,39 @@ impl VfsClient {
             .await
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one transport boundary validates full, unchanged, unavailable, and hash-linked delta responses without partially trusted intermediates"
+    )]
     pub(crate) async fn catalog_checkpoint(
         &self,
         session: &VfsSession,
-        if_none_match: Option<&str>,
+        condition: Option<&CatalogCheckpointCondition>,
     ) -> Result<CatalogCheckpointOutcome, Error> {
         let token = self.token.encode();
+        let base_revision = condition.map(|value| value.revision_id.to_string());
+        let request_headers = condition
+            .zip(base_revision.as_deref())
+            .map(|(value, revision)| {
+                vec![
+                    ("Carrack-Catalog-Accept-Delta", "v1"),
+                    ("Carrack-Catalog-Base-Revision", revision),
+                    ("Carrack-Catalog-Base-Root", value.root_data_root.as_str()),
+                    (
+                        "Carrack-Catalog-Base-SHA256",
+                        value.checkpoint_sha256.as_str(),
+                    ),
+                ]
+            })
+            .unwrap_or_default();
         let response = match self
             .control
             .send_optional_bytes(
                 "api/v2/catalog/checkpoint",
                 &token,
                 MAXIMUM_CATALOG_CHECKPOINT_BYTES,
-                if_none_match,
+                condition.map(|value| value.etag.as_str()),
+                &request_headers,
             )
             .await?
         {
@@ -474,9 +501,63 @@ impl VfsClient {
                 Error::InvalidResponse("catalog checkpoint revision header is invalid".to_owned())
             })?;
         let expected_root = required_header(&response.headers, "carrack-catalog-root")?;
+        if content_length != response.body.len() || response.body.is_empty() {
+            return Err(Error::InvalidResponse(
+                "catalog checkpoint transport receipt differs".to_owned(),
+            ));
+        }
+        if content_type == "application/vnd.carrack.catalog-delta+json" {
+            if response.body.len() > MAXIMUM_CATALOG_DELTA_BYTES {
+                return Err(Error::InvalidResponse(
+                    "catalog delta exceeds its transport bound".to_owned(),
+                ));
+            }
+            let expected_delta_sha256 =
+                required_header(&response.headers, "carrack-catalog-delta-sha256")?;
+            if expected_delta_sha256 != hex::encode(Sha256::digest(&response.body)) {
+                return Err(Error::InvalidResponse(
+                    "catalog delta transport receipt differs".to_owned(),
+                ));
+            }
+            let delta: CatalogDelta = serde_json::from_slice(&response.body).map_err(|error| {
+                Error::InvalidResponse(format!("decode catalog delta: {error}"))
+            })?;
+            if serde_json::to_vec(&delta)
+                .map_err(|error| Error::InvalidResponse(format!("encode catalog delta: {error}")))?
+                != response.body
+            {
+                return Err(Error::InvalidResponse(
+                    "catalog delta is not canonically encoded".to_owned(),
+                ));
+            }
+            validate_catalog_delta(&delta)
+                .map_err(|error| Error::InvalidResponse(error.to_string()))?;
+            let base = condition.ok_or_else(|| {
+                Error::InvalidResponse("catalog delta has no requested base".to_owned())
+            })?;
+            if delta.filesystem_id != base.filesystem_id
+                || delta.base_revision_id != base.revision_id
+                || delta.base_root_directory_id != base.root_directory_id
+                || delta.base_root_data_root != base.root_data_root
+                || delta.base_checkpoint_sha256 != base.checkpoint_sha256
+                || delta.root_directory_id != session.root_directory_id
+                || delta.revision_id != expected_revision
+                || delta.root_data_root != expected_root
+                || delta.checkpoint_sha256 != expected_sha256
+                || catalog_checkpoint_etag(expected_sha256)
+                    .map_err(|error| Error::InvalidResponse(error.to_string()))?
+                    != expected_etag
+            {
+                return Err(Error::InvalidResponse(
+                    "catalog delta identity differs from its base, session, or receipt".to_owned(),
+                ));
+            }
+            return Ok(CatalogCheckpointOutcome::Delta(CatalogDeltaDelivery {
+                delta,
+                etag: expected_etag.to_owned(),
+            }));
+        }
         if content_type != "application/json"
-            || content_length != response.body.len()
-            || response.body.is_empty()
             || expected_sha256 != hex::encode(Sha256::digest(&response.body))
         {
             return Err(Error::InvalidResponse(
@@ -1167,7 +1248,7 @@ mod tests {
     use httpmock::{Method::GET, MockServer};
 
     use super::{CatalogCheckpointOutcome, VfsClient, VfsSession, VfsToken};
-    use crate::Error;
+    use crate::{Error, catalog::CatalogCheckpointCondition};
 
     fn client(server: &MockServer) -> VfsClient {
         let token = URL_SAFE_NO_PAD.encode([7_u8; 32]);
@@ -1211,6 +1292,16 @@ mod tests {
     async fn matching_checkpoint_condition_accepts_only_exact_304() {
         let server = MockServer::start_async().await;
         let etag = "\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"";
+        let condition = CatalogCheckpointCondition {
+            filesystem_id: "101112131415161718191a1b1c1d1e1f".to_owned(),
+            revision_id: 1,
+            root_directory_id: session().root_directory_id,
+            root_data_root: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .to_owned(),
+            checkpoint_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_owned(),
+            etag: etag.to_owned(),
+        };
         let delivery = server
             .mock_async(|when, then| {
                 when.method(GET)
@@ -1221,7 +1312,7 @@ mod tests {
             .await;
         assert!(matches!(
             client(&server)
-                .catalog_checkpoint(&session(), Some(etag))
+                .catalog_checkpoint(&session(), Some(&condition))
                 .await
                 .expect("unchanged checkpoint"),
             CatalogCheckpointOutcome::Unchanged

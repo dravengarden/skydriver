@@ -386,7 +386,7 @@ async function requestJson<TSchema extends v.BaseSchema<unknown, unknown, v.Base
 ): Promise<v.InferOutput<TSchema>> {
     const headers = new Headers(init?.headers);
     headers.set("Carrack-Protocol-Epoch", "2");
-    headers.set("Carrack-SDK-Version", "0.3.1");
+    headers.set("Carrack-SDK-Version", "0.3.2");
     const response = await fetch(input, { ...init, headers });
     if (!response.ok) {
         const detail = (await response.text())

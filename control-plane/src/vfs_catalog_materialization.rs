@@ -5,7 +5,8 @@ use std::{collections::HashMap, fmt::Write as _};
 use carrack_sdk_core::{
     CATALOG_CHECKPOINT_SCHEMA, CatalogCheckpoint, CatalogCheckpointDirectory,
     CatalogCheckpointEntry, CatalogCheckpointEntryKind, MAXIMUM_CATALOG_CHECKPOINT_BYTES,
-    MAXIMUM_CATALOG_DIRECTORIES, MAXIMUM_CATALOG_ENTRIES, validate_catalog_checkpoint,
+    MAXIMUM_CATALOG_DELTA_BYTES, MAXIMUM_CATALOG_DIRECTORIES, MAXIMUM_CATALOG_ENTRIES,
+    build_catalog_delta, validate_catalog_checkpoint,
 };
 #[cfg(test)]
 use carrack_sdk_core::{DirectoryMerkleEntry, directory_merkle_root};
@@ -18,6 +19,8 @@ use crate::vfs_identifiers;
 const MAXIMUM_COLLAPSES_PER_RUN: u64 = 500;
 const CLAIM_SECONDS: u64 = 300;
 const ORPHAN_GRACE_SECONDS: u64 = 86_400;
+const MAXIMUM_DELTA_SOURCE_BYTES: u64 = MAXIMUM_CATALOG_DELTA_BYTES as u64;
+const MAXIMUM_ARTIFACT_RETIREMENTS_PER_RUN: u64 = 100;
 
 #[derive(Deserialize)]
 struct RevisionIdRow {
@@ -77,6 +80,41 @@ struct PublicationRow {
     revision_id: u64,
 }
 
+#[derive(Deserialize)]
+struct PublishedCheckpointRow {
+    revision_id: u64,
+    root_directory_id: String,
+    root_data_root: String,
+    r2_key: String,
+    sha256: String,
+    bytes: u64,
+    r2_version: String,
+}
+
+#[derive(Deserialize)]
+struct DeltaArtifactRow {
+    base_revision_id: u64,
+    base_root_data_root: String,
+    base_checkpoint_sha256: String,
+    checkpoint_sha256: String,
+    r2_key: String,
+    sha256: String,
+    bytes: u64,
+    r2_version: Option<String>,
+    state: String,
+}
+
+struct PreparedDelta {
+    base_revision_id: u64,
+    base_root_data_root: String,
+    base_checkpoint_sha256: String,
+    checkpoint_sha256: String,
+    r2_key: String,
+    sha256: String,
+    bytes: u64,
+    r2_version: String,
+}
+
 struct StoredObject {
     version: String,
     bytes: u64,
@@ -88,6 +126,7 @@ struct StoredObject {
 pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
     let database = env.d1("CARRACK_INDEX")?;
     let bucket = env.bucket("CARRACK_MANIFESTS")?;
+    cleanup_one_delta(&database, &bucket, now).await?;
     cleanup_one(&database, &bucket, now).await?;
     if let Some(candidate) = claim_latest(&database, now).await?
         && let Err(error) = materialize(&database, &bucket, &candidate, now).await
@@ -104,6 +143,7 @@ pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
         return Err(error);
     }
     collapse_historical(&database, now_seconds()).await?;
+    retire_historical_artifacts(&database, now_seconds()).await?;
     Ok(())
 }
 
@@ -197,12 +237,17 @@ async fn load_candidate(
         .await
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "checkpoint publication and its optional delta share one root fence while keeping the checkpoint independently sufficient"
+)]
 async fn materialize(
     database: &D1Database,
     bucket: &Bucket,
     candidate: &Candidate,
     now: u64,
 ) -> Result<()> {
+    let previous = load_published_checkpoint(database, candidate).await?;
     let checkpoint = load_checkpoint(database, candidate).await?;
     let encoded = serde_json::to_vec(&checkpoint)?;
     if encoded.is_empty() || encoded.len() > MAXIMUM_CATALOG_CHECKPOINT_BYTES {
@@ -241,6 +286,40 @@ async fn materialize(
         now,
     )
     .await?;
+    let delta = if let Some(previous) = previous {
+        match prepare_delta(
+            database,
+            bucket,
+            candidate,
+            &previous,
+            &checkpoint,
+            &sha256,
+            bytes,
+            now,
+        )
+        .await
+        {
+            Ok(delta) => delta,
+            Err(error) => {
+                worker::console_warn!(
+                    "optional VFS catalog delta {} failed: {error:?}",
+                    candidate.revision_id
+                );
+                if let Err(cleanup_error) =
+                    discard_optional_delta(database, bucket, candidate.revision_id, now_seconds())
+                        .await
+                {
+                    worker::console_warn!(
+                        "optional VFS catalog delta {} cleanup deferred: {cleanup_error:?}",
+                        candidate.revision_id
+                    );
+                }
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     let fence_now = now_seconds();
     if load_candidate(
@@ -271,6 +350,7 @@ async fn materialize(
         &sha256,
         bytes,
         &stored.version,
+        delta.as_ref(),
         fence_now,
     )
     .await?
@@ -332,6 +412,155 @@ async fn load_checkpoint(
         return Err(protocol_error("catalog entry bound exceeded"));
     }
     assemble_checkpoint(candidate, directories, entries)
+}
+
+async fn load_published_checkpoint(
+    database: &D1Database,
+    candidate: &Candidate,
+) -> Result<Option<PublishedCheckpointRow>> {
+    database
+        .prepare(
+            "SELECT revision.id AS revision_id, root.id AS root_directory_id,
+                    revision.root_data_root, artifact.r2_key, artifact.sha256,
+                    artifact.bytes, artifact.r2_version
+             FROM vfs_catalog_heads AS head
+             JOIN vfs_catalog_revisions AS revision ON revision.id = head.revision_id
+             JOIN vfs_filesystems AS filesystem ON filesystem.id = revision.filesystem_id
+             JOIN vfs_directories AS root
+               ON root.filesystem_id = filesystem.id AND root.parent_id IS NULL
+             JOIN vfs_catalog_checkpoint_artifacts AS artifact
+               ON artifact.revision_id = revision.id
+              AND artifact.r2_key = revision.checkpoint_r2_key
+              AND artifact.sha256 = revision.checkpoint_sha256
+              AND artifact.r2_version = revision.checkpoint_r2_version
+              AND artifact.bytes = revision.checkpoint_bytes
+             WHERE head.filesystem_id = ?1 AND head.revision_id < ?2
+               AND head.root_data_root = revision.root_data_root
+               AND revision.state = 'published' AND artifact.state = 'published'
+               AND root.state = 'active'",
+        )
+        .bind(&[
+            JsValue::from_str(&candidate.filesystem_id),
+            number(candidate.revision_id),
+        ])?
+        .first::<PublishedCheckpointRow>(None)
+        .await
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "optional delta preparation binds both immutable endpoint receipts before any R2 side effect"
+)]
+async fn prepare_delta(
+    database: &D1Database,
+    bucket: &Bucket,
+    candidate: &Candidate,
+    previous: &PublishedCheckpointRow,
+    checkpoint: &CatalogCheckpoint,
+    checkpoint_sha256: &str,
+    checkpoint_bytes: u64,
+    now: u64,
+) -> Result<Option<PreparedDelta>> {
+    if previous.bytes > MAXIMUM_DELTA_SOURCE_BYTES
+        || checkpoint_bytes > MAXIMUM_DELTA_SOURCE_BYTES
+        || previous.root_directory_id != checkpoint.root_directory_id
+    {
+        return Ok(None);
+    }
+    let base = load_verified_checkpoint(bucket, previous).await?;
+    let delta = build_catalog_delta(&base, &previous.sha256, checkpoint, checkpoint_sha256)
+        .map_err(|error| protocol_error(&error.to_string()))?;
+    let encoded = serde_json::to_vec(&delta)?;
+    if encoded.is_empty()
+        || encoded.len() > MAXIMUM_CATALOG_DELTA_BYTES
+        || u64::try_from(encoded.len()).unwrap_or(u64::MAX) >= checkpoint_bytes
+    {
+        return Ok(None);
+    }
+    let digest: [u8; 32] = Sha256::digest(&encoded).into();
+    let sha256 = lowercase_hex(&digest);
+    let r2_key = format!(
+        "vfs/catalog/deltas/{}/{}/{}.json",
+        candidate.filesystem_id,
+        &sha256[..2],
+        sha256
+    );
+    let bytes = u64::try_from(encoded.len())
+        .map_err(|_| protocol_error("catalog delta size exceeds u64"))?;
+    record_delta_writing(
+        database,
+        candidate.revision_id,
+        previous,
+        checkpoint_sha256,
+        &r2_key,
+        &sha256,
+        bytes,
+        now,
+    )
+    .await?;
+    let stored = store_immutable(bucket, &r2_key, &encoded, &digest).await?;
+    if stored.bytes != bytes {
+        return Err(protocol_error("stored catalog delta size differs"));
+    }
+    mark_delta_staged(
+        database,
+        candidate.revision_id,
+        &r2_key,
+        &sha256,
+        bytes,
+        &stored.version,
+        now,
+    )
+    .await?;
+    Ok(Some(PreparedDelta {
+        base_revision_id: previous.revision_id,
+        base_root_data_root: previous.root_data_root.clone(),
+        base_checkpoint_sha256: previous.sha256.clone(),
+        checkpoint_sha256: checkpoint_sha256.to_owned(),
+        r2_key,
+        sha256,
+        bytes,
+        r2_version: stored.version,
+    }))
+}
+
+async fn load_verified_checkpoint(
+    bucket: &Bucket,
+    receipt: &PublishedCheckpointRow,
+) -> Result<CatalogCheckpoint> {
+    let object = bucket
+        .get(receipt.r2_key.clone())
+        .execute()
+        .await?
+        .ok_or_else(|| protocol_error("delta base checkpoint is missing from R2"))?;
+    if object.key() != receipt.r2_key
+        || object.version() != receipt.r2_version
+        || object.size() != receipt.bytes
+    {
+        return Err(protocol_error("delta base checkpoint R2 receipt differs"));
+    }
+    let body = object
+        .body()
+        .ok_or_else(|| protocol_error("delta base checkpoint has no R2 body"))?
+        .bytes()
+        .await?;
+    if u64::try_from(body.len()).unwrap_or(u64::MAX) != receipt.bytes
+        || hex::encode(Sha256::digest(&body)) != receipt.sha256
+    {
+        return Err(protocol_error("delta base checkpoint body receipt differs"));
+    }
+    let checkpoint: CatalogCheckpoint = serde_json::from_slice(&body)?;
+    if serde_json::to_vec(&checkpoint)? != body {
+        return Err(protocol_error("delta base checkpoint is not canonical"));
+    }
+    validate_catalog_checkpoint(&checkpoint).map_err(|error| protocol_error(&error.to_string()))?;
+    if checkpoint.revision_id != receipt.revision_id
+        || checkpoint.root_directory_id != receipt.root_directory_id
+        || checkpoint.root_data_root != receipt.root_data_root
+    {
+        return Err(protocol_error("delta base checkpoint identity differs"));
+    }
+    Ok(checkpoint)
 }
 
 fn assemble_checkpoint(
@@ -479,6 +708,161 @@ async fn load_artifact(database: &D1Database, revision_id: u64) -> Result<Option
 
 #[allow(
     clippy::too_many_arguments,
+    reason = "the delta writing receipt persists every immutable chain and object identity before R2 I/O"
+)]
+async fn record_delta_writing(
+    database: &D1Database,
+    target_revision_id: u64,
+    base: &PublishedCheckpointRow,
+    checkpoint_sha256: &str,
+    r2_key: &str,
+    sha256: &str,
+    bytes: u64,
+    now: u64,
+) -> Result<()> {
+    database
+        .prepare(
+            "INSERT INTO vfs_catalog_delta_artifacts (
+                 target_revision_id, base_revision_id, base_root_data_root,
+                 base_checkpoint_sha256, checkpoint_sha256, r2_key, sha256,
+                 bytes, state, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'writing', ?9, ?9)
+             ON CONFLICT(target_revision_id) DO NOTHING",
+        )
+        .bind(&[
+            number(target_revision_id),
+            number(base.revision_id),
+            JsValue::from_str(&base.root_data_root),
+            JsValue::from_str(&base.sha256),
+            JsValue::from_str(checkpoint_sha256),
+            JsValue::from_str(r2_key),
+            JsValue::from_str(sha256),
+            number(bytes),
+            number(now),
+        ])?
+        .run()
+        .await?;
+    let artifact = load_delta_artifact(database, target_revision_id).await?;
+    if artifact.is_some_and(|artifact| {
+        artifact.base_revision_id == base.revision_id
+            && artifact.base_root_data_root == base.root_data_root
+            && artifact.base_checkpoint_sha256 == base.sha256
+            && artifact.checkpoint_sha256 == checkpoint_sha256
+            && artifact.r2_key == r2_key
+            && artifact.sha256 == sha256
+            && artifact.bytes == bytes
+            && matches!(artifact.state.as_str(), "writing" | "staged")
+    }) {
+        return Ok(());
+    }
+    Err(protocol_error("catalog delta artifact identity differs"))
+}
+
+async fn mark_delta_staged(
+    database: &D1Database,
+    target_revision_id: u64,
+    r2_key: &str,
+    sha256: &str,
+    bytes: u64,
+    r2_version: &str,
+    now: u64,
+) -> Result<()> {
+    database
+        .prepare(
+            "UPDATE vfs_catalog_delta_artifacts
+             SET state = 'staged', r2_version = ?1, updated_at = ?2
+             WHERE target_revision_id = ?3 AND r2_key = ?4
+               AND sha256 = ?5 AND bytes = ?6 AND state = 'writing'",
+        )
+        .bind(&[
+            JsValue::from_str(r2_version),
+            number(now),
+            number(target_revision_id),
+            JsValue::from_str(r2_key),
+            JsValue::from_str(sha256),
+            number(bytes),
+        ])?
+        .run()
+        .await?;
+    let artifact = load_delta_artifact(database, target_revision_id).await?;
+    if artifact.is_some_and(|artifact| {
+        artifact.r2_key == r2_key
+            && artifact.sha256 == sha256
+            && artifact.bytes == bytes
+            && artifact.r2_version.as_deref() == Some(r2_version)
+            && artifact.state == "staged"
+    }) {
+        return Ok(());
+    }
+    Err(protocol_error("catalog delta staging receipt differs"))
+}
+
+async fn load_delta_artifact(
+    database: &D1Database,
+    target_revision_id: u64,
+) -> Result<Option<DeltaArtifactRow>> {
+    database
+        .prepare(
+            "SELECT base_revision_id, base_root_data_root,
+                    base_checkpoint_sha256, checkpoint_sha256, r2_key,
+                    sha256, bytes, r2_version, state
+             FROM vfs_catalog_delta_artifacts WHERE target_revision_id = ?1",
+        )
+        .bind(&[number(target_revision_id)])?
+        .first::<DeltaArtifactRow>(None)
+        .await
+}
+
+async fn discard_optional_delta(
+    database: &D1Database,
+    bucket: &Bucket,
+    target_revision_id: u64,
+    now: u64,
+) -> Result<()> {
+    let Some(artifact) = load_delta_artifact(database, target_revision_id).await? else {
+        return Ok(());
+    };
+    match artifact.state.as_str() {
+        "writing" => {
+            bucket.delete(&artifact.r2_key).await?;
+            database
+                .prepare(
+                    "DELETE FROM vfs_catalog_delta_artifacts
+                     WHERE target_revision_id = ?1 AND r2_key = ?2
+                       AND sha256 = ?3 AND state = 'writing'",
+                )
+                .bind(&[
+                    number(target_revision_id),
+                    JsValue::from_str(&artifact.r2_key),
+                    JsValue::from_str(&artifact.sha256),
+                ])?
+                .run()
+                .await?;
+        }
+        "staged" => {
+            database
+                .prepare(
+                    "UPDATE vfs_catalog_delta_artifacts
+                     SET state = 'orphaned', updated_at = ?1
+                     WHERE target_revision_id = ?2 AND r2_key = ?3
+                       AND sha256 = ?4 AND state = 'staged'",
+                )
+                .bind(&[
+                    number(now),
+                    number(target_revision_id),
+                    JsValue::from_str(&artifact.r2_key),
+                    JsValue::from_str(&artifact.sha256),
+                ])?
+                .run()
+                .await?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+#[allow(
+    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "one atomic publication batch carries every immutable R2 identity and collapse fence explicitly"
 )]
@@ -489,13 +873,13 @@ async fn publish(
     sha256: &str,
     bytes: u64,
     r2_version: &str,
+    delta: Option<&PreparedDelta>,
     now: u64,
 ) -> Result<bool> {
-    database
-        .batch(vec![
-            database
-                .prepare(
-                    "UPDATE vfs_catalog_revisions
+    let mut statements = vec![
+        database
+            .prepare(
+                "UPDATE vfs_catalog_revisions
                      SET state = 'materialized', checkpoint_r2_key = ?1,
                          checkpoint_sha256 = ?2, checkpoint_r2_version = ?3,
                          checkpoint_bytes = ?4, materialized_at = ?5
@@ -515,48 +899,77 @@ async fn publish(
                            WHERE revision_id = ?6 AND r2_key = ?1 AND sha256 = ?2
                              AND r2_version = ?3 AND bytes = ?4 AND state = 'staged'
                        )",
-                )
-                .bind(&[
-                    JsValue::from_str(r2_key),
-                    JsValue::from_str(sha256),
-                    JsValue::from_str(r2_version),
-                    number(bytes),
-                    number(now),
-                    number(candidate.revision_id),
-                    JsValue::from_str(&candidate.filesystem_id),
-                    JsValue::from_str(&candidate.root_data_root),
-                    JsValue::from_str(&candidate.lease_owner),
-                ])?,
-            database
-                .prepare(
-                    "UPDATE vfs_catalog_revisions
+            )
+            .bind(&[
+                JsValue::from_str(r2_key),
+                JsValue::from_str(sha256),
+                JsValue::from_str(r2_version),
+                number(bytes),
+                number(now),
+                number(candidate.revision_id),
+                JsValue::from_str(&candidate.filesystem_id),
+                JsValue::from_str(&candidate.root_data_root),
+                JsValue::from_str(&candidate.lease_owner),
+            ])?,
+        database
+            .prepare(
+                "UPDATE vfs_catalog_revisions
                      SET state = 'published', published_at = ?1
                      WHERE id = ?2 AND state = 'materialized'
                        AND checkpoint_r2_key = ?3 AND checkpoint_sha256 = ?4
                        AND checkpoint_r2_version = ?5 AND checkpoint_bytes = ?6",
-                )
-                .bind(&[
-                    number(now),
-                    number(candidate.revision_id),
-                    JsValue::from_str(r2_key),
-                    JsValue::from_str(sha256),
-                    JsValue::from_str(r2_version),
-                    number(bytes),
-                ])?,
-            database
-                .prepare(
-                    "UPDATE vfs_catalog_checkpoint_artifacts
+            )
+            .bind(&[
+                number(now),
+                number(candidate.revision_id),
+                JsValue::from_str(r2_key),
+                JsValue::from_str(sha256),
+                JsValue::from_str(r2_version),
+                number(bytes),
+            ])?,
+        database
+            .prepare(
+                "UPDATE vfs_catalog_checkpoint_artifacts
                      SET state = 'published', updated_at = ?1
                      WHERE revision_id = ?2 AND state = 'staged'
                        AND EXISTS (
                            SELECT 1 FROM vfs_catalog_revisions
                            WHERE id = ?2 AND state = 'published'
                        )",
-                )
-                .bind(&[number(now), number(candidate.revision_id)])?,
+            )
+            .bind(&[number(now), number(candidate.revision_id)])?,
+    ];
+    if let Some(delta) = delta {
+        statements.push(
             database
                 .prepare(
-                    "INSERT INTO vfs_catalog_heads (
+                    "UPDATE vfs_catalog_delta_artifacts
+                     SET state = 'published', updated_at = ?1
+                     WHERE target_revision_id = ?2 AND base_revision_id = ?3
+                       AND base_root_data_root = ?4
+                       AND base_checkpoint_sha256 = ?5
+                       AND checkpoint_sha256 = ?6 AND r2_key = ?7
+                       AND sha256 = ?8 AND bytes = ?9 AND r2_version = ?10
+                       AND state = 'staged'",
+                )
+                .bind(&[
+                    number(now),
+                    number(candidate.revision_id),
+                    number(delta.base_revision_id),
+                    JsValue::from_str(&delta.base_root_data_root),
+                    JsValue::from_str(&delta.base_checkpoint_sha256),
+                    JsValue::from_str(&delta.checkpoint_sha256),
+                    JsValue::from_str(&delta.r2_key),
+                    JsValue::from_str(&delta.sha256),
+                    number(delta.bytes),
+                    JsValue::from_str(&delta.r2_version),
+                ])?,
+        );
+    }
+    statements.extend([
+        database
+            .prepare(
+                "INSERT INTO vfs_catalog_heads (
                          filesystem_id, revision_id, root_data_root, updated_at
                      )
                      SELECT revision.filesystem_id, revision.id,
@@ -571,11 +984,11 @@ async fn publish(
                          root_data_root = excluded.root_data_root,
                          revision = vfs_catalog_heads.revision + 1,
                          updated_at = excluded.updated_at",
-                )
-                .bind(&[number(now), number(candidate.revision_id)])?,
-            database
-                .prepare(
-                    "UPDATE vfs_catalog_outbox
+            )
+            .bind(&[number(now), number(candidate.revision_id)])?,
+        database
+            .prepare(
+                "UPDATE vfs_catalog_outbox
                      SET state = 'done', lease_owner = NULL, lease_expires_at = NULL,
                          last_error_code = NULL, updated_at = ?1
                      WHERE revision_id = ?2 AND state = 'claimed' AND lease_owner = ?3
@@ -583,14 +996,14 @@ async fn publish(
                            SELECT 1 FROM vfs_catalog_revisions
                            WHERE id = ?2 AND state = 'published'
                        )",
-                )
-                .bind(&[
-                    number(now),
-                    number(candidate.revision_id),
-                    JsValue::from_str(&candidate.lease_owner),
-                ])?,
-        ])
-        .await?;
+            )
+            .bind(&[
+                number(now),
+                number(candidate.revision_id),
+                JsValue::from_str(&candidate.lease_owner),
+            ])?,
+    ]);
+    database.batch(statements).await?;
     let publication = database
         .prepare(
             "SELECT head.revision_id
@@ -612,6 +1025,10 @@ async fn publish(
     Ok(publication.is_some_and(|row| row.revision_id == candidate.revision_id))
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one bounded D1 batch collapses revisions and retires every staged artifact type under the same published checkpoint proof"
+)]
 async fn collapse_historical(database: &D1Database, now: u64) -> Result<()> {
     let checkpoint = database
         .prepare(
@@ -662,6 +1079,25 @@ async fn collapse_historical(database: &D1Database, now: u64) -> Result<()> {
                 ])?,
             database
                 .prepare(
+                    "UPDATE vfs_catalog_delta_artifacts
+                     SET state = 'orphaned', updated_at = ?1
+                     WHERE state = 'staged' AND target_revision_id IN (
+                         SELECT collapse.revision_id
+                         FROM vfs_catalog_revision_collapses AS collapse
+                         JOIN vfs_catalog_outbox AS outbox
+                           ON outbox.revision_id = collapse.revision_id
+                         WHERE collapse.superseded_by_revision_id = ?2
+                           AND outbox.state != 'done'
+                         ORDER BY collapse.revision_id LIMIT ?3
+                     )",
+                )
+                .bind(&[
+                    number(now),
+                    number(checkpoint.revision_id),
+                    number(MAXIMUM_COLLAPSES_PER_RUN),
+                ])?,
+            database
+                .prepare(
                     "UPDATE vfs_catalog_checkpoint_artifacts
                      SET state = 'orphaned', updated_at = ?1
                      WHERE state = 'staged' AND revision_id IN (
@@ -704,26 +1140,106 @@ async fn collapse_historical(database: &D1Database, now: u64) -> Result<()> {
     Ok(())
 }
 
+async fn retire_historical_artifacts(database: &D1Database, now: u64) -> Result<()> {
+    database
+        .batch(vec![
+            database
+                .prepare(
+                    "UPDATE vfs_catalog_checkpoint_artifacts
+                     SET state = 'orphaned', updated_at = ?1
+                     WHERE revision_id IN (
+                         SELECT artifact.revision_id
+                         FROM vfs_catalog_checkpoint_artifacts AS artifact
+                              INDEXED BY idx_vfs_catalog_checkpoint_artifacts_retirement
+                         WHERE artifact.state = 'published'
+                           AND NOT EXISTS (
+                               SELECT 1 FROM vfs_catalog_heads AS head
+                               WHERE head.revision_id = artifact.revision_id
+                           )
+                           AND NOT EXISTS (
+                               SELECT 1
+                               FROM vfs_catalog_mutation_heads AS head
+                               JOIN vfs_catalog_revisions AS revision
+                                 ON revision.id = artifact.revision_id
+                                AND head.filesystem_id = revision.filesystem_id
+                                AND head.revision_id = revision.id
+                           )
+                         ORDER BY artifact.updated_at, artifact.revision_id
+                         LIMIT ?2
+                     )",
+                )
+                .bind(&[number(now), number(MAXIMUM_ARTIFACT_RETIREMENTS_PER_RUN)])?,
+            database
+                .prepare(
+                    "UPDATE vfs_catalog_delta_artifacts
+                     SET state = 'orphaned', updated_at = ?1
+                     WHERE target_revision_id IN (
+                         SELECT artifact.target_revision_id
+                         FROM vfs_catalog_delta_artifacts AS artifact
+                              INDEXED BY idx_vfs_catalog_delta_artifacts_retirement
+                         WHERE artifact.state = 'published'
+                           AND NOT EXISTS (
+                               SELECT 1 FROM vfs_catalog_heads AS head
+                               WHERE head.revision_id = artifact.target_revision_id
+                           )
+                           AND NOT EXISTS (
+                               SELECT 1
+                               FROM vfs_catalog_mutation_heads AS head
+                               JOIN vfs_catalog_revisions AS revision
+                                 ON revision.id = artifact.target_revision_id
+                                AND head.filesystem_id = revision.filesystem_id
+                                AND head.revision_id = revision.id
+                           )
+                         ORDER BY artifact.updated_at, artifact.target_revision_id
+                         LIMIT ?2
+                     )",
+                )
+                .bind(&[number(now), number(MAXIMUM_ARTIFACT_RETIREMENTS_PER_RUN)])?,
+        ])
+        .await?;
+    Ok(())
+}
+
 async fn mark_orphaned(database: &D1Database, revision_id: u64, now: u64) -> Result<()> {
     database
-        .prepare(
-            "UPDATE vfs_catalog_checkpoint_artifacts
-             SET state = 'orphaned', updated_at = ?1
-             WHERE revision_id = ?2 AND state = 'staged'
-               AND NOT EXISTS (
-                   SELECT 1 FROM vfs_catalog_heads WHERE revision_id = ?2
-               )
-               AND NOT EXISTS (
-                   SELECT 1
-                   FROM vfs_catalog_mutation_heads AS head
-                   JOIN vfs_catalog_revisions AS revision
-                     ON revision.id = ?2
-                    AND head.filesystem_id = revision.filesystem_id
-                    AND head.revision_id = revision.id
-               )",
-        )
-        .bind(&[number(now), number(revision_id)])?
-        .run()
+        .batch(vec![
+            database
+                .prepare(
+                    "UPDATE vfs_catalog_checkpoint_artifacts
+                     SET state = 'orphaned', updated_at = ?1
+                     WHERE revision_id = ?2 AND state = 'staged'
+                       AND NOT EXISTS (
+                           SELECT 1 FROM vfs_catalog_heads WHERE revision_id = ?2
+                       )
+                       AND NOT EXISTS (
+                           SELECT 1
+                           FROM vfs_catalog_mutation_heads AS head
+                           JOIN vfs_catalog_revisions AS revision
+                             ON revision.id = ?2
+                            AND head.filesystem_id = revision.filesystem_id
+                            AND head.revision_id = revision.id
+                       )",
+                )
+                .bind(&[number(now), number(revision_id)])?,
+            database
+                .prepare(
+                    "UPDATE vfs_catalog_delta_artifacts
+                     SET state = 'orphaned', updated_at = ?1
+                     WHERE target_revision_id = ?2 AND state = 'staged'
+                       AND NOT EXISTS (
+                           SELECT 1 FROM vfs_catalog_heads WHERE revision_id = ?2
+                       )
+                       AND NOT EXISTS (
+                           SELECT 1
+                           FROM vfs_catalog_mutation_heads AS head
+                           JOIN vfs_catalog_revisions AS revision
+                             ON revision.id = ?2
+                            AND head.filesystem_id = revision.filesystem_id
+                            AND head.revision_id = revision.id
+                       )",
+                )
+                .bind(&[number(now), number(revision_id)])?,
+        ])
         .await?;
     Ok(())
 }
@@ -753,13 +1269,65 @@ async fn release_claim(
     Ok(())
 }
 
+async fn cleanup_one_delta(database: &D1Database, bucket: &Bucket, now: u64) -> Result<()> {
+    let cutoff = now.saturating_sub(ORPHAN_GRACE_SECONDS);
+    let candidate = database
+        .prepare(
+            "SELECT artifact.target_revision_id AS revision_id,
+                    artifact.r2_key, artifact.state
+             FROM vfs_catalog_delta_artifacts AS artifact
+                  INDEXED BY idx_vfs_catalog_delta_artifacts_cleanup
+             WHERE artifact.updated_at <= ?1
+               AND artifact.state IN ('writing', 'orphaned')
+               AND (
+                   artifact.state = 'orphaned'
+                   OR (
+                       artifact.state = 'writing'
+                       AND NOT EXISTS (
+                           SELECT 1 FROM vfs_catalog_mutation_heads AS head
+                           JOIN vfs_catalog_revisions AS revision
+                             ON revision.id = artifact.target_revision_id
+                            AND head.filesystem_id = revision.filesystem_id
+                            AND head.revision_id = revision.id
+                       )
+                   )
+               )
+             ORDER BY artifact.updated_at, artifact.target_revision_id
+             LIMIT 1",
+        )
+        .bind(&[number(cutoff)])?
+        .first::<CleanupRow>(None)
+        .await?;
+    let Some(candidate) = candidate else {
+        return Ok(());
+    };
+    bucket.delete(&candidate.r2_key).await?;
+    database
+        .prepare(
+            "DELETE FROM vfs_catalog_delta_artifacts
+             WHERE target_revision_id = ?1 AND r2_key = ?2 AND state = ?3
+               AND updated_at <= ?4",
+        )
+        .bind(&[
+            number(candidate.revision_id),
+            JsValue::from_str(&candidate.r2_key),
+            JsValue::from_str(&candidate.state),
+            number(cutoff),
+        ])?
+        .run()
+        .await?;
+    Ok(())
+}
+
 async fn cleanup_one(database: &D1Database, bucket: &Bucket, now: u64) -> Result<()> {
     let cutoff = now.saturating_sub(ORPHAN_GRACE_SECONDS);
     let candidate = database
         .prepare(
             "SELECT artifact.revision_id, artifact.r2_key, artifact.state
              FROM vfs_catalog_checkpoint_artifacts AS artifact
+                  INDEXED BY idx_vfs_catalog_checkpoint_artifacts_cleanup
              WHERE artifact.updated_at <= ?1
+               AND artifact.state IN ('writing', 'orphaned')
                AND NOT EXISTS (
                    SELECT 1 FROM vfs_catalog_heads AS head
                    WHERE head.revision_id = artifact.revision_id

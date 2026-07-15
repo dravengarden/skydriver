@@ -30,8 +30,9 @@ The current implemented V2 slice includes:
   subtree reuse, and final live-root revalidation; and
 - server-materialized complete catalog checkpoints, directly streamed to safe
   full-root tokens or projected to a safe narrow token's exact Merkle subtree,
-  with shared native/WASM verification and transparent ACL-boundary fallback;
-  and
+  plus optional single-transition hash-linked full-root deltas, shared
+  native/WASM verification, and transparent ACL-boundary/full-checkpoint
+  fallback; and
 - durable read leases, reachability marking, tombstone grace, server-owned
   fenced GC, idempotent Aliyun and R2 deletion, and conservative retention for
   drivers the Worker cannot reach; and
@@ -39,9 +40,9 @@ The current implemented V2 slice includes:
   resumable multipart upload, concurrent exact-range download, and
   binding-owned server cleanup independent of client signing-key rotation.
 
-Remaining expansion work is explicit: hash-chained delta or content-addressed
-page acceleration, additional hosted drivers, production fault-injection for
-every lifecycle class, and final removal of the compatibility-only Go archive
+Remaining expansion work is explicit: multi-hop or narrow-view catalog-page
+acceleration, additional hosted drivers, production fault-injection for every
+lifecycle class, and final removal of the compatibility-only Go archive
 surface. Durable Aliyun credential rotation is already server-owned and does
 not change the public complete-object filesystem contract.
 
@@ -212,7 +213,12 @@ catalog revision. The current Cron materializer collapses pending historical
 outbox work into a newly verified latest checkpoint: it reconstructs the whole
 live tree under start/end root fences, writes canonical JSON to a
 content-addressed create-only R2 key, and advances the D1 catalog head only
-after the exact object exists. Tracked orphan artifacts are reclaimed after a
+after the exact object exists. When both the previous and target checkpoints
+fit an 8 MiB acceleration bound, the same pass may additionally publish a
+strictly smaller delta containing only target `(directory_id, data_root)` nodes
+absent from the base. The complete target remains independently sufficient.
+Tracked failed, superseded, and no-longer-current checkpoint/delta objects are
+retired by indexed maintenance and reclaimed by exact R2 key after a 24-hour
 grace period.
 
 The implemented client uses the directory Merkle graph directly: private local
@@ -238,6 +244,16 @@ SDK used by Worker WASM, then publishes token-scoped content-addressed local
 nodes. An ACL boundary, snapshot, absent checkpoint, or concurrent newer root
 transparently uses the authenticated paginated API; corrupt metadata fails
 closed.
+
+SDK 0.3.2 full-root clients advertise an exact local base revision, root,
+checkpoint SHA-256, and entity tag. If the current published delta links that
+same base to the current head, the Worker streams the immutable delta directly
+from R2. The portable SDK combines its changed nodes with the authenticated
+local base, derives parent/name metadata from target Merkle edges, rejects
+missing or unreachable changes, validates the complete target tree, and
+requires its canonical JSON SHA-256 to equal the advertised target checkpoint.
+Older clients, narrow roots, missed transitions, oversized sources, and deltas
+that are not smaller simply receive the normal complete checkpoint.
 
 The client distinguishes an authenticated 304 from an unavailable 204. Only a
 200/304 bulk proof permits cache-only child traversal. After 204, every cached

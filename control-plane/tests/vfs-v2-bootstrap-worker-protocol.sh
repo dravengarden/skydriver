@@ -4,7 +4,7 @@ set -euo pipefail
 curl() {
   command curl \
     --header "Carrack-Protocol-Epoch: 2" \
-    --header "Carrack-SDK-Version: 0.3.1" \
+    --header "Carrack-SDK-Version: 0.3.2" \
     "$@"
 }
 
@@ -218,9 +218,12 @@ annotation_replay=$(curl --silent --show-error --fail-with-body \
 [[ "$annotation_replay" == "$annotation_receipt" ]]
 annotated_snapshot=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" "$base_url/api/admin/snapshot")
-[[ "$(jq -r '.tokens[0].label' <<<"$annotated_snapshot")" == 'Release agent' ]]
-[[ "$(jq -r '.tokens[0].note' <<<"$annotated_snapshot")" == 'Publishes verified releases.' ]]
-[[ "$(jq -r '.tokens[0].metadata_revision' <<<"$annotated_snapshot")" == 2 ]]
+[[ "$(jq -r --arg token_id "$token_id" \
+  '.tokens[] | select(.id == $token_id) | .label' <<<"$annotated_snapshot")" == 'Release agent' ]]
+[[ "$(jq -r --arg token_id "$token_id" \
+  '.tokens[] | select(.id == $token_id) | .note' <<<"$annotated_snapshot")" == 'Publishes verified releases.' ]]
+[[ "$(jq -r --arg token_id "$token_id" \
+  '.tokens[] | select(.id == $token_id) | .metadata_revision' <<<"$annotated_snapshot")" == 2 ]]
 [[ "$(jq -r '.event_cursor' <<<"$annotated_snapshot")" -gt "$(jq -r '.event_cursor' <<<"$management_snapshot")" ]]
 
 cli_annotation_check=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
@@ -824,6 +827,146 @@ unchanged_status=$(curl --silent --show-error \
   "$base_url/api/v2/catalog/checkpoint")
 [[ "$unchanged_status" == 304 ]]
 [[ ! -s "$unchanged_checkpoint" ]]
+
+# Seed the native client's authenticated base closure, then mutate one small
+# branch. The next server head should publish a strictly smaller hash-linked
+# delta and the client must apply it without weakening full-tree verification.
+delta_sync_destination="$state_directory/delta-sync"
+delta_sync_state="$state_directory/delta-sync-state"
+initial_delta_sync=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" sync / \
+  "$delta_sync_destination" --control-url "$base_url" \
+  --state-directory "$delta_sync_state" --format json)
+[[ "$(jq -r '.directories' <<<"$initial_delta_sync")" == 4 ]]
+delta_directory=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" mkdir /delta \
+  --control-url "$base_url" --idempotency-key bootstrap-delta-directory-v1 --format json)
+delta_directory_id=$(jq -r '.directory_id' <<<"$delta_directory")
+curl --silent --show-error --fail-with-body \
+  "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
+
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" \
+  --command "CREATE TABLE vfs_catalog_delta_assertions (
+      accepted INTEGER NOT NULL CHECK (accepted = 1)
+    ) STRICT;
+    INSERT INTO vfs_catalog_delta_assertions
+    SELECT CASE WHEN
+      EXISTS (
+        SELECT 1
+        FROM vfs_catalog_heads AS head
+        JOIN vfs_catalog_delta_artifacts AS delta
+          ON delta.target_revision_id = head.revision_id
+        JOIN vfs_catalog_checkpoint_artifacts AS target
+          ON target.revision_id = head.revision_id
+        WHERE head.filesystem_id = '$filesystem_id'
+          AND delta.base_revision_id = $checkpoint_revision
+          AND delta.base_root_data_root = '$checkpoint_root'
+          AND delta.base_checkpoint_sha256 = '$checkpoint_sha256'
+          AND delta.checkpoint_sha256 = target.sha256
+          AND delta.bytes < target.bytes
+          AND delta.state = 'published'
+          AND target.state = 'published'
+      )
+      AND (SELECT state FROM vfs_catalog_checkpoint_artifacts
+           WHERE revision_id = $checkpoint_revision) = 'orphaned'
+    THEN 1 ELSE 0 END;
+    DROP TABLE vfs_catalog_delta_assertions;" >/dev/null
+
+delta_headers="$state_directory/catalog-delta-headers.txt"
+delta_body="$state_directory/catalog-delta.json"
+curl --silent --show-error --fail-with-body \
+  -D "$delta_headers" -H "$authorization" \
+  -H "If-None-Match: $checkpoint_etag" \
+  -H 'Carrack-Catalog-Accept-Delta: v1' \
+  -H "Carrack-Catalog-Base-Revision: $checkpoint_revision" \
+  -H "Carrack-Catalog-Base-Root: $checkpoint_root" \
+  -H "Carrack-Catalog-Base-SHA256: $checkpoint_sha256" \
+  "$base_url/api/v2/catalog/checkpoint" >"$delta_body"
+grep -iq '^content-type: application/vnd.carrack.catalog-delta+json' "$delta_headers"
+delta_sha256=$(awk '
+  tolower($1) == "carrack-catalog-delta-sha256:" {
+    gsub("\\r", "", $2);
+    print $2
+  }
+' "$delta_headers")
+delta_checkpoint_sha256=$(awk '
+  tolower($1) == "carrack-catalog-sha256:" {
+    gsub("\\r", "", $2);
+    print $2
+  }
+' "$delta_headers")
+delta_revision=$(awk '
+  tolower($1) == "carrack-catalog-revision:" {
+    gsub("\\r", "", $2);
+    print $2
+  }
+' "$delta_headers")
+delta_root=$(awk '
+  tolower($1) == "carrack-catalog-root:" {
+    gsub("\\r", "", $2);
+    print $2
+  }
+' "$delta_headers")
+delta_etag=$(awk '
+  tolower($1) == "etag:" {
+    gsub("\\r", "", $2);
+    print $2
+  }
+' "$delta_headers")
+[[ "$(sha256sum "$delta_body" | cut -d' ' -f1)" == "$delta_sha256" ]]
+[[ "$delta_etag" == "\"sha256:$delta_checkpoint_sha256\"" ]]
+jq --exit-status \
+  --arg filesystem_id "$filesystem_id" \
+  --arg root_directory_id "$root_directory_id" \
+  --arg delta_directory_id "$delta_directory_id" \
+  --arg base_revision "$checkpoint_revision" \
+  --arg base_root "$checkpoint_root" \
+  --arg base_sha256 "$checkpoint_sha256" \
+  --arg revision "$delta_revision" \
+  --arg root "$delta_root" \
+  --arg checkpoint_sha256 "$delta_checkpoint_sha256" \
+  '.schema == "carrack.vfs.catalog-delta.v1"
+   and .filesystem_id == $filesystem_id
+   and (.base_revision_id | tostring) == $base_revision
+   and .base_root_directory_id == $root_directory_id
+   and .base_root_data_root == $base_root
+   and .base_checkpoint_sha256 == $base_sha256
+   and (.revision_id | tostring) == $revision
+   and .root_directory_id == $root_directory_id
+   and .root_data_root == $root
+   and .checkpoint_sha256 == $checkpoint_sha256
+   and (.directories | length) == 2
+   and any(.directories[]; .directory_id == $root_directory_id)
+   and any(.directories[]; .directory_id == $delta_directory_id)' \
+  "$delta_body" >/dev/null
+
+legacy_delta_headers="$state_directory/legacy-delta-headers.txt"
+legacy_delta_body="$state_directory/legacy-delta-checkpoint.json"
+command curl --silent --show-error --fail-with-body \
+  --header "Carrack-Protocol-Epoch: 2" \
+  --header "Carrack-SDK-Version: 0.3.1" \
+  -D "$legacy_delta_headers" -H "$authorization" \
+  -H "If-None-Match: $checkpoint_etag" \
+  -H 'Carrack-Catalog-Accept-Delta: v1' \
+  -H "Carrack-Catalog-Base-Revision: $checkpoint_revision" \
+  -H "Carrack-Catalog-Base-Root: $checkpoint_root" \
+  -H "Carrack-Catalog-Base-SHA256: $checkpoint_sha256" \
+  "$base_url/api/v2/catalog/checkpoint" >"$legacy_delta_body"
+grep -iq '^content-type: application/json' "$legacy_delta_headers"
+! grep -iq '^carrack-catalog-delta-sha256:' "$legacy_delta_headers"
+legacy_delta_checkpoint_sha256=$(awk '
+  tolower($1) == "carrack-catalog-sha256:" {
+    gsub("\\r", "", $2);
+    print $2
+  }
+' "$legacy_delta_headers")
+[[ "$legacy_delta_checkpoint_sha256" == "$delta_checkpoint_sha256" ]]
+[[ "$(sha256sum "$legacy_delta_body" | cut -d' ' -f1)" == "$delta_checkpoint_sha256" ]]
+
+updated_delta_sync=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" sync / \
+  "$delta_sync_destination" --control-url "$base_url" \
+  --state-directory "$delta_sync_state" --format json)
+[[ "$(jq -r '.directories' <<<"$updated_delta_sync")" == 5 ]]
+[[ -d "$delta_sync_destination/delta" ]]
 
 projected_headers="$state_directory/projected-checkpoint-headers.txt"
 projected_body="$state_directory/projected-checkpoint.json"

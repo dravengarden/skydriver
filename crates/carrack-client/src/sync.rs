@@ -130,13 +130,17 @@ impl VfsClient {
         protect_directory(&options.state_directory)?;
         let session = self.session().await?;
         let catalog = CatalogStore::new(&options.state_directory, &session.token_id)?;
-        let checkpoint_etag = catalog.checkpoint_etag()?;
+        let checkpoint_condition = catalog.checkpoint_condition()?;
         let bulk_catalog_authorized = match self
-            .catalog_checkpoint(&session, checkpoint_etag.as_deref())
+            .catalog_checkpoint(&session, checkpoint_condition.as_ref())
             .await?
         {
             CatalogCheckpointOutcome::Delivered(delivery) => {
                 catalog.publish_checkpoint(&delivery.checkpoint, &delivery.etag)?;
+                true
+            }
+            CatalogCheckpointOutcome::Delta(delivery) => {
+                catalog.apply_delta(&delivery.delta, &delivery.etag)?;
                 true
             }
             CatalogCheckpointOutcome::Unchanged => true,

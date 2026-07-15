@@ -1,12 +1,15 @@
 //! Private content-addressed directory catalog used by incremental sync.
 
 use carrack_sdk_core::{
-    CatalogCheckpoint, CatalogCheckpointEntryKind, DirectoryMerkleEntry, directory_merkle_root,
-    validate_catalog_checkpoint, validate_catalog_checkpoint_etag,
+    CATALOG_CHECKPOINT_SCHEMA, CatalogCheckpoint, CatalogCheckpointDirectory,
+    CatalogCheckpointEntry, CatalogCheckpointEntryKind, CatalogDelta, DirectoryMerkleEntry,
+    apply_catalog_delta, directory_merkle_root, validate_catalog_checkpoint,
+    validate_catalog_checkpoint_etag,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::{
+    collections::HashSet,
     fs::OpenOptions,
     io::Write as _,
     path::{Path, PathBuf},
@@ -73,6 +76,16 @@ struct CatalogHeadEnvelope {
     head: CatalogHead,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct CatalogCheckpointCondition {
+    pub(crate) filesystem_id: String,
+    pub(crate) revision_id: u64,
+    pub(crate) root_directory_id: String,
+    pub(crate) root_data_root: String,
+    pub(crate) checkpoint_sha256: String,
+    pub(crate) etag: String,
+}
+
 pub(crate) struct CatalogStore {
     root: PathBuf,
     nodes: PathBuf,
@@ -88,7 +101,7 @@ impl CatalogStore {
         Ok(Self { root, nodes })
     }
 
-    pub(crate) fn checkpoint_etag(&self) -> Result<Option<String>, Error> {
+    pub(crate) fn checkpoint_condition(&self) -> Result<Option<CatalogCheckpointCondition>, Error> {
         let Some(head) = self.load_head()? else {
             return Ok(None);
         };
@@ -98,7 +111,14 @@ impl CatalogStore {
         {
             return Ok(None);
         }
-        Ok(Some(head.etag))
+        Ok(Some(CatalogCheckpointCondition {
+            filesystem_id: head.filesystem_id,
+            revision_id: head.revision_id,
+            root_directory_id: head.root_directory_id,
+            root_data_root: head.root_data_root,
+            checkpoint_sha256: head.checkpoint_sha256,
+            etag: head.etag,
+        }))
     }
 
     pub(crate) fn load(
@@ -207,6 +227,77 @@ impl CatalogStore {
             checkpoint_sha256,
         })?;
         Ok(())
+    }
+
+    pub(crate) fn apply_delta(&self, delta: &CatalogDelta, etag: &str) -> Result<(), Error> {
+        let head = self.load_head()?.ok_or_else(|| {
+            Error::InvalidResponse("catalog delta has no local base head".to_owned())
+        })?;
+        let base = self.reconstruct_checkpoint(&head)?;
+        let checkpoint = apply_catalog_delta(&base, &head.checkpoint_sha256, delta)
+            .map_err(|error| Error::InvalidResponse(error.to_string()))?;
+        self.publish_checkpoint(&checkpoint, etag)
+    }
+
+    fn reconstruct_checkpoint(&self, head: &CatalogHead) -> Result<CatalogCheckpoint, Error> {
+        let mut visited = HashSet::new();
+        let mut pending = vec![(
+            head.root_directory_id.clone(),
+            head.root_data_root.clone(),
+            None,
+            String::new(),
+        )];
+        let mut directories = Vec::new();
+        while let Some((directory_id, data_root, parent_directory_id, name)) = pending.pop() {
+            if !visited.insert(directory_id.clone()) {
+                return Err(Error::InvalidResponse(
+                    "local catalog base is not a tree".to_owned(),
+                ));
+            }
+            let node = self.load(&directory_id, &data_root)?.ok_or_else(|| {
+                Error::InvalidResponse("local catalog base node is missing".to_owned())
+            })?;
+            let entries = node
+                .entries
+                .iter()
+                .map(checkpoint_entry)
+                .collect::<Vec<_>>();
+            for entry in entries.iter().rev() {
+                if entry.kind == CatalogCheckpointEntryKind::Directory {
+                    pending.push((
+                        entry.child_directory_id.clone().ok_or_else(|| {
+                            Error::InvalidResponse(
+                                "local catalog child identity is missing".to_owned(),
+                            )
+                        })?,
+                        entry.data_root.clone(),
+                        Some(directory_id.clone()),
+                        entry.name.clone(),
+                    ));
+                }
+            }
+            directories.push(CatalogCheckpointDirectory {
+                directory_id,
+                parent_directory_id,
+                name,
+                data_root,
+                entries,
+            });
+        }
+        directories.sort_unstable_by(|left, right| left.directory_id.cmp(&right.directory_id));
+        let checkpoint = CatalogCheckpoint {
+            schema: CATALOG_CHECKPOINT_SCHEMA.to_owned(),
+            filesystem_id: head.filesystem_id.clone(),
+            revision_id: head.revision_id,
+            parent_revision_id: None,
+            root_directory_id: head.root_directory_id.clone(),
+            root_data_root: head.root_data_root.clone(),
+            created_at: 1,
+            directories,
+        };
+        validate_catalog_checkpoint(&checkpoint)
+            .map_err(|error| Error::InvalidResponse(error.to_string()))?;
+        Ok(checkpoint)
     }
 
     fn load_head(&self) -> Result<Option<CatalogHead>, Error> {
@@ -373,6 +464,22 @@ impl From<&DirectoryEntry> for CatalogEntry {
             data_root: entry.data_root.clone(),
             metadata_root: entry.metadata_root.clone(),
         }
+    }
+}
+
+fn checkpoint_entry(entry: &CatalogEntry) -> CatalogCheckpointEntry {
+    CatalogCheckpointEntry {
+        name: entry.name.clone(),
+        kind: match entry.kind {
+            EntryKind::File => CatalogCheckpointEntryKind::File,
+            EntryKind::Directory => CatalogCheckpointEntryKind::Directory,
+        },
+        file_id: entry.file_id.clone(),
+        version_id: entry.version_id.clone(),
+        child_directory_id: entry.child_directory_id.clone(),
+        size_bytes: entry.size_bytes,
+        data_root: entry.data_root.clone(),
+        metadata_root: entry.metadata_root.clone(),
     }
 }
 
@@ -643,7 +750,10 @@ mod tests {
             .publish_checkpoint(&checkpoint, &expected)
             .expect("publish checkpoint");
         assert_eq!(
-            store.checkpoint_etag().expect("read checkpoint head"),
+            store
+                .checkpoint_condition()
+                .expect("read checkpoint head")
+                .map(|condition| condition.etag),
             Some(expected)
         );
 
@@ -652,6 +762,6 @@ mod tests {
         let middle = bytes.len() / 2;
         bytes[middle] ^= 1;
         std::fs::write(head_path, bytes).expect("corrupt checkpoint head");
-        assert!(store.checkpoint_etag().is_err());
+        assert!(store.checkpoint_condition().is_err());
     }
 }

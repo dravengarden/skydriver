@@ -67,7 +67,12 @@ full-root token streams the immutable checkpoint directly; a safely authorized
 narrow token receives only its projected Merkle subtree. ACL-boundary and
 snapshot cases transparently traverse revision-pinned pages. The client verifies
 the complete authorized catalog before payload work, while an unchanged verified
-view uses a conditional request and transfers no checkpoint body. It also
+view uses a conditional request and transfers no checkpoint body. When a
+full-root view changed from the immediately preceding published head, SDK 0.3.2
+can receive only the hash-linked content-addressed directory nodes missing from
+its authenticated base; it still reconstructs and verifies the exact complete
+target checkpoint before reuse. A missing, oversized, or incompatible delta
+transparently falls back to the complete checkpoint. The client also
 verifies unchanged local files from prior authenticated version/block metadata
 and downloads only changed or corrupted files. Changed files run concurrently
 and each retains its own resumable range pipeline. Untracked local files are

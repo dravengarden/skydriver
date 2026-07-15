@@ -16,11 +16,12 @@ use zeroize::{Zeroize as _, Zeroizing};
 mod catalog;
 
 pub use catalog::{
-    CATALOG_CHECKPOINT_SCHEMA, CatalogCheckpoint, CatalogCheckpointDirectory,
-    CatalogCheckpointEntry, CatalogCheckpointEntryKind, MAXIMUM_CATALOG_CHECKPOINT_BYTES,
-    MAXIMUM_CATALOG_DIRECTORIES, MAXIMUM_CATALOG_ENTRIES, catalog_checkpoint_etag,
+    CATALOG_CHECKPOINT_SCHEMA, CATALOG_DELTA_SCHEMA, CatalogCheckpoint, CatalogCheckpointDirectory,
+    CatalogCheckpointEntry, CatalogCheckpointEntryKind, CatalogDelta,
+    MAXIMUM_CATALOG_CHECKPOINT_BYTES, MAXIMUM_CATALOG_DELTA_BYTES, MAXIMUM_CATALOG_DIRECTORIES,
+    MAXIMUM_CATALOG_ENTRIES, apply_catalog_delta, build_catalog_delta, catalog_checkpoint_etag,
     catalog_checkpoint_view_etag, project_catalog_checkpoint, validate_catalog_checkpoint,
-    validate_catalog_checkpoint_etag,
+    validate_catalog_checkpoint_etag, validate_catalog_delta,
 };
 
 const FILE_LEAF_DOMAIN: &[u8] = b"carrack.vfs.file.leaf.v1\0";
