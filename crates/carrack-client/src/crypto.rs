@@ -70,7 +70,11 @@ pub(crate) fn stage(
         })?;
         seal_frames(&mut input, &mut output, descriptor, key)?
     } else {
-        return cleanup_error(&temporary_path, "unsupported crypto suite");
+        return cleanup_failure(
+            &temporary_path,
+            crate::FailureKind::UnsupportedSuite,
+            format!("unsupported crypto suite {suite}"),
+        );
     };
     output.flush().map_err(|error| {
         crate::Error::InvalidResponse(format!("flush encoded staging: {error}"))
@@ -120,18 +124,33 @@ pub(crate) fn restore(
             crate::Error::InvalidResponse(format!("create download temporary: {error}"))
         })?;
     let mut output = std::io::BufWriter::new(file);
-    if suite == "plaintext/v1" {
+    let restored = if suite == "plaintext/v1" {
         if directory_key.is_some() {
-            return cleanup_error(&temporary, "plaintext download exposed a key");
+            Err(crate::Error::InvalidResponse(
+                "plaintext download exposed a key".to_owned(),
+            ))
+        } else {
+            copy_plaintext(&mut input, &mut output, descriptor.plaintext_bytes).map(|_| ())
         }
-        copy_plaintext(&mut input, &mut output, descriptor.plaintext_bytes)?;
     } else if suite == SUITE {
-        let key = directory_key.ok_or_else(|| {
-            crate::Error::InvalidResponse("encrypted download omitted its key".to_owned())
-        })?;
-        open_frames(&mut input, &mut output, descriptor, key)?;
+        directory_key.map_or_else(
+            || {
+                Err(crate::Error::InvalidResponse(
+                    "encrypted download omitted its key".to_owned(),
+                ))
+            },
+            |key| open_frames(&mut input, &mut output, descriptor, key),
+        )
     } else {
-        return cleanup_error(&temporary, "unsupported download crypto suite");
+        Err(crate::Error::failure(
+            crate::FailureKind::UnsupportedSuite,
+            format!("unsupported download crypto suite {suite}"),
+        ))
+    };
+    if let Err(error) = restored {
+        drop(output);
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error);
     }
     output.flush().map_err(|error| {
         crate::Error::InvalidResponse(format!("flush download temporary: {error}"))
@@ -250,7 +269,10 @@ fn open_frames<R: Read, W: Write>(
         input
             .read_exact(&mut frame[..plaintext_length + 16])
             .map_err(|error| {
-                crate::Error::InvalidResponse(format!("read encrypted frame {ordinal}: {error}"))
+                crate::Error::failure(
+                    crate::FailureKind::CorruptCiphertext,
+                    format!("read encrypted frame {ordinal}: {error}"),
+                )
             })?;
         let (ciphertext, tag) = frame[..plaintext_length + 16].split_at_mut(plaintext_length);
         let mut nonce = [0_u8; 12];
@@ -264,13 +286,29 @@ fn open_frames<R: Read, W: Write>(
                 GenericArray::from_slice(tag),
             )
             .map_err(|_| {
-                crate::Error::InvalidResponse(format!("authenticate encrypted frame {ordinal}"))
+                crate::Error::failure(
+                    crate::FailureKind::CorruptCiphertext,
+                    format!("authenticate encrypted frame {ordinal}"),
+                )
             })?;
         output.write_all(ciphertext).map_err(|error| {
             crate::Error::InvalidResponse(format!("write plaintext frame: {error}"))
         })?;
     }
-    require_eof(input)
+    let mut extra = [0_u8; 1];
+    if input.read(&mut extra).map_err(|error| {
+        crate::Error::failure(
+            crate::FailureKind::CorruptCiphertext,
+            format!("read encrypted object EOF: {error}"),
+        )
+    })? != 0
+    {
+        return Err(crate::Error::failure(
+            crate::FailureKind::CorruptCiphertext,
+            "encrypted object contains trailing bytes",
+        ));
+    }
+    Ok(())
 }
 
 fn copy_plaintext<R: Read, W: Write>(
@@ -365,4 +403,77 @@ fn ensure_private_directory(path: &Path) -> Result<(), crate::Error> {
 fn cleanup_error<T>(path: &Path, message: &str) -> Result<T, crate::Error> {
     let _ = std::fs::remove_file(path);
     Err(crate::Error::InvalidResponse(message.to_owned()))
+}
+
+fn cleanup_failure<T>(
+    path: &Path,
+    kind: crate::FailureKind,
+    message: impl Into<String>,
+) -> Result<T, crate::Error> {
+    let _ = std::fs::remove_file(path);
+    Err(crate::Error::failure(kind, message))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Descriptor, restore, stage};
+
+    fn descriptor() -> Descriptor {
+        Descriptor {
+            directory_id: [1; 16],
+            version_id: [2; 16],
+            key_epoch: 1,
+            frame_bytes: 2,
+            plaintext_bytes: 3,
+        }
+    }
+
+    #[test]
+    fn distinguishes_unsupported_suite_and_authenticated_corruption() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source");
+        std::fs::write(&source, b"abc").expect("write source");
+        let Err(unsupported) = stage(
+            &source,
+            directory.path(),
+            "unsupported",
+            "future-suite/v1",
+            &descriptor(),
+            None,
+        ) else {
+            panic!("accepted unsupported suite");
+        };
+        assert_eq!(
+            unsupported.failure_kind(),
+            Some(crate::FailureKind::UnsupportedSuite)
+        );
+
+        let key = [3; 32];
+        let staged = stage(
+            &source,
+            directory.path(),
+            "corrupt",
+            "carrack-vfs-aes256gcm-hkdfsha256-v1",
+            &descriptor(),
+            Some(&key),
+        )
+        .expect("stage encrypted object");
+        let mut encoded = std::fs::read(&staged.path).expect("read encoded object");
+        encoded[0] ^= 1;
+        std::fs::write(&staged.path, encoded).expect("tamper encoded object");
+        let destination = directory.path().join("destination");
+        let corrupt = restore(
+            &staged.path,
+            &destination,
+            "carrack-vfs-aes256gcm-hkdfsha256-v1",
+            &descriptor(),
+            Some(&key),
+        )
+        .expect_err("reject corrupt ciphertext");
+        assert_eq!(
+            corrupt.failure_kind(),
+            Some(crate::FailureKind::CorruptCiphertext)
+        );
+        assert!(!destination.exists());
+    }
 }

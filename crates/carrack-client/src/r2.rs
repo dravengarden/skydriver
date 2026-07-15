@@ -108,12 +108,9 @@ pub(crate) async fn upload(
         .body(reqwest::Body::wrap_stream(ReaderStream::new(file)))
         .send()
         .await
-        .map_err(|error| Error::InvalidResponse(format!("upload R2 object: {error}")))?;
+        .map_err(|error| provider_transport("upload R2 object", &error))?;
     if !response.status().is_success() {
-        return Err(Error::InvalidResponse(format!(
-            "R2 upload returned {}",
-            response.status()
-        )));
+        return Err(provider_status("R2 upload", response.status(), false));
     }
     let etag = response
         .headers()
@@ -177,16 +174,18 @@ async fn multipart_upload(
                 .header(reqwest::header::CONTENT_LENGTH, 0)
                 .send()
                 .await
-                .map_err(|error| {
-                    Error::InvalidResponse(format!("initiate R2 multipart upload: {error}"))
-                })?;
+                .map_err(|error| provider_transport("initiate R2 multipart upload", &error))?;
             if !response.status().is_success() {
-                return Err(Error::InvalidResponse(format!(
-                    "R2 multipart initiation returned {}",
-                    response.status()
-                )));
+                return Err(provider_status(
+                    "R2 multipart initiation",
+                    response.status(),
+                    false,
+                ));
             }
-            let body = response.text().await?;
+            let body = response
+                .text()
+                .await
+                .map_err(|error| provider_transport("read R2 multipart initiation", &error))?;
             let upload_id = xml_element(&body, "UploadId").ok_or_else(|| {
                 Error::InvalidResponse("R2 multipart initiation omitted upload ID".to_owned())
             })?;
@@ -289,12 +288,13 @@ async fn multipart_upload(
         .body(body)
         .send()
         .await
-        .map_err(|error| Error::InvalidResponse(format!("complete R2 multipart: {error}")))?;
+        .map_err(|error| provider_transport("complete R2 multipart", &error))?;
     if !response.status().is_success() {
-        return Err(Error::InvalidResponse(format!(
-            "R2 multipart completion returned {}",
-            response.status()
-        )));
+        return Err(provider_status(
+            "R2 multipart completion",
+            response.status(),
+            false,
+        ));
     }
     let etag = response
         .headers()
@@ -339,12 +339,13 @@ async fn upload_part(
         )))
         .send()
         .await
-        .map_err(|error| Error::InvalidResponse(format!("upload R2 part: {error}")))?;
+        .map_err(|error| provider_transport("upload R2 part", &error))?;
     if !response.status().is_success() {
-        return Err(Error::InvalidResponse(format!(
-            "R2 part {part_number} returned {}",
-            response.status()
-        )));
+        return Err(provider_status(
+            &format!("R2 part {part_number}"),
+            response.status(),
+            false,
+        ));
     }
     let etag = response
         .headers()
@@ -394,12 +395,9 @@ pub(crate) async fn download(
         .get(&grant.url)
         .send()
         .await
-        .map_err(|error| Error::InvalidResponse(format!("download R2 object: {error}")))?;
+        .map_err(|error| provider_transport("download R2 object", &error))?;
     if !response.status().is_success() {
-        return Err(Error::InvalidResponse(format!(
-            "R2 download returned {}",
-            response.status()
-        )));
+        return Err(provider_status("R2 download", response.status(), true));
     }
     let mut output = tokio::fs::File::create(&temporary)
         .await
@@ -408,8 +406,7 @@ pub(crate) async fn download(
     let mut digest = Sha256::new();
     let mut bytes = 0_u64;
     while let Some(chunk) = stream.next().await {
-        let chunk =
-            chunk.map_err(|error| Error::InvalidResponse(format!("read R2 response: {error}")))?;
+        let chunk = chunk.map_err(|error| provider_transport("read R2 response", &error))?;
         bytes = bytes.saturating_add(chunk.len() as u64);
         digest.update(&chunk);
         output
@@ -423,8 +420,9 @@ pub(crate) async fn download(
         .map_err(|error| Error::InvalidResponse(format!("sync R2 staging: {error}")))?;
     if bytes != expected_bytes || hex::encode(digest.finalize()) != expected_sha256 {
         let _ = tokio::fs::remove_file(&temporary).await;
-        return Err(Error::InvalidResponse(
-            "R2 download failed encoded-byte verification".to_owned(),
+        return Err(Error::failure(
+            crate::FailureKind::CorruptCiphertext,
+            "R2 download failed encoded-byte verification",
         ));
     }
     tokio::fs::rename(&temporary, &path)
@@ -507,8 +505,9 @@ async fn download_ranges(
     if assembled != expected_bytes || hex::encode(digest.finalize()) != expected_sha256 {
         let _ = std::fs::remove_file(&temporary);
         let _ = std::fs::remove_dir_all(&part_root);
-        return Err(Error::InvalidResponse(
-            "R2 range assembly failed encoded-byte verification".to_owned(),
+        return Err(Error::failure(
+            crate::FailureKind::CorruptCiphertext,
+            "R2 range assembly failed encoded-byte verification",
         ));
     }
     std::fs::rename(&temporary, &output_path)
@@ -534,20 +533,18 @@ async fn download_range(
         .header(reqwest::header::RANGE, format!("bytes={start}-{end}"))
         .send()
         .await
-        .map_err(|error| Error::InvalidResponse(format!("download R2 range: {error}")))?;
+        .map_err(|error| provider_transport("download R2 range", &error))?;
     if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
-        return Err(Error::InvalidResponse(format!(
-            "R2 range returned {}",
-            response.status()
-        )));
+        return Err(provider_status("R2 range", response.status(), true));
     }
     let bytes = response
         .bytes()
         .await
-        .map_err(|error| Error::InvalidResponse(format!("read R2 range: {error}")))?;
+        .map_err(|error| provider_transport("read R2 range", &error))?;
     if bytes.len() as u64 != length {
-        return Err(Error::InvalidResponse(
-            "R2 range length does not match request".to_owned(),
+        return Err(Error::failure(
+            crate::FailureKind::CorruptCiphertext,
+            "R2 range length does not match request",
         ));
     }
     let temporary = path.with_extension("part.tmp");
@@ -699,6 +696,30 @@ fn safe_signed_url(value: &str) -> bool {
     })
 }
 
+fn provider_transport(operation: &str, error: &reqwest::Error) -> Error {
+    Error::failure(
+        crate::FailureKind::ProviderUnavailable,
+        format!("{operation}: {error}"),
+    )
+}
+
+fn provider_status(
+    operation: &str,
+    status: reqwest::StatusCode,
+    immutable_object_expected: bool,
+) -> Error {
+    let kind = if immutable_object_expected
+        && matches!(
+            status,
+            reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::GONE
+        ) {
+        crate::FailureKind::PermanentLoss
+    } else {
+        crate::FailureKind::ProviderUnavailable
+    };
+    Error::failure(kind, format!("{operation} returned {status}"))
+}
+
 async fn verify_readback(
     http: &reqwest::Client,
     url: &str,
@@ -709,25 +730,26 @@ async fn verify_readback(
         .get(url)
         .send()
         .await
-        .map_err(|error| Error::InvalidResponse(format!("read back R2 upload: {error}")))?;
+        .map_err(|error| provider_transport("read back R2 upload", &error))?;
     if !response.status().is_success() {
-        return Err(Error::InvalidResponse(format!(
-            "R2 upload readback returned {}",
-            response.status()
-        )));
+        return Err(provider_status(
+            "R2 upload readback",
+            response.status(),
+            true,
+        ));
     }
     let mut stream = response.bytes_stream();
     let mut digest = Sha256::new();
     let mut bytes = 0_u64;
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk
-            .map_err(|error| Error::InvalidResponse(format!("read R2 verification: {error}")))?;
+        let chunk = chunk.map_err(|error| provider_transport("read R2 verification", &error))?;
         bytes = bytes.saturating_add(chunk.len() as u64);
         digest.update(&chunk);
     }
     if bytes != expected_bytes || hex::encode(digest.finalize()) != expected_sha256 {
-        return Err(Error::InvalidResponse(
-            "R2 upload failed encoded-byte readback verification".to_owned(),
+        return Err(Error::failure(
+            crate::FailureKind::CorruptCiphertext,
+            "R2 upload failed encoded-byte readback verification",
         ));
     }
     Ok(())
@@ -741,7 +763,7 @@ mod tests {
     };
     use sha2::{Digest as _, Sha256};
 
-    use super::{SignedGrant, download_ranges, multipart_upload};
+    use super::{SignedGrant, download_ranges, multipart_upload, provider_status};
 
     #[tokio::test]
     async fn multipart_round_trip_journals_parts_and_verifies_readback() {
@@ -857,5 +879,63 @@ mod tests {
         assert_eq!(std::fs::read(path).expect("read assembly"), b"abcdefghij");
         first.assert_async().await;
         second.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn classifies_corrupt_range_assembly_without_message_parsing() {
+        let server = MockServer::start_async().await;
+        let first = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/corrupt")
+                    .header("Range", "bytes=0-4");
+                then.status(206).body("abcde");
+            })
+            .await;
+        let second = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/corrupt")
+                    .header("Range", "bytes=5-9");
+                then.status(206).body("xxxxx");
+            })
+            .await;
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let expected = hex::encode(Sha256::digest(b"abcdefghij"));
+        let error = download_ranges(
+            &reqwest::Client::new(),
+            &server.url("/corrupt"),
+            directory.path(),
+            "corrupt-version",
+            10,
+            &expected,
+            5,
+            2,
+        )
+        .await
+        .expect_err("reject corrupt provider object");
+        assert_eq!(
+            error.failure_kind(),
+            Some(crate::FailureKind::CorruptCiphertext)
+        );
+        first.assert_async().await;
+        second.assert_async().await;
+    }
+
+    #[test]
+    fn classifies_provider_outage_and_permanent_loss() {
+        assert_eq!(
+            provider_status("download", reqwest::StatusCode::NOT_FOUND, true).failure_kind(),
+            Some(crate::FailureKind::PermanentLoss)
+        );
+        assert_eq!(
+            provider_status("download", reqwest::StatusCode::SERVICE_UNAVAILABLE, true)
+                .failure_kind(),
+            Some(crate::FailureKind::ProviderUnavailable)
+        );
+        assert_eq!(
+            provider_status("upload", reqwest::StatusCode::NOT_FOUND, false).failure_kind(),
+            Some(crate::FailureKind::ProviderUnavailable)
+        );
     }
 }

@@ -204,6 +204,11 @@ string `code` and numeric `exit_status` carry the same stable classification:
 | `12` | `management_verification_failed` | Treat the outcome as ambiguous and reconcile by readback. |
 | `13` | `internal_output_error` | Stop because the structured result was not emitted safely. |
 | `14` | `missing_environment` | Inject the named private input without placing it in argv. |
+| `15` | `unsupported_suite` | Upgrade or select a supported directory crypto suite. |
+| `16` | `corrupt_ciphertext` | Preserve evidence; retry another verified location if available. |
+| `17` | `corrupt_plaintext` | Stop; never publish or consume the destination. |
+| `18` | `provider_unavailable` | Retry the same immutable operation with bounded backoff. |
+| `19` | `permanent_loss` | Reconcile replicas and report durable loss; blind retry cannot repair it. |
 
 Status `0` remains the only success status. No other nonzero value is part of
 the Carrack CLI contract.

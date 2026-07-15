@@ -8,6 +8,7 @@ pub use carrack_sdk_core::{
 use reqwest::{StatusCode, Url, header::HeaderMap};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use thiserror::Error;
 
 /// Incompatible Carrack wire-protocol generation implemented by this client.
@@ -87,6 +88,38 @@ pub struct UpgradeRequired {
     pub upgrade_command: String,
 }
 
+/// Stable correctness and availability class for failures that callers must
+/// handle without parsing human-readable messages.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureKind {
+    /// The supplied bearer lacks authority for the requested operation.
+    MissingAuthority,
+    /// The file's declared cryptographic suite is not implemented safely.
+    UnsupportedSuite,
+    /// Encoded provider bytes or authenticated ciphertext are corrupt.
+    CorruptCiphertext,
+    /// Decrypted plaintext disagrees with its committed Merkle identity.
+    CorruptPlaintext,
+    /// The selected provider cannot currently complete the operation.
+    ProviderUnavailable,
+    /// Metadata names an immutable provider object that no longer exists.
+    PermanentLoss,
+}
+
+impl fmt::Display for FailureKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::MissingAuthority => "missing authority",
+            Self::UnsupportedSuite => "unsupported suite",
+            Self::CorruptCiphertext => "corrupt ciphertext",
+            Self::CorruptPlaintext => "corrupt plaintext",
+            Self::ProviderUnavailable => "provider unavailable",
+            Self::PermanentLoss => "permanent loss",
+        })
+    }
+}
+
 /// Native client construction and protocol errors.
 #[derive(Debug, Error)]
 pub enum Error {
@@ -110,9 +143,38 @@ pub enum Error {
         /// Bounded, redacted server response text.
         message: String,
     },
+    /// A stable correctness or provider failure that must not be inferred from text.
+    #[error("Carrack {kind}: {message}")]
+    Failure {
+        /// Stable machine-readable failure class.
+        kind: FailureKind,
+        /// Bounded human-readable context with no credential material.
+        message: String,
+    },
     /// The request could not be completed.
     #[error("Carrack control-plane request failed: {0}")]
     Transport(#[from] reqwest::Error),
+}
+
+impl Error {
+    /// Returns the stable correctness or availability class when one applies.
+    #[must_use]
+    pub const fn failure_kind(&self) -> Option<FailureKind> {
+        match self {
+            Self::Rejected {
+                status: 401 | 403, ..
+            } => Some(FailureKind::MissingAuthority),
+            Self::Failure { kind, .. } => Some(*kind),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn failure(kind: FailureKind, message: impl Into<String>) -> Self {
+        Self::Failure {
+            kind,
+            message: message.into(),
+        }
+    }
 }
 
 /// HTTPS control-plane client. Payload bytes never pass through this client.
@@ -455,6 +517,34 @@ mod tests {
         }
     }
 
+    #[test]
+    fn exposes_failure_kinds_without_message_parsing() {
+        let authority = Error::Rejected {
+            status: 403,
+            message: "forbidden".to_owned(),
+        };
+        assert_eq!(
+            authority.failure_kind(),
+            Some(FailureKind::MissingAuthority)
+        );
+        for kind in [
+            FailureKind::UnsupportedSuite,
+            FailureKind::CorruptCiphertext,
+            FailureKind::CorruptPlaintext,
+            FailureKind::ProviderUnavailable,
+            FailureKind::PermanentLoss,
+        ] {
+            assert_eq!(
+                Error::failure(kind, "classified failure").failure_kind(),
+                Some(kind)
+            );
+        }
+        assert_eq!(
+            Error::InvalidResponse("schema".to_owned()).failure_kind(),
+            None
+        );
+    }
+
     #[tokio::test]
     async fn sends_headers_and_accepts_the_strict_contract() {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -468,7 +558,7 @@ mod tests {
             let request = String::from_utf8_lossy(&request[..length]).to_ascii_lowercase();
             assert!(request.starts_with("get /api/compatibility http/1.1"));
             assert!(request.contains("carrack-protocol-epoch: 2"));
-            assert!(request.contains("carrack-sdk-version: 0.3.4"));
+            assert!(request.contains("carrack-sdk-version: 0.3.5"));
             let body = r#"{"schema":"carrack.protocol-compatibility.v1","protocol_epoch":2,"minimum_sdk_version":"0.3.0","server_version":"0.3.2","enforcement":"required","upgrade_command":"upgrade carrack"}"#;
             stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.expect("write response");
         });

@@ -584,8 +584,9 @@ async fn upload_driver(
         .map_err(|error| Error::InvalidResponse(format!("verify local object: {error}")))?;
     if bytes != staged.encoded_bytes || hex::encode(hash.finalize()) != staged.encoded_sha256 {
         let _ = directory.remove_file(&relative);
-        return Err(Error::InvalidResponse(
-            "local provider readback differs".to_owned(),
+        return Err(Error::failure(
+            crate::FailureKind::CorruptCiphertext,
+            "local provider readback differs",
         ));
     }
     for ordinal in 0..part_count {

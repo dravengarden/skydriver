@@ -254,9 +254,10 @@ matches the process status. Statuses are `2` invalid arguments, `3` invalid
 input, `4` invalid control plane, `5` required SDK upgrade, `6` invalid server
 response, `7` permission denied, `8` not found, `9` revision conflict, `10`
 other rejection, `11` transport failure, `12` failed management readback,
-`13` output failure, and `14` missing private environment input. Never treat
-an undocumented nonzero status as success or infer that a mutation was not
-committed.
+`13` output failure, `14` missing private environment input, `15` unsupported
+suite, `16` corrupt ciphertext, `17` corrupt plaintext, `18` provider
+unavailable, and `19` permanent loss. Never treat an undocumented
+nonzero status as success or infer that a mutation was not committed.
 
 | Condition | Action |
 |---|---|

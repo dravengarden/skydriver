@@ -344,8 +344,9 @@ pub(crate) async fn download(
     }
     if hash_file(&destination)? != expected_sha256 {
         let _ = std::fs::remove_file(&destination);
-        return Err(Error::InvalidResponse(
-            "Aliyun provider checksum differs".to_owned(),
+        return Err(Error::failure(
+            crate::FailureKind::CorruptCiphertext,
+            "Aliyun provider checksum differs",
         ));
     }
     Ok(destination)
@@ -410,15 +411,25 @@ impl Client {
             .bearer_auth(&self.credential.access_token)
             .json(body)
             .send()
-            .await?;
+            .await
+            .map_err(|error| provider_transport("call Aliyun Drive API", &error))?;
         let status = response.status();
-        let bytes = response.bytes().await?;
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|error| provider_transport("read Aliyun Drive API response", &error))?;
         if bytes.len() > MAXIMUM_API_BODY {
             return Err(Error::InvalidResponse(
                 "Aliyun API response is too large".to_owned(),
             ));
         }
         if !status.is_success() {
+            if status == StatusCode::REQUEST_TIMEOUT
+                || status == StatusCode::TOO_MANY_REQUESTS
+                || status.is_server_error()
+            {
+                return Err(provider_status("Aliyun Drive API", status, false));
+            }
             return Err(Error::Rejected {
                 status: status.as_u16(),
                 message: "Aliyun Drive API rejected the request".to_owned(),
@@ -472,7 +483,10 @@ impl Client {
                         "Aliyun parent is not a folder".to_owned(),
                     ));
                 }
-                Err(Error::Rejected { status: 404, .. }) => {
+                Err(Error::Failure {
+                    kind: crate::FailureKind::PermanentLoss,
+                    ..
+                }) => {
                     self.api(
                         "/adrive/v1.0/openFile/create",
                         &CreateFolder {
@@ -526,9 +540,11 @@ impl Client {
             }
             marker = page.next_marker;
         }
-        found.ok_or_else(|| Error::Rejected {
-            status: 404,
-            message: "Aliyun object was not found".to_owned(),
+        found.ok_or_else(|| {
+            Error::failure(
+                crate::FailureKind::PermanentLoss,
+                "Aliyun object was not found",
+            )
         })
     }
 
@@ -575,7 +591,8 @@ impl Client {
                 .header("Range", format!("bytes={offset}-{end}"))
                 .header("Accept-Encoding", "identity")
                 .send()
-                .await?;
+                .await
+                .map_err(|error| provider_transport("download Aliyun range", &error))?;
             if response.status() != StatusCode::PARTIAL_CONTENT
                 || response
                     .content_length()
@@ -586,14 +603,20 @@ impl Client {
                     .and_then(|value| value.to_str().ok())
                     != Some(format!("bytes {offset}-{end}/{expected_bytes}").as_str())
             {
-                return Err(Error::InvalidResponse(
-                    "Aliyun range response changed".to_owned(),
+                return Err(provider_status(
+                    "Aliyun range download",
+                    response.status(),
+                    true,
                 ));
             }
-            let bytes = response.bytes().await?;
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|error| provider_transport("read Aliyun range", &error))?;
             if bytes.len() as u64 != length {
-                return Err(Error::InvalidResponse(
-                    "Aliyun range body was short".to_owned(),
+                return Err(Error::failure(
+                    crate::FailureKind::CorruptCiphertext,
+                    "Aliyun range body was short",
                 ));
             }
             output.write_all(&bytes).map_err(|error| {
@@ -622,12 +645,31 @@ impl Client {
         std::fs::remove_file(&observed)
             .map_err(|error| Error::InvalidResponse(format!("remove Aliyun readback: {error}")))?;
         if digest? != expected_sha256 {
-            return Err(Error::InvalidResponse(
-                "Aliyun complete readback differs".to_owned(),
+            return Err(Error::failure(
+                crate::FailureKind::CorruptCiphertext,
+                "Aliyun complete readback differs",
             ));
         }
         Ok(())
     }
+}
+
+fn provider_transport(operation: &str, error: &reqwest::Error) -> Error {
+    Error::failure(
+        crate::FailureKind::ProviderUnavailable,
+        format!("{operation}: {error}"),
+    )
+}
+
+fn provider_status(operation: &str, status: StatusCode, immutable_object_expected: bool) -> Error {
+    let kind = if immutable_object_expected
+        && matches!(status, StatusCode::NOT_FOUND | StatusCode::GONE)
+    {
+        crate::FailureKind::PermanentLoss
+    } else {
+        crate::FailureKind::ProviderUnavailable
+    };
+    Error::failure(kind, format!("{operation} returned {status}"))
 }
 
 fn safe_service_url(value: &str) -> Result<Url, Error> {
@@ -668,7 +710,7 @@ mod tests {
     use serde_json::json;
     use sha2::{Digest as _, Sha256};
 
-    use super::{FileRecord, download, upload};
+    use super::{FileRecord, download, provider_status, upload};
 
     #[test]
     fn normalizes_nullable_folder_metadata() {
@@ -688,6 +730,19 @@ mod tests {
         assert_eq!(folder.size, 0);
         assert!(folder.content_hash.is_empty());
         assert_eq!(folder.kind, "folder");
+    }
+
+    #[test]
+    fn distinguishes_provider_outage_from_permanent_loss() {
+        assert_eq!(
+            provider_status("download", reqwest::StatusCode::NOT_FOUND, true).failure_kind(),
+            Some(crate::FailureKind::PermanentLoss)
+        );
+        assert_eq!(
+            provider_status("download", reqwest::StatusCode::SERVICE_UNAVAILABLE, true)
+                .failure_kind(),
+            Some(crate::FailureKind::ProviderUnavailable)
+        );
     }
 
     #[tokio::test]

@@ -30,6 +30,14 @@ minimum, a malformed contract, or HTTP 426 fails the command before side
 effects. Version output is stable JSON so an agent can decide whether to
 upgrade without scraping prose.
 
+Data-path callers inspect `Error::failure_kind()` rather than matching error
+text. `FailureKind` distinguishes missing authority, unsupported crypto suite,
+corrupt encoded or authenticated ciphertext, corrupt final plaintext,
+temporary provider unavailability, and permanent immutable-object loss. The
+filesystem CLI projects the same classes to stable JSON codes and exit
+statuses; neither surface treats a checksum mismatch as a generic transport
+retry.
+
 Protocol epoch 2 currently requires SDK `0.3.0` or newer. This floor covers the
 strict credential-expiry management contract; a `0.1.x` CLI or SDK receives
 HTTP 426 before VFS or management I/O and must be upgraded rather than parsing

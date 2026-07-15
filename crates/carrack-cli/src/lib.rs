@@ -1309,6 +1309,14 @@ fn error_disposition(error: &Error) -> ErrorDisposition {
             carrack_client::Error::InvalidCompatibility(_)
             | carrack_client::Error::InvalidResponse(_),
         ) => ("invalid_control_plane_response", 6),
+        Error::Client(carrack_client::Error::Failure { kind, .. }) => match kind {
+            carrack_client::FailureKind::MissingAuthority => ("permission_denied", 7),
+            carrack_client::FailureKind::UnsupportedSuite => ("unsupported_suite", 15),
+            carrack_client::FailureKind::CorruptCiphertext => ("corrupt_ciphertext", 16),
+            carrack_client::FailureKind::CorruptPlaintext => ("corrupt_plaintext", 17),
+            carrack_client::FailureKind::ProviderUnavailable => ("provider_unavailable", 18),
+            carrack_client::FailureKind::PermanentLoss => ("permanent_loss", 19),
+        },
         Error::Client(carrack_client::Error::Rejected {
             status: 401 | 403, ..
         }) => ("permission_denied", 7),
@@ -1463,5 +1471,41 @@ mod tests {
             "missing_environment",
             14,
         );
+        for (kind, code, status) in [
+            (
+                carrack_client::FailureKind::UnsupportedSuite,
+                "unsupported_suite",
+                15,
+            ),
+            (
+                carrack_client::FailureKind::CorruptCiphertext,
+                "corrupt_ciphertext",
+                16,
+            ),
+            (
+                carrack_client::FailureKind::CorruptPlaintext,
+                "corrupt_plaintext",
+                17,
+            ),
+            (
+                carrack_client::FailureKind::ProviderUnavailable,
+                "provider_unavailable",
+                18,
+            ),
+            (
+                carrack_client::FailureKind::PermanentLoss,
+                "permanent_loss",
+                19,
+            ),
+        ] {
+            assert_error_disposition(
+                &Error::Client(carrack_client::Error::Failure {
+                    kind,
+                    message: "classified failure".to_owned(),
+                }),
+                code,
+                status,
+            );
+        }
     }
 }

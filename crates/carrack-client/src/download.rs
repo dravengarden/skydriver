@@ -227,11 +227,14 @@ impl VfsClient {
         }
         restored?;
         let tree = integrity::build_file(destination, plan.verification_block_bytes)?;
-        if tree.size_bytes != plan.plaintext_bytes || hex::encode(tree.root) != plan.file_root {
+        if let Err(error) = verify_plaintext_identity(
+            tree.size_bytes,
+            &hex::encode(tree.root),
+            plan.plaintext_bytes,
+            &plan.file_root,
+        ) {
             let _ = std::fs::remove_file(destination);
-            return Err(Error::InvalidResponse(
-                "downloaded plaintext Merkle root differs".to_owned(),
-            ));
+            return Err(error);
         }
         std::fs::remove_file(&encoded)
             .map_err(|error| Error::InvalidResponse(format!("remove download staging: {error}")))?;
@@ -298,6 +301,21 @@ fn validate_plan(plan: &DownloadPlan, expected: DownloadExpectation<'_>) -> Resu
     {
         return Err(Error::InvalidResponse(
             "invalid download plan identity".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn verify_plaintext_identity(
+    observed_bytes: u64,
+    observed_root: &str,
+    expected_bytes: u64,
+    expected_root: &str,
+) -> Result<(), Error> {
+    if observed_bytes != expected_bytes || observed_root != expected_root {
+        return Err(Error::failure(
+            crate::FailureKind::CorruptPlaintext,
+            "downloaded plaintext Merkle root differs",
         ));
     }
     Ok(())
@@ -419,8 +437,9 @@ async fn fetch_provider(
     {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir_all(&part_root);
-        return Err(Error::InvalidResponse(
-            "provider object checksum differs".to_owned(),
+        return Err(Error::failure(
+            crate::FailureKind::CorruptCiphertext,
+            "provider object checksum differs",
         ));
     }
     std::fs::remove_dir_all(&part_root)
@@ -468,9 +487,9 @@ fn download_parts(
                             Error::InvalidResponse(format!("reset download part: {error}"))
                         })?;
                     }
-                    let mut input = worker_directory.open(source).map_err(|error| {
-                        Error::InvalidResponse(format!("open provider object: {error}"))
-                    })?;
+                    let mut input = worker_directory
+                        .open(source)
+                        .map_err(|error| local_provider_error("open provider object", &error))?;
                     input
                         .seek(std::io::SeekFrom::Start(offset))
                         .map_err(|error| {
@@ -529,6 +548,15 @@ fn hash_local_file(path: &Path) -> Result<String, Error> {
     Ok(hex::encode(hash.finalize()))
 }
 
+fn local_provider_error(operation: &str, error: &std::io::Error) -> Error {
+    let kind = if error.kind() == std::io::ErrorKind::NotFound {
+        crate::FailureKind::PermanentLoss
+    } else {
+        crate::FailureKind::ProviderUnavailable
+    };
+    Error::failure(kind, format!("{operation}: {error}"))
+}
+
 fn part_name(ordinal: u64) -> String {
     format!("{ordinal:016x}.part")
 }
@@ -582,4 +610,20 @@ fn parse_identifier(value: &str) -> Result<[u8; 16], Error> {
     let mut result = [0_u8; 16];
     result.copy_from_slice(&decoded);
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verify_plaintext_identity;
+
+    #[test]
+    fn distinguishes_plaintext_merkle_divergence() {
+        let error = verify_plaintext_identity(3, "observed", 3, "expected")
+            .expect_err("reject plaintext divergence");
+        assert_eq!(
+            error.failure_kind(),
+            Some(crate::FailureKind::CorruptPlaintext)
+        );
+        assert!(verify_plaintext_identity(3, "expected", 3, "expected").is_ok());
+    }
 }
