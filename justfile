@@ -23,6 +23,10 @@ lint:
 test:
     bash tests/architecture-boundaries.sh
     bash -n tests/aliyun-live.sh
+    bash -n tests/r2-live.sh
+    node --check control-plane/scripts/provision-default-r2.mjs
+    node --test control-plane/scripts/default-r2-provisioning.test.mjs
+    node --test control-plane/scripts/provision-default-r2.test.mjs
     go test -race ./...
     cargo test --workspace --all-features
     pnpm --filter @carrack/web test
@@ -58,5 +62,22 @@ deploy-prod: verify
 
 audit-cloudflare:
     node control-plane/scripts/audit-environments.mjs
+
+provision-r2-dev:
+    env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_TOKEN_FACTORY_API_TOKEN -u CARRACK_OPERATOR_CREDENTIAL -u CARRACK_VFS_TOKEN cargo build -p carrack-cli --bin carrackctl
+    node control-plane/scripts/provision-default-r2.mjs dev
+
+provision-r2-prod:
+    test "${CARRACK_PROVISION_PROD:-}" = "1"
+    env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_TOKEN_FACTORY_API_TOKEN -u CARRACK_OPERATOR_CREDENTIAL -u CARRACK_VFS_TOKEN cargo build -p carrack-cli --bin carrackctl
+    node control-plane/scripts/provision-default-r2.mjs prod
+
+check-r2-dev:
+    env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_TOKEN_FACTORY_API_TOKEN -u CARRACK_OPERATOR_CREDENTIAL -u CARRACK_VFS_TOKEN cargo build -p carrack-cli --bin carrackctl
+    node control-plane/scripts/provision-default-r2.mjs dev --check
+
+check-r2-prod:
+    env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_TOKEN_FACTORY_API_TOKEN -u CARRACK_OPERATOR_CREDENTIAL -u CARRACK_VFS_TOKEN cargo build -p carrack-cli --bin carrackctl
+    node control-plane/scripts/provision-default-r2.mjs prod --check
 
 verify: check-format lint test build

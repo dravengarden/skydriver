@@ -12,6 +12,16 @@ The day-to-day token needs only the account permissions required by Carrack:
 - Workers R2 Storage: Edit
 - Account Settings: Read, only when required by Wrangler identity checks
 
+It deliberately does not have `Account API Tokens: Edit`. Default R2 setup uses
+a separate, short-lived `CLOUDFLARE_TOKEN_FACTORY_API_TOKEN`, created in the
+Cloudflare dashboard from the **Create additional tokens** template. Do not put
+that token in `.env`, a Worker secret, the UI, or D1. Supply it only to the
+one-time environment provision command, preferably with an IP restriction or
+short TTL, then remove it from the process environment. Cloudflare documents
+both this required bootstrap authority and the recommendation to keep it free
+of unrelated permissions:
+<https://developers.cloudflare.com/fundamentals/api/how-to/create-via-api/>.
+
 Creating or changing the committed custom domains is a separate, rare trigger
 operation. It additionally requires `Workers Routes: Edit` for the
 `stormbird.xyz` zone. Do not grant that zone permission to the routine deploy
@@ -159,6 +169,19 @@ remove verifies namespace deletion; physical deletion remains subject to the
 normal server grace and scheduled GC rather than weakening production safety
 for a test.
 
+The managed R2 acceptance uses the same safety boundary but defaults to a
+128 MiB random payload and eight concurrent 8 MiB parts so the real multipart,
+range, resume, hash, and logical-removal paths are exercised:
+
+```bash
+export CARRACK_CONTROL_URL=https://dev.carrack.stormbird.xyz
+export CARRACK_VFS_TOKEN='<short-lived dev acceptance token>'
+CARRACK_R2_LIVE_TEST=1 tests/r2-live.sh
+```
+
+This live test is opt-in and is not part of `just verify`; the hermetic gate
+checks its shell contract only.
+
 Each recipe uploads a tagged Worker version and then moves 100% of that
 environment's traffic to it. It does not rewrite the already-audited custom
 domain, so the routine account token does not need zone-wide route mutation
@@ -182,11 +205,59 @@ account S3 endpoint, and environment-specific `carrack-payload-<environment>`
 bucket. Driver creation atomically initializes a 100 GiB physical-byte hard
 quota from `CARRACK_DEFAULT_R2_MAX_PHYSICAL_BYTES`; later UI or `carrackctl`
 quota changes advance the independent quota revision and are never overwritten
-by environment reconciliation. A new bootstrap selects that identity but
-creates no placement while it is disabled. Install one bucket-scoped R2
-access-key pair through the write-only management flow, enable the driver, and
-then add it to the intended directory placements. Additional R2 buckets remain
-operator-registered with `managed:false`. The native
+by environment reconciliation.
+
+After VFS bootstrap, provision the environment-owned driver outside the normal
+deployment credential boundary:
+
+```bash
+export CLOUDFLARE_TOKEN_FACTORY_API_TOKEN='<short-lived Create additional tokens credential>'
+export CARRACK_OPERATOR_CREDENTIAL='<environment operator credential>'
+export CARRACK_VFS_TOKEN='<environment root or scoped driver.manage token>'
+
+just check-r2-dev
+CARRACK_PROVISION_R2=1 just provision-r2-dev
+unset CLOUDFLARE_TOKEN_FACTORY_API_TOKEN CARRACK_OPERATOR_CREDENTIAL CARRACK_VFS_TOKEN
+```
+
+Production additionally requires `CARRACK_PROVISION_PROD=1`. The preflight and
+apply commands first inspect the exact Carrack driver and root placement
+revisions. If no signing credential exists, they find or create the deterministic
+account-owned token `carrack-r2-default-<environment>`, require the exact
+`Workers R2 Storage Bucket Item Write` permission and the single bucket resource,
+derive the S3 secret as SHA-256 of the one-time token value, and write it only to
+a mode-0600 temporary file. They then invoke `carrackctl --check`, apply with an
+idempotency key, and re-read the effective state. Cloudflare documents the exact
+bucket resource and S3 conversion here:
+<https://developers.cloudflare.com/r2/api/tokens/>.
+
+Creation is fail-closed under races: the tool re-lists the deterministic name
+before touching Carrack and removes its own newly created token if another
+provisioner won. If that token already exists while D1 reports no credential,
+normal apply stops rather than rotating authority behind a concurrent writer.
+After confirming no other provisioner is active, recover the interrupted setup
+explicitly:
+
+```bash
+CARRACK_PROVISION_R2=1 CARRACK_RECOVER_R2_TOKEN=1 \
+  node control-plane/scripts/provision-default-r2.mjs \
+  dev --recover-existing-token
+```
+
+The provisioner enables the driver and adds `r2-default:0` only when the root
+placement set is empty. If an existing root policy omits R2, it is preserved and
+the command warns. After reviewing that complete policy, explicitly opt into an
+append with:
+
+```bash
+CARRACK_PROVISION_R2=1 node control-plane/scripts/provision-default-r2.mjs \
+  dev --append-root-placement
+```
+
+The console never asks for the environment-owned access key; it shows only
+readiness and permits normal state and quota controls. Additional R2 buckets
+remain operator-registered with `managed:false` and retain the write-only
+credential dialog and `carrackctl driver credential set` flow. The native
 `aliyundrive-open/v2` adapter has completed this dev canary with encrypted
 complete-object upload, concurrent exact-range download, interrupted resume,
 hash verification, and logical removal.

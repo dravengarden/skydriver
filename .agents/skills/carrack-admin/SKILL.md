@@ -86,8 +86,10 @@ never accepts credentials in the non-secret config. The environment-owned
 `r2-default` is the exception: it is materialized by the server and must not be
 registered or edited. Its initial physical-byte hard quota is 100 GiB; inspect
 the independent quota revision and use the normal validated quota command when
-the environment needs a different limit. Connect its bucket-scoped key, enable
-it, and place it through the same validate/apply/readback sequence. For Aliyun
+the environment needs a different limit. Its signing parent is owned by the
+one-time environment provisioner; do not paste, rotate, or request it through
+the UI or ordinary agent workflow. The provisioner still uses the same
+validate/apply/readback CLI protocol internally. For Aliyun
 Drive, then run `carrackctl driver credential set` with `--check`, using a
 private regular JSON file readable only by its owner, and apply the same file
 before enabling the driver. Aliyun authorization input contains only `refresh_token` and

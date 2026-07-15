@@ -94,18 +94,21 @@ plane owns all access-token generation and renewal; only repeat this command if
 the server reports `reauth_required`.
 
 Dev and production materialize the disabled `r2-default` identity automatically.
-Do not register or edit that identity. Read its current revision from
-`carrackctl snapshot`, then connect the environment bucket's private
-credential file:
+Do not register or manually rotate that identity. During environment creation,
+use `just check-r2-dev` and then `CARRACK_PROVISION_R2=1 just provision-r2-dev`
+with separately injected `CLOUDFLARE_TOKEN_FACTORY_API_TOKEN`,
+`CARRACK_OPERATOR_CREDENTIAL`, and `CARRACK_VFS_TOKEN`. Production also
+requires `CARRACK_PROVISION_PROD=1`. The setup tool creates or rolls only the
+deterministically named, exact-bucket Cloudflare token, moves its derived S3
+credential through a private temporary file, calls the same `carrackctl`
+validate/apply/readback commands, and enables the driver. It adds a root
+placement only when the existing complete set is empty. Never copy the factory
+token into `.env`, the UI, D1, Worker secrets, argv, or logs.
 
-```json
-{"access_key_id":"...","secret_access_key":"..."}
-```
-
-Run `carrackctl driver credential set r2-default --check` first, apply with the
-same private file and a stable idempotency key, re-read the snapshot, then
-validate and enable the next exact driver revision. Add directory placement
-only after enablement succeeds.
+If preflight reports `recover`, stop and exclude every parallel provisioner.
+Only an explicitly reviewed recovery may set `CARRACK_RECOVER_R2_TOKEN=1` and
+pass `--recover-existing-token`; ordinary retries must never roll a provider
+token merely because Carrack currently reports no sealed credential.
 
 For an additional R2 bucket, register this configuration first:
 

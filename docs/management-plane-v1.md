@@ -39,7 +39,9 @@ rotation age, placement
 count, complete object count, encoded bytes, integrity state, and last use.
 Provider credentials are never returned. A missing legacy expiry is shown as
 unknown, credentials expiring within 24 hours are warned, and expired
-credentials are shown as errors. Unsupported acceleration features are
+credentials are shown as errors. The environment-owned `r2-default` signing
+parent is provisioner-only: the UI shows its redacted readiness but exposes no
+credential input or rotation action. Unsupported acceleration features are
 shown as warnings with the correctness-preserving fallback and a recommended
 replacement driver when one exists.
 
@@ -163,7 +165,9 @@ renews access tokens with fenced CAS updates. `r2/v1` accepts an exact
 `{endpoint,bucket,prefix,managed}` configuration. Managed instances are bound
 to the current environment's `carrack-payload-dev` or `carrack-payload-prod`
 bucket; external instances may use another Cloudflare R2 bucket. Its write-only
-credential is `{access_key_id,secret_access_key}`. Validation performs a
+credential is `{access_key_id,secret_access_key}`. For `r2-default`, only the
+environment provisioner may submit that object; ordinary UI and agent flows may
+use it only for additional operator-owned R2 instances. Validation performs a
 temporary PUT and DELETE before commit, and VFS clients receive only
 object-scoped signed URLs valid for at most 15 minutes. Uploads at or above
 100 MiB use a private resumable multipart journal and bounded concurrent part

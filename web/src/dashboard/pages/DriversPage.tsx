@@ -73,7 +73,10 @@ function credentialStatus(driver: DriverView, observedAt: number) {
         return {
             color: driver.kind === "local-filesystem/v2" ? "default" : "warning",
             icon: <WarningAmberOutlinedIcon />,
-            label: "No credential",
+            label:
+                driver.lifecycle_owner === "environment"
+                    ? "Environment setup required"
+                    : "No credential",
         } as const;
     }
     if (driver.kind !== "aliyundrive-open/v2") {
@@ -427,18 +430,19 @@ export function DriversPage({
                                         color={status.color}
                                         size="small"
                                     />
-                                    {driver.kind !== "local-filesystem/v2" && (
-                                        <Button
-                                            size="small"
-                                            variant="outlined"
-                                            startIcon={<KeyOutlinedIcon />}
-                                            onClick={() => openCredentialChange(driver)}
-                                        >
-                                            {driver.credential_present
-                                                ? "Replace authorization"
-                                                : "Connect authorization"}
-                                        </Button>
-                                    )}
+                                    {driver.kind !== "local-filesystem/v2" &&
+                                        driver.lifecycle_owner !== "environment" && (
+                                            <Button
+                                                size="small"
+                                                variant="outlined"
+                                                startIcon={<KeyOutlinedIcon />}
+                                                onClick={() => openCredentialChange(driver)}
+                                            >
+                                                {driver.credential_present
+                                                    ? "Replace authorization"
+                                                    : "Connect authorization"}
+                                            </Button>
+                                        )}
                                     <Button
                                         size="small"
                                         variant="outlined"
@@ -462,10 +466,11 @@ export function DriversPage({
                             {driver.lifecycle_owner === "environment" &&
                                 !driver.credential_present && (
                                     <Alert severity="info" sx={{ mt: 3 }}>
-                                        This environment-owned R2 bucket is ready for setup. Connect
-                                        one bucket-scoped R2 access key, then enable it and add it
-                                        to the desired collection placements. Server-side cleanup
-                                        uses the Worker binding and does not depend on that key.
+                                        This environment-owned R2 bucket is awaiting the one-time
+                                        environment provisioner. Its bucket-scoped signing
+                                        credential is not accepted or rendered in the console.
+                                        Server-side cleanup uses the Worker binding and does not
+                                        depend on that credential.
                                     </Alert>
                                 )}
 

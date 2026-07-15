@@ -535,6 +535,15 @@ use short-lived SigV4 URLs while the control plane uses the `CARRACK_PAYLOAD`
 binding only for fenced physical deletion and multipart abort. Control metadata
 continues to use its separate binding and object namespace.
 
+The long-lived signing parent for `r2-default` is created once by the
+environment provisioner as an account-owned token scoped to exactly the bound
+payload bucket. Its value is converted to the documented S3 credential, passed
+through the same write-only server validation as other R2 drivers, and sealed
+in the environment's D1 credential envelope. The browser and filesystem SDKs
+never receive that parent. The console exposes only redacted readiness; an
+additional operator-owned R2 driver retains the normal write-only credential
+flow.
+
 ## Initial implementation order
 
 1. Introduce the V2 driver contract, capability assessment, warnings, and

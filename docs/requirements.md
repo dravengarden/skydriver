@@ -146,6 +146,15 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
   100 GiB. This initial value MUST be committed atomically with driver creation
   and MUST NOT be reasserted after an operator changes it through the shared
   UI or management-CLI quota protocol.
+- Hosted environment setup MUST mint the default R2 signing credential as an
+  account-owned token scoped to exactly that environment's payload bucket. The
+  routine deploy credential MUST NOT be able to create API tokens, and the
+  operator UI MUST NOT accept or render the environment-owned R2 credential.
+  Provisioning MUST use the normal server validation, encrypted credential
+  envelope, optimistic driver revision, idempotency, and readback protocol.
+- Environment setup MAY create a root placement only when the complete root
+  placement set is empty. It MUST preserve a nonempty policy unless an operator
+  explicitly requests and reviews a replace-all mutation.
 - Put preparation MUST reserve quota atomically in D1. Commit converts the
   reservation to durable usage; abandon or expiry releases it without client
   or SDK involvement. Quota checks MUST NOT use a check-then-upload race.

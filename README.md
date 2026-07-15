@@ -93,7 +93,9 @@ Configuration commands validate locally and on the server. Mutations require
 an exact expected revision and stable idempotency key, return a durable receipt,
 and fail closed on ambiguous or incompatible responses. Provider credentials
 are accepted only from owner-private JSON files and are never returned by the
-control plane.
+control plane. The environment-owned `r2-default` credential is a stricter
+exception: the UI never accepts it, and the environment provisioner alone
+moves its exact-bucket Cloudflare authority through that write-only CLI path.
 
 See [.agents/skills/carrack-admin/SKILL.md](.agents/skills/carrack-admin/SKILL.md)
 for the AI operating procedure and

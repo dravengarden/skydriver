@@ -13,14 +13,17 @@ payload API. In one D1 batch it creates:
 - an all-actions root administration token; and
 - an immutable bootstrap receipt and audit record.
 
-The default R2 identity is derived from the Worker environment and begins
-with the environment profile's 100 GiB physical-byte hard quota. It remains
-disabled until a bucket-scoped S3 key is validated and sealed. Operators may
-later replace that quota through the same validated UI or `carrackctl` policy
-flow; environment reconciliation never resets an operator revision. The
-Cloudflare Worker stores only the token verifier and authenticated key
-envelope. It never stores the bearer token or plaintext directory key in D1 and
-never opens the configured local filesystem path.
+The default R2 identity is derived from the Worker environment and begins with
+the environment profile's 100 GiB physical-byte hard quota. The one-time
+environment provisioner creates its exact-bucket Cloudflare authority,
+validates and seals the derived S3 signing key, enables the driver, and creates
+a root placement only when the root policy is empty. A pre-existing nonempty
+policy is never silently merged. Operators may later replace the quota through
+the same validated UI or `carrackctl` policy flow; environment reconciliation
+never resets an operator revision. The Cloudflare Worker stores only the token
+verifier and authenticated key envelope. It never stores a VFS bearer token or
+plaintext directory key in D1 and never opens the configured local filesystem
+path.
 
 ## Prerequisites
 
@@ -60,8 +63,10 @@ The JSON request is strict and rejects unknown fields:
 `carrack-vfs-aes256gcm-hkdfsha256-v1`; the only alternative is the explicit
 `plaintext/v1` suite. `token_lifetime_seconds` defaults to 30 days and must be
 between one hour and 365 days. Dev and production select `r2-default`. The
-response does not imply that the disabled driver is a placement; credential,
-enablement, and placement remain separately validated operations.
+response does not imply that the initially disabled driver is a placement.
+Run the environment provisioner after bootstrap; credential, enablement, and
+placement remain separately validated operations even though the provisioner
+orchestrates them as one fail-fast setup workflow.
 
 Local conformance environments may explicitly provide both `local_driver_id`
 and `local_root`. That compatibility path preserves the original V1 request

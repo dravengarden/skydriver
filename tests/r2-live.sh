@@ -1,28 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ ${CARRACK_ALIYUN_LIVE_TEST:-} != 1 ]]; then
-  echo "set CARRACK_ALIYUN_LIVE_TEST=1 to authorize real Aliyun Drive writes" >&2
+if [[ ${CARRACK_R2_LIVE_TEST:-} != 1 ]]; then
+  echo "set CARRACK_R2_LIVE_TEST=1 to authorize real Cloudflare R2 writes" >&2
   exit 2
 fi
 : "${CARRACK_VFS_TOKEN:?CARRACK_VFS_TOKEN is required}"
-: "${CARRACK_ALIYUN_DRIVER_ID:?CARRACK_ALIYUN_DRIVER_ID is required}"
 
 control_url=${CARRACK_CONTROL_URL:-https://dev.carrack.stormbird.xyz}
-directory=${CARRACK_ALIYUN_TEST_DIRECTORY:-/}
-payload_bytes=${CARRACK_ALIYUN_TEST_BYTES:-33554432}
+driver_id=${CARRACK_R2_DRIVER_ID:-r2-default}
+directory=${CARRACK_R2_TEST_DIRECTORY:-/}
+payload_bytes=${CARRACK_R2_TEST_BYTES:-134217728}
 carrack_bin=${CARRACK_BIN:-target/debug/carrack}
 
 if [[ $control_url != https://dev.carrack.stormbird.xyz ]]; then
   echo "live acceptance is restricted to the Carrack development environment" >&2
   exit 2
 fi
+if [[ $driver_id != r2-default ]]; then
+  echo "CARRACK_R2_DRIVER_ID must be r2-default for the managed-bucket acceptance" >&2
+  exit 2
+fi
 if [[ $directory != /* || $directory == *..* || $directory == *//* ]]; then
-  echo "CARRACK_ALIYUN_TEST_DIRECTORY must be a canonical absolute VFS path" >&2
+  echo "CARRACK_R2_TEST_DIRECTORY must be a canonical absolute VFS path" >&2
   exit 2
 fi
 if [[ ! $payload_bytes =~ ^[1-9][0-9]*$ || $payload_bytes -gt 1073741824 ]]; then
-  echo "CARRACK_ALIYUN_TEST_BYTES must be between 1 and 1073741824" >&2
+  echo "CARRACK_R2_TEST_BYTES must be between 1 and 1073741824" >&2
   exit 2
 fi
 if [[ ! -x $carrack_bin ]]; then
@@ -33,7 +37,7 @@ fi
 state=$(mktemp -d)
 chmod 0700 "$state"
 identifier=$(openssl rand -hex 8)
-name="carrack-aliyun-live-$identifier.bin"
+name="carrack-r2-live-$identifier.bin"
 if [[ $directory == / ]]; then
   destination="/$name"
 else
@@ -43,7 +47,7 @@ source_file="$state/source.bin"
 download_file="$state/download.bin"
 resumed_file="$state/resumed.bin"
 put_committed=false
-remove_key="aliyun-live-remove-$identifier"
+remove_key="r2-live-remove-$identifier"
 
 cleanup() {
   if [[ $put_committed == true ]]; then
@@ -65,13 +69,13 @@ source_sha=$(sha256sum "$source_file" | cut -d' ' -f1)
 put_result=$(CARRACK_VFS_TOKEN="$CARRACK_VFS_TOKEN" "$carrack_bin" put \
   "$source_file" "$destination" \
   --control-url "$control_url" \
-  --preferred-driver-id "$CARRACK_ALIYUN_DRIVER_ID" \
-  --idempotency-key "aliyun-live-put-$identifier" \
+  --preferred-driver-id "$driver_id" \
+  --idempotency-key "r2-live-put-$identifier" \
   --staging-directory "$state/upload-staging" \
-  --transfer-part-bytes 4194304 \
-  --maximum-concurrency 4 \
+  --transfer-part-bytes 8388608 \
+  --maximum-concurrency 8 \
   --format json)
-jq -e --arg driver "$CARRACK_ALIYUN_DRIVER_ID" '
+jq -e --arg driver "$driver_id" '
   .schema == "carrack.fs-put.v1" and
   .receipt.state == "committed" and
   .receipt.driver_id == $driver and
@@ -83,8 +87,8 @@ get_result=$(CARRACK_VFS_TOKEN="$CARRACK_VFS_TOKEN" "$carrack_bin" get \
   "$destination" "$download_file" \
   --control-url "$control_url" \
   --staging-directory "$state/download-staging" \
-  --transfer-part-bytes 4194304 \
-  --maximum-concurrency 4 \
+  --transfer-part-bytes 8388608 \
+  --maximum-concurrency 8 \
   --format json)
 jq -e '.schema == "carrack.fs-get.v1"' <<<"$get_result" >/dev/null
 [[ $(sha256sum "$download_file" | cut -d' ' -f1) == "$source_sha" ]]
@@ -94,8 +98,8 @@ timeout 0.2s env CARRACK_VFS_TOKEN="$CARRACK_VFS_TOKEN" "$carrack_bin" get \
   "$destination" "$resumed_file" \
   --control-url "$control_url" \
   --staging-directory "$state/resume-staging" \
-  --transfer-part-bytes 4194304 \
-  --maximum-concurrency 4 \
+  --transfer-part-bytes 8388608 \
+  --maximum-concurrency 8 \
   --format json >/dev/null
 interrupted_status=$?
 set -e
@@ -108,8 +112,8 @@ if [[ $interrupted_status != 0 ]]; then
     "$destination" "$resumed_file" \
     --control-url "$control_url" \
     --staging-directory "$state/resume-staging" \
-    --transfer-part-bytes 4194304 \
-    --maximum-concurrency 4 \
+    --transfer-part-bytes 8388608 \
+    --maximum-concurrency 8 \
     --format json >/dev/null
 fi
 [[ $(sha256sum "$resumed_file" | cut -d' ' -f1) == "$source_sha" ]]
@@ -125,8 +129,8 @@ listing=$(CARRACK_VFS_TOKEN="$CARRACK_VFS_TOKEN" "$carrack_bin" list \
 jq -e --arg name "$name" 'all(.entries[]; .name != $name)' <<<"$listing" >/dev/null
 
 jq -n \
-  --arg schema carrack.aliyun-live-acceptance.v1 \
-  --arg driver_id "$CARRACK_ALIYUN_DRIVER_ID" \
+  --arg schema carrack.r2-live-acceptance.v1 \
+  --arg driver_id "$driver_id" \
   --arg source_sha256 "$source_sha" \
   --argjson plaintext_bytes "$payload_bytes" \
   '{
@@ -134,7 +138,7 @@ jq -n \
     driver_id: $driver_id,
     plaintext_bytes: $plaintext_bytes,
     source_sha256: $source_sha256,
-    encrypted_upload_verified: true,
+    encrypted_multipart_upload_verified: true,
     concurrent_range_download_verified: true,
     interrupted_resume_verified: true,
     logical_remove_verified: true,
