@@ -185,8 +185,13 @@ checks its shell contract only.
 Each recipe uploads a tagged Worker version and then moves 100% of that
 environment's traffic to it. It does not rewrite the already-audited custom
 domain, so the routine account token does not need zone-wide route mutation
-permission. Reconcile an intentional route change separately with a suitably
-scoped setup credential.
+permission. After the traffic move, the recipe polls the custom domain with a
+deployment-tagged cache buster and succeeds only when health reports the exact
+environment, the Worker WASM SDK round trip verifies, and the served UI asset
+has the same SHA-256 as the locally verified build. This bounded retry absorbs
+ordinary edge propagation while failing closed on a stale Worker, wrong route,
+or partial asset rollout. Reconcile an intentional route change separately
+with a suitably scoped setup credential.
 
 The stable UI endpoints are:
 

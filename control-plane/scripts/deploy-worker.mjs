@@ -3,6 +3,11 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
+import {
+    deploymentAcceptanceProfile,
+    waitForDeploymentAcceptance,
+} from "./deployment-acceptance.mjs";
+
 const environmentName = process.argv[2];
 if (environmentName !== "dev" && environmentName !== "prod") {
     throw new Error("usage: deploy-worker.mjs <dev|prod>");
@@ -32,6 +37,11 @@ if (
 }
 const timestamp = new Date().toISOString().replaceAll(/[-:.]/g, "").replace("Z", "Z");
 const tag = `${environmentName}-${timestamp}-${randomUUID().slice(0, 8)}`;
+const acceptanceProfile = deploymentAcceptanceProfile(
+    config,
+    environmentName,
+    path.join(repositoryRoot, "web/dist/client"),
+);
 
 function wrangler(args) {
     const result = spawnSync("pnpm", ["exec", "wrangler", ...args], {
@@ -43,16 +53,7 @@ function wrangler(args) {
     }
 }
 
-wrangler([
-    "versions",
-    "upload",
-    "--env",
-    environmentName,
-    "--config",
-    configPath,
-    "--tag",
-    tag,
-]);
+wrangler(["versions", "upload", "--env", environmentName, "--config", configPath, "--tag", tag]);
 wrangler([
     "versions",
     "deploy",
@@ -92,3 +93,5 @@ if (JSON.stringify(deployedSchedules) !== JSON.stringify([...cronSchedules].sort
     throw new Error(`${environmentName} Cron schedules failed post-deploy verification`);
 }
 console.log(`${environmentName}: synchronized ${deployedSchedules.length} Cron schedule(s)`);
+const acceptance = await waitForDeploymentAcceptance(acceptanceProfile, tag);
+console.log(JSON.stringify(acceptance));

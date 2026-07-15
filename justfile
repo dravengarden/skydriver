@@ -24,7 +24,9 @@ test:
     bash tests/architecture-boundaries.sh
     bash -n tests/aliyun-live.sh
     bash -n tests/r2-live.sh
+    node --check control-plane/scripts/deploy-worker.mjs
     node --check control-plane/scripts/provision-default-r2.mjs
+    node --test control-plane/scripts/deployment-acceptance.test.mjs
     node --test control-plane/scripts/default-r2-provisioning.test.mjs
     node --test control-plane/scripts/provision-default-r2.test.mjs
     go test -race ./...
