@@ -148,6 +148,8 @@ pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
 }
 
 async fn claim_latest(database: &D1Database, now: u64) -> Result<Option<Candidate>> {
+    // Both outbox predicates are deliberate: one proves the partial-index
+    // predicate while the equality set lets SQLite seek by live state.
     let candidate = database
         .prepare(
             "SELECT outbox.revision_id
@@ -157,6 +159,8 @@ async fn claim_latest(database: &D1Database, now: u64) -> Result<Option<Candidat
                ON head.filesystem_id = revision.filesystem_id
               AND head.revision_id = revision.id
              WHERE revision.state = 'pending'
+               AND outbox.state != 'done'
+               AND outbox.state IN ('pending', 'claimed')
                AND NOT EXISTS (
                    SELECT 1 FROM vfs_catalog_revision_collapses AS collapse
                    WHERE collapse.revision_id = revision.id

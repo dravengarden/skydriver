@@ -23,6 +23,7 @@ lint:
 test:
     bash tests/architecture-boundaries.sh
     control-plane/tests/schema-retirement.sh
+    control-plane/tests/query-plans.sh
     bash -n tests/aliyun-live.sh
     bash -n tests/r2-live.sh
     node --check control-plane/scripts/audit-environments.mjs

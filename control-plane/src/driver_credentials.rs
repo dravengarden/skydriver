@@ -183,10 +183,13 @@ async fn refresh_one(
     now: u64,
     driver_id: Option<&str>,
 ) -> Result<bool> {
+    // The explicit state set proves the partial claim index predicate to
+    // SQLite; the following per-state deadlines retain the exact due logic.
     let candidate = database
         .prepare(
             "SELECT driver_id FROM driver_credential_refreshes
-             WHERE (?1 IS NULL OR driver_id = ?1)
+             WHERE state IN ('ready', 'retry', 'claimed')
+               AND (?1 IS NULL OR driver_id = ?1)
                AND (
                  (state = 'ready' AND refresh_after <= ?2)
                  OR (state = 'retry' AND retry_at <= ?2)

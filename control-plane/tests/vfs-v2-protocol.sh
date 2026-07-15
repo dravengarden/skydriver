@@ -64,7 +64,7 @@ INSERT INTO vfs_v2_protocol_assertions
 SELECT COUNT(*) = 12 FROM vfs_actions;
 
 INSERT INTO vfs_v2_protocol_assertions
-SELECT COUNT(*) = 21 FROM sqlite_schema
+SELECT COUNT(*) = 25 FROM sqlite_schema
 WHERE type = 'index' AND name IN (
   'idx_vfs_directories_active_parent',
   'idx_vfs_directories_active_acl_boundaries',
@@ -86,7 +86,11 @@ WHERE type = 'index' AND name IN (
   'idx_vfs_files_current_version',
   'idx_vfs_directory_entries_file_version',
   'idx_vfs_versions_published_at',
-  'idx_vfs_version_origins_directory'
+  'idx_vfs_version_origins_directory',
+  'idx_vfs_r2_cleanup_activity',
+  'idx_driver_credential_refreshes_activity',
+  'idx_vfs_read_leases_retirement',
+  'idx_vfs_r2_cleanup_evidence_retirement'
 );
 
 INSERT INTO vfs_v2_protocol_assertions

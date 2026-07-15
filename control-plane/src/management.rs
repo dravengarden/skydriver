@@ -619,8 +619,9 @@ pub(crate) async fn activity(request: &Request, env: &Env) -> Result<Response> {
                              AS attention_required
                   FROM vfs_r2_upload_cleanup_tasks AS task
                   JOIN vfs_put_intents AS intent ON intent.id = task.intent_id
-                  WHERE task.state IN ('cleaning', 'failed')
-                     OR (task.state = 'active' AND intent.state IN ('expired', 'abandoned'))
+                  WHERE task.state IN ('active', 'cleaning', 'failed')
+                    AND (task.state IN ('cleaning', 'failed')
+                         OR intent.state IN ('expired', 'abandoned'))
                   UNION ALL
                   SELECT 'credential_refresh' AS kind, refresh.credential_id AS id,
                          'driver_credential' AS subject_kind,
