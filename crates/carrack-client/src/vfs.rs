@@ -2,7 +2,8 @@
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use carrack_sdk_core::{
-    CatalogCheckpoint, MAXIMUM_CATALOG_CHECKPOINT_BYTES, validate_catalog_checkpoint,
+    CatalogCheckpoint, MAXIMUM_CATALOG_CHECKPOINT_BYTES, catalog_checkpoint_etag,
+    validate_catalog_checkpoint,
 };
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -425,6 +426,7 @@ impl VfsClient {
     pub(crate) async fn catalog_checkpoint(
         &self,
         session: &VfsSession,
+        if_none_match: Option<&str>,
     ) -> Result<Option<CatalogCheckpoint>, Error> {
         let token = self.token.encode();
         let Some(response) = self
@@ -433,6 +435,7 @@ impl VfsClient {
                 "api/v2/catalog/checkpoint",
                 &token,
                 MAXIMUM_CATALOG_CHECKPOINT_BYTES,
+                if_none_match,
             )
             .await?
         else {
@@ -445,6 +448,8 @@ impl VfsClient {
                 Error::InvalidResponse("catalog checkpoint length header is invalid".to_owned())
             })?;
         let expected_sha256 = required_header(&response.headers, "carrack-catalog-sha256")?;
+        let expected_etag = catalog_checkpoint_etag(expected_sha256)
+            .map_err(|error| Error::InvalidResponse(error.to_string()))?;
         let expected_revision = required_header(&response.headers, "carrack-catalog-revision")?
             .parse::<u64>()
             .map_err(|_| {
@@ -455,6 +460,7 @@ impl VfsClient {
             || content_length != response.body.len()
             || response.body.is_empty()
             || expected_sha256 != hex::encode(Sha256::digest(&response.body))
+            || required_header(&response.headers, "etag")? != expected_etag
         {
             return Err(Error::InvalidResponse(
                 "catalog checkpoint transport receipt differs".to_owned(),
@@ -1171,9 +1177,31 @@ mod tests {
             .await;
         assert!(
             client(&server)
-                .catalog_checkpoint(&session())
+                .catalog_checkpoint(&session(), None)
                 .await
                 .expect("optional checkpoint request")
+                .is_none()
+        );
+        delivery.assert_hits_async(1).await;
+    }
+
+    #[tokio::test]
+    async fn matching_checkpoint_condition_accepts_only_exact_304() {
+        let server = MockServer::start_async().await;
+        let etag = "\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"";
+        let delivery = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/api/v2/catalog/checkpoint")
+                    .header("If-None-Match", etag);
+                then.status(304).header("ETag", etag);
+            })
+            .await;
+        assert!(
+            client(&server)
+                .catalog_checkpoint(&session(), Some(etag))
+                .await
+                .expect("unchanged checkpoint")
                 .is_none()
         );
         delivery.assert_hits_async(1).await;
@@ -1217,7 +1245,7 @@ mod tests {
             })
             .await;
         assert!(matches!(
-            client(&server).catalog_checkpoint(&session).await,
+            client(&server).catalog_checkpoint(&session, None).await,
             Err(Error::InvalidResponse(message))
                 if message == "catalog checkpoint transport receipt differs"
         ));

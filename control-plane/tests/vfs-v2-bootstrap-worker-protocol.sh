@@ -771,7 +771,14 @@ checkpoint_root=$(awk '
     print $2
   }
 ' "$checkpoint_headers")
+checkpoint_etag=$(awk '
+  tolower($1) == "etag:" {
+    gsub("\\r", "", $2);
+    print $2
+  }
+' "$checkpoint_headers")
 [[ -n "$checkpoint_sha256" ]]
+[[ "$checkpoint_etag" == "\"sha256:$checkpoint_sha256\"" ]]
 [[ "$(sha256sum "$checkpoint_body" | cut -d' ' -f1)" == "$checkpoint_sha256" ]]
 jq --exit-status \
   --arg filesystem_id "$filesystem_id" \
@@ -785,6 +792,14 @@ jq --exit-status \
    and .root_data_root == $root
    and ([.directories[].directory_id] | length) > 0' \
   "$checkpoint_body" >/dev/null
+
+unchanged_checkpoint="$state_directory/unchanged-catalog-checkpoint"
+unchanged_status=$(curl --silent --show-error \
+  --output "$unchanged_checkpoint" --write-out '%{http_code}' \
+  -H "$authorization" -H "If-None-Match: $checkpoint_etag" \
+  "$base_url/api/v2/catalog/checkpoint")
+[[ "$unchanged_status" == 304 ]]
+[[ ! -s "$unchanged_checkpoint" ]]
 
 "${wrangler[@]}" d1 execute CARRACK_INDEX \
   --local --persist-to "$state_directory" \

@@ -18,7 +18,8 @@ mod catalog;
 pub use catalog::{
     CATALOG_CHECKPOINT_SCHEMA, CatalogCheckpoint, CatalogCheckpointDirectory,
     CatalogCheckpointEntry, CatalogCheckpointEntryKind, MAXIMUM_CATALOG_CHECKPOINT_BYTES,
-    MAXIMUM_CATALOG_DIRECTORIES, MAXIMUM_CATALOG_ENTRIES, validate_catalog_checkpoint,
+    MAXIMUM_CATALOG_DIRECTORIES, MAXIMUM_CATALOG_ENTRIES, catalog_checkpoint_etag,
+    validate_catalog_checkpoint,
 };
 
 const FILE_LEAF_DOMAIN: &[u8] = b"carrack.vfs.file.leaf.v1\0";

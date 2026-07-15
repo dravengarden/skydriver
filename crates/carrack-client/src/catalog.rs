@@ -1,8 +1,8 @@
 //! Private content-addressed directory catalog used by incremental sync.
 
 use carrack_sdk_core::{
-    CatalogCheckpoint, CatalogCheckpointEntryKind, DirectoryMerkleEntry, directory_merkle_root,
-    validate_catalog_checkpoint,
+    CatalogCheckpoint, CatalogCheckpointEntryKind, DirectoryMerkleEntry, catalog_checkpoint_etag,
+    directory_merkle_root, validate_catalog_checkpoint,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -17,7 +17,10 @@ use crate::{DirectoryEntry, EntryKind, Error};
 
 const NODE_SCHEMA: &str = "carrack.vfs.catalog-node.v1";
 const ENVELOPE_SCHEMA: &str = "carrack.vfs.catalog-node-envelope.v1";
+const HEAD_SCHEMA: &str = "carrack.vfs.catalog-head.v1";
+const HEAD_ENVELOPE_SCHEMA: &str = "carrack.vfs.catalog-head-envelope.v1";
 const MAXIMUM_NODE_BYTES: u64 = 512 * 1024 * 1024;
+const MAXIMUM_HEAD_BYTES: u64 = 64 * 1024;
 static TEMPORARY_ORDINAL: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -50,19 +53,52 @@ struct CatalogEnvelope {
     node: CatalogNode,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CatalogHead {
+    schema: String,
+    filesystem_id: String,
+    revision_id: u64,
+    root_directory_id: String,
+    root_data_root: String,
+    checkpoint_sha256: String,
+    etag: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CatalogHeadEnvelope {
+    schema: String,
+    sha256: String,
+    head: CatalogHead,
+}
+
 pub(crate) struct CatalogStore {
+    root: PathBuf,
     nodes: PathBuf,
 }
 
 impl CatalogStore {
     pub(crate) fn new(state_directory: &Path, token_id: &str) -> Result<Self, Error> {
         validate_hex::<16>(token_id, "catalog token identity")?;
-        let nodes = state_directory
-            .join("catalog/tokens")
-            .join(token_id)
-            .join("nodes");
+        let root = state_directory.join("catalog/tokens").join(token_id);
+        let nodes = root.join("nodes");
+        ensure_private_directory(&root)?;
         ensure_private_directory(&nodes)?;
-        Ok(Self { nodes })
+        Ok(Self { root, nodes })
+    }
+
+    pub(crate) fn checkpoint_etag(&self) -> Result<Option<String>, Error> {
+        let Some(head) = self.load_head()? else {
+            return Ok(None);
+        };
+        if self
+            .load(&head.root_directory_id, &head.root_data_root)?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        Ok(Some(head.etag))
     }
 
     pub(crate) fn load(
@@ -151,7 +187,98 @@ impl CatalogStore {
                     .collect(),
             })?;
         }
+        let checkpoint_bytes = serde_json::to_vec(checkpoint).map_err(|error| {
+            Error::InvalidResponse(format!("encode catalog checkpoint receipt: {error}"))
+        })?;
+        let checkpoint_sha256 = hex::encode(Sha256::digest(&checkpoint_bytes));
+        self.publish_head(CatalogHead {
+            schema: HEAD_SCHEMA.to_owned(),
+            filesystem_id: checkpoint.filesystem_id.clone(),
+            revision_id: checkpoint.revision_id,
+            root_directory_id: checkpoint.root_directory_id.clone(),
+            root_data_root: checkpoint.root_data_root.clone(),
+            etag: catalog_checkpoint_etag(&checkpoint_sha256)
+                .map_err(|error| Error::InvalidResponse(error.to_string()))?,
+            checkpoint_sha256,
+        })?;
         Ok(())
+    }
+
+    fn load_head(&self) -> Result<Option<CatalogHead>, Error> {
+        let path = self.root.join("head.json");
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(local_error("inspect catalog head", error)),
+        };
+        if !metadata.file_type().is_file()
+            || metadata.file_type().is_symlink()
+            || metadata.len() > MAXIMUM_HEAD_BYTES
+        {
+            return Err(Error::InvalidResponse(
+                "catalog head is not a bounded regular file".to_owned(),
+            ));
+        }
+        let encoded =
+            std::fs::read(path).map_err(|error| local_error("read catalog head", error))?;
+        let envelope: CatalogHeadEnvelope = serde_json::from_slice(&encoded)
+            .map_err(|error| Error::InvalidResponse(format!("decode catalog head: {error}")))?;
+        if serde_json::to_vec(&envelope)
+            .map_err(|error| Error::InvalidResponse(format!("encode catalog head: {error}")))?
+            != encoded
+            || envelope.schema != HEAD_ENVELOPE_SCHEMA
+        {
+            return Err(Error::InvalidResponse(
+                "catalog head envelope is not canonical".to_owned(),
+            ));
+        }
+        let head_bytes = canonical_head_bytes(&envelope.head)?;
+        if envelope.sha256 != hex::encode(Sha256::digest(&head_bytes)) {
+            return Err(Error::InvalidResponse(
+                "catalog head envelope checksum differs".to_owned(),
+            ));
+        }
+        validate_head(&envelope.head)?;
+        Ok(Some(envelope.head))
+    }
+
+    fn publish_head(&self, head: CatalogHead) -> Result<(), Error> {
+        validate_head(&head)?;
+        if let Some(existing) = self.load_head()? {
+            if existing.revision_id > head.revision_id {
+                return Ok(());
+            }
+            if existing.revision_id == head.revision_id {
+                if canonical_head_bytes(&existing)? != canonical_head_bytes(&head)? {
+                    return Err(Error::InvalidResponse(
+                        "catalog head differs at one revision".to_owned(),
+                    ));
+                }
+                return Ok(());
+            }
+        }
+        let head_bytes = canonical_head_bytes(&head)?;
+        let envelope = CatalogHeadEnvelope {
+            schema: HEAD_ENVELOPE_SCHEMA.to_owned(),
+            sha256: hex::encode(Sha256::digest(&head_bytes)),
+            head,
+        };
+        let encoded = serde_json::to_vec(&envelope)
+            .map_err(|error| Error::InvalidResponse(format!("encode catalog head: {error}")))?;
+        if u64::try_from(encoded.len()).unwrap_or(u64::MAX) > MAXIMUM_HEAD_BYTES {
+            return Err(Error::InvalidResponse(
+                "catalog head exceeds the local size bound".to_owned(),
+            ));
+        }
+        let temporary = self.root.join(format!(
+            ".head.{}.{}.tmp",
+            std::process::id(),
+            TEMPORARY_ORDINAL.fetch_add(1, Ordering::Relaxed)
+        ));
+        write_private_file(&temporary, &encoded)?;
+        std::fs::rename(&temporary, self.root.join("head.json"))
+            .map_err(|error| local_error("publish catalog head", error))?;
+        sync_directory(&self.root)
     }
 
     fn publish_node(&self, node: CatalogNode) -> Result<CatalogNode, Error> {
@@ -331,6 +458,32 @@ fn canonical_node_bytes(node: &CatalogNode) -> Result<Vec<u8>, Error> {
         .map_err(|error| Error::InvalidResponse(format!("encode catalog node: {error}")))
 }
 
+fn validate_head(head: &CatalogHead) -> Result<(), Error> {
+    validate_hex::<16>(&head.filesystem_id, "catalog head filesystem identity")?;
+    validate_hex::<16>(
+        &head.root_directory_id,
+        "catalog head root directory identity",
+    )?;
+    validate_hex::<32>(&head.root_data_root, "catalog head root")?;
+    validate_hex::<32>(&head.checkpoint_sha256, "catalog head checkpoint SHA-256")?;
+    if head.schema != HEAD_SCHEMA
+        || head.revision_id == 0
+        || catalog_checkpoint_etag(&head.checkpoint_sha256)
+            .map_err(|error| Error::InvalidResponse(error.to_string()))?
+            != head.etag
+    {
+        return Err(Error::InvalidResponse(
+            "catalog head identity differs".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn canonical_head_bytes(head: &CatalogHead) -> Result<Vec<u8>, Error> {
+    serde_json::to_vec(head)
+        .map_err(|error| Error::InvalidResponse(format!("encode catalog head: {error}")))
+}
+
 fn validate_hex<const N: usize>(value: &str, context: &str) -> Result<(), Error> {
     let _ = decode_hex::<N>(value, context)?;
     Ok(())
@@ -402,6 +555,26 @@ fn local_error(context: &str, error: impl std::fmt::Display) -> Error {
 mod tests {
     use super::*;
 
+    fn empty_checkpoint() -> CatalogCheckpoint {
+        let root = hex::encode(directory_merkle_root(&[]).expect("empty directory root"));
+        CatalogCheckpoint {
+            schema: carrack_sdk_core::CATALOG_CHECKPOINT_SCHEMA.to_owned(),
+            filesystem_id: "101112131415161718191a1b1c1d1e1f".to_owned(),
+            revision_id: 1,
+            parent_revision_id: None,
+            root_directory_id: "202122232425262728292a2b2c2d2e2f".to_owned(),
+            root_data_root: root.clone(),
+            created_at: 1_700_000_000,
+            directories: vec![carrack_sdk_core::CatalogCheckpointDirectory {
+                directory_id: "202122232425262728292a2b2c2d2e2f".to_owned(),
+                parent_directory_id: None,
+                name: String::new(),
+                data_root: root,
+                entries: Vec::new(),
+            }],
+        }
+    }
+
     #[test]
     fn publishes_loads_and_rejects_corrupt_nodes() {
         let temporary = tempfile::tempdir().expect("temporary catalog");
@@ -451,5 +624,32 @@ mod tests {
                 .expect("load second token node")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn persists_only_a_verified_checkpoint_head() {
+        let temporary = tempfile::tempdir().expect("temporary catalog");
+        let store = CatalogStore::new(temporary.path(), "303132333435363738393a3b3c3d3e3f")
+            .expect("catalog store");
+        let checkpoint = empty_checkpoint();
+        let checkpoint_sha256 = hex::encode(Sha256::digest(
+            serde_json::to_vec(&checkpoint).expect("encode checkpoint"),
+        ));
+        let expected = catalog_checkpoint_etag(&checkpoint_sha256).expect("checkpoint entity tag");
+
+        store
+            .publish_checkpoint(&checkpoint)
+            .expect("publish checkpoint");
+        assert_eq!(
+            store.checkpoint_etag().expect("read checkpoint head"),
+            Some(expected)
+        );
+
+        let head_path = store.root.join("head.json");
+        let mut bytes = std::fs::read(&head_path).expect("read checkpoint head");
+        let middle = bytes.len() / 2;
+        bytes[middle] ^= 1;
+        std::fs::write(head_path, bytes).expect("corrupt checkpoint head");
+        assert!(store.checkpoint_etag().is_err());
     }
 }

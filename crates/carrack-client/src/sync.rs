@@ -130,7 +130,11 @@ impl VfsClient {
         protect_directory(&options.state_directory)?;
         let session = self.session().await?;
         let catalog = CatalogStore::new(&options.state_directory, &session.token_id)?;
-        if let Some(checkpoint) = self.catalog_checkpoint(&session).await? {
+        let checkpoint_etag = catalog.checkpoint_etag()?;
+        if let Some(checkpoint) = self
+            .catalog_checkpoint(&session, checkpoint_etag.as_deref())
+            .await?
+        {
             catalog.publish_checkpoint(&checkpoint)?;
         }
         let state_path = state_path(&options.state_directory, &session.token_id, source);
@@ -593,7 +597,7 @@ mod tests {
     use carrack_sdk_core::{
         CATALOG_CHECKPOINT_SCHEMA, CatalogCheckpoint, CatalogCheckpointDirectory,
         CatalogCheckpointEntry, CatalogCheckpointEntryKind, DirectoryMerkleEntry,
-        directory_merkle_root,
+        catalog_checkpoint_etag, directory_merkle_root,
     };
     use httpmock::{Method::GET, MockServer};
     use serde_json::json;
@@ -711,6 +715,8 @@ mod tests {
         };
         let checkpoint_body = serde_json::to_vec(&checkpoint).expect("encode checkpoint");
         let checkpoint_sha256 = hex::encode(Sha256::digest(&checkpoint_body));
+        let checkpoint_etag =
+            catalog_checkpoint_etag(&checkpoint_sha256).expect("checkpoint entity tag");
         let session = server
             .mock_async(|when, then| {
                 when.method(GET).path("/api/v2/session");
@@ -729,6 +735,7 @@ mod tests {
                 then.status(200)
                     .header("Content-Type", "application/json")
                     .header("Content-Length", checkpoint_body.len().to_string())
+                    .header("ETag", checkpoint_etag)
                     .header("Carrack-Catalog-SHA256", checkpoint_sha256)
                     .header("Carrack-Catalog-Revision", "11")
                     .header("Carrack-Catalog-Root", root_data_root.clone())

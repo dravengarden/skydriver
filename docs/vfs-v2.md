@@ -238,6 +238,13 @@ authenticated paginated API; corrupt metadata fails closed. A future
 subtree-specific checkpoint or content-addressed page tree may optimize those
 fallbacks without changing directory roots or the CLI planning model.
 
+The client persists only a canonical SHA-256-enveloped checkpoint head after
+all nodes are durable. Subsequent syncs send that strong entity tag. The Worker
+repeats the complete authorization and head proof, but returns HTTP 304 before
+opening R2 when the current artifact SHA-256 is unchanged. This keeps unchanged
+sync metadata cost to one bounded D1 proof plus the existing live-root fences;
+the local hint never bypasses authorization or Merkle verification.
+
 Catalog publication uses a D1 outbox and idempotent materialization. A head
 never advertises an R2 revision until its immutable objects exist and verify.
 Queue redelivery may duplicate work but cannot publish a different object at

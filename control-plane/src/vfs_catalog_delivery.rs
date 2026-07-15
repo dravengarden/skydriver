@@ -1,8 +1,8 @@
 //! Authenticated delivery of complete, server-materialized VFS catalogs.
 
-use carrack_sdk_core::MAXIMUM_CATALOG_CHECKPOINT_BYTES;
+use carrack_sdk_core::{MAXIMUM_CATALOG_CHECKPOINT_BYTES, catalog_checkpoint_etag};
 use serde::Deserialize;
-use worker::{D1Database, Env, Response, Result, wasm_bindgen::JsValue};
+use worker::{D1Database, Env, Request, Response, Result, wasm_bindgen::JsValue};
 
 use crate::vfs_tokens::AuthenticatedVfsToken;
 
@@ -22,12 +22,21 @@ struct DeliveryRow {
 /// filesystem-wide list and content-read authority. Narrow roots, snapshots,
 /// and filesystems containing an ACL inheritance break receive an empty
 /// success response so clients transparently retain paginated traversal.
-pub(crate) async fn checkpoint(env: &Env, token: &AuthenticatedVfsToken) -> Result<Response> {
+pub(crate) async fn checkpoint(
+    request: &Request,
+    env: &Env,
+    token: &AuthenticatedVfsToken,
+) -> Result<Response> {
     let database = env.d1("CARRACK_INDEX")?;
     let Some(delivery) = eligible_checkpoint(&database, token).await? else {
         return fallback();
     };
     validate_receipt(&delivery)?;
+    let etag = catalog_checkpoint_etag(&delivery.sha256)
+        .map_err(|error| protocol_error(&error.to_string()))?;
+    if request.headers().get("If-None-Match")?.as_deref() == Some(etag.as_str()) {
+        return not_modified(&delivery, &etag);
+    }
 
     let bucket = env.bucket("CARRACK_MANIFESTS")?;
     let object = bucket
@@ -54,19 +63,7 @@ pub(crate) async fn checkpoint(env: &Env, token: &AuthenticatedVfsToken) -> Resu
     response
         .headers_mut()
         .set("Content-Length", &delivery.bytes.to_string())?;
-    response
-        .headers_mut()
-        .set("Carrack-Catalog-SHA256", &delivery.sha256)?;
-    response.headers_mut().set(
-        "Carrack-Catalog-Revision",
-        &delivery.revision_id.to_string(),
-    )?;
-    response
-        .headers_mut()
-        .set("Carrack-Catalog-Root", &delivery.root_data_root)?;
-    response
-        .headers_mut()
-        .set("Cache-Control", "private, no-store, max-age=0")?;
+    set_receipt_headers(&mut response, &delivery, &etag)?;
     response
         .headers_mut()
         .set("X-Content-Type-Options", "nosniff")?;
@@ -204,6 +201,30 @@ fn fallback() -> Result<Response> {
         .headers_mut()
         .set("Cache-Control", "private, no-store, max-age=0")?;
     Ok(response)
+}
+
+fn not_modified(delivery: &DeliveryRow, etag: &str) -> Result<Response> {
+    let mut response = Response::empty()?.with_status(304);
+    set_receipt_headers(&mut response, delivery, etag)?;
+    Ok(response)
+}
+
+fn set_receipt_headers(response: &mut Response, delivery: &DeliveryRow, etag: &str) -> Result<()> {
+    response.headers_mut().set("ETag", etag)?;
+    response
+        .headers_mut()
+        .set("Carrack-Catalog-SHA256", &delivery.sha256)?;
+    response.headers_mut().set(
+        "Carrack-Catalog-Revision",
+        &delivery.revision_id.to_string(),
+    )?;
+    response
+        .headers_mut()
+        .set("Carrack-Catalog-Root", &delivery.root_data_root)?;
+    response
+        .headers_mut()
+        .set("Cache-Control", "private, no-store, max-age=0")?;
+    Ok(())
 }
 
 fn protocol_error(message: &str) -> worker::Error {

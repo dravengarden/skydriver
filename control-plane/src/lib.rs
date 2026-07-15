@@ -224,7 +224,7 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
             let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
                 return Response::error("VFS token authentication required", 401);
             };
-            vfs_catalog_delivery::checkpoint(&context.env, &token).await
+            vfs_catalog_delivery::checkpoint(&request, &context.env, &token).await
         })
         .get_async(
             "/api/v2/directories/:id/entries",

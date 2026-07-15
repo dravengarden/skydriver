@@ -242,6 +242,7 @@ impl Client {
         path: &str,
         token: &str,
         maximum_bytes: usize,
+        if_none_match: Option<&str>,
     ) -> Result<Option<BoundedResponse>, Error> {
         if path.contains("..") || !path.starts_with("api/") {
             return Err(Error::InvalidEndpoint("invalid API path".to_owned()));
@@ -250,15 +251,17 @@ impl Client {
             .endpoint
             .join(path)
             .map_err(|error| Error::InvalidEndpoint(error.to_string()))?;
-        let response = self
+        let mut request = self
             .http
             .get(endpoint)
             .header("Accept", "application/json")
             .header("Carrack-Protocol-Epoch", PROTOCOL_EPOCH)
             .header("Carrack-SDK-Version", SDK_VERSION)
-            .bearer_auth(token)
-            .send()
-            .await?;
+            .bearer_auth(token);
+        if let Some(etag) = if_none_match {
+            request = request.header("If-None-Match", etag);
+        }
+        let response = request.send().await?;
         if response.status() == StatusCode::UPGRADE_REQUIRED {
             let failure =
                 decode_json::<UpgradeRequired>(response, MAXIMUM_COMPATIBILITY_BODY_BYTES, true)
@@ -266,6 +269,24 @@ impl Client {
             return Err(Error::UpgradeRequired(Box::new(failure)));
         }
         if response.status() == StatusCode::NO_CONTENT {
+            return Ok(None);
+        }
+        if response.status() == StatusCode::NOT_MODIFIED {
+            let Some(expected) = if_none_match else {
+                return Err(Error::InvalidResponse(
+                    "catalog checkpoint returned 304 without a condition".to_owned(),
+                ));
+            };
+            if response
+                .headers()
+                .get("etag")
+                .and_then(|value| value.to_str().ok())
+                != Some(expected)
+            {
+                return Err(Error::InvalidResponse(
+                    "catalog checkpoint 304 entity tag differs".to_owned(),
+                ));
+            }
             return Ok(None);
         }
         if !response.status().is_success() {

@@ -65,11 +65,11 @@ carrack remove /releases/latest.tar.zst \
 `sync` first requests a bounded server-materialized catalog checkpoint when the
 token safely covers the complete filesystem, otherwise transparently traverses
 revision-pinned pages. It verifies the complete directory catalog before
-payload work, verifies
-unchanged local files from the prior authenticated version/block metadata, and
-downloads only changed or corrupted files. Changed files run concurrently and
-each retains its own resumable range pipeline. Untracked local files are
-preserved.
+payload work; unchanged verified checkpoint heads use a conditional request and
+transfer no checkpoint body. It also verifies unchanged local files from the
+prior authenticated version/block metadata, and downloads only changed or
+corrupted files. Changed files run concurrently and each retains its own
+resumable range pipeline. Untracked local files are preserved.
 
 Multipart journals, resume, range scheduling, encryption, checksums, and GC
 are internal. Transfer bounds tune the pipeline; they do not alter identity.

@@ -185,6 +185,15 @@ the token root using the shared native/WASM SDK validator before hydrating its
 private token-scoped DAG. A concurrent newer live root simply misses those
 content addresses and falls back to pages; corrupt delivery fails closed.
 
+After every complete hydration, the client atomically stores a small
+SHA-256-enveloped head receipt beside that token's private nodes. A later sync
+sends its exact strong `If-None-Match` tag. The Worker still performs the full
+current token-chain, action, ACL-boundary, and D1 publication proof first, then
+returns HTTP 304 before opening R2 when the SHA-256 is unchanged. A missing,
+partial, noncanonical, or corrupt local receipt cannot create a hit: the client
+requests and revalidates the complete checkpoint instead. The receipt is only
+an acceleration hint and never replaces the live root page and final fence.
+
 Subtree-specific checkpoint projection and hash-chained deltas remain follow-up
 accelerations. They may reduce fallback metadata further, but cannot broaden a
 token's closure or weaken the final live-root fence.

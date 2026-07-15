@@ -15,6 +15,24 @@ pub const MAXIMUM_CATALOG_ENTRIES: usize = 20_000;
 /// Maximum encoded bytes accepted for one complete checkpoint.
 pub const MAXIMUM_CATALOG_CHECKPOINT_BYTES: usize = 32 * 1024 * 1024;
 
+/// Constructs the exact strong HTTP entity tag for one canonical checkpoint
+/// SHA-256.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidInput`] for anything other than lowercase SHA-256
+/// hexadecimal.
+pub fn catalog_checkpoint_etag(sha256: &str) -> Result<String, Error> {
+    if sha256.len() != 64
+        || !sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(Error::InvalidInput("catalog checkpoint SHA-256 is invalid"));
+    }
+    Ok(format!("\"sha256:{sha256}\""))
+}
+
 /// One complete immutable filesystem catalog checkpoint.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -311,6 +329,18 @@ mod tests {
     #[test]
     fn accepts_complete_empty_checkpoint() {
         validate_catalog_checkpoint(&empty_checkpoint()).expect("valid empty checkpoint");
+    }
+
+    #[test]
+    fn constructs_strong_checkpoint_etag() {
+        assert_eq!(
+            catalog_checkpoint_etag(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            )
+            .expect("checkpoint entity tag"),
+            "\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\""
+        );
+        assert!(catalog_checkpoint_etag("AA").is_err());
     }
 
     #[test]
