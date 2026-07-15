@@ -9,6 +9,7 @@ import {
     desiredRootPlacements,
     desiredTokenPolicy,
     environmentProfile,
+    hasBootstrappedVfs,
     selectExactNamedToken,
     stableKey,
 } from "./default-r2-provisioning.mjs";
@@ -156,6 +157,12 @@ test("adds only to an empty root unless explicitly asked to append", () => {
             { driverId: "r2-default", priority: 10 },
         ],
     });
+});
+
+test("requires VFS authority only after bootstrap", () => {
+    assert.equal(hasBootstrappedVfs([]), false);
+    assert.equal(hasBootstrappedVfs([{ id: "vfs" }]), true);
+    assert.throws(() => hasBootstrappedVfs(undefined), /omitted filesystems/);
 });
 
 test("stable mutation keys contain no provider credential", () => {

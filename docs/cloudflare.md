@@ -55,8 +55,10 @@ unnecessarily require `Workers Routes: Edit`.
 
 The public UUIDs and bucket names are committed in
 `control-plane/wrangler.jsonc`; credentials and Worker runtime secrets are
-never committed. Run the local invariant check through `just test`. After a
-remote deployment, verify that no other Worker is bound to either environment:
+never committed. Run the local invariant check through `just test`. After
+migration, deployment, and the one-time default R2 provisioning described
+below, verify both resource isolation and the enabled `r2-default` profile with
+its current operator-configurable hard quota in D1:
 
 ```bash
 just audit-cloudflare
@@ -212,6 +214,7 @@ deployment credential boundary:
 ```bash
 export CLOUDFLARE_TOKEN_FACTORY_API_TOKEN='<short-lived Create additional tokens credential>'
 export CARRACK_OPERATOR_CREDENTIAL='<environment operator credential>'
+# Required only when this environment already has a bootstrapped VFS.
 export CARRACK_VFS_TOKEN='<environment root or scoped driver.manage token>'
 
 just check-r2-dev
@@ -221,7 +224,9 @@ unset CLOUDFLARE_TOKEN_FACTORY_API_TOKEN CARRACK_OPERATOR_CREDENTIAL CARRACK_VFS
 
 Production additionally requires `CARRACK_PROVISION_PROD=1`. The preflight and
 apply commands first inspect the exact Carrack driver and root placement
-revisions. If no signing credential exists, they find or create the deterministic
+revisions. Before VFS bootstrap there is no placement policy, so production can
+initialize and enable `r2-default` without a VFS bearer; a later bootstrap still
+starts with an empty placement as an explicit authority boundary. If no signing credential exists, they find or create the deterministic
 account-owned token `carrack-r2-default-<environment>`, require the exact
 `Workers R2 Storage Bucket Item Write` permission and the single bucket resource,
 derive the S3 secret as SHA-256 of the one-time token value, and write it only to

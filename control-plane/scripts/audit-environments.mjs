@@ -10,15 +10,28 @@ const config = JSON.parse(fs.readFileSync("control-plane/wrangler.jsonc", "utf8"
 const requiredSecrets = ["CARRACK_ADMIN_TOKEN", "CARRACK_VFS_MASTER_KEY_V1"];
 const forbiddenSecrets = ["CARRACK_ROOT_KEY_V1", "CARRACK_SESSION_KEY"];
 
-async function api(path) {
+async function api(path, init = {}) {
     const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`, {
-        headers: { Authorization: `Bearer ${apiToken}` },
+        ...init,
+        headers: {
+            Authorization: `Bearer ${apiToken}`,
+            ...(init.body === undefined ? {} : { "Content-Type": "application/json" }),
+            ...init.headers,
+        },
     });
     const body = await response.json();
     if (!response.ok || body.success !== true) {
         throw new Error(`Cloudflare API request failed for ${path}`);
     }
     return body.result;
+}
+
+async function queryD1(environment, sql) {
+    const result = await api(`/d1/database/${environment.databaseId}/query`, {
+        method: "POST",
+        body: JSON.stringify({ sql }),
+    });
+    return result[0]?.results ?? [];
 }
 
 function singleBinding(environment, key, binding) {
@@ -132,6 +145,38 @@ for (const environment of Object.values(expected)) {
     const subdomain = await api(`/workers/scripts/${environment.worker}/subdomain`);
     if (subdomain.enabled !== false || subdomain.previews_enabled !== false) {
         throw new Error(`${environment.name} Worker routing is not isolated as configured`);
+    }
+
+    const defaultR2 = await queryD1(
+        environment,
+        `SELECT kind, enabled, lifecycle_owner,
+                retired_at IS NULL AS active,
+                credential_ref IS NOT NULL AS credential_present,
+                json_extract(config_json, '$.bucket') AS bucket,
+                json_extract(config_json, '$.managed') AS managed,
+                json_extract(config_json, '$.prefix') AS prefix,
+                quota.max_physical_bytes
+         FROM driver_instances AS driver
+         LEFT JOIN driver_quota_policies AS quota ON quota.driver_id = driver.id
+         WHERE driver.id = 'r2-default'`,
+    );
+    const [driver] = defaultR2;
+    if (
+        defaultR2.length !== 1 ||
+        driver.kind !== "r2/v1" ||
+        driver.enabled !== 1 ||
+        driver.lifecycle_owner !== "environment" ||
+        driver.active !== 1 ||
+        driver.credential_present !== 1 ||
+        driver.bucket !== environment.payloadBucketName ||
+        driver.managed !== 1 ||
+        driver.prefix !== "" ||
+        !Number.isSafeInteger(driver.max_physical_bytes) ||
+        driver.max_physical_bytes <= 0
+    ) {
+        throw new Error(
+            `${environment.name} r2-default is not provisioned with an enabled environment profile and hard quota`,
+        );
     }
 }
 

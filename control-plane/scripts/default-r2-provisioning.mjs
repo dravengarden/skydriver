@@ -123,6 +123,13 @@ export function assertManagedDriver(driver, profile) {
     }
 }
 
+export function hasBootstrappedVfs(filesystems) {
+    if (!Array.isArray(filesystems)) {
+        throw new Error("management snapshot omitted filesystems");
+    }
+    return filesystems.length > 0;
+}
+
 export function desiredRootPlacements(policy, appendToNonempty = false) {
     if (!Number.isSafeInteger(policy?.placement_revision) || !Array.isArray(policy.placements)) {
         throw new Error("invalid root placement policy");

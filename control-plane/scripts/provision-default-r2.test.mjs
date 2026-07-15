@@ -44,7 +44,7 @@ const value = (name) => args[args.indexOf(name) + 1];
 if (args[0] === "compatibility") {
   console.log(JSON.stringify({ protocol_epoch: 2, enforcement: "required" }));
 } else if (args[0] === "snapshot") {
-  console.log(JSON.stringify({ drivers: [{
+  console.log(JSON.stringify({ filesystems: [{ id: "vfs" }], drivers: [{
     id: "r2-default",
     kind: "r2/v1",
     lifecycle_owner: "environment",

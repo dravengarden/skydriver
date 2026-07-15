@@ -12,6 +12,7 @@ import {
     desiredRootPlacements,
     desiredTokenPolicy,
     environmentProfile,
+    hasBootstrappedVfs,
     selectExactNamedToken,
     stableKey,
 } from "./default-r2-provisioning.mjs";
@@ -43,7 +44,6 @@ if (!check && recoverExistingToken && process.env.CARRACK_RECOVER_R2_TOKEN !== "
 const requiredEnvironment = [
     "CLOUDFLARE_ACCOUNT_ID",
     "CARRACK_OPERATOR_CREDENTIAL",
-    "CARRACK_VFS_TOKEN",
 ];
 for (const name of requiredEnvironment) {
     if (!process.env[name]) throw new Error(`${name} is required`);
@@ -178,8 +178,14 @@ runCarrackctl(["compatibility", "--control-url", profile.controlUrl, "--format",
 let management = snapshot();
 let driver = management.drivers.find(({ id }) => id === DEFAULT_R2_DRIVER_ID);
 assertManagedDriver(driver, profile);
-let placementPolicy = rootPlacements();
-let placementPlan = desiredRootPlacements(placementPolicy, appendRootPlacement);
+const hasVfs = hasBootstrappedVfs(management.filesystems);
+if (hasVfs && !process.env.CARRACK_VFS_TOKEN) {
+    throw new Error("CARRACK_VFS_TOKEN is required after VFS bootstrap");
+}
+let placementPolicy = hasVfs ? rootPlacements() : null;
+let placementPlan = hasVfs
+    ? desiredRootPlacements(placementPolicy, appendRootPlacement)
+    : { action: "not-applicable", placements: [] };
 let tokenPlan = null;
 if (!driver.credential_present) tokenPlan = await inspectTokenFactory();
 
@@ -328,9 +334,14 @@ if (!driver.enabled) {
     if (!driver.enabled) throw new Error("r2-default was not enabled after verified apply");
 }
 
-placementPolicy = rootPlacements();
-placementPlan = desiredRootPlacements(placementPolicy, appendRootPlacement);
-if (placementPlan.action === "add-to-empty-root" || placementPlan.action === "append-to-root") {
+if (hasVfs) {
+    placementPolicy = rootPlacements();
+    placementPlan = desiredRootPlacements(placementPolicy, appendRootPlacement);
+}
+if (
+    placementPolicy !== null &&
+    (placementPlan.action === "add-to-empty-root" || placementPlan.action === "append-to-root")
+) {
     const encoded = placementPlan.placements
         .map(({ driverId, priority }) => `${driverId}:${String(priority)}`)
         .join(",");
