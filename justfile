@@ -25,6 +25,7 @@ test:
     control-plane/tests/schema-retirement.sh
     bash -n tests/aliyun-live.sh
     bash -n tests/r2-live.sh
+    node --check control-plane/scripts/audit-environments.mjs
     node --check control-plane/scripts/deploy-worker.mjs
     node --check control-plane/scripts/provision-default-r2.mjs
     node --test control-plane/scripts/deployment-acceptance.test.mjs
