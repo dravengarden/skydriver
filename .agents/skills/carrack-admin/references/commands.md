@@ -32,6 +32,12 @@ The admin snapshot contains only redacted driver configuration and non-secret
 token metadata. It never contains provider credentials, token bearers, token
 verifiers, directory keys, or plaintext file bytes.
 
+`inventory` returns aggregate bounded-scan and quarantine state. Managed R2
+and Aliyun Drive run server-side; the latter uses only its sealed and
+automatically renewed access authority. Local filesystem inventory remains an
+agent-host capability and therefore reports `unsupported` in this control-
+plane view. Never treat quarantine as deletion authorization.
+
 `metrics` returns up to 400 days of sampled daily rollups. Use `global all` for
 the environment total. Rates are estimates derived from completed transfers;
 zero rows means no sampled completion, not zero provider availability. The

@@ -367,15 +367,19 @@ unused indexes only through a new append-only migration.
 
 ## Provider inventory
 
-The control plane runs a bounded server-owned inventory page for the
-environment-owned R2 driver and exposes only aggregate status through the
-management UI and `carrackctl inventory`. Physical object deletion is internal,
-server-owned lifecycle work. The former archive commands, Worker routes, Rust
-modules, and D1 tables have been removed; no agent may reconstruct their old
-HTTP protocol.
+The control plane runs one bounded server-owned inventory page for an enabled
+hosted driver and exposes only aggregate status through the management UI and
+`carrackctl inventory`. The environment-owned R2 binding and Aliyun Drive Open
+API adapter are supported. Agent-local filesystems remain explicitly
+unsupported because a Worker cannot safely enumerate their host. Physical
+object deletion is internal, server-owned lifecycle work. The former archive
+commands, Worker routes, Rust modules, and D1 tables have been removed; no
+agent may reconstruct their old HTTP protocol.
 
-The hosted inventory pass is read-only, bounded, fenced, and conservative: an
-unknown object is quarantined rather than adopted or deleted,
+The hosted inventory pass is read-only, bounded, fenced, and conservative. It
+uses the R2 binding or the sealed, automatically renewed Aliyun access grant;
+refresh authority never leaves the control plane. An unknown object is
+quarantined rather than adopted or deleted,
 and a missing listing result is evidence rather than proof of absence. Its
 review and physical deletion stages belong to the control plane, require the
 same final reachability and identity fences as normal lifecycle GC, and must

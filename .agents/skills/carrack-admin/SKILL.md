@@ -145,6 +145,10 @@ unless an approved VFS operation needs secret injection.
   claim cleanup work, request provider delete credentials, or delete a hosted
   provider object with either CLI. Preserve suspicious objects for control-
   plane reconciliation or operator investigation.
+- `carrackctl inventory` is a redacted aggregate view of the bounded hosted
+  scan. Managed R2 and Aliyun Drive are scanned by the control plane; local
+  filesystems report an explicit agent-host fallback. Quarantine is evidence,
+  never permission for an agent to adopt or delete provider objects.
 
 ## Finish
 
