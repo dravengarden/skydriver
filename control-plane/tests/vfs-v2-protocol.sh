@@ -64,7 +64,7 @@ INSERT INTO vfs_v2_protocol_assertions
 SELECT COUNT(*) = 12 FROM vfs_actions;
 
 INSERT INTO vfs_v2_protocol_assertions
-SELECT COUNT(*) = 17 FROM sqlite_schema
+SELECT COUNT(*) = 20 FROM sqlite_schema
 WHERE type = 'index' AND name IN (
   'idx_vfs_directories_active_parent',
   'idx_vfs_files_active_filesystem',
@@ -75,6 +75,9 @@ WHERE type = 'index' AND name IN (
   'idx_vfs_token_verifiers_created',
   'idx_admin_configuration_sessions_expires_at',
   'idx_vfs_catalog_outbox_claimable',
+  'idx_vfs_catalog_checkpoint_artifacts_cleanup',
+  'idx_vfs_catalog_revisions_pending_filesystem',
+  'idx_vfs_catalog_revision_collapses_checkpoint',
   'idx_vfs_snapshots_expiry',
   'idx_vfs_snapshot_versions_version',
   'idx_vfs_token_verifiers_snapshot_expiry',
@@ -655,6 +658,85 @@ WHERE id = '$location_b';
 
 INSERT INTO vfs_snapshot_versions (snapshot_id, version_id, created_at)
 VALUES ('$snapshot_a', '$version_b', unixepoch());
+
+INSERT INTO vfs_catalog_checkpoint_artifacts (
+  revision_id, r2_key, sha256, bytes, state, created_at, updated_at
+)
+SELECT catalog_revision_id, 'vfs/catalog/checkpoints/test.json',
+       '9666666666666666666666666666666666666666666666666666666666666666',
+       128, 'writing', unixepoch(), unixepoch()
+FROM vfs_snapshots WHERE id = '$snapshot_a';
+INSERT INTO vfs_catalog_outbox (revision_id, updated_at)
+SELECT catalog_revision_id, unixepoch()
+FROM vfs_snapshots WHERE id = '$snapshot_a';
+"
+
+expect_failure \
+  "UPDATE vfs_catalog_checkpoint_artifacts
+   SET state = 'orphaned', updated_at = unixepoch()
+   WHERE revision_id = (
+     SELECT catalog_revision_id FROM vfs_snapshots WHERE id = '$snapshot_a'
+   );" \
+  "checkpoint artifact bypassing the staged receipt"
+
+expect_failure \
+  "UPDATE vfs_catalog_revisions
+   SET state = 'materialized', materialized_at = unixepoch(),
+       checkpoint_r2_key = 'vfs/catalog/checkpoints/test.json',
+       checkpoint_sha256 =
+         '9666666666666666666666666666666666666666666666666666666666666666',
+       checkpoint_r2_version = 'r2-test-version', checkpoint_bytes = 128
+   WHERE id = (
+     SELECT catalog_revision_id FROM vfs_snapshots WHERE id = '$snapshot_a'
+   );" \
+  "catalog materialization without a staged R2 receipt"
+
+expect_failure \
+  "UPDATE vfs_catalog_outbox SET state = 'done'
+   WHERE revision_id = (
+     SELECT catalog_revision_id FROM vfs_snapshots WHERE id = '$snapshot_a'
+   );" \
+  "catalog outbox completion without a published head or collapse"
+
+execute "
+UPDATE vfs_catalog_checkpoint_artifacts
+SET state = 'staged', r2_version = 'r2-test-version', updated_at = unixepoch()
+WHERE revision_id = (
+  SELECT catalog_revision_id FROM vfs_snapshots WHERE id = '$snapshot_a'
+);
+INSERT INTO vfs_catalog_mutation_heads (
+  filesystem_id, revision_id, updated_at
+)
+SELECT filesystem_id, id, unixepoch()
+FROM vfs_catalog_revisions
+WHERE id = (
+  SELECT catalog_revision_id FROM vfs_snapshots WHERE id = '$snapshot_a'
+);
+"
+
+expect_failure \
+  "UPDATE vfs_catalog_checkpoint_artifacts
+   SET state = 'orphaned', updated_at = unixepoch()
+   WHERE revision_id = (
+     SELECT catalog_revision_id FROM vfs_snapshots WHERE id = '$snapshot_a'
+   );" \
+  "checkpoint artifact orphaned while it remains the mutation head"
+
+expect_failure \
+  "UPDATE vfs_catalog_checkpoint_artifacts
+   SET state = 'published', updated_at = unixepoch()
+   WHERE revision_id = (
+     SELECT catalog_revision_id FROM vfs_snapshots WHERE id = '$snapshot_a'
+   );" \
+  "checkpoint artifact published before its exact catalog revision"
+
+execute "
+DELETE FROM vfs_catalog_mutation_heads WHERE filesystem_id = '$filesystem_a';
+UPDATE vfs_catalog_checkpoint_artifacts
+SET state = 'orphaned', updated_at = unixepoch()
+WHERE revision_id = (
+  SELECT catalog_revision_id FROM vfs_snapshots WHERE id = '$snapshot_a'
+);
 "
 
 expect_failure \

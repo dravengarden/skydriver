@@ -35,11 +35,12 @@ The current implemented V2 slice includes:
   resumable multipart upload, concurrent exact-range download, and
   binding-owned server cleanup independent of client signing-key rotation.
 
-Remaining expansion work is explicit: R2 checkpoint/delta acceleration,
-additional hosted drivers, production fault-injection for every lifecycle
-class, and final removal of the compatibility-only Go archive surface. Durable
-Aliyun credential rotation is already server-owned and does not change the
-public complete-object filesystem contract.
+Remaining expansion work is explicit: scoped client delivery and delta
+acceleration on top of the server-owned R2 checkpoints, additional hosted
+drivers, production fault-injection for every lifecycle class, and final
+removal of the compatibility-only Go archive surface. Durable Aliyun credential
+rotation is already server-owned and does not change the public complete-object
+filesystem contract.
 
 ## Product boundary
 
@@ -202,19 +203,14 @@ degradations.
 
 ## Metadata distribution
 
-D1 is the online transaction authority but not the bulk read path for large
-directory synchronization. Every committed mutation receives a monotonic
-catalog revision. The control plane materializes immutable metadata in R2 as:
-
-- periodic zstd-compressed canonical checkpoints;
-- content-addressed, hash-chained delta segments after each checkpoint;
-- a signed head containing revision, checkpoint, delta tail, and directory
-  roots.
-
-The CLI authenticates once, obtains a head and scoped metadata grant, downloads
-the checkpoint or missing deltas directly, verifies the chain and final root,
-and updates a local SQLite catalog. It then computes the complete transfer plan
-locally. No per-file control-plane request is required on the payload hot path.
+D1 is the online transaction authority but not the intended bulk read path for
+large directory synchronization. Every committed mutation receives a monotonic
+catalog revision. The current Cron materializer collapses pending historical
+outbox work into a newly verified latest checkpoint: it reconstructs the whole
+live tree under start/end root fences, writes canonical JSON to a
+content-addressed create-only R2 key, and advances the D1 catalog head only
+after the exact object exists. Tracked orphan artifacts are reclaimed after a
+grace period.
 
 The implemented client uses the directory Merkle graph directly: private local
 state is rooted in the authenticated directory snapshot, missing directories
@@ -222,14 +218,17 @@ are assembled from revision-pinned pages before payload scheduling, and the
 live root is revalidated after the recursive closure. It then persists the
 immutable file-version, verification-block, and completed-range state needed
 for local incremental planning. Unchanged verified files require no provider
-read. R2 checkpoint/delta publication remains an optional metadata-plane
-acceleration; `vfs-catalog-v1.md` fixes the current protocol and its exact
-boundary.
+read, and changed files request grants directly by immutable version rather
+than resolving every path again.
 
-Checkpoints optimize full sequential catalog transfer. Delta segments optimize
-incremental synchronization. A content-addressed Merkle B-tree may be added
-for extremely large partial catalogs without changing directory roots or the
-CLI planning model.
+The R2 checkpoint is not yet returned to ordinary VFS tokens: a
+whole-filesystem checkpoint would disclose names outside a subtree-scoped token
+or a broken ACL inheritance boundary. A follow-up scoped delivery protocol must
+prove the authorized recursive closure before using checkpoints or deltas.
+Until then the authenticated paginated API remains the miss path and the local
+Merkle DAG supplies the incremental speedup. A content-addressed page tree may
+later optimize very large flat directories without changing directory roots or
+the CLI planning model.
 
 Catalog publication uses a D1 outbox and idempotent materialization. A head
 never advertises an R2 revision until its immutable objects exist and verify.

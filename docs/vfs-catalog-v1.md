@@ -146,19 +146,33 @@ plaintext Merkle root to match.
 
 ## R2 materialization and outbox correctness
 
-The D1 schema already reserves catalog revisions and an outbox, but the current
-outbox row stores only a revision pointer. Live directory rows are mutable, so
-a delayed worker cannot safely reconstruct arbitrary historical revision `N`
-after revision `N+1` has committed. Publishing a later live view under the old
-revision identity would be a correctness bug.
+The server now implements the conservative second form of outbox processing:
+it materializes only a filesystem's current mutation head as a complete
+checkpoint. One bounded Cron pass claims the current head, reads every active
+directory and entry, recomputes every directory Merkle root, proves that the
+graph is a single tree reachable from the filesystem root, and rechecks the
+same live root and revision after assembly.
 
-Before R2 checkpoint or delta publication is enabled, mutation transactions
-must persist enough immutable canonical event data to reconstruct the exact
-revision, or a materializer must explicitly collapse pending work into a newly
-verified latest checkpoint and never claim to have materialized skipped
-historical states. R2 objects must be content addressed, root verified, and
-published through a conditional head only after the immutable object exists.
+The canonical JSON checkpoint is written to `CARRACK_MANIFESTS` under its
+SHA-256 with an R2 create-only condition. D1 records the planned artifact before
+the R2 side effect, then publishes `vfs_catalog_heads` only after the immutable
+object exists with the exact bytes, SHA-256, R2 version, and size. A concurrent
+mutation makes the final D1 CAS fail. The staged object is then marked orphaned
+and deleted after a grace period without requiring a bucket-wide listing.
 
-Until then, the authenticated paginated directory API is the source for missing
-nodes. Local DAG reuse still removes all unchanged subtree reads and lets
-metadata synchronization run ahead of provider payload pipelines.
+Older pending revisions are not mislabeled as materialized. Only after the
+newer complete checkpoint is published are their outbox rows marked done with
+an immutable `vfs_catalog_revision_collapses` record. The original revision and
+mutation receipt remain durable evidence. Collapse cleanup is limited to 500
+revisions per Cron pass and uses dedicated pending-revision and reverse-collapse
+indexes, so an accumulated outbox cannot turn one maintenance run into an
+unbounded D1 scan or write transaction.
+
+This first checkpoint format is deliberately uncompressed and bounded at 32
+MiB, 5,000 directories, and 20,000 entries. Exceeding a bound fails the optional
+acceleration and leaves the revision retryable; it never weakens the live
+paginated API. Authenticated client checkpoint delivery and hash-chained deltas
+remain separate follow-up work because a whole-filesystem object must not be
+given to a token that can read only one subtree. Until a scoped delivery
+protocol exists, the paginated directory API remains the source for missing
+local nodes, while local DAG reuse still skips every unchanged subtree.

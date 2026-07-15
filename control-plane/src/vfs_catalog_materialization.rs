@@ -1,0 +1,1128 @@
+//! Server-owned, root-fenced VFS catalog checkpoint materialization.
+
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Write as _,
+};
+
+use carrack_sdk_core::{DirectoryMerkleEntry, directory_merkle_root};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
+use worker::{Bucket, Conditional, D1Database, Date, Env, Result, wasm_bindgen::JsValue};
+
+use crate::vfs_identifiers;
+
+const CHECKPOINT_SCHEMA: &str = "carrack.vfs.catalog-checkpoint.v1";
+const MAXIMUM_DIRECTORIES: u64 = 5_000;
+const MAXIMUM_ENTRIES: u64 = 20_000;
+const MAXIMUM_CHECKPOINT_BYTES: usize = 32 * 1024 * 1024;
+const MAXIMUM_COLLAPSES_PER_RUN: u64 = 500;
+const CLAIM_SECONDS: u64 = 300;
+const ORPHAN_GRACE_SECONDS: u64 = 86_400;
+
+#[derive(Deserialize)]
+struct RevisionIdRow {
+    revision_id: u64,
+}
+
+#[derive(Deserialize)]
+struct Candidate {
+    revision_id: u64,
+    filesystem_id: String,
+    parent_revision_id: Option<u64>,
+    root_directory_id: String,
+    root_data_root: String,
+    created_at: u64,
+    lease_owner: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct DirectoryRow {
+    id: String,
+    parent_id: Option<String>,
+    name: String,
+    data_root: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct EntryRow {
+    directory_id: String,
+    name: String,
+    kind: String,
+    file_id: Option<String>,
+    version_id: Option<String>,
+    child_directory_id: Option<String>,
+    size_bytes: u64,
+    data_root: String,
+    metadata_root: Option<String>,
+}
+
+#[derive(Serialize)]
+struct Checkpoint {
+    schema: &'static str,
+    filesystem_id: String,
+    revision_id: u64,
+    parent_revision_id: Option<u64>,
+    root_directory_id: String,
+    root_data_root: String,
+    created_at: u64,
+    directories: Vec<CheckpointDirectory>,
+}
+
+#[derive(Serialize)]
+struct CheckpointDirectory {
+    directory_id: String,
+    parent_directory_id: Option<String>,
+    name: String,
+    data_root: String,
+    entries: Vec<CheckpointEntry>,
+}
+
+#[derive(Clone, Serialize)]
+struct CheckpointEntry {
+    name: String,
+    kind: String,
+    file_id: Option<String>,
+    version_id: Option<String>,
+    child_directory_id: Option<String>,
+    size_bytes: u64,
+    data_root: String,
+    metadata_root: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ArtifactRow {
+    r2_key: String,
+    sha256: String,
+    bytes: u64,
+    r2_version: Option<String>,
+    state: String,
+}
+
+#[derive(Deserialize)]
+struct CleanupRow {
+    revision_id: u64,
+    r2_key: String,
+    state: String,
+}
+
+#[derive(Deserialize)]
+struct PublicationRow {
+    revision_id: u64,
+}
+
+struct StoredObject {
+    version: String,
+    bytes: u64,
+}
+
+/// Materializes at most one latest filesystem checkpoint and reclaims at most
+/// one tracked abandoned R2 object. Historical pending revisions are collapsed
+/// only after a newer complete checkpoint has been verified and published.
+pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
+    let database = env.d1("CARRACK_INDEX")?;
+    let bucket = env.bucket("CARRACK_MANIFESTS")?;
+    cleanup_one(&database, &bucket, now).await?;
+    if let Some(candidate) = claim_latest(&database, now).await?
+        && let Err(error) = materialize(&database, &bucket, &candidate, now).await
+    {
+        let release_now = now_seconds();
+        release_claim(
+            &database,
+            candidate.revision_id,
+            &candidate.lease_owner,
+            "checkpoint_materialization_failed",
+            release_now,
+        )
+        .await?;
+        return Err(error);
+    }
+    collapse_historical(&database, now_seconds()).await?;
+    Ok(())
+}
+
+async fn claim_latest(database: &D1Database, now: u64) -> Result<Option<Candidate>> {
+    let candidate = database
+        .prepare(
+            "SELECT outbox.revision_id
+             FROM vfs_catalog_outbox AS outbox
+             JOIN vfs_catalog_revisions AS revision ON revision.id = outbox.revision_id
+             JOIN vfs_catalog_mutation_heads AS head
+               ON head.filesystem_id = revision.filesystem_id
+              AND head.revision_id = revision.id
+             WHERE revision.state = 'pending'
+               AND NOT EXISTS (
+                   SELECT 1 FROM vfs_catalog_revision_collapses AS collapse
+                   WHERE collapse.revision_id = revision.id
+               )
+               AND (outbox.state = 'pending'
+                    OR (outbox.state = 'claimed' AND outbox.lease_expires_at <= ?1))
+             ORDER BY outbox.updated_at, outbox.revision_id
+             LIMIT 1",
+        )
+        .bind(&[number(now)])?
+        .first::<RevisionIdRow>(None)
+        .await?;
+    let Some(candidate) = candidate else {
+        return Ok(None);
+    };
+    let lease_owner = vfs_identifiers::new_uuid_v7_hex()?;
+    let claimed = database
+        .prepare(
+            "UPDATE vfs_catalog_outbox
+             SET state = 'claimed', attempts = attempts + 1, lease_owner = ?1,
+                 lease_expires_at = ?2, last_error_code = NULL, updated_at = ?3
+             WHERE revision_id = ?4
+               AND (state = 'pending' OR (state = 'claimed' AND lease_expires_at <= ?3))
+               AND EXISTS (
+                   SELECT 1
+                   FROM vfs_catalog_revisions AS revision
+                   JOIN vfs_catalog_mutation_heads AS head
+                     ON head.filesystem_id = revision.filesystem_id
+                    AND head.revision_id = revision.id
+                   WHERE revision.id = vfs_catalog_outbox.revision_id
+                     AND revision.state = 'pending'
+               )",
+        )
+        .bind(&[
+            JsValue::from_str(&lease_owner),
+            number(now + CLAIM_SECONDS),
+            number(now),
+            number(candidate.revision_id),
+        ])?
+        .run()
+        .await?;
+    if changes(claimed.meta()?) != 1 {
+        return Ok(None);
+    }
+    load_candidate(database, candidate.revision_id, &lease_owner, now).await
+}
+
+async fn load_candidate(
+    database: &D1Database,
+    revision_id: u64,
+    lease_owner: &str,
+    now: u64,
+) -> Result<Option<Candidate>> {
+    database
+        .prepare(
+            "SELECT revision.id AS revision_id, revision.filesystem_id,
+                    revision.parent_revision_id, root.id AS root_directory_id,
+                    revision.root_data_root, revision.created_at, outbox.lease_owner
+             FROM vfs_catalog_revisions AS revision
+             JOIN vfs_catalog_mutation_heads AS head
+               ON head.filesystem_id = revision.filesystem_id
+              AND head.revision_id = revision.id
+             JOIN vfs_filesystems AS filesystem ON filesystem.id = revision.filesystem_id
+             JOIN vfs_directories AS root
+               ON root.filesystem_id = filesystem.id AND root.parent_id IS NULL
+             JOIN vfs_catalog_outbox AS outbox ON outbox.revision_id = revision.id
+             WHERE revision.id = ?1 AND revision.state = 'pending'
+               AND root.state = 'active' AND root.data_root = revision.root_data_root
+               AND outbox.state = 'claimed' AND outbox.lease_owner = ?2
+               AND outbox.lease_expires_at > ?3",
+        )
+        .bind(&[
+            number(revision_id),
+            JsValue::from_str(lease_owner),
+            number(now),
+        ])?
+        .first::<Candidate>(None)
+        .await
+}
+
+async fn materialize(
+    database: &D1Database,
+    bucket: &Bucket,
+    candidate: &Candidate,
+    now: u64,
+) -> Result<()> {
+    let checkpoint = load_checkpoint(database, candidate).await?;
+    let encoded = serde_json::to_vec(&checkpoint)?;
+    if encoded.is_empty() || encoded.len() > MAXIMUM_CHECKPOINT_BYTES {
+        return Err(protocol_error("catalog checkpoint exceeds its byte bound"));
+    }
+    let digest: [u8; 32] = Sha256::digest(&encoded).into();
+    let sha256 = lowercase_hex(&digest);
+    let r2_key = format!(
+        "vfs/catalog/checkpoints/{}/{}/{}.json",
+        candidate.filesystem_id,
+        &sha256[..2],
+        sha256
+    );
+    let bytes = u64::try_from(encoded.len())
+        .map_err(|_| protocol_error("catalog checkpoint size exceeds u64"))?;
+    record_writing(
+        database,
+        candidate.revision_id,
+        &r2_key,
+        &sha256,
+        bytes,
+        now,
+    )
+    .await?;
+    let stored = store_immutable(bucket, &r2_key, &encoded, &digest).await?;
+    if stored.bytes != bytes {
+        return Err(protocol_error("stored catalog checkpoint size differs"));
+    }
+    mark_staged(
+        database,
+        candidate.revision_id,
+        &r2_key,
+        &sha256,
+        bytes,
+        &stored.version,
+        now,
+    )
+    .await?;
+
+    let fence_now = now_seconds();
+    if load_candidate(
+        database,
+        candidate.revision_id,
+        &candidate.lease_owner,
+        fence_now,
+    )
+    .await?
+    .is_none()
+    {
+        mark_orphaned(database, candidate.revision_id, fence_now).await?;
+        release_claim(
+            database,
+            candidate.revision_id,
+            &candidate.lease_owner,
+            "superseded_during_checkpoint",
+            fence_now,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    if !publish(
+        database,
+        candidate,
+        &r2_key,
+        &sha256,
+        bytes,
+        &stored.version,
+        fence_now,
+    )
+    .await?
+    {
+        mark_orphaned(database, candidate.revision_id, fence_now).await?;
+        release_claim(
+            database,
+            candidate.revision_id,
+            &candidate.lease_owner,
+            "superseded_during_checkpoint",
+            fence_now,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn load_checkpoint(database: &D1Database, candidate: &Candidate) -> Result<Checkpoint> {
+    let directories = database
+        .prepare(
+            "SELECT id, parent_id, name, data_root
+             FROM vfs_directories
+             WHERE filesystem_id = ?1 AND state = 'active'
+             ORDER BY id
+             LIMIT ?2",
+        )
+        .bind(&[
+            JsValue::from_str(&candidate.filesystem_id),
+            number(MAXIMUM_DIRECTORIES + 1),
+        ])?
+        .all()
+        .await?
+        .results::<DirectoryRow>()?;
+    if directories.is_empty()
+        || directories.len() > usize::try_from(MAXIMUM_DIRECTORIES).unwrap_or(usize::MAX)
+    {
+        return Err(protocol_error("catalog directory bound exceeded"));
+    }
+    let entries = database
+        .prepare(
+            "SELECT entry.directory_id, entry.name, entry.kind, entry.file_id,
+                    entry.version_id, entry.child_directory_id, entry.size_bytes,
+                    entry.data_root, entry.metadata_root
+             FROM vfs_directory_entries AS entry
+             JOIN vfs_directories AS directory ON directory.id = entry.directory_id
+             WHERE directory.filesystem_id = ?1 AND directory.state = 'active'
+             ORDER BY entry.directory_id, entry.name COLLATE BINARY
+             LIMIT ?2",
+        )
+        .bind(&[
+            JsValue::from_str(&candidate.filesystem_id),
+            number(MAXIMUM_ENTRIES + 1),
+        ])?
+        .all()
+        .await?
+        .results::<EntryRow>()?;
+    if entries.len() > usize::try_from(MAXIMUM_ENTRIES).unwrap_or(usize::MAX) {
+        return Err(protocol_error("catalog entry bound exceeded"));
+    }
+    assemble_checkpoint(candidate, directories, entries)
+}
+
+fn assemble_checkpoint(
+    candidate: &Candidate,
+    directories: Vec<DirectoryRow>,
+    entries: Vec<EntryRow>,
+) -> Result<Checkpoint> {
+    let mut grouped = HashMap::<String, Vec<CheckpointEntry>>::new();
+    for entry in entries {
+        grouped
+            .entry(entry.directory_id)
+            .or_default()
+            .push(CheckpointEntry {
+                name: entry.name,
+                kind: entry.kind,
+                file_id: entry.file_id,
+                version_id: entry.version_id,
+                child_directory_id: entry.child_directory_id,
+                size_bytes: entry.size_bytes,
+                data_root: entry.data_root,
+                metadata_root: entry.metadata_root,
+            });
+    }
+    let mut checkpoint_directories = Vec::with_capacity(directories.len());
+    for directory in directories {
+        checkpoint_directories.push(CheckpointDirectory {
+            entries: grouped.remove(&directory.id).unwrap_or_default(),
+            directory_id: directory.id,
+            parent_directory_id: directory.parent_id,
+            name: directory.name,
+            data_root: directory.data_root,
+        });
+    }
+    if !grouped.is_empty() {
+        return Err(protocol_error(
+            "catalog entries reference an inactive directory",
+        ));
+    }
+    validate_checkpoint(candidate, &checkpoint_directories)?;
+    Ok(Checkpoint {
+        schema: CHECKPOINT_SCHEMA,
+        filesystem_id: candidate.filesystem_id.clone(),
+        revision_id: candidate.revision_id,
+        parent_revision_id: candidate.parent_revision_id,
+        root_directory_id: candidate.root_directory_id.clone(),
+        root_data_root: candidate.root_data_root.clone(),
+        created_at: candidate.created_at,
+        directories: checkpoint_directories,
+    })
+}
+
+fn validate_checkpoint(candidate: &Candidate, directories: &[CheckpointDirectory]) -> Result<()> {
+    let mut by_id = HashMap::with_capacity(directories.len());
+    for (index, directory) in directories.iter().enumerate() {
+        validate_hex::<16>(&directory.directory_id, "catalog directory identity")?;
+        let expected_root = decode_hex::<32>(&directory.data_root, "catalog directory root")?;
+        if by_id
+            .insert(directory.directory_id.clone(), index)
+            .is_some()
+        {
+            return Err(protocol_error("catalog directory identity is duplicated"));
+        }
+        for pair in directory.entries.windows(2) {
+            if pair[0].name.as_bytes() >= pair[1].name.as_bytes() {
+                return Err(protocol_error(
+                    "catalog entries are not canonically ordered",
+                ));
+            }
+        }
+        let merkle_entries = directory
+            .entries
+            .iter()
+            .map(merkle_entry)
+            .collect::<Result<Vec<_>>>()?;
+        let actual_root = directory_merkle_root(&merkle_entries)
+            .map_err(|error| protocol_error(&error.to_string()))?;
+        if actual_root != expected_root {
+            return Err(protocol_error("catalog directory root differs"));
+        }
+    }
+    let Some(root_index) = by_id.get(&candidate.root_directory_id).copied() else {
+        return Err(protocol_error("catalog root directory is missing"));
+    };
+    let root = &directories[root_index];
+    if root.parent_directory_id.is_some()
+        || !root.name.is_empty()
+        || root.data_root != candidate.root_data_root
+    {
+        return Err(protocol_error("catalog root identity differs"));
+    }
+    let mut visited = HashSet::with_capacity(directories.len());
+    let mut pending = vec![candidate.root_directory_id.clone()];
+    while let Some(directory_id) = pending.pop() {
+        if !visited.insert(directory_id.clone()) {
+            return Err(protocol_error("catalog directory graph is not a tree"));
+        }
+        let Some(index) = by_id.get(&directory_id).copied() else {
+            return Err(protocol_error("catalog child directory is missing"));
+        };
+        let directory = &directories[index];
+        for entry in &directory.entries {
+            if entry.kind != "directory" {
+                continue;
+            }
+            let child_id = entry
+                .child_directory_id
+                .as_ref()
+                .ok_or_else(|| protocol_error("catalog child identity is missing"))?;
+            let Some(child_index) = by_id.get(child_id).copied() else {
+                return Err(protocol_error("catalog child directory is missing"));
+            };
+            let child = &directories[child_index];
+            if child.parent_directory_id.as_deref() != Some(&directory.directory_id)
+                || child.name != entry.name
+                || child.data_root != entry.data_root
+            {
+                return Err(protocol_error("catalog child link differs"));
+            }
+            pending.push(child_id.clone());
+        }
+    }
+    if visited.len() != directories.len() {
+        return Err(protocol_error("catalog contains an unreachable directory"));
+    }
+    Ok(())
+}
+
+fn merkle_entry(entry: &CheckpointEntry) -> Result<DirectoryMerkleEntry<'_>> {
+    let data_root = decode_hex::<32>(&entry.data_root, "catalog entry data root")?;
+    match entry.kind.as_str() {
+        "file"
+            if entry.child_directory_id.is_none()
+                && entry.file_id.is_some()
+                && entry.version_id.is_some()
+                && entry.metadata_root.is_some() =>
+        {
+            Ok(DirectoryMerkleEntry::File {
+                name: &entry.name,
+                stable_id: decode_hex::<16>(
+                    entry.file_id.as_deref().unwrap_or_default(),
+                    "catalog file identity",
+                )?,
+                version_id: decode_hex::<16>(
+                    entry.version_id.as_deref().unwrap_or_default(),
+                    "catalog version identity",
+                )?,
+                size_bytes: entry.size_bytes,
+                data_root,
+                metadata_root: decode_hex::<32>(
+                    entry.metadata_root.as_deref().unwrap_or_default(),
+                    "catalog metadata root",
+                )?,
+            })
+        }
+        "directory"
+            if entry.file_id.is_none()
+                && entry.version_id.is_none()
+                && entry.child_directory_id.is_some()
+                && entry.metadata_root.is_none()
+                && entry.size_bytes == 0 =>
+        {
+            Ok(DirectoryMerkleEntry::Directory {
+                name: &entry.name,
+                stable_id: decode_hex::<16>(
+                    entry.child_directory_id.as_deref().unwrap_or_default(),
+                    "catalog child identity",
+                )?,
+                data_root,
+            })
+        }
+        _ => Err(protocol_error("catalog entry union is invalid")),
+    }
+}
+
+async fn record_writing(
+    database: &D1Database,
+    revision_id: u64,
+    r2_key: &str,
+    sha256: &str,
+    bytes: u64,
+    now: u64,
+) -> Result<()> {
+    database
+        .prepare(
+            "INSERT INTO vfs_catalog_checkpoint_artifacts (
+                 revision_id, r2_key, sha256, bytes, state, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, 'writing', ?5, ?5)
+             ON CONFLICT(revision_id) DO NOTHING",
+        )
+        .bind(&[
+            number(revision_id),
+            JsValue::from_str(r2_key),
+            JsValue::from_str(sha256),
+            number(bytes),
+            number(now),
+        ])?
+        .run()
+        .await?;
+    let artifact = load_artifact(database, revision_id).await?;
+    if artifact.is_some_and(|artifact| {
+        artifact.r2_key == r2_key
+            && artifact.sha256 == sha256
+            && artifact.bytes == bytes
+            && matches!(artifact.state.as_str(), "writing" | "staged")
+    }) {
+        return Ok(());
+    }
+    Err(protocol_error(
+        "catalog checkpoint artifact identity differs",
+    ))
+}
+
+async fn mark_staged(
+    database: &D1Database,
+    revision_id: u64,
+    r2_key: &str,
+    sha256: &str,
+    bytes: u64,
+    r2_version: &str,
+    now: u64,
+) -> Result<()> {
+    database
+        .prepare(
+            "UPDATE vfs_catalog_checkpoint_artifacts
+             SET state = 'staged', r2_version = ?1, updated_at = ?2
+             WHERE revision_id = ?3 AND r2_key = ?4 AND sha256 = ?5 AND bytes = ?6
+               AND state = 'writing'",
+        )
+        .bind(&[
+            JsValue::from_str(r2_version),
+            number(now),
+            number(revision_id),
+            JsValue::from_str(r2_key),
+            JsValue::from_str(sha256),
+            number(bytes),
+        ])?
+        .run()
+        .await?;
+    let artifact = load_artifact(database, revision_id).await?;
+    if artifact.is_some_and(|artifact| {
+        artifact.r2_key == r2_key
+            && artifact.sha256 == sha256
+            && artifact.bytes == bytes
+            && artifact.r2_version.as_deref() == Some(r2_version)
+            && artifact.state == "staged"
+    }) {
+        return Ok(());
+    }
+    Err(protocol_error("catalog checkpoint staging receipt differs"))
+}
+
+async fn load_artifact(database: &D1Database, revision_id: u64) -> Result<Option<ArtifactRow>> {
+    database
+        .prepare(
+            "SELECT r2_key, sha256, bytes, r2_version, state
+             FROM vfs_catalog_checkpoint_artifacts WHERE revision_id = ?1",
+        )
+        .bind(&[number(revision_id)])?
+        .first::<ArtifactRow>(None)
+        .await
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "one atomic publication batch carries every immutable R2 identity and collapse fence explicitly"
+)]
+async fn publish(
+    database: &D1Database,
+    candidate: &Candidate,
+    r2_key: &str,
+    sha256: &str,
+    bytes: u64,
+    r2_version: &str,
+    now: u64,
+) -> Result<bool> {
+    database
+        .batch(vec![
+            database
+                .prepare(
+                    "UPDATE vfs_catalog_revisions
+                     SET state = 'materialized', checkpoint_r2_key = ?1,
+                         checkpoint_sha256 = ?2, checkpoint_r2_version = ?3,
+                         checkpoint_bytes = ?4, materialized_at = ?5
+                     WHERE id = ?6 AND filesystem_id = ?7 AND root_data_root = ?8
+                       AND state = 'pending'
+                       AND EXISTS (
+                           SELECT 1 FROM vfs_catalog_mutation_heads
+                           WHERE filesystem_id = ?7 AND revision_id = ?6
+                       )
+                       AND EXISTS (
+                           SELECT 1 FROM vfs_catalog_outbox
+                           WHERE revision_id = ?6 AND state = 'claimed'
+                             AND lease_owner = ?9 AND lease_expires_at > ?5
+                       )
+                       AND EXISTS (
+                           SELECT 1 FROM vfs_catalog_checkpoint_artifacts
+                           WHERE revision_id = ?6 AND r2_key = ?1 AND sha256 = ?2
+                             AND r2_version = ?3 AND bytes = ?4 AND state = 'staged'
+                       )",
+                )
+                .bind(&[
+                    JsValue::from_str(r2_key),
+                    JsValue::from_str(sha256),
+                    JsValue::from_str(r2_version),
+                    number(bytes),
+                    number(now),
+                    number(candidate.revision_id),
+                    JsValue::from_str(&candidate.filesystem_id),
+                    JsValue::from_str(&candidate.root_data_root),
+                    JsValue::from_str(&candidate.lease_owner),
+                ])?,
+            database
+                .prepare(
+                    "UPDATE vfs_catalog_revisions
+                     SET state = 'published', published_at = ?1
+                     WHERE id = ?2 AND state = 'materialized'
+                       AND checkpoint_r2_key = ?3 AND checkpoint_sha256 = ?4
+                       AND checkpoint_r2_version = ?5 AND checkpoint_bytes = ?6",
+                )
+                .bind(&[
+                    number(now),
+                    number(candidate.revision_id),
+                    JsValue::from_str(r2_key),
+                    JsValue::from_str(sha256),
+                    JsValue::from_str(r2_version),
+                    number(bytes),
+                ])?,
+            database
+                .prepare(
+                    "UPDATE vfs_catalog_checkpoint_artifacts
+                     SET state = 'published', updated_at = ?1
+                     WHERE revision_id = ?2 AND state = 'staged'
+                       AND EXISTS (
+                           SELECT 1 FROM vfs_catalog_revisions
+                           WHERE id = ?2 AND state = 'published'
+                       )",
+                )
+                .bind(&[number(now), number(candidate.revision_id)])?,
+            database
+                .prepare(
+                    "INSERT INTO vfs_catalog_heads (
+                         filesystem_id, revision_id, root_data_root, updated_at
+                     )
+                     SELECT revision.filesystem_id, revision.id,
+                            revision.root_data_root, ?1
+                     FROM vfs_catalog_revisions AS revision
+                     JOIN vfs_catalog_mutation_heads AS mutation
+                       ON mutation.filesystem_id = revision.filesystem_id
+                      AND mutation.revision_id = revision.id
+                     WHERE revision.id = ?2 AND revision.state = 'published'
+                     ON CONFLICT(filesystem_id) DO UPDATE SET
+                         revision_id = excluded.revision_id,
+                         root_data_root = excluded.root_data_root,
+                         revision = vfs_catalog_heads.revision + 1,
+                         updated_at = excluded.updated_at",
+                )
+                .bind(&[number(now), number(candidate.revision_id)])?,
+            database
+                .prepare(
+                    "UPDATE vfs_catalog_outbox
+                     SET state = 'done', lease_owner = NULL, lease_expires_at = NULL,
+                         last_error_code = NULL, updated_at = ?1
+                     WHERE revision_id = ?2 AND state = 'claimed' AND lease_owner = ?3
+                       AND EXISTS (
+                           SELECT 1 FROM vfs_catalog_revisions
+                           WHERE id = ?2 AND state = 'published'
+                       )",
+                )
+                .bind(&[
+                    number(now),
+                    number(candidate.revision_id),
+                    JsValue::from_str(&candidate.lease_owner),
+                ])?,
+        ])
+        .await?;
+    let publication = database
+        .prepare(
+            "SELECT head.revision_id
+             FROM vfs_catalog_heads AS head
+             JOIN vfs_catalog_revisions AS revision ON revision.id = head.revision_id
+             JOIN vfs_catalog_outbox AS outbox ON outbox.revision_id = revision.id
+             JOIN vfs_catalog_checkpoint_artifacts AS artifact
+               ON artifact.revision_id = revision.id
+             WHERE head.filesystem_id = ?1 AND head.revision_id = ?2
+               AND revision.state = 'published' AND outbox.state = 'done'
+               AND artifact.state = 'published'",
+        )
+        .bind(&[
+            JsValue::from_str(&candidate.filesystem_id),
+            number(candidate.revision_id),
+        ])?
+        .first::<PublicationRow>(None)
+        .await?;
+    Ok(publication.is_some_and(|row| row.revision_id == candidate.revision_id))
+}
+
+async fn collapse_historical(database: &D1Database, now: u64) -> Result<()> {
+    let checkpoint = database
+        .prepare(
+            "SELECT head.revision_id
+             FROM vfs_catalog_heads AS head
+             WHERE EXISTS (
+                 SELECT 1
+                 FROM vfs_catalog_revisions AS older
+                 WHERE older.filesystem_id = head.filesystem_id
+                   AND older.id < head.revision_id AND older.state = 'pending'
+                   AND NOT EXISTS (
+                       SELECT 1 FROM vfs_catalog_revision_collapses AS collapse
+                       WHERE collapse.revision_id = older.id
+                   )
+             )
+             ORDER BY head.updated_at, head.revision_id
+             LIMIT 1",
+        )
+        .first::<RevisionIdRow>(None)
+        .await?;
+    let Some(checkpoint) = checkpoint else {
+        return Ok(());
+    };
+    database
+        .batch(vec![
+            database
+                .prepare(
+                    "INSERT OR IGNORE INTO vfs_catalog_revision_collapses (
+                         revision_id, superseded_by_revision_id, collapsed_at
+                     )
+                     SELECT older.id, published.id, ?1
+                     FROM vfs_catalog_revisions AS published
+                     JOIN vfs_catalog_revisions AS older
+                       ON older.filesystem_id = published.filesystem_id
+                      AND older.id < published.id AND older.state = 'pending'
+                     WHERE published.id = ?2 AND published.state = 'published'
+                       AND NOT EXISTS (
+                           SELECT 1 FROM vfs_catalog_revision_collapses AS collapse
+                           WHERE collapse.revision_id = older.id
+                       )
+                     ORDER BY older.id
+                     LIMIT ?3",
+                )
+                .bind(&[
+                    number(now),
+                    number(checkpoint.revision_id),
+                    number(MAXIMUM_COLLAPSES_PER_RUN),
+                ])?,
+            database
+                .prepare(
+                    "UPDATE vfs_catalog_checkpoint_artifacts
+                     SET state = 'orphaned', updated_at = ?1
+                     WHERE state = 'staged' AND revision_id IN (
+                         SELECT collapse.revision_id
+                         FROM vfs_catalog_revision_collapses AS collapse
+                         JOIN vfs_catalog_outbox AS outbox
+                           ON outbox.revision_id = collapse.revision_id
+                         WHERE collapse.superseded_by_revision_id = ?2
+                           AND outbox.state != 'done'
+                         ORDER BY collapse.revision_id LIMIT ?3
+                     )",
+                )
+                .bind(&[
+                    number(now),
+                    number(checkpoint.revision_id),
+                    number(MAXIMUM_COLLAPSES_PER_RUN),
+                ])?,
+            database
+                .prepare(
+                    "UPDATE vfs_catalog_outbox
+                     SET state = 'done', lease_owner = NULL, lease_expires_at = NULL,
+                         last_error_code = 'collapsed_to_checkpoint', updated_at = ?1
+                     WHERE state != 'done' AND revision_id IN (
+                         SELECT collapse.revision_id
+                         FROM vfs_catalog_revision_collapses AS collapse
+                         JOIN vfs_catalog_outbox AS unresolved
+                           ON unresolved.revision_id = collapse.revision_id
+                         WHERE collapse.superseded_by_revision_id = ?2
+                           AND unresolved.state != 'done'
+                         ORDER BY collapse.revision_id LIMIT ?3
+                     )",
+                )
+                .bind(&[
+                    number(now),
+                    number(checkpoint.revision_id),
+                    number(MAXIMUM_COLLAPSES_PER_RUN),
+                ])?,
+        ])
+        .await?;
+    Ok(())
+}
+
+async fn mark_orphaned(database: &D1Database, revision_id: u64, now: u64) -> Result<()> {
+    database
+        .prepare(
+            "UPDATE vfs_catalog_checkpoint_artifacts
+             SET state = 'orphaned', updated_at = ?1
+             WHERE revision_id = ?2 AND state = 'staged'
+               AND NOT EXISTS (
+                   SELECT 1 FROM vfs_catalog_heads WHERE revision_id = ?2
+               )
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM vfs_catalog_mutation_heads AS head
+                   JOIN vfs_catalog_revisions AS revision
+                     ON revision.id = ?2
+                    AND head.filesystem_id = revision.filesystem_id
+                    AND head.revision_id = revision.id
+               )",
+        )
+        .bind(&[number(now), number(revision_id)])?
+        .run()
+        .await?;
+    Ok(())
+}
+
+async fn release_claim(
+    database: &D1Database,
+    revision_id: u64,
+    lease_owner: &str,
+    error_code: &str,
+    now: u64,
+) -> Result<()> {
+    database
+        .prepare(
+            "UPDATE vfs_catalog_outbox
+             SET state = 'pending', lease_owner = NULL, lease_expires_at = NULL,
+                 last_error_code = ?1, updated_at = ?2
+             WHERE revision_id = ?3 AND state = 'claimed' AND lease_owner = ?4",
+        )
+        .bind(&[
+            JsValue::from_str(error_code),
+            number(now),
+            number(revision_id),
+            JsValue::from_str(lease_owner),
+        ])?
+        .run()
+        .await?;
+    Ok(())
+}
+
+async fn cleanup_one(database: &D1Database, bucket: &Bucket, now: u64) -> Result<()> {
+    let cutoff = now.saturating_sub(ORPHAN_GRACE_SECONDS);
+    let candidate = database
+        .prepare(
+            "SELECT artifact.revision_id, artifact.r2_key, artifact.state
+             FROM vfs_catalog_checkpoint_artifacts AS artifact
+             WHERE artifact.updated_at <= ?1
+               AND NOT EXISTS (
+                   SELECT 1 FROM vfs_catalog_heads AS head
+                   WHERE head.revision_id = artifact.revision_id
+               )
+               AND (
+                   artifact.state = 'orphaned'
+                   OR (
+                       artifact.state = 'writing'
+                       AND NOT EXISTS (
+                           SELECT 1 FROM vfs_catalog_mutation_heads AS head
+                           JOIN vfs_catalog_revisions AS revision
+                             ON revision.id = artifact.revision_id
+                            AND head.filesystem_id = revision.filesystem_id
+                            AND head.revision_id = revision.id
+                       )
+                   )
+               )
+             ORDER BY artifact.updated_at, artifact.revision_id
+             LIMIT 1",
+        )
+        .bind(&[number(cutoff)])?
+        .first::<CleanupRow>(None)
+        .await?;
+    let Some(candidate) = candidate else {
+        return Ok(());
+    };
+    bucket.delete(&candidate.r2_key).await?;
+    database
+        .prepare(
+            "DELETE FROM vfs_catalog_checkpoint_artifacts
+             WHERE revision_id = ?1 AND r2_key = ?2 AND state = ?3
+               AND updated_at <= ?4
+               AND NOT EXISTS (
+                   SELECT 1 FROM vfs_catalog_heads WHERE revision_id = ?1
+               )",
+        )
+        .bind(&[
+            number(candidate.revision_id),
+            JsValue::from_str(&candidate.r2_key),
+            JsValue::from_str(&candidate.state),
+            number(cutoff),
+        ])?
+        .run()
+        .await?;
+    Ok(())
+}
+
+async fn store_immutable(
+    bucket: &Bucket,
+    key: &str,
+    encoded: &[u8],
+    digest: &[u8; 32],
+) -> Result<StoredObject> {
+    let expected_bytes = u64::try_from(encoded.len())
+        .map_err(|_| protocol_error("catalog checkpoint size exceeds u64"))?;
+    let created = bucket
+        .put(key, encoded.to_vec())
+        .only_if(Conditional {
+            etag_does_not_match: Some("*".to_owned()),
+            ..Conditional::default()
+        })
+        .sha256(digest.to_vec())
+        .execute()
+        .await?;
+    if let Some(object) = created {
+        if object.size() != expected_bytes {
+            return Err(protocol_error("R2 catalog checkpoint size differs"));
+        }
+        return Ok(StoredObject {
+            version: object.version().clone(),
+            bytes: object.size(),
+        });
+    }
+    let Some(existing) = bucket.get(key).execute().await? else {
+        return Err(protocol_error(
+            "R2 catalog checkpoint disappeared after conditional write",
+        ));
+    };
+    let existing_bytes = existing.size();
+    let existing_version = existing.version().clone();
+    let Some(body) = existing.body() else {
+        return Err(protocol_error("existing R2 catalog checkpoint has no body"));
+    };
+    let existing_body = body.bytes().await?;
+    if existing_bytes != expected_bytes
+        || existing_body != encoded
+        || Sha256::digest(&existing_body).as_slice() != digest
+    {
+        return Err(protocol_error(
+            "content-addressed R2 catalog checkpoint collision",
+        ));
+    }
+    Ok(StoredObject {
+        version: existing_version,
+        bytes: existing_bytes,
+    })
+}
+
+fn validate_hex<const N: usize>(value: &str, context: &str) -> Result<()> {
+    let _ = decode_hex::<N>(value, context)?;
+    Ok(())
+}
+
+fn decode_hex<const N: usize>(value: &str, context: &str) -> Result<[u8; N]> {
+    if value.len() != N * 2
+        || value == "0".repeat(N * 2)
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(protocol_error(&format!("{context} is invalid")));
+    }
+    let decoded =
+        hex::decode(value).map_err(|_| protocol_error(&format!("{context} is invalid")))?;
+    decoded
+        .try_into()
+        .map_err(|_| protocol_error(&format!("{context} length differs")))
+}
+
+fn lowercase_hex(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
+}
+
+fn changes(meta: Option<worker::D1ResultMeta>) -> usize {
+    meta.and_then(|value| value.changes).unwrap_or_default()
+}
+
+fn number(value: u64) -> JsValue {
+    JsValue::from_str(&value.to_string())
+}
+
+fn now_seconds() -> u64 {
+    Date::now().as_millis() / 1_000
+}
+
+fn protocol_error(message: &str) -> worker::Error {
+    worker::Error::RustError(message.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn assembles_and_rejects_unreachable_catalogs() {
+        let root_id = "202122232425262728292a2b2c2d2e2f";
+        let child_id = "303132333435363738393a3b3c3d3e3f";
+        let empty_root = "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254";
+        let child_root: [u8; 32] = hex::decode(empty_root)
+            .expect("empty root hex")
+            .try_into()
+            .expect("empty root length");
+        let root_data_root = lowercase_hex(
+            &directory_merkle_root(&[DirectoryMerkleEntry::Directory {
+                name: "docs",
+                stable_id: hex::decode(child_id)
+                    .expect("child identity hex")
+                    .try_into()
+                    .expect("child identity length"),
+                data_root: child_root,
+            }])
+            .expect("root Merkle root"),
+        );
+        let candidate = Candidate {
+            revision_id: 7,
+            filesystem_id: "101112131415161718191a1b1c1d1e1f".to_owned(),
+            parent_revision_id: Some(6),
+            root_directory_id: root_id.to_owned(),
+            root_data_root: root_data_root.clone(),
+            created_at: 1_700_000_000,
+            lease_owner: "404142434445464748494a4b4c4d4e4f".to_owned(),
+        };
+        let directories = vec![
+            DirectoryRow {
+                id: root_id.to_owned(),
+                parent_id: None,
+                name: String::new(),
+                data_root: root_data_root,
+            },
+            DirectoryRow {
+                id: child_id.to_owned(),
+                parent_id: Some(root_id.to_owned()),
+                name: "docs".to_owned(),
+                data_root: empty_root.to_owned(),
+            },
+        ];
+        let entries = vec![EntryRow {
+            directory_id: root_id.to_owned(),
+            name: "docs".to_owned(),
+            kind: "directory".to_owned(),
+            file_id: None,
+            version_id: None,
+            child_directory_id: Some(child_id.to_owned()),
+            size_bytes: 0,
+            data_root: empty_root.to_owned(),
+            metadata_root: None,
+        }];
+
+        let checkpoint = assemble_checkpoint(&candidate, directories.clone(), entries.clone())
+            .expect("valid checkpoint");
+        assert_eq!(checkpoint.directories.len(), 2);
+
+        let mut unreachable = directories;
+        unreachable.push(DirectoryRow {
+            id: "505152535455565758595a5b5c5d5e5f".to_owned(),
+            parent_id: Some(root_id.to_owned()),
+            name: "orphan".to_owned(),
+            data_root: empty_root.to_owned(),
+        });
+        assert!(assemble_checkpoint(&candidate, unreachable, entries).is_err());
+    }
+}

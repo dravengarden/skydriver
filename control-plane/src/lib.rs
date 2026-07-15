@@ -40,6 +40,7 @@ mod verification;
 mod vfs_access;
 mod vfs_authorization;
 mod vfs_bootstrap;
+mod vfs_catalog_materialization;
 mod vfs_directories;
 mod vfs_directory_management;
 mod vfs_download;

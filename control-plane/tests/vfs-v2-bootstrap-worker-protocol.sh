@@ -699,6 +699,56 @@ curl --silent --show-error --fail-with-body \
   "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
 "${wrangler[@]}" d1 execute CARRACK_INDEX \
   --local --persist-to "$state_directory" \
+  --command "CREATE TABLE vfs_catalog_checkpoint_assertions (
+      accepted INTEGER NOT NULL CHECK (accepted = 1)
+    ) STRICT;
+    INSERT INTO vfs_catalog_checkpoint_assertions
+    SELECT CASE WHEN
+      (SELECT revision_id FROM vfs_catalog_heads
+       WHERE filesystem_id = '$filesystem_id') =
+      (SELECT revision_id FROM vfs_catalog_mutation_heads
+       WHERE filesystem_id = '$filesystem_id')
+      AND EXISTS (
+        SELECT 1
+        FROM vfs_catalog_heads AS head
+        JOIN vfs_catalog_revisions AS revision ON revision.id = head.revision_id
+        JOIN vfs_catalog_outbox AS outbox ON outbox.revision_id = revision.id
+        JOIN vfs_catalog_checkpoint_artifacts AS artifact
+          ON artifact.revision_id = revision.id
+        WHERE head.filesystem_id = '$filesystem_id'
+          AND head.root_data_root = revision.root_data_root
+          AND revision.state = 'published'
+          AND revision.checkpoint_r2_key = artifact.r2_key
+          AND revision.checkpoint_sha256 = artifact.sha256
+          AND revision.checkpoint_r2_version = artifact.r2_version
+          AND revision.checkpoint_bytes = artifact.bytes
+          AND revision.checkpoint_bytes > 0
+          AND outbox.state = 'done'
+          AND artifact.state = 'published'
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM vfs_catalog_outbox AS outbox
+        JOIN vfs_catalog_revisions AS revision ON revision.id = outbox.revision_id
+        WHERE revision.filesystem_id = '$filesystem_id' AND outbox.state != 'done'
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM vfs_catalog_revisions AS revision
+        JOIN vfs_catalog_heads AS head ON head.filesystem_id = revision.filesystem_id
+        WHERE revision.filesystem_id = '$filesystem_id'
+          AND revision.id < head.revision_id
+          AND revision.state = 'pending'
+          AND NOT EXISTS (
+            SELECT 1 FROM vfs_catalog_revision_collapses AS collapse
+            WHERE collapse.revision_id = revision.id
+              AND collapse.superseded_by_revision_id = head.revision_id
+          )
+      )
+    THEN 1 ELSE 0 END;
+    DROP TABLE vfs_catalog_checkpoint_assertions;" >/dev/null
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" \
   --command "CREATE TABLE vfs_server_gc_assertions (
       accepted INTEGER NOT NULL CHECK (accepted = 1)
     ) STRICT;
