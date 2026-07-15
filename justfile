@@ -22,6 +22,7 @@ lint:
 
 test:
     bash tests/architecture-boundaries.sh
+    control-plane/tests/schema-retirement.sh
     bash -n tests/aliyun-live.sh
     bash -n tests/r2-live.sh
     node --check control-plane/scripts/deploy-worker.mjs

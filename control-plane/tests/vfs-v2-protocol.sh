@@ -147,11 +147,6 @@ INSERT INTO driver_instances (
   ('vfs-driver-1', 'localfs/v2', '{}', 'vfs-credential', 1, 1),
   ('vfs-driver-2', 's3/v2', '{}', 'vfs-credential', 1, 1);
 
-INSERT INTO clients (
-  id, name, sdk_version, capabilities_json, labels_json, state,
-  created_at, updated_at
-) VALUES ('vfs-client', 'VFS client', 'v2', '{}', '{}', 'online', 1, 1);
-
 INSERT INTO vfs_filesystems (id, name, created_at, updated_at) VALUES
   ('$filesystem_a', 'primary', 1, 1),
   ('$filesystem_b', 'secondary', 1, 1);
@@ -161,9 +156,6 @@ INSERT INTO vfs_principals (
 ) VALUES
   ('$principal_active', 'service', 'VFS test client', 'active', 1, 1),
   ('$principal_disabled', 'service', 'Disabled client', 'disabled', 1, 1);
-
-INSERT INTO vfs_principal_clients (principal_id, client_id, created_at)
-VALUES ('$principal_active', 'vfs-client', 1);
 
 INSERT INTO vfs_directories (
   id, filesystem_id, parent_id, name, data_root, crypto_suite,
