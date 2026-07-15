@@ -11,8 +11,11 @@ IDs, plaintext lengths, file roots, metadata roots, child-directory IDs, and
 child-directory roots. The Rust sync state separately retains authenticated
 file-version and verification-block identities plus completed local ranges.
 Credentials, directory keys, and signed provider URLs are never persisted in
-either cache. A fresh scoped transfer grant is still required before provider
-I/O, so "offline planning" never means offline authorization.
+either cache. Catalog nodes and sync state are scoped beneath the non-secret
+server-issued `token_id`; a narrower token can never consume metadata cached by
+a broader token even when both commands share one state directory. A fresh
+scoped transfer grant is still required before provider I/O, so "offline
+planning" never means offline authorization.
 
 ## Why the catalog is a Merkle DAG
 
@@ -107,12 +110,14 @@ control-plane request and every child root is committed by its verified parent.
 
 ## Local durability and secrecy
 
-The store root and node shards must be real directories with no group or other
-permissions. Node files use mode `0600`; directories use `0700`. Publication
-writes and fsyncs a private temporary file, creates the final name with an
-atomic no-replace hard link, fsyncs the directory, and removes the temporary
-name. An existing exact node is accepted. An existing malformed or different
-node is a hard error and is never silently replaced.
+The store root contains one namespace per non-secret VFS token ID; token
+bearers and their verifiers are never written. Every token namespace and node
+shard must be a real directory with no group or other permissions. Node files
+use mode `0600`; directories use `0700`. Publication writes and fsyncs a
+private temporary file, creates the final name with an atomic no-replace hard
+link, fsyncs the directory, and removes the temporary name. An existing exact
+node is accepted. An existing malformed or different node is a hard error and
+is never silently replaced.
 
 The cache contains filenames and stable VFS identities, so it is sensitive
 metadata. It never contains bearer tokens, provider credentials, directory

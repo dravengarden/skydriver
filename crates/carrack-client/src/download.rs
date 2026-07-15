@@ -87,6 +87,30 @@ pub struct GetOptions {
     pub maximum_concurrency: usize,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct DownloadExpectation<'a> {
+    file_id: &'a str,
+    version_id: &'a str,
+    plaintext_bytes: u64,
+    file_root: &'a str,
+}
+
+impl<'a> DownloadExpectation<'a> {
+    pub(crate) fn new(
+        file_id: &'a str,
+        version_id: &'a str,
+        plaintext_bytes: u64,
+        file_root: &'a str,
+    ) -> Self {
+        Self {
+            file_id,
+            version_id,
+            plaintext_bytes,
+            file_root,
+        }
+    }
+}
+
 impl VfsClient {
     /// Downloads, decrypts, and verifies one complete immutable file.
     ///
@@ -110,21 +134,53 @@ impl VfsClient {
                 "download target is not a file".to_owned(),
             ));
         }
+        let file_id = entry
+            .file_id
+            .as_deref()
+            .ok_or_else(|| Error::InvalidResponse("file entry omitted file identity".to_owned()))?;
         let version_id = entry.version_id.as_deref().ok_or_else(|| {
             Error::InvalidResponse("file entry omitted version identity".to_owned())
         })?;
+        self.get_expected_file(
+            vfs_path,
+            DownloadExpectation::new(file_id, version_id, entry.size_bytes, &entry.data_root),
+            destination,
+            options,
+        )
+        .await
+    }
+
+    pub(crate) async fn get_file_version(
+        &self,
+        vfs_path: &str,
+        expected: DownloadExpectation<'_>,
+        destination: &Path,
+        options: &GetOptions,
+    ) -> Result<GetResult, Error> {
+        self.get_expected_file(vfs_path, expected, destination, options)
+            .await
+    }
+
+    async fn get_expected_file(
+        &self,
+        vfs_path: &str,
+        expected: DownloadExpectation<'_>,
+        destination: &Path,
+        options: &GetOptions,
+    ) -> Result<GetResult, Error> {
+        validate_options(options)?;
         let token = self.token.encode();
         let mut plan: DownloadPlan = self
             .control
             .send_json::<DownloadPlan, ()>(
                 Method::GET,
-                &format!("api/v2/versions/{version_id}/download"),
+                &format!("api/v2/versions/{}/download", expected.version_id),
                 Some(&token),
                 &[],
                 None,
             )
             .await?;
-        validate_plan(&plan, &entry)?;
+        validate_plan(&plan, expected)?;
         let outcome = self
             .finish_download(vfs_path, destination, options, &mut plan)
             .await;
@@ -201,7 +257,7 @@ impl VfsClient {
     }
 }
 
-fn validate_plan(plan: &DownloadPlan, entry: &crate::DirectoryEntry) -> Result<(), Error> {
+fn validate_plan(plan: &DownloadPlan, expected: DownloadExpectation<'_>) -> Result<(), Error> {
     let _ = (
         &plan.filesystem_id,
         &plan.file_id,
@@ -216,10 +272,10 @@ fn validate_plan(plan: &DownloadPlan, entry: &crate::DirectoryEntry) -> Result<(
         &plan.etag,
     );
     if plan.schema != "carrack.vfs.download-plan.v1"
-        || entry.version_id.as_deref() != Some(&plan.version_id)
-        || entry.file_id.as_deref() != Some(&plan.file_id)
-        || entry.size_bytes != plan.plaintext_bytes
-        || entry.data_root != plan.file_root
+        || expected.version_id != plan.version_id
+        || expected.file_id != plan.file_id
+        || expected.plaintext_bytes != plan.plaintext_bytes
+        || expected.file_root != plan.file_root
         || plan.verification_block_bytes == 0
         || plan.verification_block_count
             != if plan.plaintext_bytes == 0 {

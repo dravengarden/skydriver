@@ -10,16 +10,24 @@ use aes_gcm::{
 use hkdf::Hkdf;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
+use unicode_normalization::UnicodeNormalization as _;
 use zeroize::{Zeroize as _, Zeroizing};
 
 const FILE_LEAF_DOMAIN: &[u8] = b"carrack.vfs.file.leaf.v1\0";
 const FILE_EMPTY_DOMAIN: &[u8] = b"carrack.vfs.file.empty.v1\0";
 const FILE_NODE_DOMAIN: &[u8] = b"carrack.vfs.file.node.v1\0";
 const FILE_ROOT_DOMAIN: &[u8] = b"carrack.vfs.file.root.v1\0";
+const DIRECTORY_FILE_ENTRY_DOMAIN: &[u8] = b"carrack.vfs.directory.file-entry.v1\0";
+const DIRECTORY_CHILD_ENTRY_DOMAIN: &[u8] = b"carrack.vfs.directory.child-entry.v1\0";
+const DIRECTORY_EMPTY_DOMAIN: &[u8] = b"carrack.vfs.directory.empty.v1\0";
+const DIRECTORY_NODE_DOMAIN: &[u8] = b"carrack.vfs.directory.node.v1\0";
+const DIRECTORY_ROOT_DOMAIN: &[u8] = b"carrack.vfs.directory.root.v1\0";
 const FILE_KEY_INFO: &[u8] = b"carrack.vfs.file-key.v1";
 const FRAME_AAD_DOMAIN: &[u8] = b"carrack.vfs.file-frame.v1\0";
 const MAXIMUM_BLOCK_BYTES: u64 = 256 * 1024 * 1024;
 const MAXIMUM_BLOCKS: usize = 1_000_000;
+const MAXIMUM_DIRECTORY_ENTRIES: usize = 1_000_000;
+const MAXIMUM_NAME_BYTES: usize = 255;
 
 /// Portable SDK validation failure.
 #[derive(Debug, thiserror::Error)]
@@ -43,6 +51,35 @@ pub struct EncryptionDescriptor {
     pub key_epoch: u64,
     /// Independently authenticated frame size.
     pub frame_bytes: u64,
+}
+
+/// One immutable entry committed by a canonical directory Merkle root.
+#[derive(Clone, Copy, Debug)]
+pub enum DirectoryMerkleEntry<'a> {
+    /// One complete immutable file version.
+    File {
+        /// NFC entry name.
+        name: &'a str,
+        /// Stable file identity.
+        stable_id: [u8; 16],
+        /// Immutable file-version identity.
+        version_id: [u8; 16],
+        /// Plaintext file length.
+        size_bytes: u64,
+        /// Plaintext file Merkle root.
+        data_root: [u8; 32],
+        /// Portable metadata root.
+        metadata_root: [u8; 32],
+    },
+    /// One child directory and its committed content root.
+    Directory {
+        /// NFC entry name.
+        name: &'a str,
+        /// Stable child-directory identity.
+        stable_id: [u8; 16],
+        /// Child directory Merkle root.
+        data_root: [u8; 32],
+    },
 }
 
 /// Deterministic proof that the portable SDK executed inside its caller.
@@ -120,6 +157,49 @@ pub fn file_merkle_root_from_block_digests(
     root.update(FILE_ROOT_DOMAIN);
     root.update(block_bytes.to_be_bytes());
     root.update(size_bytes.to_be_bytes());
+    root.update((leaves.len() as u64).to_be_bytes());
+    root.update(tree);
+    Ok(root.finalize().into())
+}
+
+/// Computes the canonical Merkle root for a complete directory node.
+///
+/// Entries are ordered by their NFC UTF-8 names before hashing. File and child
+/// identities are domain separated, so a caller cannot reinterpret one union
+/// arm as the other.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidInput`] for malformed names, zero identities,
+/// duplicate entries, or a directory exceeding the protocol entry bound.
+pub fn directory_merkle_root(entries: &[DirectoryMerkleEntry<'_>]) -> Result<[u8; 32], Error> {
+    if entries.len() > MAXIMUM_DIRECTORY_ENTRIES {
+        return Err(Error::InvalidInput("directory entry limit exceeded"));
+    }
+    let mut canonical = entries.to_vec();
+    canonical.sort_by(|left, right| {
+        entry_name(left)
+            .as_bytes()
+            .cmp(entry_name(right).as_bytes())
+    });
+    let mut leaves = Vec::with_capacity(canonical.len());
+    let mut previous_name = None;
+    for entry in &canonical {
+        validate_directory_entry(entry)?;
+        let name = entry_name(entry);
+        if previous_name == Some(name) {
+            return Err(Error::InvalidInput("duplicate directory entry"));
+        }
+        previous_name = Some(name);
+        leaves.push(hash_directory_entry(entry)?);
+    }
+    let tree = if leaves.is_empty() {
+        Sha256::digest(DIRECTORY_EMPTY_DOMAIN).into()
+    } else {
+        canonical_tree_with_domain(DIRECTORY_NODE_DOMAIN, &leaves, 0)
+    };
+    let mut root = Sha256::new();
+    root.update(DIRECTORY_ROOT_DOMAIN);
     root.update((leaves.len() as u64).to_be_bytes());
     root.update(tree);
     Ok(root.finalize().into())
@@ -278,6 +358,10 @@ fn hash_leaf(index: u64, payload: &[u8]) -> [u8; 32] {
 }
 
 fn canonical_tree(leaves: &[[u8; 32]], first: u64) -> [u8; 32] {
+    canonical_tree_with_domain(FILE_NODE_DOMAIN, leaves, first)
+}
+
+fn canonical_tree_with_domain(domain: &[u8], leaves: &[[u8; 32]], first: u64) -> [u8; 32] {
     if leaves.len() == 1 {
         return leaves[0];
     }
@@ -285,15 +369,106 @@ fn canonical_tree(leaves: &[[u8; 32]], first: u64) -> [u8; 32] {
     while left_count <= (leaves.len() - 1) / 2 {
         left_count *= 2;
     }
-    let left = canonical_tree(&leaves[..left_count], first);
-    let right = canonical_tree(&leaves[left_count..], first + left_count as u64);
+    let left = canonical_tree_with_domain(domain, &leaves[..left_count], first);
+    let right =
+        canonical_tree_with_domain(domain, &leaves[left_count..], first + left_count as u64);
     let mut hash = Sha256::new();
-    hash.update(FILE_NODE_DOMAIN);
+    hash.update(domain);
     hash.update(first.to_be_bytes());
     hash.update((leaves.len() as u64).to_be_bytes());
     hash.update(left);
     hash.update(right);
     hash.finalize().into()
+}
+
+fn validate_directory_entry(entry: &DirectoryMerkleEntry<'_>) -> Result<(), Error> {
+    let name = entry_name(entry);
+    if name.is_empty()
+        || name.len() > MAXIMUM_NAME_BYTES
+        || name == "."
+        || name == ".."
+        || name.contains(['/', '\0'])
+        || !name.nfc().eq(name.chars())
+    {
+        return Err(Error::InvalidInput("directory entry name is not canonical"));
+    }
+    match entry {
+        DirectoryMerkleEntry::File {
+            stable_id,
+            version_id,
+            data_root,
+            metadata_root,
+            ..
+        } => {
+            if *stable_id == [0; 16]
+                || *version_id == [0; 16]
+                || *data_root == [0; 32]
+                || *metadata_root == [0; 32]
+            {
+                return Err(Error::InvalidInput("file directory entry identity is zero"));
+            }
+        }
+        DirectoryMerkleEntry::Directory {
+            stable_id,
+            data_root,
+            ..
+        } => {
+            if *stable_id == [0; 16] || *data_root == [0; 32] {
+                return Err(Error::InvalidInput(
+                    "child directory entry identity is zero",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn entry_name<'a>(entry: &'a DirectoryMerkleEntry<'a>) -> &'a str {
+    match entry {
+        DirectoryMerkleEntry::File { name, .. } | DirectoryMerkleEntry::Directory { name, .. } => {
+            name
+        }
+    }
+}
+
+fn hash_directory_entry(entry: &DirectoryMerkleEntry<'_>) -> Result<[u8; 32], Error> {
+    let mut hash = Sha256::new();
+    match entry {
+        DirectoryMerkleEntry::File { .. } => hash.update(DIRECTORY_FILE_ENTRY_DOMAIN),
+        DirectoryMerkleEntry::Directory { .. } => hash.update(DIRECTORY_CHILD_ENTRY_DOMAIN),
+    }
+    let name = entry_name(entry);
+    hash.update(
+        u32::try_from(name.len())
+            .map_err(|_| Error::InvalidInput("directory entry name exceeds u32"))?
+            .to_be_bytes(),
+    );
+    hash.update(name.as_bytes());
+    match entry {
+        DirectoryMerkleEntry::File {
+            stable_id,
+            version_id,
+            size_bytes,
+            data_root,
+            metadata_root,
+            ..
+        } => {
+            hash.update(stable_id);
+            hash.update(version_id);
+            hash.update(size_bytes.to_be_bytes());
+            hash.update(data_root);
+            hash.update(metadata_root);
+        }
+        DirectoryMerkleEntry::Directory {
+            stable_id,
+            data_root,
+            ..
+        } => {
+            hash.update(stable_id);
+            hash.update(data_root);
+        }
+    }
+    Ok(hash.finalize().into())
 }
 
 fn nonce(ordinal: u64) -> [u8; 12] {
@@ -353,5 +528,71 @@ mod tests {
             open(&encoded, 7, descriptor, &key),
             Err(Error::Crypto)
         ));
+    }
+
+    #[test]
+    fn matches_shared_directory_vectors() {
+        let empty = directory_merkle_root(&[]).expect("empty directory root");
+        assert_eq!(
+            hex::encode(empty),
+            "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254"
+        );
+        let entries = [
+            DirectoryMerkleEntry::File {
+                name: "é.txt",
+                stable_id: decode("30415263748596a7b8c9daebfc0d1e2f"),
+                version_id: decode("405162738495a6b7c8d9eafb0c1d2e3f"),
+                size_bytes: 0,
+                data_root: decode(
+                    "c003d57745178277e62f45d869c5187325430cabab04a440827c3b78087dead7",
+                ),
+                metadata_root: decode(
+                    "7f8375a6dbb0bbb8aa2a4c5893444ec014588c02e59841088b1064646663bfc7",
+                ),
+            },
+            DirectoryMerkleEntry::File {
+                name: "zeta.bin",
+                stable_id: decode("00112233445566778899aabbccddeeff"),
+                version_id: decode("102132435465768798a9bacbdcedfe0f"),
+                size_bytes: 10,
+                data_root: decode(
+                    "ad777efcbf5d5ab06bf200d777484b984f9fca39c582f1bd76369e0431e1e0f7",
+                ),
+                metadata_root: decode(
+                    "7f8375a6dbb0bbb8aa2a4c5893444ec014588c02e59841088b1064646663bfc7",
+                ),
+            },
+            DirectoryMerkleEntry::Directory {
+                name: "docs",
+                stable_id: decode("2031425364758697a8b9cadbecfd0e1f"),
+                data_root: decode(
+                    "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254",
+                ),
+            },
+        ];
+        assert_eq!(
+            hex::encode(directory_merkle_root(&entries).expect("mixed directory root")),
+            "5bd3bd36a7ccda1f492c0315bab463943b7a088a24a81d513118b0c3abc1d8b2"
+        );
+    }
+
+    #[test]
+    fn rejects_noncanonical_directory_names() {
+        let entry = DirectoryMerkleEntry::Directory {
+            name: "e\u{301}",
+            stable_id: [1; 16],
+            data_root: [2; 32],
+        };
+        assert!(matches!(
+            directory_merkle_root(&[entry]),
+            Err(Error::InvalidInput(_))
+        ));
+    }
+
+    fn decode<const N: usize>(encoded: &str) -> [u8; N] {
+        hex::decode(encoded)
+            .expect("test hex")
+            .try_into()
+            .expect("test identity length")
     }
 }

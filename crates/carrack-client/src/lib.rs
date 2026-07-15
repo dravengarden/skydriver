@@ -22,6 +22,7 @@ const MAXIMUM_CONTROL_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 mod admin;
 mod aliyun;
+mod catalog;
 mod crypto;
 mod download;
 mod integrity;

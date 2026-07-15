@@ -12,6 +12,7 @@ hkdf = "0.12.4"
 serde = { version = "1.0.228", features = ["derive"] }
 sha2 = "0.10.9"
 thiserror = "2.0.17"
+unicode-normalization = "0.1.25"
 zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 
 [lints]

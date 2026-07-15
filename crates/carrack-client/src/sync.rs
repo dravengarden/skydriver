@@ -3,11 +3,21 @@
 use futures_util::{StreamExt as _, stream};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use std::path::{Path, PathBuf};
+use std::{
+    collections::VecDeque,
+    path::{Path, PathBuf},
+};
 
-use crate::{EntryKind, Error, GetOptions, VfsClient, integrity};
+use crate::{
+    DirectoryPage, EntryKind, Error, GetOptions, VfsClient,
+    catalog::{CatalogNode, CatalogStore},
+    download::DownloadExpectation,
+    integrity,
+    vfs::canonical_components,
+};
 
 const STATE_SCHEMA: &str = "carrack.local-sync-state.v1";
+const CATALOG_PAGE_SIZE: u32 = 1_000;
 
 /// Bounded incremental directory synchronization settings.
 pub struct SyncOptions {
@@ -48,6 +58,7 @@ pub struct SyncResult {
 struct PlannedFile {
     vfs_path: String,
     relative_path: PathBuf,
+    file_id: String,
     version_id: String,
     size_bytes: u64,
     file_root: String,
@@ -76,6 +87,21 @@ struct Downloaded {
     warnings: Vec<String>,
 }
 
+struct CatalogFence {
+    filesystem_id: String,
+    directory_id: String,
+    revision: u64,
+    data_root: String,
+}
+
+struct PendingDirectory {
+    vfs_path: String,
+    relative_path: PathBuf,
+    directory_id: String,
+    data_root: String,
+    node: Option<CatalogNode>,
+}
+
 impl VfsClient {
     /// Incrementally synchronizes one VFS directory into a local directory.
     ///
@@ -102,9 +128,19 @@ impl VfsClient {
         validate_options(options)?;
         ensure_directory(destination)?;
         protect_directory(&options.state_directory)?;
-        let state_path = state_path(&options.state_directory, source);
+        let session = self.session().await?;
+        let catalog = CatalogStore::new(&options.state_directory, &session.token_id)?;
+        let state_path = state_path(&options.state_directory, &session.token_id, source);
         let previous = read_state(&state_path, source)?;
-        let (directories, files) = self.plan_tree(source, destination).await?;
+        let (directories, files) = self
+            .plan_tree(
+                source,
+                destination,
+                &catalog,
+                &session,
+                options.maximum_concurrency,
+            )
+            .await?;
         let mut records = Vec::with_capacity(files.len());
         let mut downloads = Vec::new();
         let mut reused_files = 0_u64;
@@ -188,40 +224,224 @@ impl VfsClient {
         &self,
         source: &str,
         destination: &Path,
+        catalog: &CatalogStore,
+        session: &crate::VfsSession,
+        maximum_concurrency: usize,
     ) -> Result<(u64, Vec<PlannedFile>), Error> {
-        let mut stack = vec![(source.trim_end_matches('/').to_owned(), PathBuf::new())];
+        let (fence, root) = self.source_catalog(source, catalog, session).await?;
+        let canonical_source = if source == "/" {
+            String::new()
+        } else {
+            source.trim_end_matches('/').to_owned()
+        };
+        let mut pending = VecDeque::from([PendingDirectory {
+            vfs_path: canonical_source,
+            relative_path: PathBuf::new(),
+            directory_id: root.directory_id.clone(),
+            data_root: root.data_root.clone(),
+            node: Some(root),
+        }]);
         let mut directories = 0_u64;
         let mut files = Vec::new();
-        while let Some((vfs_path, relative)) = stack.pop() {
-            ensure_directory(&destination.join(&relative))?;
-            let page = self
-                .list_path(if vfs_path.is_empty() { "/" } else { &vfs_path })
-                .await?;
-            directories += 1;
-            for entry in page.entries.into_iter().rev() {
-                let child_relative = relative.join(&entry.name);
-                let child_vfs = if vfs_path.is_empty() || vfs_path == "/" {
-                    format!("/{}", entry.name)
-                } else {
-                    format!("{vfs_path}/{}", entry.name)
+        while !pending.is_empty() {
+            let batch = (0..maximum_concurrency)
+                .filter_map(|_| pending.pop_front())
+                .collect::<Vec<_>>();
+            let mut loaded = stream::iter(batch.into_iter().map(|mut task| async move {
+                let node = match task.node.take() {
+                    Some(node) => node,
+                    None => {
+                        self.load_catalog_node(catalog, &task.directory_id, &task.data_root)
+                            .await?
+                    }
                 };
-                match entry.kind {
-                    EntryKind::Directory => stack.push((child_vfs, child_relative)),
-                    EntryKind::File => files.push(PlannedFile {
-                        vfs_path: child_vfs,
-                        relative_path: child_relative,
-                        version_id: entry.version_id.ok_or_else(|| {
-                            Error::InvalidResponse("file entry omitted version identity".to_owned())
-                        })?,
-                        size_bytes: entry.size_bytes,
-                        file_root: entry.data_root,
-                    }),
+                Ok::<_, Error>((task, node))
+            }))
+            .buffer_unordered(maximum_concurrency);
+            while let Some(result) = loaded.next().await {
+                let (task, node) = result?;
+                ensure_directory(&destination.join(&task.relative_path))?;
+                directories += 1;
+                for entry in node.entries {
+                    let child_relative = task.relative_path.join(&entry.name);
+                    let child_vfs = if task.vfs_path.is_empty() {
+                        format!("/{}", entry.name)
+                    } else {
+                        format!("{}/{}", task.vfs_path, entry.name)
+                    };
+                    match entry.kind {
+                        EntryKind::Directory => pending.push_back(PendingDirectory {
+                            vfs_path: child_vfs,
+                            relative_path: child_relative,
+                            directory_id: required(
+                                entry.child_directory_id,
+                                "catalog directory entry omitted child identity",
+                            )?,
+                            data_root: entry.data_root,
+                            node: None,
+                        }),
+                        EntryKind::File => files.push(PlannedFile {
+                            vfs_path: child_vfs,
+                            relative_path: child_relative,
+                            file_id: required(
+                                entry.file_id,
+                                "catalog file entry omitted file identity",
+                            )?,
+                            version_id: required(
+                                entry.version_id,
+                                "catalog file entry omitted version identity",
+                            )?,
+                            size_bytes: entry.size_bytes,
+                            file_root: entry.data_root,
+                        }),
+                    }
                 }
             }
         }
+        let final_page = self.list_directory(&fence.directory_id, None, 1).await?;
+        validate_page_identity(
+            &final_page,
+            &fence.directory_id,
+            &fence.data_root,
+            Some((&fence.filesystem_id, fence.revision)),
+        )?;
         files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
         Ok((directories, files))
     }
+
+    async fn source_catalog(
+        &self,
+        source: &str,
+        catalog: &CatalogStore,
+        session: &crate::VfsSession,
+    ) -> Result<(CatalogFence, CatalogNode), Error> {
+        let components = canonical_components(source)?;
+        let root_page = self
+            .list_directory(&session.root_directory_id, None, CATALOG_PAGE_SIZE)
+            .await?;
+        validate_page_identity(
+            &root_page,
+            &session.root_directory_id,
+            &root_page.directory.data_root,
+            None,
+        )?;
+        let mut current = self
+            .load_catalog_from_first(catalog, root_page.clone())
+            .await?;
+        let mut source_id = current.directory_id.clone();
+        let mut source_root = current.data_root.clone();
+        for (index, component) in components.iter().enumerate() {
+            let entry = current
+                .entries
+                .iter()
+                .find(|entry| entry.name == *component)
+                .ok_or_else(|| Error::Rejected {
+                    status: 404,
+                    message: format!("VFS path not found: {source}"),
+                })?;
+            if entry.kind != EntryKind::Directory {
+                return Err(Error::Rejected {
+                    status: 400,
+                    message: format!("VFS path is not a directory: {source}"),
+                });
+            }
+            source_id = required(
+                entry.child_directory_id.clone(),
+                "catalog directory entry omitted child identity",
+            )?;
+            source_root = entry.data_root.clone();
+            if index + 1 != components.len() {
+                current = self
+                    .load_catalog_node(catalog, &source_id, &source_root)
+                    .await?;
+            }
+        }
+        let source_page = if components.is_empty() {
+            root_page
+        } else {
+            self.list_directory(&source_id, None, CATALOG_PAGE_SIZE)
+                .await?
+        };
+        validate_page_identity(&source_page, &source_id, &source_root, None)?;
+        let fence = CatalogFence {
+            filesystem_id: source_page.directory.filesystem_id.clone(),
+            directory_id: source_id,
+            revision: source_page.directory.revision,
+            data_root: source_root,
+        };
+        let node = self.load_catalog_from_first(catalog, source_page).await?;
+        Ok((fence, node))
+    }
+
+    async fn load_catalog_node(
+        &self,
+        catalog: &CatalogStore,
+        directory_id: &str,
+        data_root: &str,
+    ) -> Result<CatalogNode, Error> {
+        if let Some(node) = catalog.load(directory_id, data_root)? {
+            return Ok(node);
+        }
+        let first = self
+            .list_directory(directory_id, None, CATALOG_PAGE_SIZE)
+            .await?;
+        validate_page_identity(&first, directory_id, data_root, None)?;
+        self.load_catalog_from_first(catalog, first).await
+    }
+
+    async fn load_catalog_from_first(
+        &self,
+        catalog: &CatalogStore,
+        mut page: DirectoryPage,
+    ) -> Result<CatalogNode, Error> {
+        let directory_id = page.directory.id.clone();
+        let data_root = page.directory.data_root.clone();
+        if let Some(node) = catalog.load(&directory_id, &data_root)? {
+            return Ok(node);
+        }
+        let filesystem_id = page.directory.filesystem_id.clone();
+        let revision = page.directory.revision;
+        let mut cursor = page.next_cursor.take();
+        while let Some(next) = cursor {
+            let mut continuation = self
+                .list_directory(&directory_id, Some(&next), CATALOG_PAGE_SIZE)
+                .await?;
+            validate_page_identity(
+                &continuation,
+                &directory_id,
+                &data_root,
+                Some((&filesystem_id, revision)),
+            )?;
+            page.entries.append(&mut continuation.entries);
+            cursor = continuation.next_cursor.take();
+        }
+        catalog.publish(&directory_id, &data_root, &page.entries)
+    }
+}
+
+fn validate_page_identity(
+    page: &DirectoryPage,
+    directory_id: &str,
+    data_root: &str,
+    fence: Option<(&str, u64)>,
+) -> Result<(), Error> {
+    if page.schema != "carrack.vfs.directory-list.v1"
+        || page.directory.id != directory_id
+        || page.directory.data_root != data_root
+        || page.directory.revision == 0
+        || fence.is_some_and(|(filesystem_id, revision)| {
+            page.directory.filesystem_id != filesystem_id || page.directory.revision != revision
+        })
+    {
+        return Err(Error::InvalidResponse(
+            "directory page differs from the catalog fence".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn required(value: Option<String>, message: &'static str) -> Result<String, Error> {
+    value.ok_or_else(|| Error::InvalidResponse(message.to_owned()))
 }
 
 async fn download_one(
@@ -246,8 +466,14 @@ async fn download_one(
         std::fs::remove_file(&temporary).map_err(local_error("remove stale sync temporary"))?;
     }
     let result = client
-        .get_file(
+        .get_file_version(
             &file.vfs_path,
+            DownloadExpectation::new(
+                &file.file_id,
+                &file.version_id,
+                file.size_bytes,
+                &file.file_root,
+            ),
             &temporary,
             &GetOptions {
                 staging_directory: state_directory.join("downloads").join(&file.version_id),
@@ -298,8 +524,8 @@ fn validate_options(options: &SyncOptions) -> Result<(), Error> {
     Ok(())
 }
 
-fn state_path(root: &Path, source: &str) -> PathBuf {
-    root.join(format!(
+fn state_path(root: &Path, token_id: &str, source: &str) -> PathBuf {
+    root.join("sync/tokens").join(token_id).join(format!(
         "{}.json",
         hex::encode(Sha256::digest(source.as_bytes()))
     ))
@@ -320,6 +546,10 @@ fn read_state(path: &Path, source: &str) -> Result<SyncState, Error> {
 }
 
 fn write_state(path: &Path, state: &SyncState) -> Result<(), Error> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| Error::InvalidResponse("local sync state has no parent".to_owned()))?;
+    protect_directory(parent)?;
     let bytes = serde_json::to_vec(state)
         .map_err(|error| Error::InvalidResponse(format!("encode local sync state: {error}")))?;
     let temporary = path.with_extension("json.tmp");
@@ -352,4 +582,155 @@ fn protect_directory(path: &Path) -> Result<(), Error> {
 
 fn local_error(context: &'static str) -> impl FnOnce(std::io::Error) -> Error {
     move |error| Error::InvalidResponse(format!("{context}: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use carrack_sdk_core::{DirectoryMerkleEntry, directory_merkle_root};
+    use httpmock::{Method::GET, MockServer};
+    use serde_json::json;
+
+    use super::{SyncOptions, VfsClient};
+    use crate::VfsToken;
+
+    #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one end-to-end catalog cache test keeps every authenticated page and expected hit count visible"
+    )]
+    async fn revalidates_root_and_reuses_unchanged_child_catalog() {
+        let server = MockServer::start_async().await;
+        let filesystem_id = "101112131415161718191a1b1c1d1e1f";
+        let root_id = "202122232425262728292a2b2c2d2e2f";
+        let child_id = "303132333435363738393a3b3c3d3e3f";
+        let empty_root = "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254";
+        let child_root: [u8; 32] = hex::decode(empty_root)
+            .expect("empty directory root hex")
+            .try_into()
+            .expect("empty directory root length");
+        let root_data_root = hex::encode(
+            directory_merkle_root(&[DirectoryMerkleEntry::Directory {
+                name: "docs",
+                stable_id: hex::decode(child_id)
+                    .expect("child identity hex")
+                    .try_into()
+                    .expect("child identity length"),
+                data_root: child_root,
+            }])
+            .expect("root directory Merkle root"),
+        );
+        let root_page = json!({
+            "schema": "carrack.vfs.directory-list.v1",
+            "directory": {
+                "id": root_id,
+                "filesystem_id": filesystem_id,
+                "parent_id": null,
+                "name": "",
+                "data_root": root_data_root,
+                "crypto_suite": "aes-256-gcm-hkdf-sha256-v1",
+                "active_key_epoch": 1,
+                "acl_inherits": false,
+                "revision": 7,
+                "acl_revision": 1,
+                "placement_revision": 1
+            },
+            "entries": [{
+                "name": "docs",
+                "kind": "directory",
+                "file_id": null,
+                "version_id": null,
+                "child_directory_id": child_id,
+                "size_bytes": 0,
+                "data_root": empty_root,
+                "metadata_root": null,
+                "revision": 1,
+                "updated_at": 1_700_000_000
+            }],
+            "next_cursor": null
+        });
+        let child_page = json!({
+            "schema": "carrack.vfs.directory-list.v1",
+            "directory": {
+                "id": child_id,
+                "filesystem_id": filesystem_id,
+                "parent_id": root_id,
+                "name": "docs",
+                "data_root": empty_root,
+                "crypto_suite": "aes-256-gcm-hkdf-sha256-v1",
+                "active_key_epoch": 1,
+                "acl_inherits": true,
+                "revision": 3,
+                "acl_revision": 1,
+                "placement_revision": 1
+            },
+            "entries": [],
+            "next_cursor": null
+        });
+        let session = server
+            .mock_async(|when, then| {
+                when.method(GET).path("/api/v2/session");
+                then.status(200).json_body(json!({
+                    "schema": "carrack.vfs.session.v1",
+                    "token_id": "404142434445464748494a4b4c4d4e4f",
+                    "principal_id": "505152535455565758595a5b5c5d5e5f",
+                    "root_directory_id": root_id,
+                    "expires_at": 2_000_000_000
+                }));
+            })
+            .await;
+        let root_catalog = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path(format!("/api/v2/directories/{root_id}/entries"))
+                    .query_param("limit", "1000");
+                then.status(200).json_body(root_page.clone());
+            })
+            .await;
+        let root_fence = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path(format!("/api/v2/directories/{root_id}/entries"))
+                    .query_param("limit", "1");
+                then.status(200).json_body(root_page.clone());
+            })
+            .await;
+        let child_catalog = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path(format!("/api/v2/directories/{child_id}/entries"))
+                    .query_param("limit", "1000");
+                then.status(200).json_body(child_page);
+            })
+            .await;
+        let encoded_token = URL_SAFE_NO_PAD.encode([1_u8; 32]);
+        let client = VfsClient::new(
+            &format!("{}/", server.base_url()),
+            VfsToken::parse(&encoded_token).expect("VFS token"),
+        )
+        .expect("VFS client");
+        let temporary = tempfile::tempdir().expect("sync temporary directory");
+        let destination = temporary.path().join("destination");
+        let options = SyncOptions {
+            state_directory: temporary.path().join("state"),
+            transfer_part_bytes: 1024,
+            maximum_concurrency: 2,
+            maximum_file_concurrency: 2,
+        };
+
+        for _ in 0..2 {
+            let result = client
+                .sync_to_local("/", &destination, &options)
+                .await
+                .expect("synchronize empty child tree");
+            assert_eq!(result.directories, 2);
+            assert_eq!(result.files, 0);
+            assert!(destination.join("docs").is_dir());
+        }
+
+        session.assert_hits_async(2).await;
+        root_catalog.assert_hits_async(2).await;
+        root_fence.assert_hits_async(2).await;
+        child_catalog.assert_hits_async(1).await;
+    }
 }
