@@ -1,3 +1,4 @@
+import AccountCircleOutlinedIcon from "@mui/icons-material/AccountCircleOutlined";
 import AdminPanelSettingsOutlinedIcon from "@mui/icons-material/AdminPanelSettingsOutlined";
 import DashboardOutlinedIcon from "@mui/icons-material/DashboardOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
@@ -17,10 +18,13 @@ import {
     DialogContent,
     DialogTitle,
     Divider,
+    IconButton,
     List,
     ListItemButton,
     ListItemIcon,
     ListItemText,
+    Menu,
+    MenuItem,
     Snackbar,
     Stack,
     TextField,
@@ -68,6 +72,9 @@ export function Dashboard({ environment, onLogout }: DashboardProps) {
     const queryClient = useQueryClient();
     const [page, setPage] = useState<Page>("overview");
     const [configurationDialogOpen, setConfigurationDialogOpen] = useState(false);
+    const [mobileSessionMenuAnchor, setMobileSessionMenuAnchor] = useState<HTMLElement | null>(
+        null,
+    );
     const [credential, setCredential] = useState("");
     const [changeNoticeOpen, setChangeNoticeOpen] = useState(false);
     const previousCursor = useRef<number | null>(null);
@@ -227,15 +234,64 @@ export function Dashboard({ environment, onLogout }: DashboardProps) {
                                     : () => setConfigurationDialogOpen(true)
                             }
                             sx={{
-                                width: { xs: 34, sm: "auto" },
-                                "& .MuiChip-label": {
-                                    display: { xs: "none", sm: "block" },
-                                },
-                                "& .MuiChip-icon": {
-                                    mx: { xs: "auto", sm: undefined },
-                                },
+                                display: { xs: "none", sm: "inline-flex" },
                             }}
                         />
+                        <IconButton
+                            aria-controls={
+                                mobileSessionMenuAnchor === null ? undefined : "mobile-session-menu"
+                            }
+                            aria-expanded={mobileSessionMenuAnchor === null ? undefined : true}
+                            aria-haspopup="menu"
+                            aria-label="Open account menu"
+                            color="inherit"
+                            onClick={(event) => setMobileSessionMenuAnchor(event.currentTarget)}
+                            sx={{
+                                display: { xs: "inline-flex", sm: "none" },
+                                bgcolor: "action.hover",
+                            }}
+                        >
+                            <AccountCircleOutlinedIcon />
+                        </IconButton>
+                        <Menu
+                            id="mobile-session-menu"
+                            anchorEl={mobileSessionMenuAnchor}
+                            open={mobileSessionMenuAnchor !== null}
+                            onClose={() => setMobileSessionMenuAnchor(null)}
+                        >
+                            <MenuItem
+                                onClick={() => {
+                                    setMobileSessionMenuAnchor(null);
+                                    if (configurationEnabled) {
+                                        setPage("settings");
+                                    } else {
+                                        setConfigurationDialogOpen(true);
+                                    }
+                                }}
+                            >
+                                <ListItemIcon>
+                                    <AdminPanelSettingsOutlinedIcon fontSize="small" />
+                                </ListItemIcon>
+                                <ListItemText
+                                    primary="Configuration"
+                                    secondary={
+                                        configurationEnabled ? "Changes enabled" : "Read only"
+                                    }
+                                />
+                            </MenuItem>
+                            <Divider />
+                            <MenuItem
+                                onClick={() => {
+                                    setMobileSessionMenuAnchor(null);
+                                    onLogout();
+                                }}
+                            >
+                                <ListItemIcon>
+                                    <LogoutOutlinedIcon fontSize="small" />
+                                </ListItemIcon>
+                                <ListItemText primary="Logout" />
+                            </MenuItem>
+                        </Menu>
                         <Button
                             color="inherit"
                             startIcon={<LogoutOutlinedIcon />}
