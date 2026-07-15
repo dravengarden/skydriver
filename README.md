@@ -62,7 +62,10 @@ carrack remove /releases/latest.tar.zst \
   --idempotency-key remove-latest-2026-07-14
 ```
 
-`sync` fetches the complete directory catalog before payload work, verifies
+`sync` first requests a bounded server-materialized catalog checkpoint when the
+token safely covers the complete filesystem, otherwise transparently traverses
+revision-pinned pages. It verifies the complete directory catalog before
+payload work, verifies
 unchanged local files from the prior authenticated version/block metadata, and
 downloads only changed or corrupted files. Changed files run concurrently and
 each retains its own resumable range pipeline. Untracked local files are

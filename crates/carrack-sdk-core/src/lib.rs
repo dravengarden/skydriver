@@ -13,6 +13,14 @@ use sha2::{Digest as _, Sha256};
 use unicode_normalization::UnicodeNormalization as _;
 use zeroize::{Zeroize as _, Zeroizing};
 
+mod catalog;
+
+pub use catalog::{
+    CATALOG_CHECKPOINT_SCHEMA, CatalogCheckpoint, CatalogCheckpointDirectory,
+    CatalogCheckpointEntry, CatalogCheckpointEntryKind, MAXIMUM_CATALOG_CHECKPOINT_BYTES,
+    MAXIMUM_CATALOG_DIRECTORIES, MAXIMUM_CATALOG_ENTRIES, validate_catalog_checkpoint,
+};
+
 const FILE_LEAF_DOMAIN: &[u8] = b"carrack.vfs.file.leaf.v1\0";
 const FILE_EMPTY_DOMAIN: &[u8] = b"carrack.vfs.file.empty.v1\0";
 const FILE_NODE_DOMAIN: &[u8] = b"carrack.vfs.file.node.v1\0";

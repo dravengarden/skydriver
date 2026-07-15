@@ -5,7 +5,7 @@ pub use carrack_sdk_core::{
     file_merkle_root_from_block_digests, open, seal, wasm_acceptance_proof,
 };
 
-use reqwest::{StatusCode, Url};
+use reqwest::{StatusCode, Url, header::HeaderMap};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -121,6 +121,11 @@ pub struct Client {
     pub(crate) http: reqwest::Client,
 }
 
+pub(crate) struct BoundedResponse {
+    pub(crate) headers: HeaderMap,
+    pub(crate) body: Vec<u8>,
+}
+
 impl Client {
     /// Creates a client for an HTTPS endpoint. Plain HTTP is limited to loopback tests.
     ///
@@ -230,6 +235,48 @@ impl Client {
             return Err(Error::Rejected { status, message });
         }
         decode_json(response, MAXIMUM_CONTROL_BODY_BYTES, false).await
+    }
+
+    pub(crate) async fn send_optional_bytes(
+        &self,
+        path: &str,
+        token: &str,
+        maximum_bytes: usize,
+    ) -> Result<Option<BoundedResponse>, Error> {
+        if path.contains("..") || !path.starts_with("api/") {
+            return Err(Error::InvalidEndpoint("invalid API path".to_owned()));
+        }
+        let endpoint = self
+            .endpoint
+            .join(path)
+            .map_err(|error| Error::InvalidEndpoint(error.to_string()))?;
+        let response = self
+            .http
+            .get(endpoint)
+            .header("Accept", "application/json")
+            .header("Carrack-Protocol-Epoch", PROTOCOL_EPOCH)
+            .header("Carrack-SDK-Version", SDK_VERSION)
+            .bearer_auth(token)
+            .send()
+            .await?;
+        if response.status() == StatusCode::UPGRADE_REQUIRED {
+            let failure =
+                decode_json::<UpgradeRequired>(response, MAXIMUM_COMPATIBILITY_BODY_BYTES, true)
+                    .await?;
+            return Err(Error::UpgradeRequired(Box::new(failure)));
+        }
+        if response.status() == StatusCode::NO_CONTENT {
+            return Ok(None);
+        }
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body = read_bounded(response, 64 * 1024, false).await?;
+            let message = String::from_utf8_lossy(&body).trim().to_owned();
+            return Err(Error::Rejected { status, message });
+        }
+        let headers = response.headers().clone();
+        let body = read_bounded(response, maximum_bytes, false).await?;
+        Ok(Some(BoundedResponse { headers, body }))
     }
 }
 

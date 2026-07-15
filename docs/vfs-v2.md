@@ -28,6 +28,9 @@ The current implemented V2 slice includes:
 - a private local namespace and transfer catalog keyed by authenticated roots,
   bounded concurrent prefetch, durable verified nodes and range journals,
   subtree reuse, and final live-root revalidation; and
+- server-materialized complete catalog checkpoints, delivered only to current
+  full-root tokens with list/read authority and no ACL inheritance boundary,
+  with shared native/WASM verification and transparent page fallback; and
 - durable read leases, reachability marking, tombstone grace, server-owned
   fenced GC, idempotent Aliyun and R2 deletion, and conservative retention for
   drivers the Worker cannot reach; and
@@ -35,12 +38,12 @@ The current implemented V2 slice includes:
   resumable multipart upload, concurrent exact-range download, and
   binding-owned server cleanup independent of client signing-key rotation.
 
-Remaining expansion work is explicit: scoped client delivery and delta
-acceleration on top of the server-owned R2 checkpoints, additional hosted
-drivers, production fault-injection for every lifecycle class, and final
-removal of the compatibility-only Go archive surface. Durable Aliyun credential
-rotation is already server-owned and does not change the public complete-object
-filesystem contract.
+Remaining expansion work is explicit: subtree-specific checkpoints and
+hash-chained delta acceleration, additional hosted drivers, production
+fault-injection for every lifecycle class, and final removal of the
+compatibility-only Go archive surface. Durable Aliyun credential rotation is
+already server-owned and does not change the public complete-object filesystem
+contract.
 
 ## Product boundary
 
@@ -221,14 +224,19 @@ for local incremental planning. Unchanged verified files require no provider
 read, and changed files request grants directly by immutable version rather
 than resolving every path again.
 
-The R2 checkpoint is not yet returned to ordinary VFS tokens: a
-whole-filesystem checkpoint would disclose names outside a subtree-scoped token
-or a broken ACL inheritance boundary. A follow-up scoped delivery protocol must
-prove the authorized recursive closure before using checkpoints or deltas.
-Until then the authenticated paginated API remains the miss path and the local
-Merkle DAG supplies the incremental speedup. A content-addressed page tree may
-later optimize very large flat directories without changing directory roots or
-the CLI planning model.
+The Worker streams the current checkpoint only when the authenticated token is
+rooted at the physical filesystem root, is live and nonsnapshot, has both
+`directory.list` and `content.read`, passes the current ACL checks, and the
+filesystem has no active descendant with an ACL inheritance break. The R2 key,
+version, byte length, SHA-256, revision, and root are matched against the exact
+published D1 head before streaming. The native client bounds the response at 32
+MiB, verifies its transport receipt, canonical JSON, every directory root, and
+the complete reachable tree through the same portable SDK used by Worker WASM,
+then publishes token-scoped content-addressed local nodes. A narrow token, ACL
+boundary, absent checkpoint, or concurrent newer root transparently uses the
+authenticated paginated API; corrupt metadata fails closed. A future
+subtree-specific checkpoint or content-addressed page tree may optimize those
+fallbacks without changing directory roots or the CLI planning model.
 
 Catalog publication uses a D1 outbox and idempotent materialization. A head
 never advertises an R2 revision until its immutable objects exist and verify.

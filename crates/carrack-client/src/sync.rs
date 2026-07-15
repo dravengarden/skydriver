@@ -130,6 +130,9 @@ impl VfsClient {
         protect_directory(&options.state_directory)?;
         let session = self.session().await?;
         let catalog = CatalogStore::new(&options.state_directory, &session.token_id)?;
+        if let Some(checkpoint) = self.catalog_checkpoint(&session).await? {
+            catalog.publish_checkpoint(&checkpoint)?;
+        }
         let state_path = state_path(&options.state_directory, &session.token_id, source);
         let previous = read_state(&state_path, source)?;
         let (directories, files) = self
@@ -587,9 +590,14 @@ fn local_error(context: &'static str) -> impl FnOnce(std::io::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-    use carrack_sdk_core::{DirectoryMerkleEntry, directory_merkle_root};
+    use carrack_sdk_core::{
+        CATALOG_CHECKPOINT_SCHEMA, CatalogCheckpoint, CatalogCheckpointDirectory,
+        CatalogCheckpointEntry, CatalogCheckpointEntryKind, DirectoryMerkleEntry,
+        directory_merkle_root,
+    };
     use httpmock::{Method::GET, MockServer};
     use serde_json::json;
+    use sha2::{Digest as _, Sha256};
 
     use super::{SyncOptions, VfsClient};
     use crate::VfsToken;
@@ -597,9 +605,9 @@ mod tests {
     #[tokio::test]
     #[allow(
         clippy::too_many_lines,
-        reason = "one end-to-end catalog cache test keeps every authenticated page and expected hit count visible"
+        reason = "one end-to-end checkpoint test keeps every authenticated page and expected hit count visible"
     )]
-    async fn revalidates_root_and_reuses_unchanged_child_catalog() {
+    async fn hydrates_checkpoint_and_revalidates_only_the_root() {
         let server = MockServer::start_async().await;
         let filesystem_id = "101112131415161718191a1b1c1d1e1f";
         let root_id = "202122232425262728292a2b2c2d2e2f";
@@ -667,6 +675,42 @@ mod tests {
             "entries": [],
             "next_cursor": null
         });
+        let checkpoint = CatalogCheckpoint {
+            schema: CATALOG_CHECKPOINT_SCHEMA.to_owned(),
+            filesystem_id: filesystem_id.to_owned(),
+            revision_id: 11,
+            parent_revision_id: Some(10),
+            root_directory_id: root_id.to_owned(),
+            root_data_root: root_data_root.clone(),
+            created_at: 1_700_000_000,
+            directories: vec![
+                CatalogCheckpointDirectory {
+                    directory_id: root_id.to_owned(),
+                    parent_directory_id: None,
+                    name: String::new(),
+                    data_root: root_data_root.clone(),
+                    entries: vec![CatalogCheckpointEntry {
+                        name: "docs".to_owned(),
+                        kind: CatalogCheckpointEntryKind::Directory,
+                        file_id: None,
+                        version_id: None,
+                        child_directory_id: Some(child_id.to_owned()),
+                        size_bytes: 0,
+                        data_root: empty_root.to_owned(),
+                        metadata_root: None,
+                    }],
+                },
+                CatalogCheckpointDirectory {
+                    directory_id: child_id.to_owned(),
+                    parent_directory_id: Some(root_id.to_owned()),
+                    name: "docs".to_owned(),
+                    data_root: empty_root.to_owned(),
+                    entries: Vec::new(),
+                },
+            ],
+        };
+        let checkpoint_body = serde_json::to_vec(&checkpoint).expect("encode checkpoint");
+        let checkpoint_sha256 = hex::encode(Sha256::digest(&checkpoint_body));
         let session = server
             .mock_async(|when, then| {
                 when.method(GET).path("/api/v2/session");
@@ -677,6 +721,18 @@ mod tests {
                     "root_directory_id": root_id,
                     "expires_at": 2_000_000_000
                 }));
+            })
+            .await;
+        let checkpoint_delivery = server
+            .mock_async(|when, then| {
+                when.method(GET).path("/api/v2/catalog/checkpoint");
+                then.status(200)
+                    .header("Content-Type", "application/json")
+                    .header("Content-Length", checkpoint_body.len().to_string())
+                    .header("Carrack-Catalog-SHA256", checkpoint_sha256)
+                    .header("Carrack-Catalog-Revision", "11")
+                    .header("Carrack-Catalog-Root", root_data_root.clone())
+                    .body(checkpoint_body);
             })
             .await;
         let root_catalog = server
@@ -729,8 +785,9 @@ mod tests {
         }
 
         session.assert_hits_async(2).await;
+        checkpoint_delivery.assert_hits_async(2).await;
         root_catalog.assert_hits_async(2).await;
         root_fence.assert_hits_async(2).await;
-        child_catalog.assert_hits_async(1).await;
+        child_catalog.assert_hits_async(0).await;
     }
 }

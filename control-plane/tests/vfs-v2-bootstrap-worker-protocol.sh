@@ -747,6 +747,45 @@ curl --silent --show-error --fail-with-body \
       )
     THEN 1 ELSE 0 END;
     DROP TABLE vfs_catalog_checkpoint_assertions;" >/dev/null
+
+checkpoint_headers="$state_directory/catalog-checkpoint-headers.txt"
+checkpoint_body="$state_directory/catalog-checkpoint.json"
+curl --silent --show-error --fail-with-body \
+  -D "$checkpoint_headers" -H "$authorization" \
+  "$base_url/api/v2/catalog/checkpoint" >"$checkpoint_body"
+checkpoint_sha256=$(awk '
+  tolower($1) == "carrack-catalog-sha256:" {
+    gsub("\\r", "", $2);
+    print $2
+  }
+' "$checkpoint_headers")
+checkpoint_revision=$(awk '
+  tolower($1) == "carrack-catalog-revision:" {
+    gsub("\\r", "", $2);
+    print $2
+  }
+' "$checkpoint_headers")
+checkpoint_root=$(awk '
+  tolower($1) == "carrack-catalog-root:" {
+    gsub("\\r", "", $2);
+    print $2
+  }
+' "$checkpoint_headers")
+[[ -n "$checkpoint_sha256" ]]
+[[ "$(sha256sum "$checkpoint_body" | cut -d' ' -f1)" == "$checkpoint_sha256" ]]
+jq --exit-status \
+  --arg filesystem_id "$filesystem_id" \
+  --arg root_directory_id "$root_directory_id" \
+  --arg revision "$checkpoint_revision" \
+  --arg root "$checkpoint_root" \
+  '.schema == "carrack.vfs.catalog-checkpoint.v1"
+   and .filesystem_id == $filesystem_id
+   and .root_directory_id == $root_directory_id
+   and (.revision_id | tostring) == $revision
+   and .root_data_root == $root
+   and ([.directories[].directory_id] | length) > 0' \
+  "$checkpoint_body" >/dev/null
+
 "${wrangler[@]}" d1 execute CARRACK_INDEX \
   --local --persist-to "$state_directory" \
   --command "CREATE TABLE vfs_server_gc_assertions (

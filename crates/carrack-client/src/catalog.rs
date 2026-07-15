@@ -1,6 +1,9 @@
 //! Private content-addressed directory catalog used by incremental sync.
 
-use carrack_sdk_core::{DirectoryMerkleEntry, directory_merkle_root};
+use carrack_sdk_core::{
+    CatalogCheckpoint, CatalogCheckpointEntryKind, DirectoryMerkleEntry, directory_merkle_root,
+    validate_catalog_checkpoint,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::{
@@ -118,8 +121,44 @@ impl CatalogStore {
             data_root: data_root.to_owned(),
             entries: entries.iter().map(CatalogEntry::from).collect(),
         };
-        validate_node(&node, directory_id, data_root)?;
-        if let Some(existing) = self.load(directory_id, data_root)? {
+        self.publish_node(node)
+    }
+
+    pub(crate) fn publish_checkpoint(&self, checkpoint: &CatalogCheckpoint) -> Result<(), Error> {
+        validate_catalog_checkpoint(checkpoint)
+            .map_err(|error| Error::InvalidResponse(error.to_string()))?;
+        for directory in &checkpoint.directories {
+            self.publish_node(CatalogNode {
+                schema: NODE_SCHEMA.to_owned(),
+                directory_id: directory.directory_id.clone(),
+                data_root: directory.data_root.clone(),
+                entries: directory
+                    .entries
+                    .iter()
+                    .map(|entry| CatalogEntry {
+                        name: entry.name.clone(),
+                        kind: match entry.kind {
+                            CatalogCheckpointEntryKind::File => EntryKind::File,
+                            CatalogCheckpointEntryKind::Directory => EntryKind::Directory,
+                        },
+                        file_id: entry.file_id.clone(),
+                        version_id: entry.version_id.clone(),
+                        child_directory_id: entry.child_directory_id.clone(),
+                        size_bytes: entry.size_bytes,
+                        data_root: entry.data_root.clone(),
+                        metadata_root: entry.metadata_root.clone(),
+                    })
+                    .collect(),
+            })?;
+        }
+        Ok(())
+    }
+
+    fn publish_node(&self, node: CatalogNode) -> Result<CatalogNode, Error> {
+        let directory_id = node.directory_id.clone();
+        let data_root = node.data_root.clone();
+        validate_node(&node, &directory_id, &data_root)?;
+        if let Some(existing) = self.load(&directory_id, &data_root)? {
             if canonical_node_bytes(&existing)? != canonical_node_bytes(&node)? {
                 return Err(Error::InvalidResponse(
                     "existing catalog node differs at one content address".to_owned(),
@@ -140,7 +179,7 @@ impl CatalogStore {
                 "catalog node exceeds the local size bound".to_owned(),
             ));
         }
-        let final_path = self.node_path(directory_id, data_root)?;
+        let final_path = self.node_path(&directory_id, &data_root)?;
         let parent = final_path
             .parent()
             .ok_or_else(|| Error::InvalidResponse("catalog node path has no parent".to_owned()))?;
@@ -161,7 +200,7 @@ impl CatalogStore {
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 std::fs::remove_file(&temporary)
                     .map_err(|remove| local_error("remove raced catalog temporary", remove))?;
-                let existing = self.load(directory_id, data_root)?.ok_or_else(|| {
+                let existing = self.load(&directory_id, &data_root)?.ok_or_else(|| {
                     Error::InvalidResponse("raced catalog node disappeared".to_owned())
                 })?;
                 if canonical_node_bytes(&existing)? != node_bytes {

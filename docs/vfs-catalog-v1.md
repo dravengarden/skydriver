@@ -171,8 +171,20 @@ unbounded D1 scan or write transaction.
 This first checkpoint format is deliberately uncompressed and bounded at 32
 MiB, 5,000 directories, and 20,000 entries. Exceeding a bound fails the optional
 acceleration and leaves the revision retryable; it never weakens the live
-paginated API. Authenticated client checkpoint delivery and hash-chained deltas
-remain separate follow-up work because a whole-filesystem object must not be
-given to a token that can read only one subtree. Until a scoped delivery
-protocol exists, the paginated directory API remains the source for missing
-local nodes, while local DAG reuse still skips every unchanged subtree.
+paginated API.
+
+`GET /api/v2/catalog/checkpoint` streams that immutable R2 object only for a
+live nonsnapshot token rooted at the physical filesystem root with both
+`directory.list` and `content.read`, effective root ACL grants, and no active
+descendant ACL inheritance break. Any narrower authority receives HTTP 204 and
+the client transparently keeps the paginated path. Before streaming, the Worker
+matches the key, R2 version, byte length, SHA-256, revision, and Merkle root to
+the exact published D1 head. The client rechecks the bounded SHA-256 receipt,
+canonical JSON, every directory Merkle root, the complete reachable tree, and
+the token root using the shared native/WASM SDK validator before hydrating its
+private token-scoped DAG. A concurrent newer live root simply misses those
+content addresses and falls back to pages; corrupt delivery fails closed.
+
+Subtree-specific checkpoint projection and hash-chained deltas remain follow-up
+accelerations. They may reduce fallback metadata further, but cannot broaden a
+token's closure or weaken the final live-root fence.

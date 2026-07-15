@@ -1,8 +1,12 @@
 //! Filesystem-oriented VFS metadata client.
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use carrack_sdk_core::{
+    CatalogCheckpoint, MAXIMUM_CATALOG_CHECKPOINT_BYTES, validate_catalog_checkpoint,
+};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{Client, Error};
@@ -416,6 +420,69 @@ impl VfsClient {
         self.control
             .send_json::<VfsSession, ()>(Method::GET, "api/v2/session", Some(&token), &[], None)
             .await
+    }
+
+    pub(crate) async fn catalog_checkpoint(
+        &self,
+        session: &VfsSession,
+    ) -> Result<Option<CatalogCheckpoint>, Error> {
+        let token = self.token.encode();
+        let Some(response) = self
+            .control
+            .send_optional_bytes(
+                "api/v2/catalog/checkpoint",
+                &token,
+                MAXIMUM_CATALOG_CHECKPOINT_BYTES,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        let content_type = required_header(&response.headers, "content-type")?;
+        let content_length = required_header(&response.headers, "content-length")?
+            .parse::<usize>()
+            .map_err(|_| {
+                Error::InvalidResponse("catalog checkpoint length header is invalid".to_owned())
+            })?;
+        let expected_sha256 = required_header(&response.headers, "carrack-catalog-sha256")?;
+        let expected_revision = required_header(&response.headers, "carrack-catalog-revision")?
+            .parse::<u64>()
+            .map_err(|_| {
+                Error::InvalidResponse("catalog checkpoint revision header is invalid".to_owned())
+            })?;
+        let expected_root = required_header(&response.headers, "carrack-catalog-root")?;
+        if content_type != "application/json"
+            || content_length != response.body.len()
+            || response.body.is_empty()
+            || expected_sha256 != hex::encode(Sha256::digest(&response.body))
+        {
+            return Err(Error::InvalidResponse(
+                "catalog checkpoint transport receipt differs".to_owned(),
+            ));
+        }
+        let checkpoint: CatalogCheckpoint =
+            serde_json::from_slice(&response.body).map_err(|error| {
+                Error::InvalidResponse(format!("decode catalog checkpoint: {error}"))
+            })?;
+        if serde_json::to_vec(&checkpoint).map_err(|error| {
+            Error::InvalidResponse(format!("encode catalog checkpoint: {error}"))
+        })? != response.body
+        {
+            return Err(Error::InvalidResponse(
+                "catalog checkpoint is not canonically encoded".to_owned(),
+            ));
+        }
+        validate_catalog_checkpoint(&checkpoint)
+            .map_err(|error| Error::InvalidResponse(error.to_string()))?;
+        if checkpoint.root_directory_id != session.root_directory_id
+            || checkpoint.revision_id != expected_revision
+            || checkpoint.root_data_root != expected_root
+        {
+            return Err(Error::InvalidResponse(
+                "catalog checkpoint identity differs from its session or receipt".to_owned(),
+            ));
+        }
+        Ok(Some(checkpoint))
     }
 
     /// Reads one revision-consistent directory page.
@@ -919,6 +986,17 @@ impl VfsClient {
     }
 }
 
+fn required_header<'a>(
+    headers: &'a reqwest::header::HeaderMap,
+    name: &'static str,
+) -> Result<&'a str, Error> {
+    headers
+        .get(name)
+        .ok_or_else(|| Error::InvalidResponse(format!("catalog checkpoint omitted {name}")))?
+        .to_str()
+        .map_err(|_| Error::InvalidResponse(format!("catalog checkpoint {name} is invalid")))
+}
+
 fn validate_remove_receipt(
     receipt: &RemoveReceipt,
     parent_id: &str,
@@ -1048,5 +1126,101 @@ pub(crate) fn canonical_path(components: &[String]) -> String {
         "/".to_owned()
     } else {
         format!("/{}", components.join("/"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use carrack_sdk_core::{
+        CATALOG_CHECKPOINT_SCHEMA, CatalogCheckpoint, CatalogCheckpointDirectory,
+        directory_merkle_root,
+    };
+    use httpmock::{Method::GET, MockServer};
+
+    use super::{VfsClient, VfsSession, VfsToken};
+    use crate::Error;
+
+    fn client(server: &MockServer) -> VfsClient {
+        let token = URL_SAFE_NO_PAD.encode([7_u8; 32]);
+        VfsClient::new(
+            &format!("{}/", server.base_url()),
+            VfsToken::parse(&token).expect("VFS token"),
+        )
+        .expect("VFS client")
+    }
+
+    fn session() -> VfsSession {
+        VfsSession {
+            schema: "carrack.vfs.session.v1".to_owned(),
+            token_id: "303132333435363738393a3b3c3d3e3f".to_owned(),
+            principal_id: "404142434445464748494a4b4c4d4e4f".to_owned(),
+            root_directory_id: "202122232425262728292a2b2c2d2e2f".to_owned(),
+            expires_at: 2_000_000_000,
+        }
+    }
+
+    #[tokio::test]
+    async fn checkpoint_absence_is_optional() {
+        let server = MockServer::start_async().await;
+        let delivery = server
+            .mock_async(|when, then| {
+                when.method(GET).path("/api/v2/catalog/checkpoint");
+                then.status(204);
+            })
+            .await;
+        assert!(
+            client(&server)
+                .catalog_checkpoint(&session())
+                .await
+                .expect("optional checkpoint request")
+                .is_none()
+        );
+        delivery.assert_hits_async(1).await;
+    }
+
+    #[tokio::test]
+    async fn checkpoint_checksum_mismatch_fails_closed() {
+        let server = MockServer::start_async().await;
+        let session = session();
+        let root = hex::encode(directory_merkle_root(&[]).expect("empty root"));
+        let body = serde_json::to_vec(&CatalogCheckpoint {
+            schema: CATALOG_CHECKPOINT_SCHEMA.to_owned(),
+            filesystem_id: "101112131415161718191a1b1c1d1e1f".to_owned(),
+            revision_id: 1,
+            parent_revision_id: None,
+            root_directory_id: session.root_directory_id.clone(),
+            root_data_root: root.clone(),
+            created_at: 1_700_000_000,
+            directories: vec![CatalogCheckpointDirectory {
+                directory_id: session.root_directory_id.clone(),
+                parent_directory_id: None,
+                name: String::new(),
+                data_root: root.clone(),
+                entries: Vec::new(),
+            }],
+        })
+        .expect("encode checkpoint");
+        let delivery = server
+            .mock_async(|when, then| {
+                when.method(GET).path("/api/v2/catalog/checkpoint");
+                then.status(200)
+                    .header("Content-Type", "application/json")
+                    .header("Content-Length", body.len().to_string())
+                    .header(
+                        "Carrack-Catalog-SHA256",
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )
+                    .header("Carrack-Catalog-Revision", "1")
+                    .header("Carrack-Catalog-Root", root)
+                    .body(body);
+            })
+            .await;
+        assert!(matches!(
+            client(&server).catalog_checkpoint(&session).await,
+            Err(Error::InvalidResponse(message))
+                if message == "catalog checkpoint transport receipt differs"
+        ));
+        delivery.assert_hits_async(1).await;
     }
 }

@@ -1,10 +1,13 @@
 //! Server-owned, root-fenced VFS catalog checkpoint materialization.
 
-use std::{
-    collections::{HashMap, HashSet},
-    fmt::Write as _,
-};
+use std::{collections::HashMap, fmt::Write as _};
 
+use carrack_sdk_core::{
+    CATALOG_CHECKPOINT_SCHEMA, CatalogCheckpoint, CatalogCheckpointDirectory,
+    CatalogCheckpointEntry, CatalogCheckpointEntryKind, MAXIMUM_CATALOG_CHECKPOINT_BYTES,
+    MAXIMUM_CATALOG_DIRECTORIES, MAXIMUM_CATALOG_ENTRIES, validate_catalog_checkpoint,
+};
+#[cfg(test)]
 use carrack_sdk_core::{DirectoryMerkleEntry, directory_merkle_root};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -12,10 +15,6 @@ use worker::{Bucket, Conditional, D1Database, Date, Env, Result, wasm_bindgen::J
 
 use crate::vfs_identifiers;
 
-const CHECKPOINT_SCHEMA: &str = "carrack.vfs.catalog-checkpoint.v1";
-const MAXIMUM_DIRECTORIES: u64 = 5_000;
-const MAXIMUM_ENTRIES: u64 = 20_000;
-const MAXIMUM_CHECKPOINT_BYTES: usize = 32 * 1024 * 1024;
 const MAXIMUM_COLLAPSES_PER_RUN: u64 = 500;
 const CLAIM_SECONDS: u64 = 300;
 const ORPHAN_GRACE_SECONDS: u64 = 86_400;
@@ -47,39 +46,6 @@ struct DirectoryRow {
 #[derive(Clone, Deserialize, Serialize)]
 struct EntryRow {
     directory_id: String,
-    name: String,
-    kind: String,
-    file_id: Option<String>,
-    version_id: Option<String>,
-    child_directory_id: Option<String>,
-    size_bytes: u64,
-    data_root: String,
-    metadata_root: Option<String>,
-}
-
-#[derive(Serialize)]
-struct Checkpoint {
-    schema: &'static str,
-    filesystem_id: String,
-    revision_id: u64,
-    parent_revision_id: Option<u64>,
-    root_directory_id: String,
-    root_data_root: String,
-    created_at: u64,
-    directories: Vec<CheckpointDirectory>,
-}
-
-#[derive(Serialize)]
-struct CheckpointDirectory {
-    directory_id: String,
-    parent_directory_id: Option<String>,
-    name: String,
-    data_root: String,
-    entries: Vec<CheckpointEntry>,
-}
-
-#[derive(Clone, Serialize)]
-struct CheckpointEntry {
     name: String,
     kind: String,
     file_id: Option<String>,
@@ -239,7 +205,7 @@ async fn materialize(
 ) -> Result<()> {
     let checkpoint = load_checkpoint(database, candidate).await?;
     let encoded = serde_json::to_vec(&checkpoint)?;
-    if encoded.is_empty() || encoded.len() > MAXIMUM_CHECKPOINT_BYTES {
+    if encoded.is_empty() || encoded.len() > MAXIMUM_CATALOG_CHECKPOINT_BYTES {
         return Err(protocol_error("catalog checkpoint exceeds its byte bound"));
     }
     let digest: [u8; 32] = Sha256::digest(&encoded).into();
@@ -322,7 +288,10 @@ async fn materialize(
     Ok(())
 }
 
-async fn load_checkpoint(database: &D1Database, candidate: &Candidate) -> Result<Checkpoint> {
+async fn load_checkpoint(
+    database: &D1Database,
+    candidate: &Candidate,
+) -> Result<CatalogCheckpoint> {
     let directories = database
         .prepare(
             "SELECT id, parent_id, name, data_root
@@ -333,14 +302,12 @@ async fn load_checkpoint(database: &D1Database, candidate: &Candidate) -> Result
         )
         .bind(&[
             JsValue::from_str(&candidate.filesystem_id),
-            number(MAXIMUM_DIRECTORIES + 1),
+            number((MAXIMUM_CATALOG_DIRECTORIES + 1) as u64),
         ])?
         .all()
         .await?
         .results::<DirectoryRow>()?;
-    if directories.is_empty()
-        || directories.len() > usize::try_from(MAXIMUM_DIRECTORIES).unwrap_or(usize::MAX)
-    {
+    if directories.is_empty() || directories.len() > MAXIMUM_CATALOG_DIRECTORIES {
         return Err(protocol_error("catalog directory bound exceeded"));
     }
     let entries = database
@@ -356,12 +323,12 @@ async fn load_checkpoint(database: &D1Database, candidate: &Candidate) -> Result
         )
         .bind(&[
             JsValue::from_str(&candidate.filesystem_id),
-            number(MAXIMUM_ENTRIES + 1),
+            number((MAXIMUM_CATALOG_ENTRIES + 1) as u64),
         ])?
         .all()
         .await?
         .results::<EntryRow>()?;
-    if entries.len() > usize::try_from(MAXIMUM_ENTRIES).unwrap_or(usize::MAX) {
+    if entries.len() > MAXIMUM_CATALOG_ENTRIES {
         return Err(protocol_error("catalog entry bound exceeded"));
     }
     assemble_checkpoint(candidate, directories, entries)
@@ -371,15 +338,20 @@ fn assemble_checkpoint(
     candidate: &Candidate,
     directories: Vec<DirectoryRow>,
     entries: Vec<EntryRow>,
-) -> Result<Checkpoint> {
-    let mut grouped = HashMap::<String, Vec<CheckpointEntry>>::new();
+) -> Result<CatalogCheckpoint> {
+    let mut grouped = HashMap::<String, Vec<CatalogCheckpointEntry>>::new();
     for entry in entries {
+        let kind = match entry.kind.as_str() {
+            "file" => CatalogCheckpointEntryKind::File,
+            "directory" => CatalogCheckpointEntryKind::Directory,
+            _ => return Err(protocol_error("catalog entry kind is invalid")),
+        };
         grouped
             .entry(entry.directory_id)
             .or_default()
-            .push(CheckpointEntry {
+            .push(CatalogCheckpointEntry {
                 name: entry.name,
-                kind: entry.kind,
+                kind,
                 file_id: entry.file_id,
                 version_id: entry.version_id,
                 child_directory_id: entry.child_directory_id,
@@ -390,7 +362,7 @@ fn assemble_checkpoint(
     }
     let mut checkpoint_directories = Vec::with_capacity(directories.len());
     for directory in directories {
-        checkpoint_directories.push(CheckpointDirectory {
+        checkpoint_directories.push(CatalogCheckpointDirectory {
             entries: grouped.remove(&directory.id).unwrap_or_default(),
             directory_id: directory.id,
             parent_directory_id: directory.parent_id,
@@ -403,9 +375,8 @@ fn assemble_checkpoint(
             "catalog entries reference an inactive directory",
         ));
     }
-    validate_checkpoint(candidate, &checkpoint_directories)?;
-    Ok(Checkpoint {
-        schema: CHECKPOINT_SCHEMA,
+    let checkpoint = CatalogCheckpoint {
+        schema: CATALOG_CHECKPOINT_SCHEMA.to_owned(),
         filesystem_id: candidate.filesystem_id.clone(),
         revision_id: candidate.revision_id,
         parent_revision_id: candidate.parent_revision_id,
@@ -413,130 +384,9 @@ fn assemble_checkpoint(
         root_data_root: candidate.root_data_root.clone(),
         created_at: candidate.created_at,
         directories: checkpoint_directories,
-    })
-}
-
-fn validate_checkpoint(candidate: &Candidate, directories: &[CheckpointDirectory]) -> Result<()> {
-    let mut by_id = HashMap::with_capacity(directories.len());
-    for (index, directory) in directories.iter().enumerate() {
-        validate_hex::<16>(&directory.directory_id, "catalog directory identity")?;
-        let expected_root = decode_hex::<32>(&directory.data_root, "catalog directory root")?;
-        if by_id
-            .insert(directory.directory_id.clone(), index)
-            .is_some()
-        {
-            return Err(protocol_error("catalog directory identity is duplicated"));
-        }
-        for pair in directory.entries.windows(2) {
-            if pair[0].name.as_bytes() >= pair[1].name.as_bytes() {
-                return Err(protocol_error(
-                    "catalog entries are not canonically ordered",
-                ));
-            }
-        }
-        let merkle_entries = directory
-            .entries
-            .iter()
-            .map(merkle_entry)
-            .collect::<Result<Vec<_>>>()?;
-        let actual_root = directory_merkle_root(&merkle_entries)
-            .map_err(|error| protocol_error(&error.to_string()))?;
-        if actual_root != expected_root {
-            return Err(protocol_error("catalog directory root differs"));
-        }
-    }
-    let Some(root_index) = by_id.get(&candidate.root_directory_id).copied() else {
-        return Err(protocol_error("catalog root directory is missing"));
     };
-    let root = &directories[root_index];
-    if root.parent_directory_id.is_some()
-        || !root.name.is_empty()
-        || root.data_root != candidate.root_data_root
-    {
-        return Err(protocol_error("catalog root identity differs"));
-    }
-    let mut visited = HashSet::with_capacity(directories.len());
-    let mut pending = vec![candidate.root_directory_id.clone()];
-    while let Some(directory_id) = pending.pop() {
-        if !visited.insert(directory_id.clone()) {
-            return Err(protocol_error("catalog directory graph is not a tree"));
-        }
-        let Some(index) = by_id.get(&directory_id).copied() else {
-            return Err(protocol_error("catalog child directory is missing"));
-        };
-        let directory = &directories[index];
-        for entry in &directory.entries {
-            if entry.kind != "directory" {
-                continue;
-            }
-            let child_id = entry
-                .child_directory_id
-                .as_ref()
-                .ok_or_else(|| protocol_error("catalog child identity is missing"))?;
-            let Some(child_index) = by_id.get(child_id).copied() else {
-                return Err(protocol_error("catalog child directory is missing"));
-            };
-            let child = &directories[child_index];
-            if child.parent_directory_id.as_deref() != Some(&directory.directory_id)
-                || child.name != entry.name
-                || child.data_root != entry.data_root
-            {
-                return Err(protocol_error("catalog child link differs"));
-            }
-            pending.push(child_id.clone());
-        }
-    }
-    if visited.len() != directories.len() {
-        return Err(protocol_error("catalog contains an unreachable directory"));
-    }
-    Ok(())
-}
-
-fn merkle_entry(entry: &CheckpointEntry) -> Result<DirectoryMerkleEntry<'_>> {
-    let data_root = decode_hex::<32>(&entry.data_root, "catalog entry data root")?;
-    match entry.kind.as_str() {
-        "file"
-            if entry.child_directory_id.is_none()
-                && entry.file_id.is_some()
-                && entry.version_id.is_some()
-                && entry.metadata_root.is_some() =>
-        {
-            Ok(DirectoryMerkleEntry::File {
-                name: &entry.name,
-                stable_id: decode_hex::<16>(
-                    entry.file_id.as_deref().unwrap_or_default(),
-                    "catalog file identity",
-                )?,
-                version_id: decode_hex::<16>(
-                    entry.version_id.as_deref().unwrap_or_default(),
-                    "catalog version identity",
-                )?,
-                size_bytes: entry.size_bytes,
-                data_root,
-                metadata_root: decode_hex::<32>(
-                    entry.metadata_root.as_deref().unwrap_or_default(),
-                    "catalog metadata root",
-                )?,
-            })
-        }
-        "directory"
-            if entry.file_id.is_none()
-                && entry.version_id.is_none()
-                && entry.child_directory_id.is_some()
-                && entry.metadata_root.is_none()
-                && entry.size_bytes == 0 =>
-        {
-            Ok(DirectoryMerkleEntry::Directory {
-                name: &entry.name,
-                stable_id: decode_hex::<16>(
-                    entry.child_directory_id.as_deref().unwrap_or_default(),
-                    "catalog child identity",
-                )?,
-                data_root,
-            })
-        }
-        _ => Err(protocol_error("catalog entry union is invalid")),
-    }
+    validate_catalog_checkpoint(&checkpoint).map_err(|error| protocol_error(&error.to_string()))?;
+    Ok(checkpoint)
 }
 
 async fn record_writing(
@@ -1006,27 +856,6 @@ async fn store_immutable(
         version: existing_version,
         bytes: existing_bytes,
     })
-}
-
-fn validate_hex<const N: usize>(value: &str, context: &str) -> Result<()> {
-    let _ = decode_hex::<N>(value, context)?;
-    Ok(())
-}
-
-fn decode_hex<const N: usize>(value: &str, context: &str) -> Result<[u8; N]> {
-    if value.len() != N * 2
-        || value == "0".repeat(N * 2)
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        return Err(protocol_error(&format!("{context} is invalid")));
-    }
-    let decoded =
-        hex::decode(value).map_err(|_| protocol_error(&format!("{context} is invalid")))?;
-    decoded
-        .try_into()
-        .map_err(|_| protocol_error(&format!("{context} length differs")))
 }
 
 fn lowercase_hex(bytes: &[u8]) -> String {

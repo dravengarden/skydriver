@@ -40,6 +40,7 @@ mod verification;
 mod vfs_access;
 mod vfs_authorization;
 mod vfs_bootstrap;
+mod vfs_catalog_delivery;
 mod vfs_catalog_materialization;
 mod vfs_directories;
 mod vfs_directory_management;
@@ -218,6 +219,12 @@ pub async fn main(request: Request, env: Env, _context: Context) -> Result<Respo
                 return Response::error("VFS token authentication required", 401);
             };
             vfs_tokens::session(&token)
+        })
+        .get_async("/api/v2/catalog/checkpoint", |request, context| async move {
+            let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                return Response::error("VFS token authentication required", 401);
+            };
+            vfs_catalog_delivery::checkpoint(&context.env, &token).await
         })
         .get_async(
             "/api/v2/directories/:id/entries",
