@@ -1,6 +1,7 @@
 //! Native Aliyun Drive Open API complete-object transport.
 
 use carrack_driver_contract::AliyunDriveConfig as Config;
+use futures_util::StreamExt as _;
 use reqwest::{StatusCode, Url};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -548,6 +549,9 @@ impl Client {
             )
             .await?;
         let url = safe_service_url(&grant.url)?;
+        if expected_bytes == 0 {
+            self.verify_empty_download(url.clone()).await?;
+        }
         let temporary = staging_root.join(format!(".{file_id}.aliyun-readback"));
         if temporary.exists() {
             std::fs::remove_file(&temporary).map_err(|error| {
@@ -607,6 +611,41 @@ impl Client {
             .sync_all()
             .map_err(|error| Error::InvalidResponse(format!("sync Aliyun download: {error}")))?;
         Ok(temporary)
+    }
+
+    async fn verify_empty_download(&self, url: Url) -> Result<(), Error> {
+        let response = self
+            .http
+            .get(url)
+            .header("Accept-Encoding", "identity")
+            .send()
+            .await
+            .map_err(|error| provider_transport("download empty Aliyun object", &error))?;
+        if response.status() != StatusCode::OK {
+            return Err(provider_status(
+                "Aliyun empty-object download",
+                response.status(),
+                true,
+            ));
+        }
+        if response.content_length().is_some_and(|bytes| bytes != 0) {
+            return Err(Error::failure(
+                crate::FailureKind::CorruptCiphertext,
+                "Aliyun zero-byte object returned a non-empty body",
+            ));
+        }
+        let mut body = response.bytes_stream();
+        while let Some(chunk) = body.next().await {
+            let chunk =
+                chunk.map_err(|error| provider_transport("read empty Aliyun object", &error))?;
+            if !chunk.is_empty() {
+                return Err(Error::failure(
+                    crate::FailureKind::CorruptCiphertext,
+                    "Aliyun zero-byte object returned a non-empty body",
+                ));
+            }
+        }
+        Ok(())
     }
 
     async fn verify_readback(
@@ -722,6 +761,57 @@ mod tests {
                 .failure_kind(),
             Some(crate::FailureKind::ProviderUnavailable)
         );
+    }
+
+    #[tokio::test]
+    async fn zero_byte_download_still_verifies_the_provider_body() {
+        let server = MockServer::start();
+        let drive_info = server.mock(|when, then| {
+            when.method(POST).path("/adrive/v1.0/user/getDriveInfo");
+            then.status(200).json_body(json!({
+                "default_drive_id": "drive",
+                "resource_drive_id": "drive",
+                "backup_drive_id": "drive"
+            }));
+        });
+        let download_url = server.url("/download");
+        let grant = server.mock(|when, then| {
+            when.method(POST)
+                .path("/adrive/v1.0/openFile/getDownloadUrl");
+            then.status(200).json_body(json!({"url": download_url}));
+        });
+        let provider = server.mock(|when, then| {
+            when.method(GET)
+                .path("/download")
+                .header("Accept-Encoding", "identity");
+            then.status(200).body("unexpected");
+        });
+        let staging = tempfile::tempdir().expect("temporary staging");
+        let error = download(
+            &reqwest::Client::new(),
+            &json!({
+                "api_base_url": server.base_url(),
+                "drive_type": "resource",
+                "root_folder_id": "root",
+                "upload_part_bytes": 2
+            }),
+            json!({"access_token": "secret"}),
+            "object",
+            Some("file-1"),
+            staging.path(),
+            "version-1",
+            0,
+            &hex::encode(Sha256::digest([])),
+        )
+        .await
+        .expect_err("non-empty provider body must not satisfy zero-byte identity");
+        assert_eq!(
+            error.failure_kind(),
+            Some(crate::FailureKind::CorruptCiphertext)
+        );
+        drive_info.assert();
+        grant.assert();
+        provider.assert();
     }
 
     #[tokio::test]
