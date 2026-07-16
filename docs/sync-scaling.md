@@ -9,9 +9,10 @@ Carrack as a small-object compaction or query engine.
 
 The planner is linear in reachable entries. File and new-state plans use
 private disk spools. Previous state uses a token/source-scoped SQLite primary
-key rather than an in-memory table. A directory up to 20,000 entries may use a
-whole-node memory/cache representation; wider revision-pinned directories are
-verified and planned through a streaming spool. The portable directory Merkle
+key rather than an in-memory table, plus an immutable-version index for
+namespace rename reuse. A directory up to 20,000 entries may use a whole-node
+memory/cache representation; wider revision-pinned directories are verified
+and planned through a streaming spool. The portable directory Merkle
 accumulator retains only the prior bounded name and logarithmically many
 subtree hashes.
 
@@ -24,6 +25,12 @@ not a filesystem capacity failure.
 An unchanged catalog version transfers no provider payload, but Carrack reads
 the local file to recompute its exact plaintext root. Size, mtime, inode, and a
 user-writable content-addressed hardlink are insufficient correctness proofs.
+
+For a namespace rename, a matching immutable version may be copied from its
+old local path instead of downloaded. Carrack verifies the old path, copies it
+without creating a shared inode, then verifies the complete staging file again
+before atomic publication. Any lookup, copy, or proof failure retains the
+provider download path, so this acceleration cannot publish unverified bytes.
 
 An optional future fs-verity backend may skip that read only when it can bind a
 previously recorded measurement to a kernel-enforced immutable inode. Missing
@@ -56,8 +63,8 @@ atomically per successful item, and retains the current endpoint as fallback.
 - An explicit release-mode test authenticates the protocol maximum of one
   million entries.
 - Client tests cover private unique spools, corrupt indexed-state fallback,
-  v1-to-v2 migration, atomic state replacement, destination overlap, final
-  live-root fencing, and checkpoint/page identity.
+  v1-to-v2 migration, immutable-version rename reuse, atomic state replacement,
+  destination overlap, final live-root fencing, and checkpoint/page identity.
 - Worker protocol tests cover concurrent namespace mutation, ACL and token
   boundaries, catalog materialization, put publication, and environment
   isolation against local D1.

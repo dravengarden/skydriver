@@ -102,9 +102,12 @@ This document is the normative product and correctness baseline. The key words
 - Missing, incompatible, oversized, multi-hop, narrow-authorization, or
   ACL-sensitive acceleration MUST fall back to a complete checkpoint or
   revision-pinned traversal without weakening correctness.
-- Incremental sync MUST transfer no payload for an unchanged authenticated file
-  and MUST redownload a locally missing or corrupt file even if metadata is
-  unchanged.
+- Incremental sync MUST transfer no provider payload for an unchanged
+  authenticated file whose destination bytes still verify. A missing or corrupt
+  destination MUST NOT be accepted from metadata alone: the client MUST either
+  redownload it or copy an independently complete local candidate into private
+  staging and fully reverify the expected immutable version, size, and plaintext
+  Merkle root before publication.
 - A final live-root recheck MUST reject a plan whose namespace changed during
   synchronization unless the caller explicitly requested a pinned snapshot.
 

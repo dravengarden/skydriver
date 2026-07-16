@@ -190,29 +190,16 @@ impl CatalogStore {
         validate_catalog_checkpoint_etag(etag)
             .map_err(|error| Error::InvalidResponse(error.to_string()))?;
         for directory in &checkpoint.directories {
-            self.publish_node(CatalogNode {
-                schema: NODE_SCHEMA.to_owned(),
-                directory_id: directory.directory_id.clone(),
-                data_root: directory.data_root.clone(),
-                entries: directory
-                    .entries
-                    .iter()
-                    .map(|entry| CatalogEntry {
-                        name: entry.name.clone(),
-                        kind: match entry.kind {
-                            CatalogCheckpointEntryKind::File => EntryKind::File,
-                            CatalogCheckpointEntryKind::Directory => EntryKind::Directory,
-                        },
-                        file_id: entry.file_id.clone(),
-                        version_id: entry.version_id.clone(),
-                        child_directory_id: entry.child_directory_id.clone(),
-                        size_bytes: entry.size_bytes,
-                        data_root: entry.data_root.clone(),
-                        metadata_root: entry.metadata_root.clone(),
-                    })
-                    .collect(),
-            })?;
+            self.publish_node(checkpoint_node(directory))?;
         }
+        self.publish_checkpoint_head(checkpoint, etag)
+    }
+
+    fn publish_checkpoint_head(
+        &self,
+        checkpoint: &CatalogCheckpoint,
+        etag: &str,
+    ) -> Result<(), Error> {
         let checkpoint_bytes = serde_json::to_vec(checkpoint).map_err(|error| {
             Error::InvalidResponse(format!("encode catalog checkpoint receipt: {error}"))
         })?;
@@ -236,7 +223,14 @@ impl CatalogStore {
         let base = self.reconstruct_checkpoint(&head)?;
         let checkpoint = apply_catalog_delta(&base, &head.checkpoint_sha256, delta)
             .map_err(|error| Error::InvalidResponse(error.to_string()))?;
-        self.publish_checkpoint(&checkpoint, etag)
+        // The portable core has reconstructed and verified the complete target
+        // checkpoint, including its target SHA-256. Unchanged content-addressed
+        // nodes already belong to the verified base, so only delta-carried nodes
+        // need publication before the new head becomes visible.
+        for directory in &delta.directories {
+            self.publish_node(checkpoint_node(directory))?;
+        }
+        self.publish_checkpoint_head(&checkpoint, etag)
     }
 
     fn reconstruct_checkpoint(&self, head: &CatalogHead) -> Result<CatalogCheckpoint, Error> {
@@ -452,6 +446,31 @@ impl CatalogStore {
     }
 }
 
+fn checkpoint_node(directory: &CatalogCheckpointDirectory) -> CatalogNode {
+    CatalogNode {
+        schema: NODE_SCHEMA.to_owned(),
+        directory_id: directory.directory_id.clone(),
+        data_root: directory.data_root.clone(),
+        entries: directory
+            .entries
+            .iter()
+            .map(|entry| CatalogEntry {
+                name: entry.name.clone(),
+                kind: match entry.kind {
+                    CatalogCheckpointEntryKind::File => EntryKind::File,
+                    CatalogCheckpointEntryKind::Directory => EntryKind::Directory,
+                },
+                file_id: entry.file_id.clone(),
+                version_id: entry.version_id.clone(),
+                child_directory_id: entry.child_directory_id.clone(),
+                size_bytes: entry.size_bytes,
+                data_root: entry.data_root.clone(),
+                metadata_root: entry.metadata_root.clone(),
+            })
+            .collect(),
+    }
+}
+
 impl From<&DirectoryEntry> for CatalogEntry {
     fn from(entry: &DirectoryEntry) -> Self {
         Self {
@@ -663,6 +682,7 @@ fn local_error(context: &str, error: impl std::fmt::Display) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use carrack_sdk_core::build_catalog_delta;
 
     fn empty_checkpoint() -> CatalogCheckpoint {
         let root = hex::encode(directory_merkle_root(&[]).expect("empty directory root"));
@@ -763,5 +783,96 @@ mod tests {
         bytes[middle] ^= 1;
         std::fs::write(head_path, bytes).expect("corrupt checkpoint head");
         assert!(store.checkpoint_condition().is_err());
+    }
+
+    #[test]
+    fn applies_minimal_delta_over_verified_content_addressed_base() {
+        let temporary = tempfile::tempdir().expect("temporary catalog");
+        let store = CatalogStore::new(temporary.path(), "303132333435363738393a3b3c3d3e3f")
+            .expect("catalog store");
+        let base = checkpoint_with_child(1, None, "docs");
+        let target = checkpoint_with_child(2, Some(1), "archive");
+        let base_sha256 = checkpoint_sha256(&base);
+        let target_sha256 = checkpoint_sha256(&target);
+        let base_etag = format!("\"sha256:{base_sha256}\"");
+        let target_etag = format!("\"sha256:{target_sha256}\"");
+        let delta = build_catalog_delta(&base, &base_sha256, &target, &target_sha256)
+            .expect("build minimal catalog delta");
+        assert_eq!(delta.directories.len(), 1);
+
+        store
+            .publish_checkpoint(&base, &base_etag)
+            .expect("publish base checkpoint");
+        store
+            .apply_delta(&delta, &target_etag)
+            .expect("apply verified minimal delta");
+
+        let condition = store
+            .checkpoint_condition()
+            .expect("load target condition")
+            .expect("target condition");
+        assert_eq!(condition.revision_id, 2);
+        assert_eq!(condition.root_data_root, target.root_data_root);
+        assert_eq!(condition.checkpoint_sha256, target_sha256);
+    }
+
+    fn checkpoint_with_child(
+        revision_id: u64,
+        parent_revision_id: Option<u64>,
+        child_name: &str,
+    ) -> CatalogCheckpoint {
+        let root_directory_id = "202122232425262728292a2b2c2d2e2f";
+        let child_directory_id = "404142434445464748494a4b4c4d4e4f";
+        let child_root = hex::encode(directory_merkle_root(&[]).expect("empty child root"));
+        let child_root_bytes = decode_hex::<32>(&child_root, "child root").expect("child root hex");
+        let root = hex::encode(
+            directory_merkle_root(&[DirectoryMerkleEntry::Directory {
+                name: child_name,
+                stable_id: decode_hex::<16>(child_directory_id, "child identity")
+                    .expect("child identity hex"),
+                data_root: child_root_bytes,
+            }])
+            .expect("parent root"),
+        );
+        CatalogCheckpoint {
+            schema: CATALOG_CHECKPOINT_SCHEMA.to_owned(),
+            filesystem_id: "101112131415161718191a1b1c1d1e1f".to_owned(),
+            revision_id,
+            parent_revision_id,
+            root_directory_id: root_directory_id.to_owned(),
+            root_data_root: root.clone(),
+            created_at: 1_700_000_000 + revision_id,
+            directories: vec![
+                CatalogCheckpointDirectory {
+                    directory_id: root_directory_id.to_owned(),
+                    parent_directory_id: None,
+                    name: String::new(),
+                    data_root: root,
+                    entries: vec![CatalogCheckpointEntry {
+                        name: child_name.to_owned(),
+                        kind: CatalogCheckpointEntryKind::Directory,
+                        file_id: None,
+                        version_id: None,
+                        child_directory_id: Some(child_directory_id.to_owned()),
+                        size_bytes: 0,
+                        data_root: child_root.clone(),
+                        metadata_root: None,
+                    }],
+                },
+                CatalogCheckpointDirectory {
+                    directory_id: child_directory_id.to_owned(),
+                    parent_directory_id: Some(root_directory_id.to_owned()),
+                    name: child_name.to_owned(),
+                    data_root: child_root,
+                    entries: Vec::new(),
+                },
+            ],
+        }
+    }
+
+    fn checkpoint_sha256(checkpoint: &CatalogCheckpoint) -> String {
+        hex::encode(Sha256::digest(
+            serde_json::to_vec(checkpoint).expect("encode checkpoint"),
+        ))
     }
 }

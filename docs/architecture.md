@@ -125,13 +125,21 @@ receives an exact authorized subtree or falls back to revision-pinned pages.
 When the client holds the immediately preceding authenticated full checkpoint,
 the server may return a hash-linked single-transition delta containing only
 new directory nodes. The client reconstructs and verifies the complete target
-root before use. Missing, oversized, incompatible, multi-hop, or ACL-sensitive
-cases safely fall back to a complete checkpoint or bounded page traversal.
+root before use, durably publishes only the new content-addressed nodes, and
+publishes the new local head last. Missing, oversized, incompatible, multi-hop,
+or ACL-sensitive cases safely fall back to a complete checkpoint or bounded
+page traversal.
 
 The private local catalog stores metadata and recovery journals, never
 credentials or directory keys. Independent files run concurrently. Each file
 uses bounded multipart or range pipelines and persists durable receipts so a
 restart transfers only missing or invalid units.
+
+The token/source-scoped local state also indexes immutable version identities.
+When a namespace rename moves an unchanged version, sync may copy the already
+verified local plaintext into a private staging file and verify the complete
+Merkle root again before atomic publication. Missing, mutable, unreadable, or
+unverifiable candidates fall back to the normal provider download.
 
 ## Drivers
 

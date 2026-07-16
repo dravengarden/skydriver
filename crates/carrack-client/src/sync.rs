@@ -28,6 +28,7 @@ const MAXIMUM_MEMORY_DIRECTORY_ENTRIES: usize = 20_000;
 const MAXIMUM_SPOOL_RECORD_BYTES: usize = 1024 * 1024;
 static PLAN_SPOOL_ORDINAL: AtomicU64 = AtomicU64::new(0);
 static STATE_TEMPORARY_ORDINAL: AtomicU64 = AtomicU64::new(0);
+static LOCAL_REUSE_ORDINAL: AtomicU64 = AtomicU64::new(0);
 
 /// Bounded incremental directory synchronization settings.
 pub struct SyncOptions {
@@ -96,6 +97,7 @@ struct LegacySyncState {
 struct StateIndex {
     connection: rusqlite::Connection,
     healthy: Cell<bool>,
+    version_lookup_indexed: bool,
 }
 
 impl StateIndex {
@@ -133,9 +135,13 @@ impl StateIndex {
                 "indexed local sync state identity differs".to_owned(),
             ));
         }
+        let user_version = connection
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+            .map_err(state_database_error("read indexed local sync version"))?;
         Ok(Self {
             connection,
             healthy: Cell::new(true),
+            version_lookup_indexed: user_version >= 3,
         })
     }
 
@@ -165,24 +171,62 @@ impl StateIndex {
             self.healthy.set(false);
             return None;
         }?;
-        let size_bytes = canonical_u64(&row.1)?;
-        let verification_block_bytes = canonical_u64(&row.3)?;
-        if row.0.is_empty()
-            || row.2.len() != 64
-            || hex::decode(&row.2).is_err()
-            || verification_block_bytes == 0
-            || verification_block_bytes > 256 * 1024 * 1024
-        {
-            return None;
-        }
-        Some(StateRecord {
-            relative_path: relative_path.to_owned(),
-            version_id: row.0,
-            size_bytes,
-            file_root: row.2,
-            verification_block_bytes,
-        })
+        decode_state_row(relative_path.to_owned(), row)
     }
+
+    fn lookup_version(&self, version_id: &str) -> Vec<StateRecord> {
+        if !self.healthy.get() || !self.version_lookup_indexed || version_id.is_empty() {
+            return Vec::new();
+        }
+        let Ok(mut statement) = self.connection.prepare_cached(
+            "SELECT relative_path, version_id, size_bytes, file_root, verification_block_bytes
+             FROM state_records
+             WHERE version_id = ?1
+             ORDER BY relative_path
+             LIMIT 16",
+        ) else {
+            self.healthy.set(false);
+            return Vec::new();
+        };
+        let Ok(rows) = statement.query_map([version_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        }) else {
+            self.healthy.set(false);
+            return Vec::new();
+        };
+        rows.filter_map(|row| {
+            let (relative_path, version_id, size_bytes, file_root, verification_block_bytes) =
+                row.ok()?;
+            decode_state_row(
+                PathBuf::from(relative_path),
+                (version_id, size_bytes, file_root, verification_block_bytes),
+            )
+        })
+        .collect()
+    }
+}
+
+fn decode_state_row(
+    relative_path: PathBuf,
+    row: (String, String, String, String),
+) -> Option<StateRecord> {
+    let size_bytes = canonical_u64(&row.1)?;
+    let verification_block_bytes = canonical_u64(&row.3)?;
+    let record = StateRecord {
+        relative_path,
+        version_id: row.0,
+        size_bytes,
+        file_root: row.2,
+        verification_block_bytes,
+    };
+    validate_state_record(&record).ok()?;
+    Some(record)
 }
 
 struct Downloaded {
@@ -498,7 +542,34 @@ impl VfsClient {
                 records.append(&record)?;
                 reused_files += 1;
             } else {
-                downloads.append(&file)?;
+                let mut relocated = None;
+                if let Some(index) = &previous {
+                    for candidate in index.lookup_version(&file.version_id) {
+                        if candidate.relative_path == file.relative_path
+                            || candidate.size_bytes != file.size_bytes
+                            || candidate.file_root != file.file_root
+                        {
+                            continue;
+                        }
+                        match reuse_local_version(destination, &file, &candidate) {
+                            Ok(Some(record)) => {
+                                relocated = Some(record);
+                                break;
+                            }
+                            Ok(None) => {}
+                            Err(error) => warnings.push(format!(
+                                "Local immutable-version reuse for {} failed and provider download was retained: {error}",
+                                file.relative_path.display()
+                            )),
+                        }
+                    }
+                }
+                if let Some(record) = relocated {
+                    records.append(&record)?;
+                    reused_files += 1;
+                } else {
+                    downloads.append(&file)?;
+                }
             }
         }
 
@@ -685,8 +756,16 @@ impl VfsClient {
         bulk_catalog_authorized: bool,
     ) -> Result<(CatalogFence, LoadedDirectory), Error> {
         let components = canonical_components(source)?;
+        // A delivered checkpoint, delta, or reauthorized 304 proves that the
+        // token-scoped local DAG may supply directory contents. The live page is
+        // then needed only for identity/revision fencing, not bulk entries.
+        let identity_page_size = if bulk_catalog_authorized {
+            1
+        } else {
+            CATALOG_PAGE_SIZE
+        };
         let root_page = self
-            .list_directory(&session.root_directory_id, None, CATALOG_PAGE_SIZE)
+            .list_directory(&session.root_directory_id, None, identity_page_size)
             .await?;
         validate_page_identity(
             &root_page,
@@ -738,7 +817,7 @@ impl VfsClient {
         let source_page = if components.is_empty() {
             root_page
         } else {
-            self.list_directory(&source_id, None, CATALOG_PAGE_SIZE)
+            self.list_directory(&source_id, None, identity_page_size)
                 .await?
         };
         validate_page_identity(&source_page, &source_id, &source_root, None)?;
@@ -926,6 +1005,91 @@ fn local_matches(path: &Path, record: &StateRecord) -> Result<bool, Error> {
         record.size_bytes,
         &record.file_root,
     )
+}
+
+fn reuse_local_version(
+    destination: &Path,
+    file: &PlannedFile,
+    candidate: &StateRecord,
+) -> Result<Option<StateRecord>, Error> {
+    let source = destination.join(&candidate.relative_path);
+    if !local_matches(&source, candidate)? {
+        return Ok(None);
+    }
+    let target = destination.join(&file.relative_path);
+    let parent = target
+        .parent()
+        .ok_or_else(|| Error::InvalidResponse("sync reuse target has no parent".to_owned()))?;
+    ensure_directory(parent)?;
+    let file_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| Error::InvalidResponse("sync reuse filename is not UTF-8".to_owned()))?;
+    let (temporary, mut output) = loop {
+        let ordinal = LOCAL_REUSE_ORDINAL.fetch_add(1, Ordering::Relaxed);
+        let temporary = parent.join(format!(
+            ".{file_name}.carrack-reuse-{}-{ordinal:016x}.tmp",
+            std::process::id()
+        ));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        match options.open(&temporary) {
+            Ok(output) => break (temporary, output),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(local_error("create local reuse temporary")(error)),
+        }
+    };
+    let copied = (|| -> Result<(), Error> {
+        let input = std::fs::File::open(&source)
+            .map_err(local_error("open immutable local reuse source"))?;
+        let metadata = input
+            .metadata()
+            .map_err(local_error("inspect immutable local reuse source"))?;
+        if !metadata.is_file() || metadata.len() != candidate.size_bytes {
+            return Err(Error::InvalidResponse(
+                "local immutable-version source changed before copy".to_owned(),
+            ));
+        }
+        let maximum_copy_bytes = candidate
+            .size_bytes
+            .checked_add(1)
+            .ok_or_else(|| Error::InvalidResponse("local reuse size overflow".to_owned()))?;
+        let copied_bytes = std::io::copy(&mut input.take(maximum_copy_bytes), &mut output)
+            .map_err(local_error("copy immutable local reuse source"))?;
+        if copied_bytes != candidate.size_bytes {
+            return Err(Error::InvalidResponse(
+                "local immutable-version source changed during copy".to_owned(),
+            ));
+        }
+        output
+            .sync_all()
+            .map_err(local_error("sync immutable local reuse temporary"))?;
+        drop(output);
+        if !local_matches(&temporary, candidate)? {
+            return Err(Error::InvalidResponse(
+                "local immutable-version copy changed during verification".to_owned(),
+            ));
+        }
+        std::fs::rename(&temporary, &target)
+            .map_err(local_error("publish immutable local reuse"))?;
+        Ok(())
+    })();
+    if let Err(error) = copied {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error);
+    }
+    Ok(Some(StateRecord {
+        relative_path: file.relative_path.clone(),
+        version_id: file.version_id.clone(),
+        size_bytes: file.size_bytes,
+        file_root: file.file_root.clone(),
+        verification_block_bytes: candidate.verification_block_bytes,
+    }))
 }
 
 fn validate_options(options: &SyncOptions) -> Result<(), Error> {
@@ -1121,7 +1285,7 @@ fn build_state_database(
             "PRAGMA journal_mode = OFF;
              PRAGMA synchronous = OFF;
              PRAGMA trusted_schema = OFF;
-             PRAGMA user_version = 2;
+             PRAGMA user_version = 3;
              CREATE TABLE state_identity (
                  schema TEXT NOT NULL,
                  source TEXT NOT NULL
@@ -1132,7 +1296,9 @@ fn build_state_database(
                  size_bytes TEXT NOT NULL,
                  file_root TEXT NOT NULL,
                  verification_block_bytes TEXT NOT NULL
-             ) STRICT, WITHOUT ROWID;",
+             ) STRICT, WITHOUT ROWID;
+             CREATE INDEX state_records_version_id
+                 ON state_records (version_id, relative_path);",
         )
         .map_err(state_database_error("initialize indexed local sync state"))?;
     let transaction = connection
@@ -1307,7 +1473,8 @@ mod tests {
 
     use super::{
         LEGACY_STATE_SCHEMA, PlannedFile, RecordSpool, StateIndex, StateRecord, SyncOptions,
-        VfsClient, acquire_sync_lock, open_state_index, retain_bounded, write_state,
+        VfsClient, acquire_sync_lock, open_state_index, retain_bounded, reuse_local_version,
+        write_state,
     };
     use crate::VfsToken;
 
@@ -1435,6 +1602,14 @@ mod tests {
                 .is_some()
         );
         assert_eq!(
+            loaded
+                .lookup_version("first-version")
+                .into_iter()
+                .map(|record| record.relative_path)
+                .collect::<Vec<_>>(),
+            vec![std::path::PathBuf::from("first.parquet")]
+        );
+        assert_eq!(
             std::fs::read(&legacy_temporary).expect("read legacy temporary"),
             b"other concurrent writer"
         );
@@ -1496,6 +1671,68 @@ mod tests {
         assert!(index.is_none());
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("will be rebuilt without trusting it"));
+    }
+
+    #[test]
+    fn immutable_version_reuse_copies_and_reverifies_before_publication() {
+        let temporary = tempfile::tempdir().expect("local reuse temporary directory");
+        let destination = temporary.path().join("destination");
+        let old_path = destination.join("old/data.parquet");
+        std::fs::create_dir_all(old_path.parent().expect("old path parent"))
+            .expect("create old path parent");
+        std::fs::write(&old_path, b"verified immutable payload").expect("write immutable payload");
+        let tree = super::integrity::build_file(&old_path, 4).expect("hash immutable payload");
+        let candidate = StateRecord {
+            relative_path: "old/data.parquet".into(),
+            version_id: "immutable-version".to_owned(),
+            size_bytes: tree.size_bytes,
+            file_root: hex::encode(tree.root),
+            verification_block_bytes: tree.block_bytes,
+        };
+        let planned = PlannedFile {
+            vfs_path: "/new/data.parquet".to_owned(),
+            relative_path: "new/data.parquet".into(),
+            file_id: "file-id".to_owned(),
+            version_id: candidate.version_id.clone(),
+            size_bytes: candidate.size_bytes,
+            file_root: candidate.file_root.clone(),
+        };
+
+        let record = reuse_local_version(&destination, &planned, &candidate)
+            .expect("reuse immutable local version")
+            .expect("matching immutable version");
+
+        assert_eq!(record.relative_path, planned.relative_path);
+        assert_eq!(
+            std::fs::read(&old_path).expect("read old path"),
+            b"verified immutable payload"
+        );
+        assert_eq!(
+            std::fs::read(destination.join(&planned.relative_path)).expect("read reused path"),
+            b"verified immutable payload"
+        );
+        assert!(
+            std::fs::read_dir(destination.join("new"))
+                .expect("read target parent")
+                .all(|entry| !entry
+                    .expect("target entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("carrack-reuse"))
+        );
+
+        std::fs::write(&old_path, b"corrupt immutable payload").expect("corrupt old path");
+        let rejected = PlannedFile {
+            relative_path: "rejected/data.parquet".into(),
+            vfs_path: "/rejected/data.parquet".to_owned(),
+            ..planned
+        };
+        assert!(
+            reuse_local_version(&destination, &rejected, &candidate)
+                .expect("reject corrupt local candidate")
+                .is_none()
+        );
+        assert!(!destination.join(rejected.relative_path).exists());
     }
 
     #[test]
@@ -1652,14 +1889,6 @@ mod tests {
                     .body(checkpoint_body);
             })
             .await;
-        let root_catalog = server
-            .mock_async(|when, then| {
-                when.method(GET)
-                    .path(format!("/api/v2/directories/{root_id}/entries"))
-                    .query_param("limit", "1000");
-                then.status(200).json_body(root_page.clone());
-            })
-            .await;
         let root_fence = server
             .mock_async(|when, then| {
                 when.method(GET)
@@ -1703,8 +1932,7 @@ mod tests {
 
         session.assert_hits_async(2).await;
         checkpoint_delivery.assert_hits_async(2).await;
-        root_catalog.assert_hits_async(2).await;
-        root_fence.assert_hits_async(4).await;
+        root_fence.assert_hits_async(6).await;
         child_catalog.assert_hits_async(0).await;
     }
 }

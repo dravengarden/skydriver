@@ -44,7 +44,10 @@ the correctness protocol.
 The Rust `carrack sync` implementation performs these steps:
 
 1. Read the first live page of the requested root directory with the current
-   VFS bearer token.
+   VFS bearer token. After an authorized checkpoint, delta, or reauthorized
+   304, request only one entry because the page supplies a live identity fence;
+   without that bulk proof, request the normal bounded page and follow its
+   revision-pinned cursor.
 2. Use the authenticated `data_root` and directory revision as the recursive
    synchronization fence.
 3. Load the root node from the private local store when it already exists and
@@ -250,7 +253,9 @@ client reconstructs its complete base closure from independently checked local
 nodes, applies the changed nodes, derives navigation metadata from target
 Merkle edges, rejects missing or unreachable changes, revalidates the complete
 target tree, and requires the resulting canonical body to match the target
-checkpoint SHA-256. A missed transition, narrow token, SDK before `0.3.2`,
+checkpoint SHA-256. It then publishes only delta-carried content-addressed
+nodes before atomically advancing the local head; unchanged verified base nodes
+are not republished. A missed transition, narrow token, SDK before `0.3.2`,
 oversized source, or absent delta receives the complete checkpoint instead.
 
 Delta availability is never a correctness dependency. Once a catalog head
