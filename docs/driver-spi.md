@@ -80,6 +80,10 @@ decoding, credential decoding, and cursor wire schemas. Its caller uses only
 the shared inventory posture to decide whether a hosted credential envelope
 must be renewed and opened; it never interprets provider configuration or
 credential fields.
+An inventory generation resolves a missing unknown object only after its final
+page commits. Partial and failed scans retain evidence. Resolved evidence is
+kept for 30 days, then removed by bounded maintenance using the state/seen
+index; live quarantine rows have no age-based deletion.
 
 An adapter owns:
 

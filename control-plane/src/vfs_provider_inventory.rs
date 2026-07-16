@@ -268,6 +268,24 @@ pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
                 .bind(&[JsValue::from_str(&candidate.driver_id), JsValue::from_str(&observed.storage_key), JsValue::from_str(&sha256(&observed.storage_key)), JsValue::from_str(&observed.provider_version), integer(observed.size_bytes), integer(generation), integer(now)])?);
         }
     }
+    if page.next_cursor.is_none() {
+        // Only a complete generation proves that an earlier unknown object is
+        // absent. Partial pages and failed scans must retain their evidence.
+        statements.push(
+            database
+                .prepare(
+                    "UPDATE vfs_provider_quarantine
+                     SET state = 'resolved', resolved_at = ?1
+                     WHERE driver_id = ?2 AND state = 'observed'
+                       AND last_seen_generation < ?3",
+                )
+                .bind(&[
+                    integer(now),
+                    JsValue::from_str(&candidate.driver_id),
+                    integer(generation),
+                ])?,
+        );
+    }
     let (state, cursor, completed, next_scan_at) = if let Some(cursor) = page.next_cursor {
         (
             "scanning",

@@ -19,6 +19,8 @@ const MAXIMUM_TRANSFER_METRIC_ROWS_PER_RUN: u64 = 1_000;
 const MAXIMUM_ACCESS_AUDIT_ROWS_PER_RUN: u64 = 1_000;
 const AUTH_RATE_LIMIT_RETENTION_SECONDS: u64 = 86_400;
 const MAXIMUM_AUTH_RATE_LIMIT_ROWS_PER_RUN: u64 = 500;
+const PROVIDER_QUARANTINE_EVIDENCE_SECONDS: u64 = 30 * 86_400;
+const MAXIMUM_PROVIDER_QUARANTINE_ROWS_PER_RUN: u64 = 500;
 
 /// Performs bounded metadata hygiene without touching provider objects.
 ///
@@ -31,6 +33,7 @@ pub(crate) async fn run(env: &Env) -> Result<()> {
     let database = env.d1(DATABASE_BINDING)?;
     environment_defaults::ensure(env, &database, now).await?;
     vfs_provider_inventory::run(env, now).await?;
+    delete_resolved_provider_quarantine(&database, now).await?;
     delete_expired_authorization_claims(&database, now).await?;
     delete_expired_auth_rate_limits(&database, now).await?;
 
@@ -123,6 +126,31 @@ pub(crate) async fn run(env: &Env) -> Result<()> {
     vfs_server_lifecycle::run(env, now).await?;
     vfs_catalog_materialization::run(env, now).await?;
 
+    Ok(())
+}
+
+async fn delete_resolved_provider_quarantine(
+    database: &worker::D1Database,
+    now: u64,
+) -> Result<()> {
+    database
+        .prepare(
+            "DELETE FROM vfs_provider_quarantine
+             WHERE (driver_id, storage_key) IN (
+                 SELECT driver_id, storage_key FROM vfs_provider_quarantine
+                 WHERE state = 'resolved' AND resolved_at <= ?1
+                 ORDER BY last_seen_at, driver_id, storage_key LIMIT ?2
+             )",
+        )
+        .bind(&[
+            JsValue::from_str(
+                &now.saturating_sub(PROVIDER_QUARANTINE_EVIDENCE_SECONDS)
+                    .to_string(),
+            ),
+            JsValue::from_str(&MAXIMUM_PROVIDER_QUARANTINE_ROWS_PER_RUN.to_string()),
+        ])?
+        .run()
+        .await?;
     Ok(())
 }
 

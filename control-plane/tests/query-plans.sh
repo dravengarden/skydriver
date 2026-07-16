@@ -143,6 +143,16 @@ assert_uses_index provider-quarantine-driver vfs_provider_quarantine_by_driver_s
    WHERE driver_id = 'r2-default' AND state = 'observed'
    ORDER BY last_seen_at, storage_key LIMIT 100"
 
+assert_uses_index provider-quarantine-convergence vfs_provider_quarantine_by_driver_generation \
+  "SELECT storage_key FROM vfs_provider_quarantine
+   WHERE driver_id = 'r2-default' AND state = 'observed'
+     AND last_seen_generation < 2"
+
+assert_uses_index provider-quarantine-retirement vfs_provider_quarantine_by_state_seen \
+  "SELECT driver_id, storage_key FROM vfs_provider_quarantine
+   WHERE state = 'resolved' AND resolved_at <= 1
+   ORDER BY last_seen_at, driver_id, storage_key LIMIT 500"
+
 assert_uses_index group-membership-principal vfs_group_members_by_principal_group \
   "SELECT group_id FROM vfs_group_members
    WHERE principal_id = '00000000000000000000000000000001'

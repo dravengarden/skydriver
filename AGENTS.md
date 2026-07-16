@@ -74,6 +74,9 @@ agent processes are SDK consumers, not a third architectural component.
   `driver_inventory.rs` and `driver_lifecycle.rs`. Those adapters MUST NOT own
   D1 claims, revision or read-lease fences, quarantine publication, retries,
   retention, credential-envelope opening, or outcome state transitions.
+- Provider inventory may resolve absence only at a complete generation fence.
+  Partial or failed scans retain unknown-object evidence; resolved evidence is
+  removed only by bounded indexed retention.
 - Secrets and credentials never enter Git. D1 stores only password hashes,
   token verifiers, encrypted provider-credential envelopes, and wrapped VFS
   directory keys. VFS master keys stay in Cloudflare secrets or Secrets Store
