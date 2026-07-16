@@ -28,6 +28,12 @@ struct RevisionIdRow {
 }
 
 #[derive(Deserialize)]
+struct ClaimedOutboxState {
+    attempts: u64,
+    current_head: u64,
+}
+
+#[derive(Deserialize)]
 struct Candidate {
     revision_id: u64,
     filesystem_id: String,
@@ -36,6 +42,7 @@ struct Candidate {
     root_data_root: String,
     created_at: u64,
     lease_owner: String,
+    attempts: u64,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -138,6 +145,8 @@ pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
             &candidate.lease_owner,
             "checkpoint_materialization_failed",
             release_now,
+            candidate.attempts,
+            true,
         )
         .await?;
         return Err(error);
@@ -154,6 +163,7 @@ async fn claim_latest(database: &D1Database, now: u64) -> Result<Option<Candidat
         .prepare(
             "SELECT outbox.revision_id
              FROM vfs_catalog_outbox AS outbox
+                  INDEXED BY idx_vfs_catalog_outbox_claimable
              JOIN vfs_catalog_revisions AS revision ON revision.id = outbox.revision_id
              JOIN vfs_catalog_mutation_heads AS head
                ON head.filesystem_id = revision.filesystem_id
@@ -165,9 +175,10 @@ async fn claim_latest(database: &D1Database, now: u64) -> Result<Option<Candidat
                    SELECT 1 FROM vfs_catalog_revision_collapses AS collapse
                    WHERE collapse.revision_id = revision.id
                )
-               AND (outbox.state = 'pending'
+               AND ((outbox.state = 'pending'
+                     AND (outbox.retry_at IS NULL OR outbox.retry_at <= ?1))
                     OR (outbox.state = 'claimed' AND outbox.lease_expires_at <= ?1))
-             ORDER BY outbox.updated_at, outbox.revision_id
+             ORDER BY COALESCE(outbox.retry_at, outbox.updated_at), outbox.revision_id
              LIMIT 1",
         )
         .bind(&[number(now)])?
@@ -181,9 +192,11 @@ async fn claim_latest(database: &D1Database, now: u64) -> Result<Option<Candidat
         .prepare(
             "UPDATE vfs_catalog_outbox
              SET state = 'claimed', attempts = attempts + 1, lease_owner = ?1,
-                 lease_expires_at = ?2, last_error_code = NULL, updated_at = ?3
+                 lease_expires_at = ?2, retry_at = NULL,
+                 last_error_code = NULL, updated_at = ?3
              WHERE revision_id = ?4
-               AND (state = 'pending' OR (state = 'claimed' AND lease_expires_at <= ?3))
+               AND ((state = 'pending' AND (retry_at IS NULL OR retry_at <= ?3))
+                    OR (state = 'claimed' AND lease_expires_at <= ?3))
                AND EXISTS (
                    SELECT 1
                    FROM vfs_catalog_revisions AS revision
@@ -205,7 +218,54 @@ async fn claim_latest(database: &D1Database, now: u64) -> Result<Option<Candidat
     if changes(claimed.meta()?) != 1 {
         return Ok(None);
     }
-    load_candidate(database, candidate.revision_id, &lease_owner, now).await
+    let loaded = load_candidate(database, candidate.revision_id, &lease_owner, now).await?;
+    if loaded.is_some() {
+        return Ok(loaded);
+    }
+    release_unloadable_claim(database, candidate.revision_id, &lease_owner).await?;
+    Ok(None)
+}
+
+async fn release_unloadable_claim(
+    database: &D1Database,
+    revision_id: u64,
+    lease_owner: &str,
+) -> Result<()> {
+    let claim = database
+        .prepare(
+            "SELECT outbox.attempts,
+                    EXISTS (
+                        SELECT 1
+                        FROM vfs_catalog_revisions AS revision
+                        JOIN vfs_catalog_mutation_heads AS head
+                          ON head.filesystem_id = revision.filesystem_id
+                         AND head.revision_id = revision.id
+                        WHERE revision.id = outbox.revision_id
+                    ) AS current_head
+             FROM vfs_catalog_outbox AS outbox
+             WHERE outbox.revision_id = ?1 AND outbox.state = 'claimed'
+               AND outbox.lease_owner = ?2",
+        )
+        .bind(&[number(revision_id), JsValue::from_str(lease_owner)])?
+        .first::<ClaimedOutboxState>(None)
+        .await?;
+    if let Some(claim) = claim {
+        release_claim(
+            database,
+            revision_id,
+            lease_owner,
+            if claim.current_head == 0 {
+                "superseded_before_checkpoint"
+            } else {
+                "checkpoint_materialization_failed"
+            },
+            now_seconds(),
+            claim.attempts,
+            claim.current_head != 0,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 async fn load_candidate(
@@ -218,7 +278,8 @@ async fn load_candidate(
         .prepare(
             "SELECT revision.id AS revision_id, revision.filesystem_id,
                     revision.parent_revision_id, root.id AS root_directory_id,
-                    revision.root_data_root, revision.created_at, outbox.lease_owner
+                    revision.root_data_root, revision.created_at, outbox.lease_owner,
+                    outbox.attempts
              FROM vfs_catalog_revisions AS revision
              JOIN vfs_catalog_mutation_heads AS head
                ON head.filesystem_id = revision.filesystem_id
@@ -342,6 +403,8 @@ async fn materialize(
             &candidate.lease_owner,
             "superseded_during_checkpoint",
             fence_now,
+            candidate.attempts,
+            false,
         )
         .await?;
         return Ok(());
@@ -366,6 +429,8 @@ async fn materialize(
             &candidate.lease_owner,
             "superseded_during_checkpoint",
             fence_now,
+            candidate.attempts,
+            false,
         )
         .await?;
     }
@@ -994,7 +1059,7 @@ async fn publish(
             .prepare(
                 "UPDATE vfs_catalog_outbox
                      SET state = 'done', lease_owner = NULL, lease_expires_at = NULL,
-                         last_error_code = NULL, updated_at = ?1
+                         retry_at = NULL, last_error_code = NULL, updated_at = ?1
                      WHERE revision_id = ?2 AND state = 'claimed' AND lease_owner = ?3
                        AND EXISTS (
                            SELECT 1 FROM vfs_catalog_revisions
@@ -1123,7 +1188,8 @@ async fn collapse_historical(database: &D1Database, now: u64) -> Result<()> {
                 .prepare(
                     "UPDATE vfs_catalog_outbox
                      SET state = 'done', lease_owner = NULL, lease_expires_at = NULL,
-                         last_error_code = 'collapsed_to_checkpoint', updated_at = ?1
+                         retry_at = NULL, last_error_code = 'collapsed_to_checkpoint',
+                         updated_at = ?1
                      WHERE state != 'done' AND revision_id IN (
                          SELECT collapse.revision_id
                          FROM vfs_catalog_revision_collapses AS collapse
@@ -1254,15 +1320,23 @@ async fn release_claim(
     lease_owner: &str,
     error_code: &str,
     now: u64,
+    attempts: u64,
+    retry: bool,
 ) -> Result<()> {
+    let retry_at = if retry {
+        number(now + retry_delay(attempts, revision_id))
+    } else {
+        JsValue::NULL
+    };
     database
         .prepare(
             "UPDATE vfs_catalog_outbox
              SET state = 'pending', lease_owner = NULL, lease_expires_at = NULL,
-                 last_error_code = ?1, updated_at = ?2
-             WHERE revision_id = ?3 AND state = 'claimed' AND lease_owner = ?4",
+                 retry_at = ?1, last_error_code = ?2, updated_at = ?3
+             WHERE revision_id = ?4 AND state = 'claimed' AND lease_owner = ?5",
         )
         .bind(&[
+            retry_at,
             JsValue::from_str(error_code),
             number(now),
             number(revision_id),
@@ -1271,6 +1345,11 @@ async fn release_claim(
         .run()
         .await?;
     Ok(())
+}
+
+fn retry_delay(attempt: u64, revision_id: u64) -> u64 {
+    let exponent = attempt.saturating_sub(1).min(8) as u32;
+    (60_u64.saturating_mul(1_u64 << exponent)).min(6 * 60 * 60) + revision_id % 61
 }
 
 async fn cleanup_one_delta(database: &D1Database, bucket: &Bucket, now: u64) -> Result<()> {
@@ -1486,6 +1565,7 @@ mod tests {
             root_data_root: root_data_root.clone(),
             created_at: 1_700_000_000,
             lease_owner: "404142434445464748494a4b4c4d4e4f".to_owned(),
+            attempts: 1,
         };
         let directories = vec![
             DirectoryRow {
@@ -1525,5 +1605,12 @@ mod tests {
             data_root: empty_root.to_owned(),
         });
         assert!(assemble_checkpoint(&candidate, unreachable, entries).is_err());
+    }
+
+    #[test]
+    fn catalog_retry_is_bounded_and_jittered() {
+        assert!((60..=120).contains(&retry_delay(1, 60)));
+        assert!(retry_delay(2, 2) > retry_delay(1, 1));
+        assert!(retry_delay(100, 60) <= 6 * 60 * 60 + 60);
     }
 }

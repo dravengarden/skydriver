@@ -526,6 +526,20 @@ failed=$(curl --silent --show-error --fail-with-body \
   "$base_url/api/v2/put-deletes/$race_intent_b/fail")
 [[ "$(jq -r '.state' <<<"$failed")" == failed ]]
 
+deferred_reclaim=$(curl --silent --show-error --fail-with-body \
+  -H "$authorization_2" -H "$json" --data '{"lease_seconds":60}' \
+  "$base_url/api/v2/put-deletes/claim")
+[[ "$(jq -r '.task == null' <<<"$deferred_reclaim")" == true ]]
+
+# A client-reported provider failure is not immediately reclaimable. Advance only
+# this task's durable retry deadline so the rest of the fencing protocol can run.
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local \
+  --persist-to "$state_directory" \
+  --command "UPDATE vfs_put_delete_tasks
+             SET retry_at = unixepoch() - 1
+             WHERE id = '$race_intent_b';" >/dev/null
+
 reclaimed=$(curl --silent --show-error --fail-with-body \
   -H "$authorization_2" -H "$json" --data '{"lease_seconds":60}' \
   "$base_url/api/v2/put-deletes/claim")

@@ -271,7 +271,11 @@ pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
                 now,
             )
             .await?;
-            return Err(error);
+            worker::console_error!(
+                "provider inventory {} failed: {error:?}",
+                candidate.driver_id
+            );
+            return Ok(());
         }
     };
     let mut statements = Vec::new();

@@ -391,6 +391,10 @@ continue one bounded page per Cron pass, while provider failures use durable
 exponential retry capped at roughly six hours. The dashboard and
 `carrackctl inventory` expose the next scan time and failure-attempt count;
 clients never schedule or perform inventory work.
+An inventory provider failure is isolated to that driver's scan: after storing
+its error and retry deadline, the same Cron invocation continues metadata
+hygiene, credential renewal, physical lifecycle work, and catalog
+materialization.
 
 ## Activity and lifecycle health
 

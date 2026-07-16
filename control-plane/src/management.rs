@@ -652,6 +652,25 @@ pub(crate) async fn activity(request: &Request, env: &Env) -> Result<Response> {
                              AS attention_required
                   FROM vfs_location_delete_tasks AS task
                   WHERE task.state IN ('pending', 'claimed', 'retry', 'blocked')
+                  UNION ALL
+                  SELECT 'catalog_materialization' AS kind,
+                         CAST(outbox.revision_id AS TEXT) AS id,
+                         'catalog_revision' AS subject_kind,
+                         CAST(outbox.revision_id AS TEXT) AS subject_id,
+                         CASE WHEN outbox.state = 'pending' AND outbox.retry_at IS NOT NULL
+                              THEN 'retry' ELSE outbox.state END AS state,
+                         NULL AS driver_id, revision.created_at, outbox.updated_at,
+                         COALESCE(outbox.retry_at, outbox.lease_expires_at) AS deadline_at,
+                         outbox.attempts AS attempt_count, outbox.last_error_code,
+                         CASE WHEN outbox.last_error_code IS NOT NULL THEN 1 ELSE 0 END
+                             AS attention_required
+                  FROM vfs_catalog_outbox AS outbox
+                  JOIN vfs_catalog_revisions AS revision
+                    ON revision.id = outbox.revision_id
+                  JOIN vfs_catalog_mutation_heads AS head
+                    ON head.filesystem_id = revision.filesystem_id
+                   AND head.revision_id = revision.id
+                  WHERE outbox.state IN ('pending', 'claimed')
               )
               ORDER BY attention_required DESC, updated_at DESC, id
               LIMIT 100",

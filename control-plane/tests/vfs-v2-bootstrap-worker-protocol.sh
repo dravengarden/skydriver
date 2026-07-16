@@ -1199,6 +1199,72 @@ revoked_grant_status=$(curl --silent --output /dev/null --write-out '%{http_code
   -X POST -H "$authorization" "$base_url/api/v2/puts/$intent_id/key-grant")
 [[ "$revoked_grant_status" == 403 ]]
 
+# A malformed newest catalog root exercises the real Worker materializer
+# failure boundary. The immutable revision remains pending with a future retry,
+# appears in Activity, and an immediate second Cron cannot hot-loop it.
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" \
+  --command "INSERT INTO vfs_catalog_revisions (
+      filesystem_id, parent_revision_id, root_data_root, state, created_at,
+      mutation_kind, mutation_id
+    ) SELECT filesystem_id, revision_id,
+             'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+             'pending', unixepoch(), 'fault', 'catalog-retry'
+      FROM vfs_catalog_mutation_heads WHERE filesystem_id = '$filesystem_id';
+    INSERT INTO vfs_catalog_outbox (revision_id, updated_at)
+    SELECT id, unixepoch() FROM vfs_catalog_revisions
+    WHERE mutation_kind = 'fault' AND mutation_id = 'catalog-retry';
+    UPDATE vfs_catalog_mutation_heads
+    SET revision_id = (
+          SELECT id FROM vfs_catalog_revisions
+          WHERE mutation_kind = 'fault' AND mutation_id = 'catalog-retry'
+        ), revision = revision + 1, updated_at = unixepoch()
+    WHERE filesystem_id = '$filesystem_id';" >/dev/null
+curl --silent --show-error --fail-with-body \
+  "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
+catalog_retry_state=
+for _ in $(seq 1 50); do
+  catalog_retry_state=$("${wrangler[@]}" d1 execute CARRACK_INDEX \
+    --local --persist-to "$state_directory" --command \
+    "SELECT outbox.revision_id, outbox.state, outbox.attempts,
+            outbox.last_error_code, outbox.retry_at, outbox.updated_at
+     FROM vfs_catalog_outbox AS outbox
+     JOIN vfs_catalog_revisions AS revision ON revision.id = outbox.revision_id
+     WHERE revision.mutation_kind = 'fault' AND revision.mutation_id = 'catalog-retry';" \
+    --json)
+  if jq -e '.[0].results[0] |
+      .state == "pending" and .attempts == 1 and
+      .last_error_code == "checkpoint_materialization_failed"' \
+      <<<"$catalog_retry_state" >/dev/null; then
+    break
+  fi
+  sleep 0.1
+done
+jq -e '
+  .[0].results[0] |
+  .state == "pending" and .attempts == 1 and
+  .last_error_code == "checkpoint_materialization_failed" and
+  .retry_at > .updated_at
+' <<<"$catalog_retry_state" >/dev/null
+catalog_retry_id=$(jq -r '.[0].results[0].revision_id' <<<"$catalog_retry_state")
+catalog_retry_at=$(jq -r '.[0].results[0].retry_at' <<<"$catalog_retry_state")
+catalog_activity=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" "$base_url/api/admin/activity")
+jq -e --arg id "$catalog_retry_id" --argjson retry_at "$catalog_retry_at" '
+  .active_items[] | select(.kind == "catalog_materialization" and .id == $id) |
+  .state == "retry" and .deadline_at == $retry_at and
+  .attempt_count == 1 and .attention_required == true
+' <<<"$catalog_activity" >/dev/null
+curl --silent --show-error --fail-with-body \
+  "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" --command \
+  "SELECT CASE WHEN state = 'pending' AND attempts = 1
+                       AND retry_at = $catalog_retry_at
+     THEN 1 ELSE 0 END AS accepted
+   FROM vfs_catalog_outbox WHERE revision_id = $catalog_retry_id;" --json |
+  jq -e '.[0].results == [{"accepted":1}]' >/dev/null
+
 # Authentication throttling is server-enforced and survives successful logins.
 # The earlier wrong-environment login counts against the same local source-IP
 # window, so this loop reaches the twenty-failure threshold within twenty attempts.

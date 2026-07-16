@@ -44,6 +44,15 @@ assert_uses_index activity-location-delete idx_vfs_location_delete_tasks_claim \
    WHERE state IN ('pending', 'claimed', 'retry', 'blocked')
    ORDER BY updated_at DESC, id LIMIT 100"
 
+assert_uses_index activity-catalog-materialization idx_vfs_catalog_outbox_claimable \
+  "SELECT outbox.revision_id FROM vfs_catalog_outbox AS outbox
+   JOIN vfs_catalog_revisions AS revision ON revision.id = outbox.revision_id
+   JOIN vfs_catalog_mutation_heads AS head
+     ON head.filesystem_id = revision.filesystem_id
+    AND head.revision_id = revision.id
+   WHERE outbox.state IN ('pending', 'claimed')
+   ORDER BY outbox.updated_at DESC, outbox.revision_id LIMIT 100"
+
 assert_uses_index activity-put-cleanup idx_vfs_put_delete_tasks_claimable \
   "SELECT task.id FROM vfs_put_delete_tasks AS task
    JOIN vfs_put_intents AS intent ON intent.id = task.id
@@ -141,6 +150,7 @@ assert_uses_index group-membership-principal vfs_group_members_by_principal_grou
 
 assert_uses_index catalog-outbox-claim idx_vfs_catalog_outbox_claimable \
   "SELECT outbox.revision_id FROM vfs_catalog_outbox AS outbox
+       INDEXED BY idx_vfs_catalog_outbox_claimable
    JOIN vfs_catalog_revisions AS revision ON revision.id = outbox.revision_id
    JOIN vfs_catalog_mutation_heads AS head
      ON head.filesystem_id = revision.filesystem_id
@@ -152,9 +162,10 @@ assert_uses_index catalog-outbox-claim idx_vfs_catalog_outbox_claimable \
        SELECT 1 FROM vfs_catalog_revision_collapses AS collapse
        WHERE collapse.revision_id = revision.id
      )
-     AND (outbox.state = 'pending'
+     AND ((outbox.state = 'pending'
+          AND (outbox.retry_at IS NULL OR outbox.retry_at <= 1))
        OR (outbox.state = 'claimed' AND outbox.lease_expires_at <= 1))
-   ORDER BY outbox.updated_at, outbox.revision_id LIMIT 1"
+   ORDER BY COALESCE(outbox.retry_at, outbox.updated_at), outbox.revision_id LIMIT 1"
 
 assert_uses_index location-tombstone-queue idx_vfs_locations_tombstone_deadline \
   "SELECT location.id FROM vfs_locations AS location

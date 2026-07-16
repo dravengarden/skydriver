@@ -590,7 +590,8 @@ curl --silent --show-error --fail-with-body \
        '1666666666666666666666666666666666666666666666666666666666666666',
        '2666666666666666666666666666666666666666666666666666666666666666',
        '3666666666666666666666666666666666666666666666666666666666666666',
-       1, 'fault/manifests/cleanup', 'plaintext/v1', 1, 4096,
+       1, 'fault/manifests/cleanup',
+       'carrack-vfs-aes256gcm-hkdfsha256-v1', 1, 4096,
        '4666666666666666666666666666666666666666666666666666666666666666',
        'cleanup-fault', unixepoch() + 3600, unixepoch()
    );
@@ -680,6 +681,13 @@ curl --silent --show-error --fail-with-body \
        'aliyun-inventory-fault', 'aliyundrive-open/v2',
        '{\"api_base_url\":\"https://openapi.alipan.com\",\"drive_type\":\"resource\",\"root_folder_id\":\"root\",\"upload_part_bytes\":4194304}',
        1, 1, unixepoch(), unixepoch()
+   );
+   INSERT INTO operator_auth_rate_limits (
+       scope, subject, window_started_at, attempts, blocked_until, updated_at
+   ) VALUES (
+       'login_ip',
+       'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+       1, 1, 1, 1
    );" >/dev/null
 curl --silent --show-error --fail-with-body \
   "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
@@ -693,6 +701,13 @@ jq -e '
   .state == "error" and .attempt_count == 1 and
   .last_error_code == "provider_list_failed" and .next_scan_at > .updated_at
 ' <<<"$inventory_retry_state" >/dev/null
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" --command \
+  "SELECT CASE WHEN NOT EXISTS (
+       SELECT 1 FROM operator_auth_rate_limits
+       WHERE subject = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+     ) THEN 1 ELSE 0 END AS accepted;" --json |
+  jq -e '.[0].results == [{"accepted":1}]' >/dev/null
 inventory_retry_at=$(jq -r '.[0].results[0].next_scan_at' \
   <<<"$inventory_retry_state")
 curl --silent --show-error --fail-with-body \

@@ -153,6 +153,12 @@ directory and entry, recomputes every directory Merkle root, proves that the
 graph is a single tree reachable from the filesystem root, and rechecks the
 same live root and revision after assembly.
 
+A failed current-head materialization remains pending with a durable
+`retry_at`. Retries use exponential backoff from one minute to roughly six
+hours, and Activity exposes the attempt, error, and next deadline. A concurrent
+newer head is a normal supersession rather than a provider failure, so it is
+released without a retry schedule and later resolved by the collapse proof.
+
 The canonical JSON checkpoint is written to `CARRACK_MANIFESTS` under its
 SHA-256 with an R2 create-only condition. D1 records the planned artifact before
 the R2 side effect, then publishes `vfs_catalog_heads` only after the immutable
