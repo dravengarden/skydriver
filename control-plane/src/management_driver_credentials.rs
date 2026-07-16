@@ -9,8 +9,9 @@ use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
 
 use crate::{
+    driver_configuration,
     driver_credentials::{self, RefreshFailure},
-    management_driver_registration, operator_sessions, r2_signing,
+    operator_sessions, r2_signing,
     vfs_envelopes::{ENVELOPE_ALGORITHM, MASTER_KEY_VERSION, blob_binding, seal_driver_credential},
     vfs_identifiers,
 };
@@ -21,6 +22,7 @@ const VALIDATION_LIFETIME_SECONDS: u64 = 5 * 60;
 const CREDENTIAL_KIND: &str = "driver.credential";
 const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.driver-credential.v1\0";
 const ALIYUN_DRIVE_KIND: &str = DriverKind::AliyunDriveOpenV2.as_str();
+const R2_KIND: &str = DriverKind::R2V1.as_str();
 const AUTHORIZATION_CLAIM_SECONDS: u64 = 5 * 60;
 const LONG_LIVED_CREDENTIAL_EXPIRES_AT: u64 = 253_402_300_799;
 
@@ -129,11 +131,7 @@ pub(crate) async fn validate(
     if driver.revision != requested.expected_revision {
         return Response::error("driver revision conflict", 409);
     }
-    if !management_driver_registration::valid_stored_configuration(
-        &driver.kind,
-        &driver.config_json,
-        true,
-    ) {
+    if !driver_configuration::valid_stored(&driver.kind, &driver.config_json, true) {
         return Response::error("driver kind does not accept this credential", 400);
     }
     let refresh_token_expires_at = match (&driver.kind[..], &requested.credential) {
@@ -150,7 +148,7 @@ pub(crate) async fn validate(
             }
             claims.exp
         }
-        (management_driver_registration::R2_KIND, CredentialAuthorization::R2(credential))
+        (R2_KIND, CredentialAuthorization::R2(credential))
             if r2_signing::valid_credential(credential) =>
         {
             LONG_LIVED_CREDENTIAL_EXPIRES_AT
@@ -160,7 +158,7 @@ pub(crate) async fn validate(
 
     let validation_expires_at = now_seconds() + VALIDATION_LIFETIME_SECONDS;
     let validation_digest = validation_digest(env, driver_id, &requested, validation_expires_at)?;
-    let is_r2 = driver.kind == management_driver_registration::R2_KIND;
+    let is_r2 = driver.kind == R2_KIND;
     no_store_json(&ValidationResponse {
         schema: "carrack.management.driver-credential-validation.v1",
         driver_id: driver_id.to_owned(),
@@ -241,11 +239,7 @@ pub(crate) async fn apply(
     if driver.revision != desired.expected_revision {
         return Response::error("driver revision conflict", 409);
     }
-    if !management_driver_registration::valid_stored_configuration(
-        &driver.kind,
-        &driver.config_json,
-        true,
-    ) {
+    if !driver_configuration::valid_stored(&driver.kind, &driver.config_json, true) {
         return Response::error("driver kind does not accept this credential", 409);
     }
 
@@ -321,9 +315,7 @@ pub(crate) async fn apply(
                 let bytes = serde_json::to_vec(&credential).map_err(|error| json_error(&error))?;
                 (bytes, access_expiry, refresh_expiry, issuer)
             }
-            CredentialAuthorization::R2(credential)
-                if driver.kind == management_driver_registration::R2_KIND =>
-            {
+            CredentialAuthorization::R2(credential) if driver.kind == R2_KIND => {
                 let config = serde_json::from_str::<r2_signing::Config>(&driver.config_json)
                     .map_err(|error| json_error(&error))?;
                 if !r2_signing::verify(&config, &credential).await {

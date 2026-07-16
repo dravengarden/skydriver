@@ -3,6 +3,7 @@
 //! The Worker serves metadata and the web console. Payload bytes always move
 //! directly between Carrack agents and storage providers.
 
+mod driver_configuration;
 mod driver_credentials;
 mod driver_inventory;
 mod driver_lifecycle;

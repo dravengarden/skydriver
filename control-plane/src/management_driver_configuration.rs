@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 
-use crate::{management_driver_registration, operator_sessions, vfs_identifiers};
+use crate::{driver_configuration, operator_sessions, vfs_identifiers};
 
 const ADMIN_TOKEN_BINDING: &str = "CARRACK_ADMIN_TOKEN";
 const DATABASE_BINDING: &str = "CARRACK_INDEX";
@@ -348,7 +348,7 @@ fn state_warnings(driver: &DriverRow, enabled: bool) -> Vec<String> {
 }
 
 fn valid_driver_configuration(driver: &DriverRow) -> bool {
-    let structurally_valid = management_driver_registration::valid_stored_configuration(
+    let structurally_valid = driver_configuration::valid_stored(
         &driver.kind,
         &driver.config_json,
         driver.credential_present == 1,

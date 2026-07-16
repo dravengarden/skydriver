@@ -1,16 +1,14 @@
 use std::fmt::Write as _;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use carrack_driver_contract::{
-    AliyunDriveConfig, CredentialPosture, DriverKind, LocalFilesystemConfig,
-};
+use carrack_driver_contract::{CredentialPosture, DriverKind};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 
-use crate::{operator_sessions, r2_signing, vfs_identifiers};
+use crate::{driver_configuration, operator_sessions, vfs_identifiers};
 
 const ADMIN_TOKEN_BINDING: &str = "CARRACK_ADMIN_TOKEN";
 const DATABASE_BINDING: &str = "CARRACK_INDEX";
@@ -19,8 +17,8 @@ const REGISTRATION_KIND: &str = "driver.register";
 const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.driver-registration.v1\0";
 #[cfg(test)]
 const ALIYUN_DRIVE_KIND: &str = DriverKind::AliyunDriveOpenV2.as_str();
-pub(crate) const R2_KIND: &str = DriverKind::R2V1.as_str();
-const MAXIMUM_ALIYUN_UPLOAD_PART_BYTES: u64 = 512 << 20;
+#[cfg(test)]
+const R2_KIND: &str = DriverKind::R2V1.as_str();
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -262,38 +260,7 @@ fn normalize_registration(requested: RegistrationRequest) -> Result<Registration
     let kind = DriverKind::parse(&requested.kind).ok_or_else(|| {
         worker::Error::RustError("driver kind is not compiled by this Carrack release".to_owned())
     })?;
-    let config = match kind {
-        DriverKind::LocalFilesystemV2 => {
-            let config: LocalFilesystemConfig =
-                serde_json::from_value(requested.config).map_err(|error| json_error(&error))?;
-            if !valid_local_root(&config.root) {
-                return Err(worker::Error::RustError(
-                    "local filesystem root is invalid".to_owned(),
-                ));
-            }
-            serde_json::to_value(config).map_err(|error| json_error(&error))?
-        }
-        DriverKind::AliyunDriveOpenV2 => {
-            let config: AliyunDriveConfig =
-                serde_json::from_value(requested.config).map_err(|error| json_error(&error))?;
-            if !valid_aliyun_config(&config) {
-                return Err(worker::Error::RustError(
-                    "Aliyun Drive configuration is invalid".to_owned(),
-                ));
-            }
-            serde_json::to_value(config).map_err(|error| json_error(&error))?
-        }
-        DriverKind::R2V1 => {
-            let config: r2_signing::Config =
-                serde_json::from_value(requested.config).map_err(|error| json_error(&error))?;
-            if !r2_signing::valid_config(&config) {
-                return Err(worker::Error::RustError(
-                    "R2 configuration is invalid".to_owned(),
-                ));
-            }
-            serde_json::to_value(config).map_err(|error| json_error(&error))?
-        }
-    };
+    let config = driver_configuration::normalize(kind, requested.config)?;
 
     Ok(RegistrationRequest {
         config,
@@ -302,47 +269,10 @@ fn normalize_registration(requested: RegistrationRequest) -> Result<Registration
 }
 
 fn valid_environment_registration(request: &RegistrationRequest, _env: &Env) -> Result<bool> {
-    if DriverKind::parse(&request.kind) != Some(DriverKind::R2V1) {
-        return Ok(true);
-    }
-    let config = serde_json::from_value::<r2_signing::Config>(request.config.clone())
-        .map_err(|error| json_error(&error))?;
-    Ok(!config.managed)
-}
-
-fn valid_aliyun_config(config: &AliyunDriveConfig) -> bool {
-    config.api_base_url.starts_with("https://")
-        && !config.api_base_url.contains('@')
-        && !config.api_base_url.contains('#')
-        && !config.api_base_url.contains('?')
-        && !config.api_base_url.ends_with('/')
-        && matches!(
-            config.drive_type.as_str(),
-            "default" | "resource" | "backup"
-        )
-        && valid_string(&config.root_folder_id, 256)
-        && config.upload_part_bytes > 0
-        && config.upload_part_bytes <= MAXIMUM_ALIYUN_UPLOAD_PART_BYTES
-}
-
-pub(crate) fn valid_stored_configuration(
-    kind: &str,
-    config_json: &str,
-    credential_present: bool,
-) -> bool {
-    match DriverKind::parse(kind) {
-        Some(DriverKind::LocalFilesystemV2) => {
-            serde_json::from_str::<LocalFilesystemConfig>(config_json)
-                .is_ok_and(|config| valid_local_root(&config.root) && !credential_present)
-        }
-        Some(DriverKind::AliyunDriveOpenV2) => {
-            serde_json::from_str::<AliyunDriveConfig>(config_json)
-                .is_ok_and(|config| valid_aliyun_config(&config) && credential_present)
-        }
-        Some(DriverKind::R2V1) => serde_json::from_str::<r2_signing::Config>(config_json)
-            .is_ok_and(|config| r2_signing::valid_config(&config) && credential_present),
-        None => false,
-    }
+    let kind = DriverKind::parse(&request.kind).ok_or_else(|| {
+        worker::Error::RustError("driver kind is not compiled by this Carrack release".to_owned())
+    })?;
+    driver_configuration::operator_registration_allowed(kind, &request.config)
 }
 
 fn registration_warnings(kind: &str) -> Vec<String> {
@@ -360,7 +290,7 @@ fn registration_warnings(kind: &str) -> Vec<String> {
                 .to_owned(),
             "Aliyun Drive uses native complete-object multipart upload and exact range readback; upload concurrency is intentionally one until provider canaries justify more."
                 .to_owned(),
-            "Physical deletion is delayed and performed only by the control plane after reachability, grace, read-lease, identity, and driver-revision fences; accelerated inventory is unavailable."
+            "Physical deletion is delayed and performed only by the control plane after reachability, grace, read-lease, identity, and driver-revision fences; bounded provider inventory quarantines unknown objects without adopting or deleting them."
                 .to_owned(),
         ],
         Some(DriverKind::LocalFilesystemV2) | None => {
@@ -448,17 +378,6 @@ fn canonical(requested: &RegistrationRequest) -> Result<Vec<u8>> {
     .map_err(|error| json_error(&error))
 }
 
-fn valid_local_root(root: &str) -> bool {
-    root.starts_with('/')
-        && root.len() <= 4_096
-        && !root.contains('\0')
-        && !root.chars().any(char::is_control)
-        && (root == "/" || !root.ends_with('/'))
-        && !root
-            .split('/')
-            .any(|component| matches!(component, "." | ".."))
-}
-
 fn valid_string(value: &str, maximum_bytes: usize) -> bool {
     !value.is_empty()
         && value.len() <= maximum_bytes
@@ -510,8 +429,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        ALIYUN_DRIVE_KIND, R2_KIND, RegistrationRequest, normalize_registration,
-        valid_stored_configuration,
+        ALIYUN_DRIVE_KIND, R2_KIND, RegistrationRequest, driver_configuration,
+        normalize_registration,
     };
 
     #[test]
@@ -547,19 +466,19 @@ mod tests {
 
     #[test]
     fn enablement_requires_kind_specific_credential_posture() {
-        assert!(valid_stored_configuration(
+        assert!(driver_configuration::valid_stored(
             ALIYUN_DRIVE_KIND,
             r#"{"api_base_url":"https://openapi.alipan.com","drive_type":"resource","root_folder_id":"root","upload_part_bytes":20971520}"#,
             true,
         ));
-        assert!(!valid_stored_configuration(
+        assert!(!driver_configuration::valid_stored(
             ALIYUN_DRIVE_KIND,
             r#"{"api_base_url":"https://openapi.alipan.com","drive_type":"resource","root_folder_id":"root","upload_part_bytes":20971520}"#,
             false,
         ));
         let r2 = r#"{"endpoint":"https://0123456789abcdef.r2.cloudflarestorage.com","bucket":"carrack-payload-dev","prefix":"","managed":true}"#;
-        assert!(valid_stored_configuration(R2_KIND, r2, true));
-        assert!(!valid_stored_configuration(R2_KIND, r2, false));
+        assert!(driver_configuration::valid_stored(R2_KIND, r2, true));
+        assert!(!driver_configuration::valid_stored(R2_KIND, r2, false));
     }
 
     #[test]

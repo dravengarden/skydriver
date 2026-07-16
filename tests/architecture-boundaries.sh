@@ -172,8 +172,21 @@ if ! rg -q 'driver_inventory::list_page' control-plane/src/vfs_provider_inventor
 fi
 if rg --line-number \
   'D1Database|\.prepare\(|SELECT |INSERT |UPDATE |DELETE FROM ' \
-  control-plane/src/driver_inventory.rs control-plane/src/driver_lifecycle.rs; then
-  echo "provider adapters must not own D1 state, claims, fences, or publication" >&2
+  control-plane/src/driver_configuration.rs control-plane/src/driver_inventory.rs \
+  control-plane/src/driver_lifecycle.rs; then
+  echo "driver policy and provider adapters must not own D1 state, claims, fences, or publication" >&2
+  exit 1
+fi
+if rg --line-number 'management_driver_registration::' \
+  control-plane/src/management_driver_configuration.rs \
+  control-plane/src/management_driver_credentials.rs; then
+  echo "management subsystems must share pure driver configuration policy, not registration transactions" >&2
+  exit 1
+fi
+if ! rg -q 'driver_configuration::normalize' control-plane/src/management_driver_registration.rs \
+  || ! rg -q 'driver_configuration::valid_stored' control-plane/src/management_driver_configuration.rs \
+  || ! rg -q 'driver_configuration::valid_stored' control-plane/src/management_driver_credentials.rs; then
+  echo "registration, credential, and enablement paths must share driver configuration policy" >&2
   exit 1
 fi
 

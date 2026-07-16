@@ -50,6 +50,10 @@ agent processes are SDK consumers, not a third architectural component.
 - Versioned driver-kind strings and static capability posture belong only in
   `carrack-driver-contract`; client and Worker modules must use its exhaustive
   enum instead of duplicating provider-kind string dispatch.
+- Worker registration, credential replacement, and enablement MUST share pure
+  config normalization and credential-posture checks through
+  `control-plane/src/driver_configuration.rs`; management transaction modules
+  must not depend on each other for driver config meaning.
 - Worker VFS planners and grant handlers MUST project provider authority only
   through `control-plane/src/driver_registry.rs`; provider signing and stored
   access-token minimization, including multipart grant signing, must not be

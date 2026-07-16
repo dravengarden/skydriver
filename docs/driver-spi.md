@@ -12,6 +12,13 @@ configuration shape. It contains no provider implementation or policy-bound
 environment validation. Both `carrack-client` and the Worker use its exhaustive
 enum and config types, so their interpretation of a kind cannot silently drift.
 
+The Worker adds a pure `driver_configuration` policy layer over those shared
+types. It performs strict normalization, provider-safe field validation,
+credential-posture checks, and environment-registration restrictions without
+D1 or provider I/O. Registration, credential replacement, and enablement all
+reuse it; none may depend on another management transaction module for config
+meaning.
+
 `carrack-client` exposes one compiled `DriverRegistry` to native transfer
 orchestration. The registry accepts a versioned driver kind, JSON grant
 envelopes, and one uniform immutable upload or download request. It rejects an
