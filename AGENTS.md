@@ -81,6 +81,10 @@ agent processes are SDK consumers, not a third architectural component.
 - Hosted lifecycle adapters must exact-Stat immutable provider identity before
   Delete. A mismatch blocks permanently; cleanup without verified object
   evidence may abort an exact multipart upload but must never delete by key.
+- Provider adapters MUST use an atomic no-replace primitive for complete-object
+  publication. A collision is an idempotent replay only after complete encoded
+  length and SHA-256 readback, and recorded provider identity must come from
+  provider evidence rather than a client-derived fallback.
 - Secrets and credentials never enter Git. D1 stores only password hashes,
   token verifiers, encrypted provider-credential envelopes, and wrapped VFS
   directory keys. VFS master keys stay in Cloudflare secrets or Secrets Store

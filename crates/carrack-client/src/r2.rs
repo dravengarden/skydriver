@@ -17,6 +17,7 @@ const MAXIMUM_SINGLE_PUT_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 const MULTIPART_THRESHOLD_BYTES: u64 = 100 * 1024 * 1024;
 const MINIMUM_PART_BYTES: u64 = 5 * 1024 * 1024;
 const MAXIMUM_PARTS: u64 = 10_000;
+const NO_REPLACE_HEADER: &str = "*";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -84,6 +85,7 @@ pub(crate) async fn upload(
     maximum_concurrency: usize,
 ) -> Result<(String, String, String), Error> {
     let grant = decode_grant(credential, "PUT")?;
+    require_no_replace_signature(&grant.url)?;
     if bytes >= MULTIPART_THRESHOLD_BYTES || bytes > MAXIMUM_SINGLE_PUT_BYTES {
         return multipart_upload(
             control,
@@ -104,25 +106,21 @@ pub(crate) async fn upload(
         .map_err(|error| Error::InvalidResponse(format!("open R2 upload: {error}")))?;
     let response = http
         .put(&grant.url)
+        .header(reqwest::header::IF_NONE_MATCH, NO_REPLACE_HEADER)
         .header(reqwest::header::CONTENT_LENGTH, bytes)
         .body(reqwest::Body::wrap_stream(ReaderStream::new(file)))
         .send()
         .await
         .map_err(|error| provider_transport("upload R2 object", &error))?;
-    if !response.status().is_success() {
+    if !response.status().is_success()
+        && response.status() != reqwest::StatusCode::PRECONDITION_FAILED
+    {
         return Err(provider_status("R2 upload", response.status(), false));
     }
-    let etag = response
-        .headers()
-        .get(reqwest::header::ETAG)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or(expected_sha256)
-        .trim_matches('"')
-        .to_owned();
     let verify_url = grant.verify_url.as_deref().ok_or_else(|| {
         Error::InvalidResponse("R2 upload grant omitted its readback URL".to_owned())
     })?;
-    verify_readback(http, verify_url, bytes, expected_sha256).await?;
+    let etag = verify_readback(http, verify_url, bytes, expected_sha256).await?;
     Ok((expected_sha256.to_owned(), expected_sha256.to_owned(), etag))
 }
 
@@ -168,13 +166,23 @@ async fn multipart_upload(
             let create_url = initial.multipart_create_url.as_deref().ok_or_else(|| {
                 Error::InvalidResponse("R2 grant omitted multipart initiation".to_owned())
             })?;
+            require_no_replace_signature(create_url)?;
             let response = control
                 .http
                 .post(create_url)
+                .header(reqwest::header::IF_NONE_MATCH, NO_REPLACE_HEADER)
                 .header(reqwest::header::CONTENT_LENGTH, 0)
                 .send()
                 .await
                 .map_err(|error| provider_transport("initiate R2 multipart upload", &error))?;
+            if response.status() == reqwest::StatusCode::PRECONDITION_FAILED {
+                let verify_url = initial.verify_url.as_deref().ok_or_else(|| {
+                    Error::InvalidResponse("R2 grant omitted its readback URL".to_owned())
+                })?;
+                let etag =
+                    verify_readback(&control.http, verify_url, bytes, expected_sha256).await?;
+                return Ok((expected_sha256.to_owned(), expected_sha256.to_owned(), etag));
+            }
             if !response.status().is_success() {
                 return Err(provider_status(
                     "R2 multipart initiation",
@@ -206,18 +214,12 @@ async fn multipart_upload(
     let mut latest_grant = None;
     if journal.etags.len() as u64 == part_count
         && let Some(verify_url) = initial.verify_url.as_deref()
-        && verify_readback(&control.http, verify_url, bytes, expected_sha256)
-            .await
-            .is_ok()
+        && let Ok(etag) = verify_readback(&control.http, verify_url, bytes, expected_sha256).await
     {
         std::fs::remove_file(&journal_path).map_err(|error| {
             Error::InvalidResponse(format!("remove recovered R2 multipart journal: {error}"))
         })?;
-        return Ok((
-            expected_sha256.to_owned(),
-            expected_sha256.to_owned(),
-            expected_sha256.to_owned(),
-        ));
+        return Ok((expected_sha256.to_owned(), expected_sha256.to_owned(), etag));
     }
     for first in (1..=part_count).step_by(64) {
         let count = (part_count - first + 1).min(64);
@@ -281,29 +283,26 @@ async fn multipart_upload(
         Error::InvalidResponse("R2 multipart completion grant is absent".to_owned())
     })?;
     let body = completion_xml(&journal.etags)?;
+    require_no_replace_signature(&grant.complete_url)?;
     let response = control
         .http
         .post(&grant.complete_url)
+        .header(reqwest::header::IF_NONE_MATCH, NO_REPLACE_HEADER)
         .header(reqwest::header::CONTENT_TYPE, "application/xml")
         .body(body)
         .send()
         .await
         .map_err(|error| provider_transport("complete R2 multipart", &error))?;
-    if !response.status().is_success() {
+    if !response.status().is_success()
+        && response.status() != reqwest::StatusCode::PRECONDITION_FAILED
+    {
         return Err(provider_status(
             "R2 multipart completion",
             response.status(),
             false,
         ));
     }
-    let etag = response
-        .headers()
-        .get(reqwest::header::ETAG)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or(expected_sha256)
-        .trim_matches('"')
-        .to_owned();
-    verify_readback(&control.http, &grant.verify_url, bytes, expected_sha256).await?;
+    let etag = verify_readback(&control.http, &grant.verify_url, bytes, expected_sha256).await?;
     std::fs::remove_file(&journal_path).map_err(|error| {
         Error::InvalidResponse(format!("remove completed R2 multipart journal: {error}"))
     })?;
@@ -568,10 +567,7 @@ fn hash_file(path: &Path) -> Result<String, Error> {
 fn decode_grant(value: Value, expected_method: &str) -> Result<SignedGrant, Error> {
     let grant = serde_json::from_value::<SignedGrant>(value)
         .map_err(|error| Error::InvalidResponse(format!("decode R2 signed grant: {error}")))?;
-    if grant.method != expected_method
-        || !grant.url.starts_with("https://")
-        || grant.expires_at == 0
-    {
+    if grant.method != expected_method || !safe_signed_url(&grant.url) || grant.expires_at == 0 {
         return Err(Error::InvalidResponse("invalid R2 signed grant".to_owned()));
     }
     Ok(grant)
@@ -696,6 +692,29 @@ fn safe_signed_url(value: &str) -> bool {
     })
 }
 
+fn require_no_replace_signature(value: &str) -> Result<(), Error> {
+    let url = url::Url::parse(value)
+        .map_err(|error| Error::InvalidResponse(format!("parse R2 signed URL: {error}")))?;
+    let signed_headers = url
+        .query_pairs()
+        .find_map(|(name, value)| {
+            name.eq_ignore_ascii_case("X-Amz-SignedHeaders")
+                .then_some(value)
+        })
+        .ok_or_else(|| {
+            Error::InvalidResponse("R2 upload grant omitted signed headers".to_owned())
+        })?;
+    if !signed_headers
+        .split(';')
+        .any(|name| name.eq_ignore_ascii_case("if-none-match"))
+    {
+        return Err(Error::InvalidResponse(
+            "R2 upload grant does not enforce atomic no-replace".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn provider_transport(operation: &str, error: &reqwest::Error) -> Error {
     Error::failure(
         crate::FailureKind::ProviderUnavailable,
@@ -725,7 +744,7 @@ async fn verify_readback(
     url: &str,
     expected_bytes: u64,
     expected_sha256: &str,
-) -> Result<(), Error> {
+) -> Result<String, Error> {
     let response = http
         .get(url)
         .send()
@@ -738,6 +757,15 @@ async fn verify_readback(
             true,
         ));
     }
+    let etag = response
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim_matches('"').to_owned())
+        .filter(|value| valid_etag(value))
+        .ok_or_else(|| {
+            Error::InvalidResponse("R2 upload readback omitted its exact ETag".to_owned())
+        })?;
     let mut stream = response.bytes_stream();
     let mut digest = Sha256::new();
     let mut bytes = 0_u64;
@@ -752,7 +780,7 @@ async fn verify_readback(
             "R2 upload failed encoded-byte readback verification",
         ));
     }
-    Ok(())
+    Ok(etag)
 }
 
 #[cfg(test)]
@@ -763,7 +791,24 @@ mod tests {
     };
     use sha2::{Digest as _, Sha256};
 
-    use super::{SignedGrant, download_ranges, multipart_upload, provider_status};
+    use super::{
+        SignedGrant, download_ranges, multipart_upload, provider_status,
+        require_no_replace_signature, upload,
+    };
+
+    #[test]
+    fn upload_grants_must_bind_the_no_replace_header() {
+        assert!(
+            require_no_replace_signature(
+                "https://bucket.example/object?X-Amz-SignedHeaders=host%3Bif-none-match"
+            )
+            .is_ok()
+        );
+        assert!(
+            require_no_replace_signature("https://bucket.example/object?X-Amz-SignedHeaders=host")
+                .is_err()
+        );
+    }
 
     #[tokio::test]
     async fn multipart_round_trip_journals_parts_and_verifies_readback() {
@@ -772,7 +817,9 @@ mod tests {
         let sha256 = hex::encode(Sha256::digest(payload.as_bytes()));
         let create = server
             .mock_async(|when, then| {
-                when.method(POST).path("/create");
+                when.method(POST)
+                    .path("/create")
+                    .header("If-None-Match", "*");
                 then.status(200)
                     .body("<InitiateMultipartUploadResult><UploadId>upload-1</UploadId></InitiateMultipartUploadResult>");
             })
@@ -785,14 +832,18 @@ mod tests {
             .await;
         let complete = server
             .mock_async(|when, then| {
-                when.method(POST).path("/complete");
-                then.status(200).header("ETag", "complete-etag");
+                when.method(POST)
+                    .path("/complete")
+                    .header("If-None-Match", "*");
+                then.status(412);
             })
             .await;
         let verify = server
             .mock_async(|when, then| {
                 when.method(GET).path("/verify");
-                then.status(200).body(payload.clone());
+                then.status(200)
+                    .header("ETag", "verified-etag")
+                    .body(payload.clone());
             })
             .await;
         let grant = server
@@ -803,7 +854,7 @@ mod tests {
                     "schema": "carrack.vfs.r2-multipart-grant.v1",
                     "upload_id": "upload-1",
                     "parts": [{"part_number": 1, "url": server.url("/part/1")}],
-                    "complete_url": server.url("/complete"),
+                    "complete_url": format!("{}?X-Amz-SignedHeaders=host%3Bif-none-match", server.url("/complete")),
                     "abort_url": server.url("/abort"),
                     "verify_url": server.url("/verify"),
                     "expires_at": 2_000_000_000,
@@ -816,9 +867,15 @@ mod tests {
         let control = crate::Client::new(&format!("{}/", server.base_url())).expect("client");
         let initial = SignedGrant {
             method: "PUT".to_owned(),
-            url: server.url("/single"),
+            url: format!(
+                "{}?X-Amz-SignedHeaders=host%3Bif-none-match",
+                server.url("/single")
+            ),
             verify_url: Some(server.url("/verify")),
-            multipart_create_url: Some(server.url("/create")),
+            multipart_create_url: Some(format!(
+                "{}?X-Amz-SignedHeaders=host%3Bif-none-match",
+                server.url("/create")
+            )),
             expires_at: 2_000_000_000,
         };
         let result = multipart_upload(
@@ -834,12 +891,114 @@ mod tests {
         )
         .await
         .expect("multipart upload");
-        assert_eq!(result.2, "complete-etag");
+        assert_eq!(result.2, "verified-etag");
         assert!(!directory.path().join(".r2-multipart-intent.json").exists());
         create.assert_async().await;
         grant.assert_async().await;
         part.assert_async().await;
         complete.assert_async().await;
+        verify.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn single_put_adopts_only_an_identical_no_replace_collision() {
+        let server = MockServer::start_async().await;
+        let payload = b"already present";
+        let sha256 = hex::encode(Sha256::digest(payload));
+        let put = server
+            .mock_async(|when, then| {
+                when.method(PUT)
+                    .path("/object")
+                    .header("If-None-Match", "*");
+                then.status(412);
+            })
+            .await;
+        let verify = server
+            .mock_async(|when, then| {
+                when.method(GET).path("/verify");
+                then.status(200)
+                    .header("ETag", "existing-etag")
+                    .body(payload.as_slice());
+            })
+            .await;
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("encoded");
+        std::fs::write(&path, payload).expect("write staged object");
+        let control = crate::Client::new(&format!("{}/", server.base_url())).expect("client");
+        let credential = serde_json::json!({
+            "method": "PUT",
+            "url": format!("{}?X-Amz-SignedHeaders=host%3Bif-none-match", server.url("/object")),
+            "verify_url": server.url("/verify"),
+            "multipart_create_url": format!("{}?X-Amz-SignedHeaders=host%3Bif-none-match", server.url("/create")),
+            "expires_at": 2_000_000_000_u64,
+        });
+        let result = upload(
+            &control,
+            "token",
+            "intent",
+            credential,
+            &path,
+            u64::try_from(payload.len()).expect("payload length"),
+            &sha256,
+            5 * 1024 * 1024,
+            1,
+        )
+        .await
+        .expect("adopt identical object");
+        assert_eq!(result.2, "existing-etag");
+        put.assert_async().await;
+        verify.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn single_put_rejects_a_different_no_replace_collision() {
+        let server = MockServer::start_async().await;
+        let payload = b"expected bytes";
+        let sha256 = hex::encode(Sha256::digest(payload));
+        let put = server
+            .mock_async(|when, then| {
+                when.method(PUT)
+                    .path("/object")
+                    .header("If-None-Match", "*");
+                then.status(412);
+            })
+            .await;
+        let verify = server
+            .mock_async(|when, then| {
+                when.method(GET).path("/verify");
+                then.status(200)
+                    .header("ETag", "different-etag")
+                    .body("different bytes");
+            })
+            .await;
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("encoded");
+        std::fs::write(&path, payload).expect("write staged object");
+        let control = crate::Client::new(&format!("{}/", server.base_url())).expect("client");
+        let error = upload(
+            &control,
+            "token",
+            "intent",
+            serde_json::json!({
+                "method": "PUT",
+                "url": format!("{}?X-Amz-SignedHeaders=host%3Bif-none-match", server.url("/object")),
+                "verify_url": server.url("/verify"),
+                "multipart_create_url": format!("{}?X-Amz-SignedHeaders=host%3Bif-none-match", server.url("/create")),
+                "expires_at": 2_000_000_000_u64,
+            }),
+            &path,
+            u64::try_from(payload.len()).expect("payload length"),
+            &sha256,
+            5 * 1024 * 1024,
+            1,
+        )
+        .await
+        .expect_err("different existing object must fail closed");
+        assert_eq!(
+            error.failure_kind(),
+            Some(crate::FailureKind::CorruptCiphertext)
+        );
+        put.assert_async().await;
         verify.assert_async().await;
     }
 

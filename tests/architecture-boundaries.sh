@@ -207,6 +207,17 @@ if ! rg -q 'hard_link\(&temporary, &directory, &relative\)' \
   echo "local provider publication must be atomic no-replace" >&2
   exit 1
 fi
+if ! rg -q 'presign_no_replace' control-plane/src/r2_signing.rs \
+  || ! rg -q 'presign_query_no_replace' control-plane/src/r2_signing.rs \
+  || ! rg -q 'IF_NONE_MATCH' crates/carrack-client/src/r2.rs \
+  || ! rg -q 'PRECONDITION_FAILED' crates/carrack-client/src/r2.rs; then
+  echo "R2 single and multipart publication must be atomic no-replace" >&2
+  exit 1
+fi
+if rg -q 'unwrap_or\(expected_sha256\)' crates/carrack-client/src/r2.rs; then
+  echo "R2 provider identity must come from provider readback evidence" >&2
+  exit 1
+fi
 if rg --line-number 'management_driver_registration::' \
   control-plane/src/management_driver_configuration.rs \
   control-plane/src/management_driver_credentials.rs; then

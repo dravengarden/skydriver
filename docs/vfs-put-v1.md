@@ -99,7 +99,12 @@ After prepare, the Go client obtains short-lived key and provider grants, then
 uses the selected compiled driver directly. It must publish the exact encoded
 length and SHA-256 to the fresh provider key and satisfy either a trusted strong
 provider checksum or complete independent readback. Provider multipart parts
-remain transport state and disappear behind one completed object.
+remain transport state and disappear behind one completed object. Publication
+uses provider-native atomic no-replace, including multipart completion. A
+precondition collision is an idempotent replay only after complete readback
+matches both encoded length and SHA-256; a different existing object is never
+overwritten. The provider ETag recorded at commit comes from that verified
+readback rather than a client-derived fallback.
 
 The block-manifest call has an
 `application/octet-stream` body in the canonical format from

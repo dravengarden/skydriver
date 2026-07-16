@@ -78,6 +78,9 @@ lifecycle safety or inventory publication. A Stat mismatch is permanently
 blocked with its evidence intact. Provider absence is idempotent success only
 under the same final D1 fence. Cleanup without verified complete-object
 evidence may abort a named multipart upload but must not delete by key.
+Complete-object adapters must publish with an atomic provider no-replace
+primitive. A collision may be adopted only after full encoded-byte readback;
+an existence probe followed by an unconditional write is not sufficient.
 
 The inventory facade also owns provider execution reachability, strict config
 decoding, credential decoding, and cursor wire schemas. Its caller uses only

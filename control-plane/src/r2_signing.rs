@@ -2,6 +2,7 @@ pub(crate) use carrack_driver_contract::R2Config as Config;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use worker::{Date, Fetch, Headers, Method, Request, RequestInit};
 use zeroize::Zeroize as _;
 
@@ -83,6 +84,26 @@ pub(crate) fn presign(
         key,
         expires_seconds,
         &[],
+        &[],
+        &amz_timestamp()?,
+    )
+}
+
+fn presign_no_replace(
+    method: &str,
+    config: &Config,
+    credential: &Credential,
+    key: &str,
+    expires_seconds: u64,
+) -> Option<String> {
+    presign_query_at(
+        method,
+        config,
+        credential,
+        key,
+        expires_seconds,
+        &[],
+        &[("if-none-match", "*")],
         &amz_timestamp()?,
     )
 }
@@ -102,10 +123,35 @@ fn presign_query(
         key,
         expires_seconds,
         query,
+        &[],
         &amz_timestamp()?,
     )
 }
 
+fn presign_query_no_replace(
+    method: &str,
+    config: &Config,
+    credential: &Credential,
+    key: &str,
+    expires_seconds: u64,
+    query: &[(&str, &str)],
+) -> Option<String> {
+    presign_query_at(
+        method,
+        config,
+        credential,
+        key,
+        expires_seconds,
+        query,
+        &[("if-none-match", "*")],
+        &amz_timestamp()?,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "SigV4 binds method, provider authority, object, lifetime, query, headers, and deterministic signing time"
+)]
 fn presign_query_at(
     method: &str,
     config: &Config,
@@ -113,6 +159,7 @@ fn presign_query_at(
     key: &str,
     expires_seconds: u64,
     extra_query: &[(&str, &str)],
+    required_headers: &[(&str, &str)],
     timestamp: &str,
 ) -> Option<String> {
     if !matches!(method, "GET" | "HEAD" | "PUT" | "POST" | "DELETE")
@@ -126,6 +173,35 @@ fn presign_query_at(
     let host = config.endpoint.strip_prefix("https://")?;
     let date = timestamp.get(..8)?;
     let scope = format!("{date}/{REGION}/{SERVICE}/aws4_request");
+    if required_headers.iter().any(|(name, value)| {
+        name.is_empty()
+            || *name == "host"
+            || name
+                .bytes()
+                .any(|byte| !byte.is_ascii_lowercase() && byte != b'-' && !byte.is_ascii_digit())
+            || value.is_empty()
+            || value.bytes().any(|byte| byte.is_ascii_control())
+    }) {
+        return None;
+    }
+    let mut canonical_headers = vec![("host", host)];
+    canonical_headers.extend_from_slice(required_headers);
+    canonical_headers.sort_unstable_by_key(|(name, _)| *name);
+    if canonical_headers
+        .windows(2)
+        .any(|pair| pair[0].0 == pair[1].0)
+    {
+        return None;
+    }
+    let signed_headers = canonical_headers
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(";");
+    let mut rendered_headers = String::new();
+    for (name, value) in &canonical_headers {
+        writeln!(rendered_headers, "{name}:{}", value.trim()).ok()?;
+    }
     let canonical_uri = format!(
         "/{}/{}",
         percent_encode(&config.bucket, true),
@@ -139,7 +215,7 @@ fn presign_query_at(
         ),
         ("X-Amz-Date".to_owned(), timestamp.to_owned()),
         ("X-Amz-Expires".to_owned(), expires_seconds.to_string()),
-        ("X-Amz-SignedHeaders".to_owned(), "host".to_owned()),
+        ("X-Amz-SignedHeaders".to_owned(), signed_headers.clone()),
     ];
     query.extend(
         extra_query
@@ -163,7 +239,7 @@ fn presign_query_at(
         .collect::<Vec<_>>()
         .join("&");
     let canonical_request = format!(
-        "{method}\n{canonical_uri}\n{canonical_query}\nhost:{host}\n\nhost\nUNSIGNED-PAYLOAD"
+        "{method}\n{canonical_uri}\n{canonical_query}\n{rendered_headers}\n{signed_headers}\nUNSIGNED-PAYLOAD"
     );
     let string_to_sign = format!(
         "{ALGORITHM}\n{timestamp}\n{scope}\n{}",
@@ -189,14 +265,18 @@ pub(crate) fn access_grant_from_plaintext(
     let key = object_key(&config, storage_key)?;
     let now = Date::now().as_millis() / 1_000;
     let lifetime = maximum_expires_at.saturating_sub(now).min(900);
-    let url = presign(method, &config, &credential, &key, lifetime)?;
+    let url = if method == "PUT" {
+        presign_no_replace(method, &config, &credential, &key, lifetime)?
+    } else {
+        presign(method, &config, &credential, &key, lifetime)?
+    };
     let verify_url = if method == "PUT" {
         Some(presign("GET", &config, &credential, &key, lifetime)?)
     } else {
         None
     };
     let multipart_create_url = if method == "PUT" {
-        Some(presign_query(
+        Some(presign_query_no_replace(
             "POST",
             &config,
             &credential,
@@ -254,7 +334,7 @@ pub(crate) fn multipart_grant_from_plaintext(
             Some(serde_json::json!({"part_number": part_number, "url": url}))
         })
         .collect::<Option<Vec<_>>>()?;
-    let complete_url = presign_query(
+    let complete_url = presign_query_no_replace(
         "POST",
         &config,
         &credential,
@@ -535,11 +615,13 @@ mod tests {
             "objects/v2/value",
             900,
             &[],
+            &[("if-none-match", "*")],
             "20260715T120000Z",
         )
         .expect("sign grant");
         assert!(grant.contains("X-Amz-Signature"));
         assert!(grant.contains("X-Amz-Expires"));
+        assert!(grant.contains("X-Amz-SignedHeaders=host%3Bif-none-match"));
         assert!(!grant.contains("test-secret"));
     }
 
@@ -562,6 +644,7 @@ mod tests {
             "objects/value",
             900,
             &[("uploadId", "id+/="), ("partNumber", "7")],
+            &[],
             "20260715T120000Z",
         )
         .expect("sign multipart part");

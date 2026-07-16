@@ -125,6 +125,10 @@ This document is the normative product and correctness baseline. The key words
 - A driver lacking exact ranges or multipart resume MAY restart the current
   complete file after an explicit capability warning. It MUST NOT report a
   partial object as published.
+- Provider-object publication MUST be atomic no-replace. A concurrent key
+  collision MAY be adopted only after complete independent readback proves the
+  exact encoded length and SHA-256; otherwise the existing provider object
+  MUST remain untouched and publication MUST fail closed.
 - Local destination publication MUST be atomic. A failed verification MUST
   leave the prior destination intact.
 
