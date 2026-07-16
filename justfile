@@ -26,6 +26,8 @@ test:
     control-plane/tests/query-plans.sh
     bash -n tests/aliyun-live.sh
     bash -n tests/r2-live.sh
+    bash -n tests/lib/live-metrics.sh
+    bash tests/live-metrics-test.sh
     node --check control-plane/scripts/audit-environments.mjs
     node --check control-plane/scripts/deploy-worker.mjs
     node --check control-plane/scripts/provision-default-r2.mjs

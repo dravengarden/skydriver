@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=tests/lib/live-metrics.sh
+source "$root/tests/lib/live-metrics.sh"
+
 if [[ ${CARRACK_ALIYUN_LIVE_TEST:-} != 1 ]]; then
   echo "set CARRACK_ALIYUN_LIVE_TEST=1 to authorize real Aliyun Drive writes" >&2
   exit 2
@@ -62,6 +66,7 @@ source_sha=$(sha256sum "$source_file" | cut -d' ' -f1)
 "$carrack_bin" compatibility --control-url "$control_url" --format json |
   jq -e '.protocol_epoch == 2 and .enforcement == "required"' >/dev/null
 
+upload_started_ns=$(carrack_now_ns)
 put_result=$(CARRACK_VFS_TOKEN="$CARRACK_VFS_TOKEN" "$carrack_bin" put \
   "$source_file" "$destination" \
   --control-url "$control_url" \
@@ -71,6 +76,7 @@ put_result=$(CARRACK_VFS_TOKEN="$CARRACK_VFS_TOKEN" "$carrack_bin" put \
   --transfer-part-bytes 4194304 \
   --maximum-concurrency 4 \
   --format json)
+upload_finished_ns=$(carrack_now_ns)
 jq -e --arg driver "$CARRACK_ALIYUN_DRIVER_ID" '
   .schema == "carrack.fs-put.v1" and
   .receipt.state == "committed" and
@@ -79,6 +85,7 @@ jq -e --arg driver "$CARRACK_ALIYUN_DRIVER_ID" '
 ' <<<"$put_result" >/dev/null
 put_committed=true
 
+download_started_ns=$(carrack_now_ns)
 get_result=$(CARRACK_VFS_TOKEN="$CARRACK_VFS_TOKEN" "$carrack_bin" get \
   "$destination" "$download_file" \
   --control-url "$control_url" \
@@ -86,10 +93,12 @@ get_result=$(CARRACK_VFS_TOKEN="$CARRACK_VFS_TOKEN" "$carrack_bin" get \
   --transfer-part-bytes 4194304 \
   --maximum-concurrency 4 \
   --format json)
+download_finished_ns=$(carrack_now_ns)
 jq -e '.schema == "carrack.fs-get.v1"' <<<"$get_result" >/dev/null
 [[ $(sha256sum "$download_file" | cut -d' ' -f1) == "$source_sha" ]]
 
 set +e
+resume_started_ns=$(carrack_now_ns)
 timeout 0.2s env CARRACK_VFS_TOKEN="$CARRACK_VFS_TOKEN" "$carrack_bin" get \
   "$destination" "$resumed_file" \
   --control-url "$control_url" \
@@ -112,7 +121,18 @@ if [[ $interrupted_status != 0 ]]; then
     --maximum-concurrency 4 \
     --format json >/dev/null
 fi
+resume_finished_ns=$(carrack_now_ns)
 [[ $(sha256sum "$resumed_file" | cut -d' ' -f1) == "$source_sha" ]]
+
+upload_elapsed_ns=$((upload_finished_ns - upload_started_ns))
+download_elapsed_ns=$((download_finished_ns - download_started_ns))
+resume_elapsed_ns=$((resume_finished_ns - resume_started_ns))
+upload_elapsed_ms=$(carrack_elapsed_ms "$upload_started_ns" "$upload_finished_ns")
+download_elapsed_ms=$(carrack_elapsed_ms "$download_started_ns" "$download_finished_ns")
+resume_elapsed_ms=$(carrack_elapsed_ms "$resume_started_ns" "$resume_finished_ns")
+upload_bytes_per_second=$(carrack_bytes_per_second "$payload_bytes" "$upload_elapsed_ns")
+download_bytes_per_second=$(carrack_bytes_per_second "$payload_bytes" "$download_elapsed_ns")
+resume_bytes_per_second=$(carrack_bytes_per_second "$payload_bytes" "$resume_elapsed_ns")
 
 remove_result=$(CARRACK_VFS_TOKEN="$CARRACK_VFS_TOKEN" "$carrack_bin" remove \
   "$destination" --control-url "$control_url" \
@@ -129,11 +149,31 @@ jq -n \
   --arg driver_id "$CARRACK_ALIYUN_DRIVER_ID" \
   --arg source_sha256 "$source_sha" \
   --argjson plaintext_bytes "$payload_bytes" \
+  --argjson transfer_part_bytes 4194304 \
+  --argjson maximum_concurrency 4 \
+  --argjson upload_elapsed_ms "$upload_elapsed_ms" \
+  --argjson upload_bytes_per_second "$upload_bytes_per_second" \
+  --argjson download_elapsed_ms "$download_elapsed_ms" \
+  --argjson download_bytes_per_second "$download_bytes_per_second" \
+  --argjson resume_elapsed_ms "$resume_elapsed_ms" \
+  --argjson resume_bytes_per_second "$resume_bytes_per_second" \
   '{
     schema: $schema,
     driver_id: $driver_id,
     plaintext_bytes: $plaintext_bytes,
     source_sha256: $source_sha256,
+    pipeline: {
+      transfer_part_bytes: $transfer_part_bytes,
+      maximum_concurrency: $maximum_concurrency
+    },
+    end_to_end: {
+      upload_elapsed_ms: $upload_elapsed_ms,
+      upload_bytes_per_second: $upload_bytes_per_second,
+      download_elapsed_ms: $download_elapsed_ms,
+      download_bytes_per_second: $download_bytes_per_second,
+      interrupted_resume_elapsed_ms: $resume_elapsed_ms,
+      interrupted_resume_bytes_per_second: $resume_bytes_per_second
+    },
     encrypted_upload_verified: true,
     concurrent_range_download_verified: true,
     interrupted_resume_verified: true,

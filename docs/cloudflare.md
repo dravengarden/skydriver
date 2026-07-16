@@ -185,7 +185,11 @@ CARRACK_ALIYUN_LIVE_TEST=1 tests/aliyun-live.sh
 The script never prints credentials, provider locators, or signed URLs. Its
 remove verifies namespace deletion; physical deletion remains subject to the
 normal server grace and scheduled GC rather than weakening production safety
-for a test.
+for a test. The JSON result also reports end-to-end upload, verified download,
+and interrupted-resume elapsed milliseconds and effective plaintext bytes per
+second. These wall-clock observations include control-plane, cryptography,
+provider, verification, and local publication work; they are practical client
+throughput rather than provider-only or billing metrics.
 
 The managed R2 acceptance uses the same safety boundary but defaults to a
 128 MiB random payload and eight concurrent 8 MiB parts so the real multipart,
@@ -198,7 +202,13 @@ CARRACK_R2_LIVE_TEST=1 tests/r2-live.sh
 ```
 
 This live test is opt-in and is not part of `just verify`; the hermetic gate
-checks its shell contract only.
+checks its shell contract and metric arithmetic only. Set
+`CARRACK_ALIYUN_TEST_BYTES` or `CARRACK_R2_TEST_BYTES` to compare the same
+payload size, up to the scripts' 1 GiB safety bound. When using a token already
+scoped to a test directory, leave the test directory as `/`: paths are relative
+to the authenticated token root. Run multiple samples before comparing drivers
+because the low-cost telemetry deliberately does not claim benchmark-grade
+precision.
 
 Each recipe uploads a tagged Worker version and then moves 100% of that
 environment's traffic to it. It does not rewrite the already-audited custom
