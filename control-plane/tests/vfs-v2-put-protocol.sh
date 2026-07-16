@@ -431,6 +431,41 @@ expect_failure \
   "mutation of immutable VFS put delete identity"
 
 execute "
+UPDATE vfs_put_delete_tasks
+SET state = 'claimed', owner_token_id = '$token',
+    incarnation = (SELECT incarnation FROM control_plane_state WHERE singleton = 1),
+    fencing_token = fencing_token + 1, lease_expires_at = unixepoch() + 120,
+    attempt_count = attempt_count + 1, claimed_at = unixepoch(),
+    updated_at = unixepoch()
+WHERE id = '$contender';
+"
+
+expect_failure \
+  "UPDATE vfs_put_delete_tasks
+   SET state = 'failed', owner_token_id = NULL, incarnation = NULL,
+       lease_expires_at = NULL, last_error_code = 'provider_delete_failed',
+       updated_at = unixepoch()
+   WHERE id = '$contender';" \
+  "put cleanup failure without an explicit retry schedule"
+
+execute "
+UPDATE vfs_put_delete_tasks
+SET state = 'failed', owner_token_id = NULL, incarnation = NULL,
+    lease_expires_at = NULL, retry_at = unixepoch() + 120,
+    last_error_code = 'provider_delete_failed', updated_at = unixepoch()
+WHERE id = '$contender';
+"
+
+expect_failure \
+  "UPDATE vfs_put_delete_tasks
+   SET state = 'claimed', owner_token_id = '$token',
+       incarnation = (SELECT incarnation FROM control_plane_state WHERE singleton = 1),
+       fencing_token = fencing_token + 1, lease_expires_at = unixepoch() + 120,
+       attempt_count = attempt_count + 1, updated_at = unixepoch()
+   WHERE id = '$contender';" \
+  "put cleanup reclaim that retains its retry schedule"
+
+execute "
 UPDATE vfs_token_verifiers SET revoked_at = unixepoch() WHERE id = '$token';
 "
 

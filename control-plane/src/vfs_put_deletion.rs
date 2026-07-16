@@ -99,10 +99,12 @@ pub(crate) async fn claim(
                  incarnation = (SELECT incarnation FROM control_plane_state WHERE singleton = 1),
                  fencing_token = fencing_token + 1, lease_expires_at = ?2,
                  attempt_count = attempt_count + 1, last_error_code = NULL,
-                 claimed_at = ?3, revalidated_at = NULL, updated_at = ?3
+                 retry_at = NULL, claimed_at = ?3, revalidated_at = NULL,
+                 updated_at = ?3
              WHERE id = ?4
                AND server_blocked_at IS NULL
-               AND (state IN ('pending', 'failed')
+               AND (state = 'pending'
+                    OR (state = 'failed' AND retry_at <= ?3)
                     OR (state = 'claimed' AND (
                         lease_expires_at <= ?3
                         OR incarnation != (
@@ -222,7 +224,7 @@ pub(crate) async fn complete(
         .prepare(
             "UPDATE vfs_put_delete_tasks
              SET state = 'deleted', owner_token_id = NULL, incarnation = NULL,
-                 lease_expires_at = NULL, last_error_code = NULL,
+                 lease_expires_at = NULL, retry_at = NULL, last_error_code = NULL,
                  completion_outcome = ?1, completed_at = ?2, updated_at = ?2
              WHERE id = ?3 AND state = 'claimed' AND owner_token_id = ?4
                AND incarnation = ?5 AND fencing_token = ?6
@@ -277,11 +279,12 @@ pub(crate) async fn fail(
             "UPDATE vfs_put_delete_tasks
              SET state = 'failed', owner_token_id = NULL, incarnation = NULL,
                  lease_expires_at = NULL, revalidated_at = NULL,
-                 last_error_code = ?1, updated_at = ?2
-             WHERE id = ?3 AND state = 'claimed' AND owner_token_id = ?4
-               AND incarnation = ?5 AND fencing_token = ?6",
+                 retry_at = ?1, last_error_code = ?2, updated_at = ?3
+             WHERE id = ?4 AND state = 'claimed' AND owner_token_id = ?5
+               AND incarnation = ?6 AND fencing_token = ?7",
         )
         .bind(&[
+            integer(now + retry_delay(requested.fencing_token, requested.fencing_token))?,
             JsValue::from_str(&requested.error_code),
             integer(now)?,
             JsValue::from_str(task_id),
@@ -369,14 +372,15 @@ async fn load_candidate(
                          )
                      )
                ) = 2
-               AND (task.state IN ('pending', 'failed')
+               AND (task.state = 'pending'
+                    OR (task.state = 'failed' AND task.retry_at <= ?3)
                     OR (task.state = 'claimed' AND (
                         task.lease_expires_at <= ?3
                         OR task.incarnation != (
                             SELECT incarnation FROM control_plane_state WHERE singleton = 1
                         )
                     )))
-             ORDER BY task.delete_after, task.updated_at, task.id
+             ORDER BY COALESCE(task.retry_at, task.delete_after), task.updated_at, task.id
              LIMIT 1",
         )
         .bind(&[
@@ -598,4 +602,9 @@ fn valid_error_code(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+fn retry_delay(attempt: u64, fence: u64) -> u64 {
+    let exponent = attempt.saturating_sub(1).min(8) as u32;
+    (60_u64.saturating_mul(1_u64 << exponent)).min(6 * 60 * 60) + fence % 61
 }

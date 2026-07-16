@@ -205,6 +205,8 @@ cmp "$unknown_source" "$unknown_readback"
 # changes, while deleting an independently fenced object once every identity
 # and reachability check still matches.
 filesystem_id=$(jq -r '.filesystem_id' <<<"$bootstrapped")
+principal_id=$(jq -r '.principal_id' <<<"$bootstrapped")
+token_id=$(jq -r '.token_id' <<<"$bootstrapped")
 blocked_source="$state_directory/lifecycle-blocked-object"
 blocked_readback="$state_directory/lifecycle-blocked-readback"
 deleted_source="$state_directory/lifecycle-deleted-object"
@@ -539,6 +541,123 @@ curl --silent --show-error --fail-with-body \
      THEN 1 ELSE 0 END AS accepted
    FROM vfs_location_delete_tasks
    WHERE id = 'c5555555555555555555555555555555';" --json |
+  jq -e '.[0].results == [{"accepted":1}]' >/dev/null
+
+# Abandoned complete uploads and unfinished R2 multipart uploads share the
+# hosted lifecycle, but retain independent fences and retry schedules. A
+# credential-less third-party R2 driver fails only at the provider boundary.
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" --command \
+  "INSERT INTO driver_instances (
+       id, kind, config_json, enabled, revision, created_at, updated_at
+   ) VALUES (
+       'r2-cleanup-fault', 'r2/v1',
+       '{\"endpoint\":\"https://fault.r2.cloudflarestorage.com\",\"bucket\":\"fault\",\"prefix\":\"\",\"managed\":false}',
+       1, 1, unixepoch(), unixepoch()
+   );
+   INSERT INTO vfs_directory_drivers (
+       directory_id, driver_id, write_priority, created_by, created_at, updated_at
+   ) VALUES (
+       '$root_directory_id', 'r2-cleanup-fault', 90, '$principal_id',
+       unixepoch(), unixepoch()
+   );
+   INSERT INTO vfs_put_intents (
+       id, filesystem_id, principal_id, token_id, directory_id, entry_name,
+       expected_entry_revision, expected_file_revision, file_id, version_id,
+       location_id, driver_id, storage_key, plaintext_bytes,
+       verification_block_bytes, verification_block_count, file_root,
+       metadata_root, block_manifest_sha256, block_manifest_bytes,
+       block_manifest_r2_key, crypto_suite, key_epoch, encryption_frame_bytes,
+       request_sha256, idempotency_key, expires_at, created_at
+   ) VALUES (
+       'd6666666666666666666666666666666', '$filesystem_id', '$principal_id',
+       '$token_id', '$root_directory_id', 'cleanup-fault.bin', 0, 0,
+       'a6666666666666666666666666666666',
+       'b6666666666666666666666666666666',
+       'c6666666666666666666666666666666', 'r2-cleanup-fault',
+       'objects/v2/de/dededededededededededededededededededededededede',
+       1, 4096, 1,
+       '1666666666666666666666666666666666666666666666666666666666666666',
+       '2666666666666666666666666666666666666666666666666666666666666666',
+       '3666666666666666666666666666666666666666666666666666666666666666',
+       1, 'fault/manifests/cleanup', 'plaintext/v1', 1, 4096,
+       '4666666666666666666666666666666666666666666666666666666666666666',
+       'cleanup-fault', unixepoch() + 3600, unixepoch()
+   );
+   INSERT INTO vfs_r2_upload_cleanup_tasks (
+       intent_id, driver_revision, created_at, updated_at
+   ) VALUES ('d6666666666666666666666666666666', 1, unixepoch(), unixepoch());
+   INSERT INTO vfs_put_upload_evidence (
+       intent_id, token_id, commit_sha256, block_manifest_r2_version,
+       encoded_bytes, encoded_sha256, verification_method, verified_at
+   ) VALUES (
+       'd6666666666666666666666666666666', '$token_id',
+       '5666666666666666666666666666666666666666666666666666666666666666',
+       'fault-manifest-version', 1,
+       '6666666666666666666666666666666666666666666666666666666666666666',
+       'complete_readback', unixepoch()
+   );
+   UPDATE vfs_put_intents
+   SET state = 'expired', revision = revision + 1
+   WHERE id = 'd6666666666666666666666666666666';
+   INSERT INTO vfs_put_delete_tasks (
+       id, driver_revision, evidence_sha256, delete_after, created_at, updated_at
+   ) VALUES (
+       'd6666666666666666666666666666666', 1,
+       '5666666666666666666666666666666666666666666666666666666666666666',
+       unixepoch() - 1, unixepoch(), unixepoch()
+   );" >/dev/null
+curl --silent --show-error --fail-with-body \
+  "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
+cleanup_retry_state=$("${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" --command \
+  "SELECT 'put' AS kind, state, attempt_count, last_error_code, retry_at, updated_at
+   FROM vfs_put_delete_tasks WHERE id = 'd6666666666666666666666666666666'
+   UNION ALL
+   SELECT 'r2', state, attempt_count, last_error_code, retry_at, updated_at
+   FROM vfs_r2_upload_cleanup_tasks
+   WHERE intent_id = 'd6666666666666666666666666666666'
+   ORDER BY kind;" --json)
+jq -e '
+  .[0].results | length == 2 and
+  all(.[];
+    .state == "failed" and .attempt_count == 1 and
+    .last_error_code == (if .kind == "put" then "provider_delete_failed"
+                         else "provider_cleanup_failed" end) and
+    .retry_at > .updated_at
+  )
+' <<<"$cleanup_retry_state" >/dev/null
+put_retry_at=$(jq -r '.[0].results[] | select(.kind == "put") | .retry_at' \
+  <<<"$cleanup_retry_state")
+r2_retry_at=$(jq -r '.[0].results[] | select(.kind == "r2") | .retry_at' \
+  <<<"$cleanup_retry_state")
+cleanup_activity=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" "$base_url/api/admin/activity")
+jq -e --argjson put_retry_at "$put_retry_at" --argjson r2_retry_at "$r2_retry_at" '
+  any(.active_items[];
+    .kind == "put_cleanup" and
+    .id == "d6666666666666666666666666666666" and
+    .deadline_at == $put_retry_at and .attention_required == true
+  ) and
+  any(.active_items[];
+    .kind == "r2_upload_cleanup" and
+    .id == "d6666666666666666666666666666666" and
+    .deadline_at == $r2_retry_at and .attention_required == true
+  )
+' <<<"$cleanup_activity" >/dev/null
+curl --silent --show-error --fail-with-body \
+  "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" --command \
+  "SELECT CASE WHEN
+       (SELECT attempt_count = 1 AND retry_at = $put_retry_at
+        FROM vfs_put_delete_tasks
+        WHERE id = 'd6666666666666666666666666666666')
+       AND
+       (SELECT attempt_count = 1 AND retry_at = $r2_retry_at
+        FROM vfs_r2_upload_cleanup_tasks
+        WHERE intent_id = 'd6666666666666666666666666666666')
+     THEN 1 ELSE 0 END AS accepted;" --json |
   jq -e '.[0].results == [{"accepted":1}]' >/dev/null
 
 "${wrangler[@]}" d1 execute CARRACK_INDEX \

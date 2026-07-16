@@ -672,7 +672,8 @@ pub(crate) async fn activity(request: &Request, env: &Env) -> Result<Response> {
                          CASE WHEN task.server_blocked_at IS NULL THEN task.state
                               ELSE 'blocked' END AS state,
                          intent.driver_id, task.created_at, task.updated_at,
-                         task.delete_after AS deadline_at, task.attempt_count,
+                         COALESCE(task.retry_at, task.delete_after) AS deadline_at,
+                         task.attempt_count,
                          task.last_error_code,
                          CASE WHEN task.state = 'failed' OR task.server_blocked_at IS NOT NULL
                               THEN 1 ELSE 0 END AS attention_required
@@ -684,7 +685,8 @@ pub(crate) async fn activity(request: &Request, env: &Env) -> Result<Response> {
                          'r2_upload_cleanup_task' AS subject_kind,
                          task.intent_id AS subject_id, task.state, intent.driver_id,
                          task.created_at, task.updated_at,
-                         task.lease_expires_at AS deadline_at, task.attempt_count,
+                         COALESCE(task.retry_at, task.lease_expires_at) AS deadline_at,
+                         task.attempt_count,
                          task.last_error_code,
                          CASE WHEN task.state = 'failed' THEN 1 ELSE 0 END
                              AS attention_required

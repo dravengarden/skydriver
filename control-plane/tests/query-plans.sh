@@ -168,6 +168,25 @@ assert_uses_index location-delete-claim idx_vfs_location_delete_tasks_claim \
       OR (state = 'claimed' AND lease_expires_at <= 1)
    ORDER BY COALESCE(retry_at, delete_after), id LIMIT 1"
 
+assert_uses_index put-cleanup-claim idx_vfs_put_delete_tasks_server_claim \
+  "SELECT id FROM vfs_put_delete_tasks
+       INDEXED BY idx_vfs_put_delete_tasks_server_claim
+   WHERE server_blocked_at IS NULL
+     AND state IN ('pending', 'claimed', 'failed')
+     AND ((state = 'pending' AND delete_after <= 1)
+       OR (state = 'failed' AND retry_at <= 1)
+       OR (state = 'claimed' AND lease_expires_at <= 1))
+   ORDER BY COALESCE(retry_at, delete_after), id LIMIT 1"
+
+assert_uses_index r2-upload-cleanup-claim idx_vfs_r2_cleanup_claim \
+  "SELECT intent_id FROM vfs_r2_upload_cleanup_tasks
+       INDEXED BY idx_vfs_r2_cleanup_claim
+   WHERE state IN ('active', 'cleaning', 'failed')
+     AND (state = 'active'
+       OR (state = 'failed' AND retry_at <= 1)
+       OR (state = 'cleaning' AND lease_expires_at <= 1))
+   ORDER BY COALESCE(retry_at, lease_expires_at), intent_id LIMIT 1"
+
 assert_uses_index unreachable-version-mark idx_vfs_versions_published_at \
   "SELECT id FROM safe_unreachable_vfs_locations
    WHERE published_at <= 1

@@ -90,10 +90,13 @@ async fn cleanup_one_r2_upload(env: &Env, database: &D1Database, now: u64) -> Re
     let candidate = database
         .prepare(
             "SELECT intent_id FROM vfs_r2_upload_cleanup_tasks
+                 INDEXED BY idx_vfs_r2_cleanup_claim
              WHERE intent_id IN (SELECT intent_id FROM safe_vfs_r2_upload_cleanup_tasks)
-               AND (state IN ('active', 'failed')
+               AND state IN ('active', 'cleaning', 'failed')
+               AND (state = 'active'
+                    OR (state = 'failed' AND retry_at <= ?1)
                     OR (state = 'cleaning' AND lease_expires_at <= ?1))
-             ORDER BY intent_id LIMIT 1",
+             ORDER BY COALESCE(retry_at, lease_expires_at), intent_id LIMIT 1",
         )
         .bind(&[integer(now)])?
         .first::<serde_json::Value>(Some("intent_id"))
@@ -106,10 +109,11 @@ async fn cleanup_one_r2_upload(env: &Env, database: &D1Database, now: u64) -> Re
             "UPDATE vfs_r2_upload_cleanup_tasks
              SET state = 'cleaning', fencing_token = fencing_token + 1,
                  lease_expires_at = ?1, attempt_count = attempt_count + 1,
-                 last_error_code = NULL, updated_at = ?2
+                 retry_at = NULL, last_error_code = NULL, updated_at = ?2
              WHERE intent_id = ?3
                AND intent_id IN (SELECT intent_id FROM safe_vfs_r2_upload_cleanup_tasks)
-               AND (state IN ('active', 'failed')
+               AND (state = 'active'
+                    OR (state = 'failed' AND retry_at <= ?2)
                     OR (state = 'cleaning' AND lease_expires_at <= ?2))",
         )
         .bind(&[
@@ -149,27 +153,29 @@ async fn cleanup_one_r2_upload(env: &Env, database: &D1Database, now: u64) -> Re
         return Ok(());
     };
     let result = cleanup_r2_upload(env, &task).await;
-    let (state, error, completed_at) = if result.is_ok() {
-        ("cleaned", JsValue::NULL, integer(now))
+    let (state, error, completed_at, retry_at) = if result.is_ok() {
+        ("cleaned", JsValue::NULL, integer(now), JsValue::NULL)
     } else {
         worker::console_error!("R2 upload cleanup {} failed", task.intent_id);
         (
             "failed",
             JsValue::from_str("provider_cleanup_failed"),
             JsValue::NULL,
+            integer(now + retry_delay(task.fencing_token, task.fencing_token)),
         )
     };
     database
         .prepare(
             "UPDATE vfs_r2_upload_cleanup_tasks
              SET state = ?1, lease_expires_at = NULL, last_error_code = ?2,
-                 completed_at = ?3, updated_at = ?4
-             WHERE intent_id = ?5 AND state = 'cleaning' AND fencing_token = ?6",
+                 completed_at = ?3, retry_at = ?4, updated_at = ?5
+             WHERE intent_id = ?6 AND state = 'cleaning' AND fencing_token = ?7",
         )
         .bind(&[
             JsValue::from_str(state),
             error,
             completed_at,
+            retry_at,
             integer(now),
             JsValue::from_str(&task.intent_id),
             integer(task.fencing_token),
@@ -188,11 +194,14 @@ async fn delete_one_abandoned_put(env: &Env, database: &D1Database, now: u64) ->
         .prepare(
             "SELECT task.id
              FROM vfs_put_delete_tasks AS task
+                  INDEXED BY idx_vfs_put_delete_tasks_server_claim
              WHERE task.id IN (SELECT id FROM safe_vfs_put_delete_tasks)
                AND task.server_blocked_at IS NULL
-               AND (task.state IN ('pending', 'failed')
+               AND task.state IN ('pending', 'claimed', 'failed')
+               AND ((task.state = 'pending' AND task.delete_after <= ?1)
+                    OR (task.state = 'failed' AND task.retry_at <= ?1)
                     OR (task.state = 'claimed' AND task.lease_expires_at <= ?1))
-             ORDER BY task.delete_after, task.id LIMIT 1",
+             ORDER BY COALESCE(task.retry_at, task.delete_after), task.id LIMIT 1",
         )
         .bind(&[integer(now)])?
         .first::<serde_json::Value>(Some("id"))
@@ -209,10 +218,12 @@ async fn delete_one_abandoned_put(env: &Env, database: &D1Database, now: u64) ->
                  incarnation = (SELECT incarnation FROM control_plane_state WHERE singleton = 1),
                  fencing_token = fencing_token + 1, lease_expires_at = ?2,
                  attempt_count = attempt_count + 1, last_error_code = NULL,
-                 claimed_at = ?3, revalidated_at = ?3, updated_at = ?3
+                 retry_at = NULL, claimed_at = ?3, revalidated_at = ?3,
+                 updated_at = ?3
              WHERE id = ?1 AND server_blocked_at IS NULL
                AND id IN (SELECT id FROM safe_vfs_put_delete_tasks)
-               AND (state IN ('pending', 'failed')
+               AND ((state = 'pending' AND delete_after <= ?3)
+                    OR (state = 'failed' AND retry_at <= ?3)
                     OR (state = 'claimed' AND lease_expires_at <= ?3))",
         )
         .bind(&[
@@ -323,7 +334,8 @@ async fn complete_abandoned_put(database: &D1Database, task: &DeleteTask, now: u
         .prepare(
             "UPDATE vfs_put_delete_tasks
              SET state = 'deleted', owner_token_id = NULL, incarnation = NULL,
-                 lease_expires_at = NULL, completion_outcome = 'deleted',
+                 lease_expires_at = NULL, retry_at = NULL,
+                 completion_outcome = 'deleted',
                  completed_at = ?1, updated_at = ?1
              WHERE id = ?2 AND state = 'claimed' AND fencing_token = ?3
                AND id IN (SELECT id FROM safe_vfs_put_delete_tasks)",
@@ -346,16 +358,22 @@ async fn fail_abandoned_put(
     code: &str,
     blocked: bool,
 ) -> Result<()> {
+    let retry_at = if blocked {
+        JsValue::NULL
+    } else {
+        integer(now + retry_delay(fencing_token, fencing_token))
+    };
     database
         .prepare(
             "UPDATE vfs_put_delete_tasks
              SET state = 'failed', owner_token_id = NULL, incarnation = NULL,
-                 lease_expires_at = NULL, last_error_code = ?1,
-                 server_blocked_at = CASE WHEN ?2 = 1 THEN ?3 ELSE NULL END,
-                 updated_at = ?3
-             WHERE id = ?4 AND state = 'claimed' AND fencing_token = ?5",
+                 lease_expires_at = NULL, retry_at = ?1, last_error_code = ?2,
+                 server_blocked_at = CASE WHEN ?3 = 1 THEN ?4 ELSE NULL END,
+                 updated_at = ?4
+             WHERE id = ?5 AND state = 'claimed' AND fencing_token = ?6",
         )
         .bind(&[
+            retry_at,
             JsValue::from_str(code),
             integer(u64::from(blocked)),
             integer(now),
