@@ -60,6 +60,10 @@ agent processes are SDK consumers, not a third architectural component.
 - Filesystem grant handlers MUST establish caller authority before provider I/O
   or credential mutation. Key-only grants must not depend on provider renewal;
   provider-authority grants recheck live authorization after renewal.
+- Server credential rotation MUST keep D1 claims, fences, envelopes, retry
+  state, and publication in `driver_credentials.rs`; provider token formats,
+  exchange, identity continuity, and grant projection belong to the D1-free
+  `driver_renewal.rs` adapter.
 - Worker VFS planners and grant handlers MUST project provider authority only
   through `control-plane/src/driver_registry.rs`; provider signing and stored
   access-token minimization, including multipart grant signing, must not be

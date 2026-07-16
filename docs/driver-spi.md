@@ -28,6 +28,12 @@ Filesystem grant paths authorize the caller before any synchronous renewal can
 perform provider I/O or mutate credential state. Directory-key grants never
 renew provider credentials; only an authorized operation that actually returns
 provider authority may do so, and it rechecks authorization after renewal.
+Proactive and synchronous rotation split the same way: `driver_credentials`
+owns D1 claims, fencing, envelope opening/sealing, retry state, and atomic
+publication, while the D1-free `driver_renewal` adapter owns provider token
+formats, identity continuity checks, network exchange, and least-authority
+grant projection. Adding a refreshable driver does not add provider branches to
+the durable state machine.
 
 `carrack-client` exposes one compiled `DriverRegistry` to native transfer
 orchestration. The registry accepts a versioned driver kind, JSON grant

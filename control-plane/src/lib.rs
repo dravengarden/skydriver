@@ -9,6 +9,7 @@ mod driver_credentials;
 mod driver_inventory;
 mod driver_lifecycle;
 mod driver_registry;
+mod driver_renewal;
 mod environment_defaults;
 mod maintenance;
 mod management;

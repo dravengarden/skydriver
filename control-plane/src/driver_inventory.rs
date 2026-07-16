@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use worker::{Env, Fetch, Headers, Method, Request, RequestInit, Result, wasm_bindgen::JsValue};
 
-use crate::{driver_credentials::AliyunCredential, environment_defaults, r2_signing};
+use crate::{driver_renewal::AliyunCredential, environment_defaults, r2_signing};
 
 const PAGE_SIZE: u32 = 100;
 const MAXIMUM_ALIYUN_PAGES_PER_RUN: usize = 8;

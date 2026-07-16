@@ -8,7 +8,7 @@
 use carrack_driver_contract::{DriverKind, GrantMode};
 use worker::Result;
 
-use crate::{driver_credentials, r2_signing};
+use crate::{driver_renewal, r2_signing};
 
 pub(crate) fn compiled_kind(value: &str) -> Result<DriverKind> {
     DriverKind::parse(value)
@@ -32,7 +32,7 @@ pub(crate) fn project_access_grant(
             expires_at,
         )
         .ok_or_else(|| worker::Error::RustError("sign object-scoped driver grant".to_owned())),
-        GrantMode::StoredAccess => driver_credentials::access_grant_from_plaintext(kind, plaintext)
+        GrantMode::StoredAccess => driver_renewal::access_grant_from_plaintext(kind, plaintext)
             .map_err(|error| {
                 worker::Error::RustError(format!("decode stored driver authority: {error}"))
             }),

@@ -3,85 +3,28 @@
 //! Filesystem clients receive only short-lived access credentials. Refresh
 //! authority stays encrypted in D1 and is rotated by a fenced Cron worker.
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use carrack_driver_contract::DriverKind;
-use serde::{Deserialize, Serialize};
-use worker::{D1Database, Env, Fetch, Method, Request, RequestInit, Result, wasm_bindgen::JsValue};
+use serde::Deserialize;
+use worker::{D1Database, Env, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
 
-use crate::vfs_envelopes::{
-    ENVELOPE_ALGORITHM, MASTER_KEY_VERSION, blob_binding, open_driver_credential,
-    seal_driver_credential,
+use crate::{
+    driver_renewal::{self, RenewalFailure},
+    vfs_envelopes::{
+        ENVELOPE_ALGORITHM, MASTER_KEY_VERSION, blob_binding, open_driver_credential,
+        seal_driver_credential,
+    },
 };
 
-pub(crate) const OPENLIST_ONLINE_ISSUER: &str = "openlist-online/v1";
-const OPENLIST_RENEW_ENDPOINT: &str = "https://api.oplist.org/alicloud/renewapi";
 const CLAIM_SECONDS: u64 = 120;
-const REFRESH_LEAD_SECONDS: u64 = 30 * 60;
 const MINIMUM_GRANT_LIFETIME_SECONDS: u64 = 5 * 60;
 const MAXIMUM_REFRESHES_PER_RUN: usize = 4;
-const MAXIMUM_TOKEN_BYTES: usize = 16 << 10;
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct AliyunCredential {
-    pub(crate) access_token: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) refresh_token: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) refresh_issuer: Option<String>,
-}
-
-impl AliyunCredential {
-    pub(crate) fn managed_issuer(&self) -> Option<&str> {
-        match (
-            self.refresh_token.as_deref(),
-            self.refresh_issuer.as_deref(),
-        ) {
-            (Some(token), Some(OPENLIST_ONLINE_ISSUER)) if valid_token(token) => {
-                Some(OPENLIST_ONLINE_ISSUER)
-            }
-            _ => None,
-        }
-    }
-
-    pub(crate) fn access_expiry(&self) -> Option<u64> {
-        jwt_claims(&self.access_token).map(|claims| claims.exp)
-    }
-
-    pub(crate) fn access_grant(&self) -> serde_json::Value {
-        serde_json::json!({"access_token": self.access_token})
-    }
-}
-
-impl Drop for AliyunCredential {
-    fn drop(&mut self) {
-        self.access_token.zeroize();
-        if let Some(token) = self.refresh_token.as_mut() {
-            token.zeroize();
-        }
-    }
-}
-
-/// Decodes a stored provider credential and returns the least-authority JSON
-/// that a filesystem client needs. Refresh material is deliberately omitted.
-pub(crate) fn access_grant_from_plaintext(
-    driver_kind: DriverKind,
-    plaintext: &[u8],
-) -> Result<serde_json::Value> {
-    if driver_kind != DriverKind::AliyunDriveOpenV2 {
-        return serde_json::from_slice(plaintext)
-            .map_err(|error| worker::Error::RustError(error.to_string()));
-    }
-    let credential = serde_json::from_slice::<AliyunCredential>(plaintext)
-        .map_err(|error| worker::Error::RustError(error.to_string()))?;
-    Ok(credential.access_grant())
-}
 
 #[derive(Deserialize)]
 struct RefreshTask {
     credential_id: String,
     driver_id: String,
+    driver_kind: String,
     issuer: String,
     observed_credential_revision: u64,
     fencing_token: u64,
@@ -93,48 +36,10 @@ struct RefreshTask {
 }
 
 #[derive(Deserialize)]
-struct OpenListResponse {
-    #[serde(default)]
-    access_token: String,
-    #[serde(default)]
-    refresh_token: String,
-    #[serde(default)]
-    text: String,
-}
-
-#[derive(Deserialize)]
 struct RefreshCommitRow {
     observed_credential_revision: u64,
     state: String,
     last_succeeded_at: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct JwtClaims {
-    pub(crate) sub: String,
-    pub(crate) aud: String,
-    pub(crate) exp: u64,
-}
-
-pub(crate) enum RefreshFailure {
-    Retry(&'static str),
-    Reauthenticate(&'static str),
-}
-
-pub(crate) fn refresh_claims(token: &str) -> Option<JwtClaims> {
-    jwt_claims(token)
-}
-
-pub(crate) async fn authorize_refresh_token(
-    refresh_token: &str,
-    issuer: &str,
-) -> std::result::Result<AliyunCredential, RefreshFailure> {
-    if issuer != OPENLIST_ONLINE_ISSUER {
-        return Err(RefreshFailure::Reauthenticate("refresh_issuer_invalid"));
-    }
-    let old_refresh =
-        jwt_claims(refresh_token).ok_or(RefreshFailure::Reauthenticate("refresh_token_invalid"))?;
-    exchange_openlist(refresh_token, &old_refresh, None).await
 }
 
 /// Runs a bounded proactive renewal pass. Provider failures are persisted as
@@ -172,10 +77,6 @@ pub(crate) async fn ensure_fresh(env: &Env, driver_id: &str, expires_at: u64) ->
     Ok(current
         .and_then(|value| value.as_u64())
         .is_some_and(|value| value > now + MINIMUM_GRANT_LIFETIME_SECONDS))
-}
-
-pub(crate) fn refresh_after(expires_at: u64, now: u64) -> u64 {
-    expires_at.saturating_sub(REFRESH_LEAD_SECONDS).max(now + 1)
 }
 
 async fn refresh_one(
@@ -234,41 +135,38 @@ async fn refresh_one(
     };
     let outcome = renew(env, &task).await;
     match outcome {
-        Ok(mut credential) => {
-            let expires_at = credential.access_expiry().ok_or_else(|| {
-                worker::Error::RustError("renewed Aliyun access token has no expiry".to_owned())
-            })?;
-            let refresh_token_expires_at = credential
-                .refresh_token
-                .as_deref()
-                .and_then(jwt_claims)
-                .map(|claims| claims.exp)
-                .ok_or_else(|| {
-                    worker::Error::RustError(
-                        "renewed Aliyun refresh token has no expiry".to_owned(),
-                    )
-                })?;
-            let mut plaintext = serde_json::to_vec(&credential)
-                .map_err(|error| worker::Error::RustError(error.to_string()))?;
+        Ok(mut material) => {
             let next_revision = task.observed_credential_revision + 1;
-            let sealed =
-                seal_driver_credential(env, &task.credential_id, next_revision, &plaintext);
-            plaintext.zeroize();
-            credential.access_token.zeroize();
-            let sealed = sealed?;
+            let sealed = seal_driver_credential(
+                env,
+                &task.credential_id,
+                next_revision,
+                &material.plaintext,
+            );
+            material.plaintext.zeroize();
+            let sealed = match sealed {
+                Ok(sealed) => sealed,
+                Err(error) => {
+                    fail_refresh(database, &task, now, "credential_seal_failed", false).await?;
+                    return Err(error);
+                }
+            };
             commit_refresh(
                 database,
                 &task,
                 &sealed,
-                expires_at,
-                refresh_token_expires_at,
+                material.credential_expires_at,
+                material.refresh_token_expires_at,
                 now,
             )
             .await?;
         }
-        Err(RefreshFailure::Retry(code)) => fail_refresh(database, &task, now, code, false).await?,
-        Err(RefreshFailure::Reauthenticate(code)) => {
+        Err(RenewalFailure::Retry(code)) => fail_refresh(database, &task, now, code, false).await?,
+        Err(RenewalFailure::Reauthenticate(code)) => {
             fail_refresh(database, &task, now, code, true).await?;
+        }
+        Err(RenewalFailure::Internal(_)) => {
+            fail_refresh(database, &task, now, "credential_material_invalid", true).await?;
         }
     }
     Ok(true)
@@ -281,7 +179,8 @@ async fn load_claimed(
 ) -> Result<Option<RefreshTask>> {
     database
         .prepare(
-            "SELECT refresh.credential_id, refresh.driver_id, refresh.issuer,
+            "SELECT refresh.credential_id, refresh.driver_id, driver.kind AS driver_kind,
+                    refresh.issuer,
                     refresh.observed_credential_revision, refresh.fencing_token,
                     refresh.attempt_count, credential.envelope_algorithm,
                     credential.key_version, credential.nonce, credential.ciphertext
@@ -301,7 +200,7 @@ async fn load_claimed(
 async fn renew(
     env: &Env,
     task: &RefreshTask,
-) -> std::result::Result<AliyunCredential, RefreshFailure> {
+) -> std::result::Result<driver_renewal::CredentialMaterial, RenewalFailure> {
     let mut plaintext = open_driver_credential(
         env,
         &task.credential_id,
@@ -311,84 +210,12 @@ async fn renew(
         &task.nonce,
         &task.ciphertext,
     )
-    .map_err(|_| RefreshFailure::Reauthenticate("credential_envelope_invalid"))?;
-    let decoded = serde_json::from_slice::<AliyunCredential>(&plaintext);
+    .map_err(|_| RenewalFailure::Reauthenticate("credential_envelope_invalid"))?;
+    let kind = DriverKind::parse(&task.driver_kind)
+        .ok_or(RenewalFailure::Reauthenticate("credential_kind_unknown"))?;
+    let renewed = driver_renewal::renew(kind, &plaintext, &task.issuer).await;
     plaintext.zeroize();
-    let mut current = decoded.map_err(|_| RefreshFailure::Reauthenticate("credential_invalid"))?;
-    let Some(refresh_token) = current.refresh_token.as_deref() else {
-        return Err(RefreshFailure::Reauthenticate("refresh_token_missing"));
-    };
-    if task.issuer != OPENLIST_ONLINE_ISSUER
-        || current.managed_issuer() != Some(OPENLIST_ONLINE_ISSUER)
-    {
-        return Err(RefreshFailure::Reauthenticate("refresh_issuer_invalid"));
-    }
-    let old_access = jwt_claims(&current.access_token)
-        .ok_or(RefreshFailure::Reauthenticate("access_token_invalid"))?;
-    let old_refresh =
-        jwt_claims(refresh_token).ok_or(RefreshFailure::Reauthenticate("refresh_token_invalid"))?;
-    let mut refreshed = exchange_openlist(refresh_token, &old_refresh, Some(&old_access)).await?;
-    current.access_token = std::mem::take(&mut refreshed.access_token);
-    current.refresh_token = refreshed.refresh_token.take();
-    Ok(current)
-}
-
-async fn exchange_openlist(
-    refresh_token: &str,
-    old_refresh: &JwtClaims,
-    old_access: Option<&JwtClaims>,
-) -> std::result::Result<AliyunCredential, RefreshFailure> {
-    let url = format!(
-        "{OPENLIST_RENEW_ENDPOINT}?refresh_ui={refresh_token}&server_use=true&driver_txt=alicloud_qr"
-    );
-    let mut init = RequestInit::new();
-    init.with_method(Method::Get);
-    let request = Request::new_with_init(&url, &init)
-        .map_err(|_| RefreshFailure::Retry("refresh_request_invalid"))?;
-    let mut response = Fetch::Request(request)
-        .send()
-        .await
-        .map_err(|_| RefreshFailure::Retry("refresh_transport_failed"))?;
-    let status = response.status_code();
-    let refreshed = response.json::<OpenListResponse>().await;
-    if !(200..300).contains(&status) {
-        return Err(match refreshed {
-            Ok(refreshed) if permanent_provider_rejection(&refreshed.text) => {
-                RefreshFailure::Reauthenticate("refresh_rejected")
-            }
-            _ if status == 429 || status >= 500 => {
-                RefreshFailure::Retry("refresh_provider_unavailable")
-            }
-            _ => RefreshFailure::Reauthenticate("refresh_rejected"),
-        });
-    }
-    let refreshed = refreshed.map_err(|_| RefreshFailure::Retry("refresh_response_invalid"))?;
-    if !refreshed.text.is_empty()
-        || !valid_token(&refreshed.access_token)
-        || !valid_token(&refreshed.refresh_token)
-    {
-        return Err(RefreshFailure::Reauthenticate(
-            "refresh_credentials_rejected",
-        ));
-    }
-    let new_access = jwt_claims(&refreshed.access_token)
-        .ok_or(RefreshFailure::Reauthenticate("refreshed_access_invalid"))?;
-    let new_refresh = jwt_claims(&refreshed.refresh_token)
-        .ok_or(RefreshFailure::Reauthenticate("refreshed_refresh_invalid"))?;
-    if old_access.is_some_and(|old| old.sub != new_access.sub || old.aud != new_access.aud)
-        || old_refresh.sub != new_access.sub
-        || old_refresh.aud != new_access.aud
-        || old_refresh.sub != new_refresh.sub
-        || old_refresh.aud != new_refresh.aud
-        || new_access.exp <= now_seconds() + MINIMUM_GRANT_LIFETIME_SECONDS
-    {
-        return Err(RefreshFailure::Reauthenticate("refresh_identity_mismatch"));
-    }
-    Ok(AliyunCredential {
-        access_token: refreshed.access_token,
-        refresh_token: Some(refreshed.refresh_token),
-        refresh_issuer: Some(OPENLIST_ONLINE_ISSUER.to_owned()),
-    })
+    renewed
 }
 
 async fn commit_refresh(
@@ -443,7 +270,7 @@ async fn commit_refresh(
                 )
                 .bind(&[
                     integer(next_revision),
-                    integer(refresh_after(expires_at, now)),
+                    integer(driver_renewal::refresh_after(expires_at, now)),
                     integer(refresh_token_expires_at),
                     integer(now),
                     JsValue::from_str(&task.credential_id),
@@ -532,41 +359,6 @@ fn retry_delay(attempt: u64, fence: u64) -> u64 {
     (60_u64.saturating_mul(1_u64 << exponent)).min(6 * 60 * 60) + fence % 61
 }
 
-fn jwt_claims(token: &str) -> Option<JwtClaims> {
-    if !valid_token(token) {
-        return None;
-    }
-    let mut segments = token.split('.');
-    let _header = segments.next()?;
-    let payload = segments.next()?;
-    let _signature = segments.next()?;
-    if segments.next().is_some() {
-        return None;
-    }
-    let payload = URL_SAFE_NO_PAD.decode(payload).ok()?;
-    let value = serde_json::from_slice::<serde_json::Value>(&payload).ok()?;
-    Some(JwtClaims {
-        sub: value.get("sub")?.as_str()?.to_owned(),
-        aud: value.get("aud")?.as_str()?.to_owned(),
-        exp: value.get("exp")?.as_u64()?,
-    })
-}
-
-fn valid_token(token: &str) -> bool {
-    !token.is_empty()
-        && token.len() <= MAXIMUM_TOKEN_BYTES
-        && token
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~'))
-}
-
-fn permanent_provider_rejection(message: &str) -> bool {
-    let normalized = message.to_ascii_lowercase();
-    ["invalid", "expired", "incorrect", "revoked"]
-        .iter()
-        .any(|needle| normalized.contains(needle))
-}
-
 fn now_seconds() -> u64 {
     worker::Date::now().as_millis() / 1_000
 }
@@ -581,56 +373,11 @@ fn changes(meta: Option<worker::D1ResultMeta>) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-
-    use super::{
-        AliyunCredential, OPENLIST_ONLINE_ISSUER, jwt_claims, permanent_provider_rejection,
-        refresh_after, retry_delay,
-    };
-
-    fn jwt(sub: &str, aud: &str, exp: u64) -> String {
-        let payload = URL_SAFE_NO_PAD.encode(
-            serde_json::json!({"sub": sub, "aud": aud, "exp": exp})
-                .to_string()
-                .as_bytes(),
-        );
-        format!("e30.{payload}.c2ln")
-    }
+    use super::retry_delay;
 
     #[test]
-    fn parses_identity_and_expiry_from_jwt() {
-        let claims = jwt_claims(&jwt("account", "client", 1234)).expect("JWT claims");
-        assert_eq!(claims.sub, "account");
-        assert_eq!(claims.aud, "client");
-        assert_eq!(claims.exp, 1234);
-    }
-
-    #[test]
-    fn grant_projection_never_contains_refresh_authority() {
-        let credential = AliyunCredential {
-            access_token: jwt("account", "client", 1234),
-            refresh_token: Some(jwt("account", "client", 5678)),
-            refresh_issuer: Some(OPENLIST_ONLINE_ISSUER.to_owned()),
-        };
-        let grant = credential.access_grant();
-        assert!(grant.get("access_token").is_some());
-        assert!(grant.get("refresh_token").is_none());
-        assert!(grant.get("refresh_issuer").is_none());
-    }
-
-    #[test]
-    fn refresh_schedule_and_retry_are_bounded() {
-        assert_eq!(refresh_after(10_000, 1_000), 8_200);
-        assert_eq!(refresh_after(1_100, 1_000), 1_001);
+    fn retry_is_bounded() {
         assert!((60..=120).contains(&retry_delay(1, 60)));
         assert!(retry_delay(100, 60) <= 6 * 60 * 60 + 60);
-    }
-
-    #[test]
-    fn classifies_openlist_invalid_token_even_when_it_uses_http_500() {
-        assert!(permanent_provider_rejection("invalid refresh_token"));
-        assert!(!permanent_provider_rejection(
-            "upstream temporarily unavailable"
-        ));
     }
 }

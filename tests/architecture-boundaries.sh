@@ -173,8 +173,18 @@ fi
 if rg --line-number \
   'D1Database|\.prepare\(|SELECT |INSERT |UPDATE |DELETE FROM ' \
   control-plane/src/driver_authorization.rs control-plane/src/driver_configuration.rs \
-  control-plane/src/driver_inventory.rs control-plane/src/driver_lifecycle.rs; then
+  control-plane/src/driver_inventory.rs control-plane/src/driver_lifecycle.rs \
+  control-plane/src/driver_renewal.rs; then
   echo "driver policy and provider adapters must not own D1 state, claims, fences, or publication" >&2
+  exit 1
+fi
+if rg --line-number 'Fetch::|OPENLIST_RENEW_ENDPOINT|AliyunCredential|jwt_claims' \
+  control-plane/src/driver_credentials.rs; then
+  echo "credential state machines must not implement provider renewal protocols" >&2
+  exit 1
+fi
+if ! rg -q 'driver_renewal::renew' control-plane/src/driver_credentials.rs; then
+  echo "credential renewal must enter provider I/O through driver_renewal" >&2
   exit 1
 fi
 if rg --line-number 'management_driver_registration::' \

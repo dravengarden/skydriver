@@ -7,7 +7,7 @@
 use carrack_driver_contract::DriverKind;
 use serde::{Deserialize, Serialize};
 
-use crate::{driver_credentials, r2_signing};
+use crate::{driver_renewal, r2_signing};
 
 pub(crate) const LONG_LIVED_CREDENTIAL_EXPIRES_AT: u64 = 253_402_300_799;
 
@@ -40,7 +40,7 @@ pub(crate) enum AuthorizationFailure {
 }
 
 pub(crate) fn refresh_after(expires_at: u64, now: u64) -> u64 {
-    driver_credentials::refresh_after(expires_at, now)
+    driver_renewal::refresh_after(expires_at, now)
 }
 
 pub(crate) fn validate(
@@ -50,9 +50,9 @@ pub(crate) fn validate(
 ) -> Option<u64> {
     match (kind, authorization) {
         (DriverKind::AliyunDriveOpenV2, CredentialAuthorization::Aliyun(authorization))
-            if authorization.refresh_issuer == driver_credentials::OPENLIST_ONLINE_ISSUER =>
+            if authorization.refresh_issuer == driver_renewal::OPENLIST_ONLINE_ISSUER =>
         {
-            driver_credentials::refresh_claims(&authorization.refresh_token)
+            driver_renewal::refresh_claims(&authorization.refresh_token)
                 .filter(|claims| claims.exp > now)
                 .map(|claims| claims.exp)
         }
@@ -76,41 +76,23 @@ pub(crate) async fn authorize(
     }
     match (kind, authorization) {
         (DriverKind::AliyunDriveOpenV2, CredentialAuthorization::Aliyun(authorization)) => {
-            let credential = driver_credentials::authorize_refresh_token(
+            let material = driver_renewal::authorize_refresh_token(
                 &authorization.refresh_token,
                 &authorization.refresh_issuer,
             )
             .await
             .map_err(|failure| match failure {
-                driver_credentials::RefreshFailure::Reauthenticate(_) => {
-                    AuthorizationFailure::Rejected
+                driver_renewal::RenewalFailure::Reauthenticate(_) => AuthorizationFailure::Rejected,
+                driver_renewal::RenewalFailure::Retry(_) => AuthorizationFailure::Retry,
+                driver_renewal::RenewalFailure::Internal(error) => {
+                    AuthorizationFailure::Internal(error)
                 }
-                driver_credentials::RefreshFailure::Retry(_) => AuthorizationFailure::Retry,
-            })?;
-            let credential_expires_at = credential.access_expiry().ok_or_else(|| {
-                AuthorizationFailure::Internal(worker::Error::RustError(
-                    "provider access token has no expiry".to_owned(),
-                ))
-            })?;
-            let refresh_token_expires_at = credential
-                .refresh_token
-                .as_deref()
-                .and_then(driver_credentials::refresh_claims)
-                .map(|claims| claims.exp)
-                .ok_or_else(|| {
-                    AuthorizationFailure::Internal(worker::Error::RustError(
-                        "provider refresh token has no expiry".to_owned(),
-                    ))
-                })?;
-            let managed_issuer = credential.managed_issuer().map(str::to_owned);
-            let plaintext = serde_json::to_vec(&credential).map_err(|error| {
-                AuthorizationFailure::Internal(worker::Error::RustError(error.to_string()))
             })?;
             Ok(CredentialMaterial {
-                plaintext,
-                credential_expires_at,
-                refresh_token_expires_at,
-                managed_issuer,
+                plaintext: material.plaintext,
+                credential_expires_at: material.credential_expires_at,
+                refresh_token_expires_at: material.refresh_token_expires_at,
+                managed_issuer: material.managed_issuer,
             })
         }
         (DriverKind::R2V1, CredentialAuthorization::R2(credential)) => {
