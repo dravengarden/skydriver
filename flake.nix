@@ -12,6 +12,24 @@
       system:
       let
         pkgs = import nixpkgs { inherit system; };
+        carrack = pkgs.rustPlatform.buildRustPackage {
+          pname = "carrack";
+          version = "0.3.6";
+          src = pkgs.lib.cleanSource ./.;
+          cargoLock.lockFile = ./Cargo.lock;
+          cargoBuildFlags = [
+            "--package"
+            "carrack-cli"
+          ];
+          cargoTestFlags = [
+            "--package"
+            "carrack-cli"
+          ];
+          meta = {
+            description = "Encrypted complete-object VFS client and operator CLI";
+            mainProgram = "carrack";
+          };
+        };
         go1265 = pkgs.go.overrideAttrs (
           _finalAttrs: _previousAttrs: {
             version = "1.26.5";
@@ -25,6 +43,11 @@
         );
       in
       {
+        packages = {
+          default = carrack;
+          inherit carrack;
+        };
+
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             go1265
