@@ -1,10 +1,6 @@
-//! Complete-object AES-256-GCM framing compatible with Carrack VFS V1.
+//! Complete-object streaming I/O around the portable Carrack crypto core.
 
-use aes_gcm::{
-    Aes256Gcm, KeyInit as _, Nonce,
-    aead::{AeadInPlace as _, generic_array::GenericArray},
-};
-use hkdf::Hkdf;
+use carrack_sdk_core::{EncryptionDescriptor, FrameCipher};
 use sha2::{Digest as _, Sha256};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -12,8 +8,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use zeroize::{Zeroize, Zeroizing};
 
 const SUITE: &str = "carrack-vfs-aes256gcm-hkdfsha256-v1";
-const FILE_KEY_INFO: &[u8] = b"carrack.vfs.file-key.v1";
-const FRAME_AAD_DOMAIN: &[u8] = b"carrack.vfs.file-frame.v1\0";
 static DOWNLOAD_TEMPORARY_ORDINAL: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) struct Descriptor {
@@ -207,14 +201,8 @@ fn seal_frames<R: Read, W: Write>(
             "invalid encryption descriptor".to_owned(),
         ));
     }
-    let mut salt = [0_u8; 32];
-    salt[..16].copy_from_slice(&descriptor.directory_id);
-    salt[16..].copy_from_slice(&descriptor.version_id);
-    let hkdf = Hkdf::<Sha256>::new(Some(&salt), directory_key);
-    let mut file_key = Zeroizing::new([0_u8; 32]);
-    hkdf.expand(FILE_KEY_INFO, file_key.as_mut())
-        .map_err(|_| crate::Error::InvalidResponse("derive file key".to_owned()))?;
-    let cipher = Aes256Gcm::new(GenericArray::from_slice(file_key.as_ref()));
+    let mut cipher = FrameCipher::new(core_descriptor(descriptor), directory_key)
+        .map_err(|error| crate::Error::InvalidResponse(error.to_string()))?;
     let frame_capacity = usize::try_from(descriptor.frame_bytes)
         .map_err(|_| crate::Error::InvalidResponse("frame exceeds this platform".to_owned()))?;
     let mut frame = Zeroizing::new(vec![0_u8; frame_capacity]);
@@ -237,16 +225,15 @@ fn seal_frames<R: Read, W: Write>(
             .map_err(|error| {
                 crate::Error::InvalidResponse(format!("read encryption frame {ordinal}: {error}"))
             })?;
-        let mut nonce = [0_u8; 12];
-        nonce[4..].copy_from_slice(&ordinal.to_be_bytes());
-        let aad = frame_aad(descriptor, ordinal, plaintext_bytes);
         let tag = cipher
-            .encrypt_in_place_detached(
-                Nonce::from_slice(&nonce),
-                &aad,
+            .seal_frame(
+                ordinal,
+                descriptor.plaintext_bytes,
                 &mut frame[..plaintext_length],
             )
-            .map_err(|_| crate::Error::InvalidResponse(format!("encrypt frame {ordinal}")))?;
+            .map_err(|error| {
+                crate::Error::InvalidResponse(format!("encrypt frame {ordinal}: {error}"))
+            })?;
         output
             .write_all(&frame[..plaintext_length])
             .and_then(|()| output.write_all(&tag))
@@ -270,15 +257,12 @@ fn open_frames<R: Read, W: Write>(
 ) -> Result<(), crate::Error> {
     let frame_capacity = usize::try_from(descriptor.frame_bytes)
         .map_err(|_| crate::Error::InvalidResponse("frame exceeds this platform".to_owned()))?;
-    let mut salt = [0_u8; 32];
-    salt[..16].copy_from_slice(&descriptor.directory_id);
-    salt[16..].copy_from_slice(&descriptor.version_id);
-    let hkdf = Hkdf::<Sha256>::new(Some(&salt), directory_key);
-    let mut file_key = Zeroizing::new([0_u8; 32]);
-    hkdf.expand(FILE_KEY_INFO, file_key.as_mut())
-        .map_err(|_| crate::Error::InvalidResponse("derive file key".to_owned()))?;
-    let cipher = Aes256Gcm::new(GenericArray::from_slice(file_key.as_ref()));
-    let mut frame = Zeroizing::new(vec![0_u8; frame_capacity + 16]);
+    let cipher = FrameCipher::new(core_descriptor(descriptor), directory_key)
+        .map_err(|error| crate::Error::InvalidResponse(error.to_string()))?;
+    let encoded_frame_capacity = frame_capacity
+        .checked_add(16)
+        .ok_or_else(|| crate::Error::InvalidResponse("encoded frame size overflows".to_owned()))?;
+    let mut frame = Zeroizing::new(vec![0_u8; encoded_frame_capacity]);
     let frame_count = if descriptor.plaintext_bytes == 0 {
         0
     } else {
@@ -300,20 +284,18 @@ fn open_frames<R: Read, W: Write>(
                 )
             })?;
         let (ciphertext, tag) = frame[..plaintext_length + 16].split_at_mut(plaintext_length);
-        let mut nonce = [0_u8; 12];
-        nonce[4..].copy_from_slice(&ordinal.to_be_bytes());
-        let aad = frame_aad(descriptor, ordinal, plaintext_bytes);
-        cipher
-            .decrypt_in_place_detached(
-                Nonce::from_slice(&nonce),
-                &aad,
-                ciphertext,
-                GenericArray::from_slice(tag),
+        let tag: &[u8; 16] = (&*tag).try_into().map_err(|_| {
+            crate::Error::failure(
+                crate::FailureKind::CorruptCiphertext,
+                format!("encrypted frame {ordinal} tag width differs"),
             )
-            .map_err(|_| {
+        })?;
+        cipher
+            .open_frame(ordinal, descriptor.plaintext_bytes, ciphertext, tag)
+            .map_err(|error| {
                 crate::Error::failure(
                     crate::FailureKind::CorruptCiphertext,
-                    format!("authenticate encrypted frame {ordinal}"),
+                    format!("authenticate encrypted frame {ordinal}: {error}"),
                 )
             })?;
         output.write_all(ciphertext).map_err(|error| {
@@ -362,17 +344,13 @@ fn copy_plaintext<R: Read, W: Write>(
     Ok((length, hex::encode(hasher.finalize())))
 }
 
-fn frame_aad(descriptor: &Descriptor, ordinal: u64, plaintext_bytes: u64) -> Vec<u8> {
-    let mut aad = Vec::with_capacity(FRAME_AAD_DOMAIN.len() + 64);
-    aad.extend_from_slice(FRAME_AAD_DOMAIN);
-    aad.extend_from_slice(&descriptor.directory_id);
-    aad.extend_from_slice(&descriptor.version_id);
-    aad.extend_from_slice(&descriptor.key_epoch.to_be_bytes());
-    aad.extend_from_slice(&descriptor.frame_bytes.to_be_bytes());
-    aad.extend_from_slice(&descriptor.plaintext_bytes.to_be_bytes());
-    aad.extend_from_slice(&ordinal.to_be_bytes());
-    aad.extend_from_slice(&plaintext_bytes.to_be_bytes());
-    aad
+fn core_descriptor(descriptor: &Descriptor) -> EncryptionDescriptor {
+    EncryptionDescriptor {
+        directory_id: descriptor.directory_id,
+        version_id: descriptor.version_id,
+        key_epoch: descriptor.key_epoch,
+        frame_bytes: descriptor.frame_bytes,
+    }
 }
 
 fn require_eof<R: Read>(input: &mut R) -> Result<(), crate::Error> {

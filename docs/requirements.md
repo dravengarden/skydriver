@@ -20,6 +20,30 @@ This document is the normative product and correctness baseline. The key words
 - Carrack MUST NOT split, pack, bundle, merge, compact, or stripe user files.
   One input file MUST remain one complete provider object at every location.
 
+## Stable correctness core
+
+- `carrack-sdk-core` MUST be the portable, provider-free correctness kernel
+  shared by native clients and Worker WASM. It MUST NOT depend on filesystems,
+  sockets, async runtimes, databases, Cloudflare APIs, drivers, CLI, or UI.
+- Core responsibilities MUST remain in orthogonal modules: canonical wire
+  values, content integrity, encryption, authenticated catalog closure, and a
+  composition-only native/WASM acceptance proof. A module MUST NOT duplicate
+  or reach into another module's private algorithm.
+- Integrity domains, Merkle construction, block-manifest encoding and
+  validation, key derivation, frame authentication, and catalog closure MUST
+  have exactly one Rust product implementation in `carrack-sdk-core`.
+- `carrack-client` and the Worker MAY adapt owned transport or database values
+  into core value objects, but MUST delegate the final canonical validation to
+  the core. CLI and UI validation is advisory UX only; server and core
+  validation remain authoritative.
+- Every core module MUST have independent positive, negative, boundary, and
+  golden-vector tests where a language-neutral format exists. Changes to core
+  wire semantics MUST update normative documentation and pass native plus WASM
+  gates. Outer-layer feature work SHOULD NOT modify the core.
+- Optional acceleration MUST remain outside the correctness kernel and MUST
+  safely fall back to the same core proof when absent, stale, corrupt,
+  unsupported, or over its resource bound.
+
 ## Namespace and object model
 
 - Directory, file, and version identities MUST be stable opaque identifiers

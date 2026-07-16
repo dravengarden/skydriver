@@ -5,7 +5,10 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::{DirectoryMerkleEntry, Error, directory_merkle_root};
+use crate::{
+    error::Error,
+    integrity::{DirectoryMerkleEntry, directory_merkle_root},
+};
 
 /// Stable complete VFS catalog checkpoint schema.
 pub const CATALOG_CHECKPOINT_SCHEMA: &str = "carrack.vfs.catalog-checkpoint.v1";

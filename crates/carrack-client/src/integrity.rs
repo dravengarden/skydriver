@@ -1,14 +1,8 @@
 //! Canonical Carrack file Merkle and block-manifest implementation.
 
-use sha2::{Digest as _, Sha256};
-use std::io::{Read as _, Write as _};
+use std::io::Read as _;
 use std::path::Path;
 
-const FILE_LEAF_DOMAIN: &str = "carrack.vfs.file.leaf.v1";
-const FILE_EMPTY_DOMAIN: &str = "carrack.vfs.file.empty.v1";
-const FILE_NODE_DOMAIN: &str = "carrack.vfs.file.node.v1";
-const MANIFEST_DOMAIN: &str = "carrack.vfs.block-manifest.v1";
-const EMPTY_METADATA_DOMAIN: &str = "carrack.vfs.metadata.empty.v1";
 const MAXIMUM_BLOCKS: usize = 1_000_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,7 +18,6 @@ pub(crate) struct FileTree {
     pub size_bytes: u64,
     pub block_bytes: u64,
     pub blocks: Vec<FileBlock>,
-    pub tree_digest: [u8; 32],
     pub root: [u8; 32],
 }
 
@@ -76,7 +69,7 @@ pub(crate) fn build_file(path: &Path, block_bytes: u64) -> Result<FileTree, crat
             index,
             offset,
             size_bytes: length,
-            digest: hash_block(index, &buffer[..length_usize]),
+            digest: carrack_sdk_core::file_block_digest(index, &buffer[..length_usize]),
         });
         offset += length;
     }
@@ -198,23 +191,18 @@ fn same_file_identity(opened: &std::fs::Metadata, current: &std::fs::Metadata) -
         && opened.modified().ok() == current.modified().ok()
 }
 
-pub(crate) fn manifest(tree: &FileTree) -> Vec<u8> {
-    let mut encoded =
-        Vec::with_capacity(MANIFEST_DOMAIN.len() + 1 + 24 + tree.blocks.len() * 32 + 32);
-    encoded.extend_from_slice(MANIFEST_DOMAIN.as_bytes());
-    encoded.push(0);
-    encoded.extend_from_slice(&tree.size_bytes.to_be_bytes());
-    encoded.extend_from_slice(&tree.block_bytes.to_be_bytes());
-    encoded.extend_from_slice(&(tree.blocks.len() as u64).to_be_bytes());
-    for block in &tree.blocks {
-        encoded.extend_from_slice(&block.digest);
-    }
-    encoded.extend_from_slice(&tree.root);
-    encoded
+pub(crate) fn manifest(tree: &FileTree) -> Result<Vec<u8>, crate::Error> {
+    let leaves = tree
+        .blocks
+        .iter()
+        .map(|block| block.digest)
+        .collect::<Vec<_>>();
+    carrack_sdk_core::encode_block_manifest(tree.size_bytes, tree.block_bytes, &leaves)
+        .map_err(|error| crate::Error::InvalidResponse(error.to_string()))
 }
 
 pub(crate) fn empty_metadata_root() -> [u8; 32] {
-    domain_hasher(EMPTY_METADATA_DOMAIN).finalize().into()
+    carrack_sdk_core::empty_metadata_root()
 }
 
 fn root_from_blocks(
@@ -223,11 +211,6 @@ fn root_from_blocks(
     blocks: Vec<FileBlock>,
 ) -> Result<FileTree, crate::Error> {
     let leaves = blocks.iter().map(|block| block.digest).collect::<Vec<_>>();
-    let tree_digest = if leaves.is_empty() {
-        domain_hasher(FILE_EMPTY_DOMAIN).finalize().into()
-    } else {
-        canonical_tree(&leaves, 0)
-    };
     let root =
         carrack_sdk_core::file_merkle_root_from_block_digests(size_bytes, block_bytes, &leaves)
             .map_err(|error| crate::Error::InvalidResponse(error.to_string()))?;
@@ -235,46 +218,8 @@ fn root_from_blocks(
         size_bytes,
         block_bytes,
         blocks,
-        tree_digest,
         root,
     })
-}
-
-fn hash_block(index: u64, payload: &[u8]) -> [u8; 32] {
-    let mut hash = domain_hasher(FILE_LEAF_DOMAIN);
-    hash.write_all(&index.to_be_bytes())
-        .expect("SHA-256 writes cannot fail");
-    hash.write_all(&(payload.len() as u64).to_be_bytes())
-        .expect("SHA-256 writes cannot fail");
-    hash.write_all(payload).expect("SHA-256 writes cannot fail");
-    hash.finalize().into()
-}
-
-fn canonical_tree(leaves: &[[u8; 32]], first: u64) -> [u8; 32] {
-    if leaves.len() == 1 {
-        return leaves[0];
-    }
-    let mut left_count = 1;
-    while left_count <= (leaves.len() - 1) / 2 {
-        left_count *= 2;
-    }
-    let left = canonical_tree(&leaves[..left_count], first);
-    let right = canonical_tree(&leaves[left_count..], first + left_count as u64);
-    let mut hash = domain_hasher(FILE_NODE_DOMAIN);
-    hash.write_all(&first.to_be_bytes())
-        .expect("SHA-256 writes cannot fail");
-    hash.write_all(&(leaves.len() as u64).to_be_bytes())
-        .expect("SHA-256 writes cannot fail");
-    hash.write_all(&left).expect("SHA-256 writes cannot fail");
-    hash.write_all(&right).expect("SHA-256 writes cannot fail");
-    hash.finalize().into()
-}
-
-fn domain_hasher(domain: &str) -> Sha256 {
-    let mut hash = Sha256::new();
-    hash.update(domain.as_bytes());
-    hash.update([0]);
-    hash
 }
 
 #[cfg(test)]
@@ -295,7 +240,6 @@ mod tests {
     struct Expected {
         block_bytes: u64,
         root: String,
-        tree_digest: String,
     }
 
     #[test]
@@ -309,8 +253,7 @@ mod tests {
             let tree = build_file(&path, vector.expected.block_bytes).unwrap();
             std::fs::remove_file(path).unwrap();
             assert_eq!(hex::encode(tree.root), vector.expected.root);
-            assert_eq!(hex::encode(tree.tree_digest), vector.expected.tree_digest);
-            assert!(!manifest(&tree).is_empty());
+            assert!(!manifest(&tree).expect("encode manifest").is_empty());
         }
         assert_eq!(hex::encode(empty_metadata_root()).len(), 64);
     }

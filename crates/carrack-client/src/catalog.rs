@@ -516,7 +516,7 @@ fn validate_node(node: &CatalogNode, directory_id: &str, data_root: &str) -> Res
     Ok(())
 }
 
-fn merkle_entry(entry: &CatalogEntry) -> Result<DirectoryMerkleEntry<'_>, Error> {
+pub(crate) fn merkle_entry(entry: &CatalogEntry) -> Result<DirectoryMerkleEntry<'_>, Error> {
     let data_root = decode_hex::<32>(&entry.data_root, "catalog entry data root")?;
     match entry.kind {
         EntryKind::File => {

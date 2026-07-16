@@ -13,6 +13,73 @@ if rg --line-number --ignore-case \
 fi
 
 if rg --line-number --ignore-case \
+  '(^|[[:space:]])(reqwest|tokio|rusqlite|worker|cap-std|fs2)[[:space:]]*=' \
+  crates/carrack-sdk-core/Cargo.toml; then
+  echo "carrack-sdk-core must remain free of I/O, runtime, database, and provider dependencies" >&2
+  exit 1
+fi
+
+if rg --line-number \
+  'carrack\.vfs\.(file\.(leaf|empty|node|root)|directory\.(file-entry|child-entry|empty|node|root)|block-manifest)\.v1' \
+  crates/carrack-client/src control-plane/src web/src; then
+  echo "portable integrity domains must be implemented only by carrack-sdk-core" >&2
+  exit 1
+fi
+
+if ! rg -q 'carrack_sdk_core' control-plane/src/vfs_merkle.rs \
+  || ! rg -q 'validate_block_manifest' control-plane/src/vfs_merkle.rs \
+  || ! rg -q 'directory_merkle_root' control-plane/src/vfs_merkle.rs; then
+  echo "the Worker Merkle adapter must delegate final validation to carrack-sdk-core" >&2
+  exit 1
+fi
+
+if rg --line-number 'sha2|unicode_normalization|canonical_tree|domain_hasher' \
+  control-plane/src/vfs_merkle.rs; then
+  echo "the Worker Merkle adapter must not implement integrity algorithms" >&2
+  exit 1
+fi
+
+if rg --line-number \
+  'carrack\.vfs\.file-frame\.v1|carrack\.vfs\.file-key\.v1|encrypt_in_place_detached|decrypt_in_place_detached|Hkdf' \
+  crates/carrack-client/src \
+  || rg --line-number '^[[:space:]]*(aes-gcm|hkdf)[[:space:]]*=' \
+    crates/carrack-client/Cargo.toml; then
+  echo "native client I/O must delegate version key and frame cryptography to carrack-sdk-core" >&2
+  exit 1
+fi
+
+if rg --line-number 'crate::(crypto|catalog|acceptance)' \
+  crates/carrack-sdk-core/src/integrity.rs \
+  || rg --line-number 'crate::(integrity|catalog|acceptance)' \
+    crates/carrack-sdk-core/src/crypto.rs \
+  || rg --line-number 'crate::(integrity|crypto|catalog|acceptance)' \
+    crates/carrack-sdk-core/src/canonical.rs; then
+  echo "portable core leaf modules must remain orthogonal" >&2
+  exit 1
+fi
+
+core_modules=(acceptance canonical catalog crypto error integrity)
+for core_module in "${core_modules[@]}"; do
+  if ! test -f "crates/carrack-sdk-core/src/$core_module.rs"; then
+    echo "required portable core module is missing: $core_module" >&2
+    exit 1
+  fi
+done
+
+if rg --line-number 'carrack-sdk-core|carrack-control-plane|reqwest' \
+  crates/carrack-cli/Cargo.toml crates/carrack-cli/src; then
+  echo "CLI binaries must remain thin carrack-client consumers" >&2
+  exit 1
+fi
+
+if rg --line-number \
+  'FileMerkle|DirectoryMerkle|BlockManifestExpectation|validate_block_manifest|directory_merkle_root' \
+  crates/carrack-cli/src web/src; then
+  echo "CLI and UI must not implement portable correctness rules" >&2
+  exit 1
+fi
+
+if rg --line-number --ignore-case \
   'OpenListTeam|api\.oplist\.org|openlist' \
   crates/carrack-client/src crates/carrack-cli/src; then
   echo "native Rust clients must not link to or call OpenList" >&2

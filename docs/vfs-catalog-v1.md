@@ -29,11 +29,15 @@ unchanged sibling roots remain identical. A client that observes one new root
 downloads the changed ancestor path and reuses every cached sibling subtree.
 No per-file control-plane call is required to discover the namespace.
 
-The current whole-directory node is intentionally simple. Very large flat
-directories are fetched through revision-pinned pages and assembled locally.
-A future content-addressed page tree may reduce metadata transfer for one-entry
+Whole-directory nodes remain the durable cache format for bounded directories.
+Very large flat directories are fetched through revision-pinned pages, fed to
+the portable ordered-directory Merkle accumulator, and streamed through a
+private disk spool. The client retains at most 20,000 entries of one directory
+for whole-node caching; above that bound it discards the memory copy after the
+same complete root proof and plans from the spool. A future content-addressed
+page tree may additionally reduce repeated metadata transfer for one-entry
 changes inside a huge flat directory without changing the directory root or
-the public cache key.
+the correctness protocol.
 
 ## Synchronization protocol
 

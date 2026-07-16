@@ -6,8 +6,12 @@ ingestion schedules, trading semantics, or other consumer-specific behavior.
 
 ## Architecture
 
-- `crates/carrack-client/`, `crates/carrack-cli/`: canonical Rust client core
-  and the `carrack`/`carrackctl` binaries.
+- `crates/carrack-sdk-core/`: stable, portable correctness kernel split into
+  orthogonal canonical, integrity, crypto, catalog, and acceptance modules.
+- `crates/carrack-client/`: native I/O, driver, recovery, and publication
+  orchestration that delegates wire correctness to `carrack-sdk-core`.
+- `crates/carrack-cli/`: thin `carrack`/`carrackctl` SDK consumers; business or
+  protocol rules do not belong here.
 - `driver/`, `transfer/journal/`, `vfs/`: narrow Go conformance oracles for the
   complete-object contract, recovery journal, and shared binary vectors. They
   are not a public SDK or installation surface and must not gain product
@@ -30,6 +34,10 @@ agent processes are SDK consumers, not a third architectural component.
   name. Consumer projects depend on Carrack; Carrack never depends on them.
 - Go uses the Columbus maximum-strictness golangci-lint profile.
 - TypeScript is strict: no `any`, no unchecked boundary casts.
+- Merkle domains, block-manifest rules, encryption derivation, and catalog
+  closure logic belong only in the matching `carrack-sdk-core` module. Worker,
+  client, CLI, and UI may adapt values and improve diagnostics but must not
+  duplicate those algorithms.
 - Secrets and credentials never enter Git. D1 stores only password hashes,
   token verifiers, encrypted provider-credential envelopes, and wrapped VFS
   directory keys. VFS master keys stay in Cloudflare secrets or Secrets Store

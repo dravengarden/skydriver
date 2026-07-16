@@ -23,6 +23,29 @@ The CLI binaries are SDK consumers, not additional components. External
 sources remain caller-owned: callers give Carrack bytes, streams, or local
 files and receive bytes or local files.
 
+### Correctness-kernel boundary
+
+`carrack-sdk-core` is the small, portable correctness kernel used by both the
+native client and Worker WASM. Its modules are deliberately one-directional:
+
+- `canonical` parses context-free canonical wire values;
+- `integrity` owns file/directory Merkle and block-manifest identity;
+- `crypto` owns version-scoped key derivation and authenticated frames;
+- `catalog` verifies complete checkpoint/delta closures using `integrity`;
+- `acceptance` composes public APIs to prove native/WASM parity and owns no
+  protocol rule.
+
+The kernel performs no I/O and knows no provider, database, HTTP route, CLI,
+or UI. `carrack-client` owns local/provider I/O, recovery, pipelines, and
+publication. The Worker owns authorization and D1/R2 transaction orchestration.
+Both convert boundary data into kernel value objects and accept its result;
+neither reimplements the algorithm. CLI and UI are consumers whose local
+checks improve UX but never create authority or establish correctness.
+
+This boundary is intentionally stable: ordinary driver, management, CLI, and
+UI work should not change it. Normative docs, module-local negative and golden
+tests, a WASM build, and architecture checks make semantic changes explicit.
+
 Payload bytes move directly between a client and a storage driver. The Worker
 never relays a file body. It may contact hosted drivers for credential renewal,
 exact identity checks, multipart abort, and fenced physical deletion.
@@ -163,6 +186,8 @@ Architecture tests forbid a Go SDK or CLI and the removed archive model.
 
 ## Detailed contracts
 
+- [portable correctness core](sdk-core.md)
+- [synchronization scaling](sync-scaling.md)
 - [VFS V2](vfs-v2.md)
 - [Merkle format](vfs-merkle-v1.md)
 - [Put protocol](vfs-put-v1.md)

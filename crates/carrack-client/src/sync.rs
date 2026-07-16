@@ -15,7 +15,7 @@ use std::{
 
 use crate::{
     DirectoryPage, EntryKind, Error, GetOptions, VfsClient,
-    catalog::{CatalogNode, CatalogStore},
+    catalog::{CatalogEntry, CatalogNode, CatalogStore, merkle_entry},
     download::DownloadExpectation,
     integrity,
     vfs::{CatalogCheckpointOutcome, canonical_components},
@@ -24,6 +24,7 @@ use crate::{
 const LEGACY_STATE_SCHEMA: &str = "carrack.local-sync-state.v1";
 const STATE_SCHEMA: &str = "carrack.local-sync-state.v2";
 const CATALOG_PAGE_SIZE: u32 = 1_000;
+const MAXIMUM_MEMORY_DIRECTORY_ENTRIES: usize = 20_000;
 const MAXIMUM_SPOOL_RECORD_BYTES: usize = 1024 * 1024;
 static PLAN_SPOOL_ORDINAL: AtomicU64 = AtomicU64::new(0);
 static STATE_TEMPORARY_ORDINAL: AtomicU64 = AtomicU64::new(0);
@@ -201,6 +202,48 @@ struct RecordSpoolReader<T> {
     record: PhantomData<T>,
 }
 
+struct LoadedDirectory {
+    directory_id: String,
+    data_root: String,
+    entries: LoadedEntries,
+}
+
+enum LoadedEntries {
+    Memory(std::vec::IntoIter<CatalogEntry>),
+    Spool(RecordSpoolReader<CatalogEntry>),
+}
+
+impl Iterator for LoadedEntries {
+    type Item = Result<CatalogEntry, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Memory(entries) => entries.next().map(Ok),
+            Self::Spool(entries) => entries.next(),
+        }
+    }
+}
+
+impl From<CatalogNode> for LoadedDirectory {
+    fn from(node: CatalogNode) -> Self {
+        Self {
+            directory_id: node.directory_id,
+            data_root: node.data_root,
+            entries: LoadedEntries::Memory(node.entries.into_iter()),
+        }
+    }
+}
+
+fn retain_bounded<T>(retained: &mut Option<Vec<T>>, value: T, maximum: usize) {
+    if let Some(values) = retained {
+        if values.len() < maximum {
+            values.push(value);
+        } else {
+            *retained = None;
+        }
+    }
+}
+
 #[derive(Debug)]
 struct DestinationLock {
     _ancestors: Vec<std::fs::File>,
@@ -363,7 +406,7 @@ struct PendingDirectory {
     relative_path: PathBuf,
     directory_id: String,
     data_root: String,
-    node: Option<CatalogNode>,
+    node: Option<LoadedDirectory>,
 }
 
 impl VfsClient {
@@ -427,6 +470,7 @@ impl VfsClient {
                 destination,
                 &catalog,
                 &session,
+                &options.state_directory,
                 options.maximum_concurrency,
                 bulk_catalog_authorized,
                 plan_spool,
@@ -533,12 +577,19 @@ impl VfsClient {
         destination: &Path,
         catalog: &CatalogStore,
         session: &crate::VfsSession,
+        state_directory: &Path,
         maximum_concurrency: usize,
         bulk_catalog_authorized: bool,
         mut files: RecordSpool<PlannedFile>,
     ) -> Result<(CatalogFence, u64, RecordSpool<PlannedFile>), Error> {
         let (fence, root) = self
-            .source_catalog(source, catalog, session, bulk_catalog_authorized)
+            .source_catalog(
+                source,
+                catalog,
+                session,
+                state_directory,
+                bulk_catalog_authorized,
+            )
             .await?;
         let canonical_source = if source == "/" {
             String::new()
@@ -565,6 +616,7 @@ impl VfsClient {
                             catalog,
                             &task.directory_id,
                             &task.data_root,
+                            state_directory,
                             bulk_catalog_authorized,
                         )
                         .await?
@@ -578,6 +630,7 @@ impl VfsClient {
                 ensure_directory(&destination.join(&task.relative_path))?;
                 directories += 1;
                 for entry in node.entries {
+                    let entry = entry?;
                     let child_relative = task.relative_path.join(&entry.name);
                     let child_vfs = if task.vfs_path.is_empty() {
                         format!("/{}", entry.name)
@@ -628,8 +681,9 @@ impl VfsClient {
         source: &str,
         catalog: &CatalogStore,
         session: &crate::VfsSession,
+        state_directory: &Path,
         bulk_catalog_authorized: bool,
-    ) -> Result<(CatalogFence, CatalogNode), Error> {
+    ) -> Result<(CatalogFence, LoadedDirectory), Error> {
         let components = canonical_components(source)?;
         let root_page = self
             .list_directory(&session.root_directory_id, None, CATALOG_PAGE_SIZE)
@@ -641,19 +695,23 @@ impl VfsClient {
             None,
         )?;
         let mut current = self
-            .load_catalog_from_first(catalog, root_page.clone())
+            .load_catalog_from_first(catalog, root_page.clone(), state_directory)
             .await?;
         let mut source_id = current.directory_id.clone();
         let mut source_root = current.data_root.clone();
         for (index, component) in components.iter().enumerate() {
-            let entry = current
-                .entries
-                .iter()
-                .find(|entry| entry.name == *component)
-                .ok_or_else(|| Error::Rejected {
-                    status: 404,
-                    message: format!("VFS path not found: {source}"),
-                })?;
+            let mut found = None;
+            for entry in current.entries.by_ref() {
+                let entry = entry?;
+                if entry.name == *component {
+                    found = Some(entry);
+                    break;
+                }
+            }
+            let entry = found.ok_or_else(|| Error::Rejected {
+                status: 404,
+                message: format!("VFS path not found: {source}"),
+            })?;
             if entry.kind != EntryKind::Directory {
                 return Err(Error::Rejected {
                     status: 400,
@@ -667,7 +725,13 @@ impl VfsClient {
             source_root = entry.data_root.clone();
             if index + 1 != components.len() {
                 current = self
-                    .load_catalog_node(catalog, &source_id, &source_root, bulk_catalog_authorized)
+                    .load_catalog_node(
+                        catalog,
+                        &source_id,
+                        &source_root,
+                        state_directory,
+                        bulk_catalog_authorized,
+                    )
                     .await?;
             }
         }
@@ -684,7 +748,12 @@ impl VfsClient {
             revision: source_page.directory.revision,
             data_root: source_root,
         };
-        let node = self.load_catalog_from_first(catalog, source_page).await?;
+        let node = if components.is_empty() {
+            current
+        } else {
+            self.load_catalog_from_first(catalog, source_page, state_directory)
+                .await?
+        };
         Ok((fence, node))
     }
 
@@ -693,45 +762,78 @@ impl VfsClient {
         catalog: &CatalogStore,
         directory_id: &str,
         data_root: &str,
+        state_directory: &Path,
         bulk_catalog_authorized: bool,
-    ) -> Result<CatalogNode, Error> {
+    ) -> Result<LoadedDirectory, Error> {
         if bulk_catalog_authorized && let Some(node) = catalog.load(directory_id, data_root)? {
-            return Ok(node);
+            return Ok(node.into());
         }
         let first = self
             .list_directory(directory_id, None, CATALOG_PAGE_SIZE)
             .await?;
         validate_page_identity(&first, directory_id, data_root, None)?;
-        self.load_catalog_from_first(catalog, first).await
+        self.load_catalog_from_first(catalog, first, state_directory)
+            .await
     }
 
     async fn load_catalog_from_first(
         &self,
         catalog: &CatalogStore,
         mut page: DirectoryPage,
-    ) -> Result<CatalogNode, Error> {
+        state_directory: &Path,
+    ) -> Result<LoadedDirectory, Error> {
         let directory_id = page.directory.id.clone();
         let data_root = page.directory.data_root.clone();
         if let Some(node) = catalog.load(&directory_id, &data_root)? {
-            return Ok(node);
+            return Ok(node.into());
         }
         let filesystem_id = page.directory.filesystem_id.clone();
         let revision = page.directory.revision;
-        let mut cursor = page.next_cursor.take();
-        while let Some(next) = cursor {
-            let mut continuation = self
+        let expected_root = carrack_sdk_core::decode_lower_hex::<32>(&data_root)
+            .map_err(|error| Error::InvalidResponse(error.to_string()))?;
+        let mut accumulator = carrack_sdk_core::DirectoryMerkleAccumulator::new();
+        let mut spool = RecordSpool::<CatalogEntry>::create(state_directory)?;
+        let mut cache_entries = Some(Vec::new());
+        loop {
+            for entry in page.entries.drain(..) {
+                let catalog_entry = CatalogEntry::from(&entry);
+                accumulator
+                    .push(&merkle_entry(&catalog_entry)?)
+                    .map_err(|error| Error::InvalidResponse(error.to_string()))?;
+                spool.append(&catalog_entry)?;
+                retain_bounded(&mut cache_entries, entry, MAXIMUM_MEMORY_DIRECTORY_ENTRIES);
+            }
+            let Some(next) = page.next_cursor.take() else {
+                break;
+            };
+            page = self
                 .list_directory(&directory_id, Some(&next), CATALOG_PAGE_SIZE)
                 .await?;
             validate_page_identity(
-                &continuation,
+                &page,
                 &directory_id,
                 &data_root,
                 Some((&filesystem_id, revision)),
             )?;
-            page.entries.append(&mut continuation.entries);
-            cursor = continuation.next_cursor.take();
         }
-        catalog.publish(&directory_id, &data_root, &page.entries)
+        let actual_root = accumulator
+            .finish()
+            .map_err(|error| Error::InvalidResponse(error.to_string()))?;
+        if actual_root != expected_root {
+            return Err(Error::InvalidResponse(
+                "paged catalog directory Merkle root differs".to_owned(),
+            ));
+        }
+        if let Some(entries) = cache_entries {
+            return catalog
+                .publish(&directory_id, &data_root, &entries)
+                .map(Into::into);
+        }
+        Ok(LoadedDirectory {
+            directory_id,
+            data_root,
+            entries: LoadedEntries::Spool(spool.finish()?),
+        })
     }
 }
 
@@ -1205,9 +1307,22 @@ mod tests {
 
     use super::{
         LEGACY_STATE_SCHEMA, PlannedFile, RecordSpool, StateIndex, StateRecord, SyncOptions,
-        VfsClient, acquire_sync_lock, open_state_index, write_state,
+        VfsClient, acquire_sync_lock, open_state_index, retain_bounded, write_state,
     };
     use crate::VfsToken;
+
+    #[test]
+    fn bounded_directory_cache_drops_all_entries_at_its_limit() {
+        let mut retained = Some(Vec::new());
+        retain_bounded(&mut retained, 1_u8, 2);
+        retain_bounded(&mut retained, 2_u8, 2);
+        assert_eq!(retained, Some(vec![1, 2]));
+
+        retain_bounded(&mut retained, 3_u8, 2);
+        assert!(retained.is_none());
+        retain_bounded(&mut retained, 4_u8, 2);
+        assert!(retained.is_none());
+    }
 
     #[test]
     fn plan_spool_streams_records_and_removes_private_file() {

@@ -287,7 +287,7 @@ impl VfsClient {
             ));
         }
         let tree = integrity::build_file(source, options.verification_block_bytes)?;
-        let manifest = integrity::manifest(&tree);
+        let manifest = integrity::manifest(&tree)?;
         let manifest_sha256 = hex::encode(Sha256::digest(&manifest));
         let file_root = hex::encode(tree.root);
         let metadata_root = hex::encode(integrity::empty_metadata_root());
