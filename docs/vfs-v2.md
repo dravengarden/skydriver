@@ -358,6 +358,16 @@ staging file, and verified-block bitmap. Resume range-reads only missing blocks
 and reacquires keys without persisting them. Final publication requires the
 complete file root and an atomic no-replace local publication.
 
+Before requesting a download plan, the native client acquires a crash-released
+cross-process fence on the caller's real staging-directory inode. The fence
+remains held through provider assembly, decryption, plaintext verification,
+publication, and encoded-staging cleanup, so two downloads cannot truncate or
+remove the same resumable artifacts and the fence leaves no lock metadata.
+Directory sync already gives each immutable version an independent staging
+directory and therefore retains file-level concurrency. Independent direct
+downloads that need parallelism likewise use independent staging directories;
+sharing one root intentionally serializes them.
+
 ### Reference transfer journal
 
 The Go `transfer/journal` package is the V2 reference recovery protocol. Its

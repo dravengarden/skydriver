@@ -5,6 +5,7 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -229,6 +230,8 @@ impl VfsClient {
         options: &GetOptions,
     ) -> Result<GetResult, Error> {
         validate_options(options)?;
+        let _staging_lock =
+            acquire_download_staging_lock(&options.staging_directory, expected.version_id).await?;
         let transfer_started = Instant::now();
         let token = self.token.encode();
         let mut plan: DownloadPlan = self
@@ -352,6 +355,55 @@ impl VfsClient {
             provider_elapsed,
         ))
     }
+}
+
+struct DownloadStagingLock {
+    _file: File,
+}
+
+async fn acquire_download_staging_lock(
+    staging_root: &Path,
+    version_id: &str,
+) -> Result<DownloadStagingLock, Error> {
+    let staging_root = staging_root.to_owned();
+    let version_id = version_id.to_owned();
+    tokio::task::spawn_blocking(move || {
+        acquire_download_staging_lock_blocking(&staging_root, &version_id)
+    })
+    .await
+    .map_err(|error| {
+        Error::InvalidResponse(format!("download staging lock worker failed: {error}"))
+    })?
+}
+
+fn acquire_download_staging_lock_blocking(
+    staging_root: &Path,
+    version_id: &str,
+) -> Result<DownloadStagingLock, Error> {
+    let _ = parse_identifier(version_id)?;
+    std::fs::create_dir_all(staging_root).map_err(|error| {
+        Error::InvalidResponse(format!("create download staging root: {error}"))
+    })?;
+    let metadata = std::fs::symlink_metadata(staging_root).map_err(|error| {
+        Error::InvalidResponse(format!("inspect download staging root: {error}"))
+    })?;
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err(Error::InvalidResponse(
+            "download staging root is not a real directory".to_owned(),
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(staging_root, std::fs::Permissions::from_mode(0o700)).map_err(
+            |error| Error::InvalidResponse(format!("protect download staging root: {error}")),
+        )?;
+    }
+    let file = File::open(staging_root)
+        .map_err(|error| Error::InvalidResponse(format!("open download staging lock: {error}")))?;
+    fs2::FileExt::lock_exclusive(&file)
+        .map_err(|error| Error::InvalidResponse(format!("lock download staging: {error}")))?;
+    Ok(DownloadStagingLock { _file: file })
 }
 
 struct ResolvedFileDownload {
@@ -767,8 +819,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        DownloadExpectation, DownloadPlan, VerifiedOutputSpool, copy_verified_output,
-        publish_no_replace, validate_plan, verify_and_publish_plaintext, verify_plaintext_identity,
+        DownloadExpectation, DownloadPlan, VerifiedOutputSpool,
+        acquire_download_staging_lock_blocking, copy_verified_output, publish_no_replace,
+        validate_plan, verify_and_publish_plaintext, verify_plaintext_identity,
     };
 
     fn valid_plan() -> DownloadPlan {
@@ -873,6 +926,44 @@ mod tests {
         encrypted_without_key.directory_key = None;
         validate_plan(&encrypted_without_key, expectation(&encrypted_without_key))
             .expect_err("reject missing encrypted key");
+    }
+
+    #[test]
+    fn shared_download_staging_root_is_serialized_without_residue() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let version_id = "44444444444444444444444444444444";
+        let first = acquire_download_staging_lock_blocking(temporary.path(), version_id)
+            .expect("first staging lock");
+        let root = temporary.path().to_owned();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            started_tx.send(()).expect("announce lock waiter");
+            let lock = acquire_download_staging_lock_blocking(&root, version_id)
+                .expect("second staging lock");
+            acquired_tx.send(lock).expect("announce acquired lock");
+        });
+        started_rx.recv().expect("lock waiter started");
+        assert!(
+            acquired_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "same-version staging lock did not serialize"
+        );
+        drop(first);
+        let second = acquired_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("second staging lock acquired after release");
+        drop(second);
+        waiter.join().expect("lock waiter");
+
+        assert!(
+            std::fs::read_dir(temporary.path())
+                .expect("read staging root")
+                .next()
+                .is_none(),
+            "staging fence left local metadata"
+        );
     }
 
     #[test]
