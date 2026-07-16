@@ -202,6 +202,11 @@ if rg -q 'remove_file\(&relative\)' crates/carrack-client/src/local.rs; then
   echo "native adapters must retain ambiguous provider objects for fenced lifecycle" >&2
   exit 1
 fi
+if ! rg -q 'hard_link\(&temporary, &directory, &relative\)' \
+  crates/carrack-client/src/local.rs; then
+  echo "local provider publication must be atomic no-replace" >&2
+  exit 1
+fi
 if rg --line-number 'management_driver_registration::' \
   control-plane/src/management_driver_configuration.rs \
   control-plane/src/management_driver_credentials.rs; then

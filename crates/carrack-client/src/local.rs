@@ -75,14 +75,20 @@ pub(crate) fn upload(
         .sync_all()
         .map_err(|error| Error::InvalidResponse(format!("sync local upload: {error}")))?;
     drop(output);
-    if directory.metadata(&relative).is_ok() {
-        directory
-            .remove_file(&temporary)
-            .map_err(|error| Error::InvalidResponse(format!("remove replay temporary: {error}")))?;
-    } else {
-        directory
-            .rename(&temporary, &directory, &relative)
-            .map_err(|error| Error::InvalidResponse(format!("publish local object: {error}")))?;
+    match directory.hard_link(&temporary, &directory, &relative) {
+        Ok(()) => directory.remove_file(&temporary).map_err(|error| {
+            Error::InvalidResponse(format!("remove published local temporary: {error}"))
+        })?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            directory.remove_file(&temporary).map_err(|cleanup| {
+                Error::InvalidResponse(format!("remove replay temporary: {cleanup}"))
+            })?;
+        }
+        Err(error) => {
+            return Err(Error::InvalidResponse(format!(
+                "publish local object without replacement: {error}"
+            )));
+        }
     }
     let mut file = directory
         .open(&relative)
