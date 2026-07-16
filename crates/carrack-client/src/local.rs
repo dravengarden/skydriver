@@ -155,6 +155,9 @@ pub(crate) fn download(
         std::fs::remove_file(&path)
             .map_err(|error| Error::InvalidResponse(format!("reset download assembly: {error}")))?;
     }
+    if encoded_bytes == 0 {
+        verify_empty_provider_object(&directory, &relative)?;
+    }
     let part_root = staging_root.join("parts").join(version_id);
     std::fs::create_dir_all(&part_root)
         .map_err(|error| Error::InvalidResponse(format!("create download journal: {error}")))?;
@@ -196,6 +199,23 @@ pub(crate) fn download(
         .map_err(|error| Error::InvalidResponse(format!("remove download journal: {error}")))?;
     let _ = std::fs::remove_dir(staging_root.join("parts"));
     Ok(path)
+}
+
+fn verify_empty_provider_object(directory: &Dir, source: &Path) -> Result<(), Error> {
+    let mut input = directory
+        .open(source)
+        .map_err(|error| local_provider_error("open empty provider object", &error))?;
+    let mut byte = [0_u8; 1];
+    let observed = input
+        .read(&mut byte)
+        .map_err(|error| local_provider_error("read empty provider object", &error))?;
+    if observed != 0 {
+        return Err(Error::failure(
+            FailureKind::CorruptCiphertext,
+            "local zero-byte provider object returned data",
+        ));
+    }
+    Ok(())
 }
 
 fn upload_parts(
@@ -370,6 +390,44 @@ mod tests {
         for invalid in ["", "/absolute", "../escape", "a/../b", "a\\b"] {
             assert!(safe_storage_key(invalid).is_err(), "accepted {invalid:?}");
         }
+    }
+
+    #[test]
+    fn zero_byte_download_still_reads_the_provider_object() {
+        let temporary = tempfile::tempdir().expect("temporary driver root");
+        let root = temporary.path().join("provider");
+        let object = root.join("objects/ab/object");
+        std::fs::create_dir_all(object.parent().expect("object parent"))
+            .expect("create provider root");
+        std::fs::write(&object, b"unexpected").expect("write non-empty provider object");
+        let empty_sha256 = hex::encode(Sha256::digest([]));
+
+        let error = download(
+            root.to_str().expect("UTF-8 provider root"),
+            "objects/ab/object",
+            &temporary.path().join("downloads"),
+            "version-empty",
+            0,
+            &empty_sha256,
+            4_096,
+            1,
+        )
+        .expect_err("non-empty provider body must not satisfy zero-byte identity");
+        assert_eq!(error.failure_kind(), Some(FailureKind::CorruptCiphertext));
+
+        std::fs::remove_file(&object).expect("remove provider object");
+        let missing = download(
+            root.to_str().expect("UTF-8 provider root"),
+            "objects/ab/object",
+            &temporary.path().join("missing-download"),
+            "version-missing",
+            0,
+            &empty_sha256,
+            4_096,
+            1,
+        )
+        .expect_err("missing provider object must not satisfy zero-byte identity");
+        assert_eq!(missing.failure_kind(), Some(FailureKind::PermanentLoss));
     }
 
     #[test]
