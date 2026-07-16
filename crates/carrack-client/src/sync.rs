@@ -4,8 +4,10 @@ use futures_util::{StreamExt as _, stream};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
+    io::{BufReader, BufWriter, Read as _, Write as _},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use crate::{
@@ -18,6 +20,9 @@ use crate::{
 
 const STATE_SCHEMA: &str = "carrack.local-sync-state.v1";
 const CATALOG_PAGE_SIZE: u32 = 1_000;
+const MAXIMUM_PLAN_RECORD_BYTES: usize = 1024 * 1024;
+static PLAN_SPOOL_ORDINAL: AtomicU64 = AtomicU64::new(0);
+static STATE_TEMPORARY_ORDINAL: AtomicU64 = AtomicU64::new(0);
 
 /// Bounded incremental directory synchronization settings.
 pub struct SyncOptions {
@@ -54,7 +59,8 @@ pub struct SyncResult {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct PlannedFile {
     vfs_path: String,
     relative_path: PathBuf,
@@ -85,6 +91,158 @@ struct SyncState {
 struct Downloaded {
     record: StateRecord,
     warnings: Vec<String>,
+}
+
+struct PlanSpool {
+    path: Option<PathBuf>,
+    writer: Option<BufWriter<std::fs::File>>,
+}
+
+struct PlanSpoolReader {
+    path: Option<PathBuf>,
+    file: std::fs::File,
+}
+
+#[derive(Debug)]
+struct DestinationLock {
+    _ancestors: Vec<std::fs::File>,
+    _destination: std::fs::File,
+}
+
+impl PlanSpool {
+    fn create(state_directory: &Path) -> Result<Self, Error> {
+        let directory = state_directory.join("sync/plans");
+        protect_directory(&directory)?;
+        loop {
+            let ordinal = PLAN_SPOOL_ORDINAL.fetch_add(1, Ordering::Relaxed);
+            let path = directory.join(format!(".plan-{}-{ordinal:016x}.spool", std::process::id()));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt as _;
+                        if let Err(error) =
+                            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                        {
+                            drop(file);
+                            let _ = std::fs::remove_file(&path);
+                            return Err(local_error("protect sync plan spool")(error));
+                        }
+                    }
+                    return Ok(Self {
+                        path: Some(path),
+                        writer: Some(BufWriter::new(file)),
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(local_error("create sync plan spool")(error)),
+            }
+        }
+    }
+
+    fn append(&mut self, file: &PlannedFile) -> Result<(), Error> {
+        let encoded = serde_json::to_vec(file)
+            .map_err(|error| Error::InvalidResponse(format!("encode sync plan: {error}")))?;
+        if encoded.is_empty() || encoded.len() > MAXIMUM_PLAN_RECORD_BYTES {
+            return Err(Error::InvalidResponse(
+                "sync plan record exceeds its local bound".to_owned(),
+            ));
+        }
+        let length = u32::try_from(encoded.len()).map_err(|_| {
+            Error::InvalidResponse("sync plan record length exceeds u32".to_owned())
+        })?;
+        let writer = self
+            .writer
+            .as_mut()
+            .ok_or_else(|| Error::InvalidResponse("sync plan spool is sealed".to_owned()))?;
+        writer
+            .write_all(&length.to_be_bytes())
+            .and_then(|()| writer.write_all(&encoded))
+            .map_err(local_error("write sync plan spool"))?;
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<PlanSpoolReader, Error> {
+        let mut writer = self
+            .writer
+            .take()
+            .ok_or_else(|| Error::InvalidResponse("sync plan spool is sealed".to_owned()))?;
+        writer
+            .flush()
+            .map_err(local_error("flush sync plan spool"))?;
+        writer
+            .get_ref()
+            .sync_all()
+            .map_err(local_error("sync plan spool"))?;
+        drop(writer);
+        let path = self
+            .path
+            .take()
+            .ok_or_else(|| Error::InvalidResponse("sync plan spool path is missing".to_owned()))?;
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) => {
+                let _ = std::fs::remove_file(&path);
+                return Err(local_error("open sync plan spool")(error));
+            }
+        };
+        Ok(PlanSpoolReader {
+            path: Some(path),
+            file,
+        })
+    }
+}
+
+impl Drop for PlanSpool {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+impl Iterator for PlanSpoolReader {
+    type Item = Result<PlannedFile, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut encoded_length = [0_u8; 4];
+        match self.file.read(&mut encoded_length[..1]) {
+            Ok(0) => return None,
+            Ok(1) => {}
+            Ok(_) => unreachable!("one-byte read returned more than one byte"),
+            Err(error) => return Some(Err(local_error("read sync plan spool")(error))),
+        }
+        if let Err(error) = self.file.read_exact(&mut encoded_length[1..]) {
+            return Some(Err(local_error("read sync plan record length")(error)));
+        }
+        let length = u32::from_be_bytes(encoded_length) as usize;
+        if length == 0 || length > MAXIMUM_PLAN_RECORD_BYTES {
+            return Some(Err(Error::InvalidResponse(
+                "sync plan record length is invalid".to_owned(),
+            )));
+        }
+        let mut encoded = vec![0_u8; length];
+        if let Err(error) = self.file.read_exact(&mut encoded) {
+            return Some(Err(local_error("read sync plan record")(error)));
+        }
+        Some(
+            serde_json::from_slice(&encoded).map_err(|error| {
+                Error::InvalidResponse(format!("decode sync plan record: {error}"))
+            }),
+        )
+    }
+}
+
+impl Drop for PlanSpoolReader {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 struct CatalogFence {
@@ -128,6 +286,7 @@ impl VfsClient {
         validate_options(options)?;
         ensure_directory(destination)?;
         protect_directory(&options.state_directory)?;
+        let _destination_lock = acquire_sync_lock(destination)?;
         let session = self.session().await?;
         let catalog = CatalogStore::new(&options.state_directory, &session.token_id)?;
         let checkpoint_condition = catalog.checkpoint_condition()?;
@@ -148,7 +307,19 @@ impl VfsClient {
         };
         let state_path = state_path(&options.state_directory, &session.token_id, source);
         let previous = read_state(&state_path, source)?;
-        let (directories, files) = self
+        let mut previous_by_path = HashMap::with_capacity(previous.records.len());
+        for record in &previous.records {
+            if previous_by_path
+                .insert(record.relative_path.as_path(), record)
+                .is_some()
+            {
+                return Err(Error::InvalidResponse(
+                    "local sync state contains duplicate paths".to_owned(),
+                ));
+            }
+        }
+        let plan_spool = PlanSpool::create(&options.state_directory)?;
+        let (fence, directories, files) = self
             .plan_tree(
                 source,
                 destination,
@@ -156,26 +327,31 @@ impl VfsClient {
                 &session,
                 options.maximum_concurrency,
                 bulk_catalog_authorized,
+                plan_spool,
             )
             .await?;
-        let mut records = Vec::with_capacity(files.len());
-        let mut downloads = Vec::new();
+        let mut records = Vec::new();
+        let mut downloads = PlanSpool::create(&options.state_directory)?;
         let mut reused_files = 0_u64;
-        for file in files {
+        for file in files.finish()? {
+            let file = file?;
             let local_path = destination.join(&file.relative_path);
-            let reusable = previous.records.iter().find(|record| {
-                record.relative_path == file.relative_path
-                    && record.version_id == file.version_id
-                    && record.size_bytes == file.size_bytes
-                    && record.file_root == file.file_root
-            });
+            let reusable = previous_by_path
+                .get(file.relative_path.as_path())
+                .copied()
+                .filter(|record| {
+                    record.relative_path == file.relative_path
+                        && record.version_id == file.version_id
+                        && record.size_bytes == file.size_bytes
+                        && record.file_root == file.file_root
+                });
             if let Some(record) = reusable
                 && local_matches(&local_path, record)?
             {
                 records.push(record.clone());
                 reused_files += 1;
             } else {
-                downloads.push(file);
+                downloads.append(&file)?;
             }
         }
 
@@ -186,11 +362,12 @@ impl VfsClient {
         let transfer_part_bytes = options.transfer_part_bytes;
         let file_concurrency = options.maximum_file_concurrency;
         let maximum_concurrency = options.maximum_concurrency;
-        let mut pending = stream::iter(downloads.into_iter().map(move |file| {
+        let mut pending = stream::iter(downloads.finish()?.map(move |file| {
             let client = client.clone();
             let destination = destination.clone();
             let state_directory = state_directory.clone();
             async move {
+                let file = file?;
                 download_one(
                     &client,
                     &file,
@@ -213,17 +390,24 @@ impl VfsClient {
             warnings.extend(downloaded.warnings);
             records.push(downloaded.record);
         }
+        let final_page = self.list_directory(&fence.directory_id, None, 1).await?;
+        validate_page_identity(
+            &final_page,
+            &fence.directory_id,
+            &fence.data_root,
+            Some((&fence.filesystem_id, fence.revision)),
+        )?;
         records.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-        warnings.sort();
-        warnings.dedup();
-        write_state(
+        warnings.extend(write_state(
             &state_path,
             &SyncState {
                 schema: STATE_SCHEMA.to_owned(),
                 source: source.to_owned(),
                 records,
             },
-        )?;
+        )?);
+        warnings.sort();
+        warnings.dedup();
         Ok(SyncResult {
             schema: "carrack.fs-sync.v1",
             source: source.to_owned(),
@@ -237,6 +421,10 @@ impl VfsClient {
         })
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the authenticated traversal carries explicit catalog, fence, concurrency, and private spool boundaries"
+    )]
     async fn plan_tree(
         &self,
         source: &str,
@@ -245,7 +433,8 @@ impl VfsClient {
         session: &crate::VfsSession,
         maximum_concurrency: usize,
         bulk_catalog_authorized: bool,
-    ) -> Result<(u64, Vec<PlannedFile>), Error> {
+        mut files: PlanSpool,
+    ) -> Result<(CatalogFence, u64, PlanSpool), Error> {
         let (fence, root) = self
             .source_catalog(source, catalog, session, bulk_catalog_authorized)
             .await?;
@@ -262,7 +451,6 @@ impl VfsClient {
             node: Some(root),
         }]);
         let mut directories = 0_u64;
-        let mut files = Vec::new();
         while !pending.is_empty() {
             let batch = (0..maximum_concurrency)
                 .filter_map(|_| pending.pop_front())
@@ -305,7 +493,7 @@ impl VfsClient {
                             data_root: entry.data_root,
                             node: None,
                         }),
-                        EntryKind::File => files.push(PlannedFile {
+                        EntryKind::File => files.append(&PlannedFile {
                             vfs_path: child_vfs,
                             relative_path: child_relative,
                             file_id: required(
@@ -318,7 +506,7 @@ impl VfsClient {
                             )?,
                             size_bytes: entry.size_bytes,
                             file_root: entry.data_root,
-                        }),
+                        })?,
                     }
                 }
             }
@@ -330,8 +518,7 @@ impl VfsClient {
             &fence.data_root,
             Some((&fence.filesystem_id, fence.revision)),
         )?;
-        files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-        Ok((directories, files))
+        Ok((fence, directories, files))
     }
 
     async fn source_catalog(
@@ -529,14 +716,12 @@ async fn download_one(
 }
 
 fn local_matches(path: &Path, record: &StateRecord) -> Result<bool, Error> {
-    if !path
-        .metadata()
-        .is_ok_and(|metadata| metadata.is_file() && metadata.len() == record.size_bytes)
-    {
-        return Ok(false);
-    }
-    let tree = integrity::build_file(path, record.verification_block_bytes)?;
-    Ok(tree.size_bytes == record.size_bytes && hex::encode(tree.root) == record.file_root)
+    integrity::matches_file(
+        path,
+        record.verification_block_bytes,
+        record.size_bytes,
+        &record.file_root,
+    )
 }
 
 fn validate_options(options: &SyncOptions) -> Result<(), Error> {
@@ -551,6 +736,48 @@ fn validate_options(options: &SyncOptions) -> Result<(), Error> {
     Ok(())
 }
 
+fn acquire_sync_lock(destination: &Path) -> Result<DestinationLock, Error> {
+    let canonical_destination = std::fs::canonicalize(destination)
+        .map_err(local_error("canonicalize local sync destination"))?;
+    let mut ancestors = canonical_destination
+        .ancestors()
+        .skip(1)
+        .collect::<Vec<_>>();
+    ancestors.reverse();
+    let mut ancestor_locks = Vec::with_capacity(ancestors.len());
+    for ancestor in ancestors {
+        let file = std::fs::File::open(ancestor)
+            .map_err(local_error("open local sync ancestor for locking"))?;
+        fs2::FileExt::try_lock_shared(&file).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                Error::InvalidResponse(format!(
+                    "another sync is already publishing an overlapping destination of {}",
+                    canonical_destination.display()
+                ))
+            } else {
+                local_error("lock local sync ancestor")(error)
+            }
+        })?;
+        ancestor_locks.push(file);
+    }
+    let destination_lock = std::fs::File::open(&canonical_destination)
+        .map_err(local_error("open local sync destination for locking"))?;
+    fs2::FileExt::try_lock_exclusive(&destination_lock).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            Error::InvalidResponse(format!(
+                "another sync is already publishing an overlapping destination of {}",
+                canonical_destination.display()
+            ))
+        } else {
+            local_error("lock local sync destination")(error)
+        }
+    })?;
+    Ok(DestinationLock {
+        _ancestors: ancestor_locks,
+        _destination: destination_lock,
+    })
+}
+
 fn state_path(root: &Path, token_id: &str, source: &str) -> PathBuf {
     root.join("sync/tokens").join(token_id).join(format!(
         "{}.json",
@@ -559,10 +786,20 @@ fn state_path(root: &Path, token_id: &str, source: &str) -> PathBuf {
 }
 
 fn read_state(path: &Path, source: &str) -> Result<SyncState, Error> {
-    let Ok(bytes) = std::fs::read(path) else {
-        return Ok(SyncState::default());
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SyncState::default());
+        }
+        Err(error) => return Err(local_error("inspect local sync state")(error)),
     };
-    let state: SyncState = serde_json::from_slice(&bytes)
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err(Error::InvalidResponse(
+            "local sync state is not a regular file".to_owned(),
+        ));
+    }
+    let file = std::fs::File::open(path).map_err(local_error("open local sync state"))?;
+    let state: SyncState = serde_json::from_reader(BufReader::new(file))
         .map_err(|error| Error::InvalidResponse(format!("decode local sync state: {error}")))?;
     if state.schema != STATE_SCHEMA || state.source != source {
         return Err(Error::InvalidResponse(
@@ -572,16 +809,84 @@ fn read_state(path: &Path, source: &str) -> Result<SyncState, Error> {
     Ok(state)
 }
 
-fn write_state(path: &Path, state: &SyncState) -> Result<(), Error> {
+fn write_state(path: &Path, state: &SyncState) -> Result<Vec<String>, Error> {
     let parent = path
         .parent()
         .ok_or_else(|| Error::InvalidResponse("local sync state has no parent".to_owned()))?;
     protect_directory(parent)?;
-    let bytes = serde_json::to_vec(state)
-        .map_err(|error| Error::InvalidResponse(format!("encode local sync state: {error}")))?;
-    let temporary = path.with_extension("json.tmp");
-    std::fs::write(&temporary, bytes).map_err(local_error("write local sync state"))?;
-    std::fs::rename(&temporary, path).map_err(local_error("publish local sync state"))
+    let (temporary, file) = create_state_temporary(parent)?;
+    let mut writer = BufWriter::new(file);
+    if let Err(error) = serde_json::to_writer(&mut writer, state) {
+        drop(writer);
+        let _ = std::fs::remove_file(&temporary);
+        return Err(Error::InvalidResponse(format!(
+            "encode local sync state: {error}"
+        )));
+    }
+    if let Err(error) = writer.flush() {
+        drop(writer);
+        let _ = std::fs::remove_file(&temporary);
+        return Err(local_error("flush local sync state")(error));
+    }
+    if let Err(error) = writer.get_ref().sync_all() {
+        drop(writer);
+        let _ = std::fs::remove_file(&temporary);
+        return Err(local_error("sync local sync state")(error));
+    }
+    drop(writer);
+    if let Err(error) = std::fs::rename(&temporary, path) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(local_error("publish local sync state")(error));
+    }
+    let mut warnings = Vec::new();
+    if let Err(error) = sync_state_directory(parent) {
+        warnings.push(format!(
+            "The verified sync state was published, but its directory sync failed: {error}"
+        ));
+    }
+    Ok(warnings)
+}
+
+fn create_state_temporary(parent: &Path) -> Result<(PathBuf, std::fs::File), Error> {
+    loop {
+        let ordinal = STATE_TEMPORARY_ORDINAL.fetch_add(1, Ordering::Relaxed);
+        let path = parent.join(format!(".state-{}-{ordinal:016x}.tmp", std::process::id()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    if let Err(error) = file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                    {
+                        drop(file);
+                        let _ = std::fs::remove_file(&path);
+                        return Err(local_error("protect local sync state")(error));
+                    }
+                }
+                return Ok((path, file));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(local_error("create local sync state")(error)),
+        }
+    }
+}
+
+fn sync_state_directory(path: &Path) -> Result<(), Error> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(path)
+            .and_then(|directory| directory.sync_all())
+            .map_err(local_error("sync local state directory"))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
 }
 
 fn ensure_directory(path: &Path) -> Result<(), Error> {
@@ -623,15 +928,127 @@ mod tests {
     use serde_json::json;
     use sha2::{Digest as _, Sha256};
 
-    use super::{SyncOptions, VfsClient};
+    use super::{
+        PlanSpool, PlannedFile, STATE_SCHEMA, StateRecord, SyncOptions, SyncState, VfsClient,
+        acquire_sync_lock, read_state, write_state,
+    };
     use crate::VfsToken;
+
+    #[test]
+    fn plan_spool_streams_records_and_removes_private_file() {
+        let temporary = tempfile::tempdir().expect("sync plan temporary directory");
+        let mut spool = PlanSpool::create(temporary.path()).expect("create sync plan spool");
+        let first = PlannedFile {
+            vfs_path: "/first.parquet".to_owned(),
+            relative_path: "first.parquet".into(),
+            file_id: "first-file".to_owned(),
+            version_id: "first-version".to_owned(),
+            size_bytes: 11,
+            file_root: "11".repeat(32),
+        };
+        let second = PlannedFile {
+            vfs_path: "/second.parquet".to_owned(),
+            relative_path: "second.parquet".into(),
+            file_id: "second-file".to_owned(),
+            version_id: "second-version".to_owned(),
+            size_bytes: 22,
+            file_root: "22".repeat(32),
+        };
+        spool.append(&first).expect("append first plan record");
+        spool.append(&second).expect("append second plan record");
+
+        let mut reader = spool.finish().expect("seal sync plan spool");
+        let spool_path = reader.path.clone().expect("reader spool path");
+        assert!(spool_path.is_file());
+        let decoded_first = reader.next().expect("first record").expect("decode first");
+        let decoded_second = reader
+            .next()
+            .expect("second record")
+            .expect("decode second");
+        assert_eq!(decoded_first.relative_path, first.relative_path);
+        assert_eq!(decoded_first.version_id, first.version_id);
+        assert_eq!(decoded_second.relative_path, second.relative_path);
+        assert_eq!(decoded_second.version_id, second.version_id);
+        assert!(reader.next().is_none());
+        drop(reader);
+        assert!(!spool_path.exists());
+    }
+
+    #[test]
+    fn plan_spools_are_unique_within_one_process() {
+        let temporary = tempfile::tempdir().expect("sync plan temporary directory");
+        let first = PlanSpool::create(temporary.path()).expect("first sync plan spool");
+        let second = PlanSpool::create(temporary.path()).expect("second sync plan spool");
+        assert_ne!(first.path, second.path);
+    }
+
+    #[test]
+    fn sync_state_publication_is_atomic_and_ignores_legacy_temporary_name() {
+        let temporary = tempfile::tempdir().expect("sync state temporary directory");
+        let path = temporary.path().join("tokens/token/source.json");
+        let parent = path.parent().expect("sync state parent");
+        std::fs::create_dir_all(parent).expect("create sync state parent");
+        let legacy_temporary = path.with_extension("json.tmp");
+        std::fs::write(&legacy_temporary, b"other concurrent writer")
+            .expect("write legacy temporary collision");
+        let first = SyncState {
+            schema: STATE_SCHEMA.to_owned(),
+            source: "/docs".to_owned(),
+            records: vec![StateRecord {
+                relative_path: "first.parquet".into(),
+                version_id: "first-version".to_owned(),
+                size_bytes: 11,
+                file_root: "11".repeat(32),
+                verification_block_bytes: 4,
+            }],
+        };
+        write_state(&path, &first).expect("publish first sync state");
+        let second = SyncState {
+            schema: STATE_SCHEMA.to_owned(),
+            source: "/docs".to_owned(),
+            records: vec![StateRecord {
+                relative_path: "second.parquet".into(),
+                version_id: "second-version".to_owned(),
+                size_bytes: 22,
+                file_root: "22".repeat(32),
+                verification_block_bytes: 8,
+            }],
+        };
+        write_state(&path, &second).expect("replace sync state atomically");
+
+        let loaded = read_state(&path, "/docs").expect("read latest sync state");
+        assert_eq!(loaded.records.len(), 1);
+        assert_eq!(loaded.records[0].version_id, "second-version");
+        assert_eq!(
+            std::fs::read(&legacy_temporary).expect("read legacy temporary"),
+            b"other concurrent writer"
+        );
+    }
+
+    #[test]
+    fn destination_lock_rejects_overlapping_sync_and_allows_siblings() {
+        let temporary = tempfile::tempdir().expect("sync lock temporary directory");
+        let destination = temporary.path().join("destination");
+        std::fs::create_dir(&destination).expect("create sync destination");
+        let child = destination.join("child");
+        std::fs::create_dir(&child).expect("create nested sync destination");
+        let sibling = temporary.path().join("sibling");
+        std::fs::create_dir(&sibling).expect("create sibling sync destination");
+        let first = acquire_sync_lock(&destination).expect("acquire first sync lock");
+        acquire_sync_lock(&destination).expect_err("reject concurrent sync destination");
+        acquire_sync_lock(&child).expect_err("reject nested sync destination");
+        let sibling_lock = acquire_sync_lock(&sibling).expect("allow sibling sync destination");
+        drop(sibling_lock);
+        drop(first);
+        acquire_sync_lock(&child).expect("acquire nested destination after release");
+    }
 
     #[tokio::test]
     #[allow(
         clippy::too_many_lines,
         reason = "one end-to-end checkpoint test keeps every authenticated page and expected hit count visible"
     )]
-    async fn hydrates_checkpoint_and_revalidates_only_the_root() {
+    async fn hydrates_checkpoint_and_fences_root_before_and_after_payload_phase() {
         let server = MockServer::start_async().await;
         let filesystem_id = "101112131415161718191a1b1c1d1e1f";
         let root_id = "202122232425262728292a2b2c2d2e2f";
@@ -814,7 +1231,7 @@ mod tests {
         session.assert_hits_async(2).await;
         checkpoint_delivery.assert_hits_async(2).await;
         root_catalog.assert_hits_async(2).await;
-        root_fence.assert_hits_async(2).await;
+        root_fence.assert_hits_async(4).await;
         child_catalog.assert_hits_async(0).await;
     }
 }

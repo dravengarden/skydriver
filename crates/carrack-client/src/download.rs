@@ -16,7 +16,7 @@ use zeroize::Zeroize;
 
 use crate::{
     Error, VfsClient,
-    crypto::{Descriptor, restore},
+    crypto::{Descriptor, restore_to_staging},
     integrity,
     transfer::TransferTelemetry,
 };
@@ -208,9 +208,20 @@ impl VfsClient {
                 Some(&completion),
             )
             .await;
-        let (result, _) = outcome?;
-        release?;
-        Ok(result)
+        match outcome {
+            Ok((mut result, _)) => {
+                if let Err(error) = release {
+                    result.warnings.push(format!(
+                        "The verified file was published, but read-lease completion will rely on expiry: {error}"
+                    ));
+                }
+                Ok(result)
+            }
+            Err(error) => {
+                let _ = release;
+                Err(error)
+            }
+        }
     }
 
     async fn finish_download(
@@ -231,9 +242,12 @@ impl VfsClient {
             frame_bytes: plan.encryption_frame_bytes,
             plaintext_bytes: plan.plaintext_bytes,
         };
-        let restored = restore(
+        let parent = destination.parent().ok_or_else(|| {
+            Error::InvalidResponse("download destination has no parent".to_owned())
+        })?;
+        let plaintext_staging = restore_to_staging(
             &encoded,
-            destination,
+            parent,
             &plan.crypto_suite,
             &descriptor,
             directory_key.as_ref(),
@@ -241,19 +255,25 @@ impl VfsClient {
         if let Some(key) = directory_key.as_mut() {
             key.zeroize();
         }
-        restored?;
-        let tree = integrity::build_file(destination, plan.verification_block_bytes)?;
-        if let Err(error) = verify_plaintext_identity(
-            tree.size_bytes,
-            &hex::encode(tree.root),
+        let plaintext_staging = plaintext_staging?;
+        let mut warnings = verify_and_publish_plaintext(
+            &plaintext_staging,
+            destination,
+            plan.verification_block_bytes,
             plan.plaintext_bytes,
             &plan.file_root,
-        ) {
-            let _ = std::fs::remove_file(destination);
-            return Err(error);
+        )?;
+        if plan.driver_kind == "aliyundrive-open/v2" && options.maximum_concurrency > 1 {
+            warnings.push(
+                "Aliyun exact-range download is safely degraded to sequential requests; use an S3 or R2 driver when parallel ranges are required."
+                    .to_owned(),
+            );
         }
-        std::fs::remove_file(&encoded)
-            .map_err(|error| Error::InvalidResponse(format!("remove download staging: {error}")))?;
+        if let Err(error) = std::fs::remove_file(&encoded) {
+            warnings.push(format!(
+                "The verified file was published, but encoded staging cleanup was deferred: {error}"
+            ));
+        }
         Ok((
             GetResult {
                 schema: "carrack.fs-get.v1",
@@ -263,19 +283,87 @@ impl VfsClient {
                 file_root: plan.file_root.clone(),
                 verification_block_bytes: plan.verification_block_bytes,
                 driver_id: plan.driver_id.clone(),
-                warnings: if plan.driver_kind == "aliyundrive-open/v2"
-                    && options.maximum_concurrency > 1
-                {
-                    vec![
-                    "Aliyun exact-range download is safely degraded to sequential requests; use an S3 or R2 driver when parallel ranges are required."
-                        .to_owned(),
-                ]
-                } else {
-                    Vec::new()
-                },
+                warnings,
             },
             provider_elapsed,
         ))
+    }
+}
+
+fn verify_and_publish_plaintext(
+    staging: &Path,
+    destination: &Path,
+    verification_block_bytes: u64,
+    plaintext_bytes: u64,
+    file_root: &str,
+) -> Result<Vec<String>, Error> {
+    let tree = match integrity::build_file(staging, verification_block_bytes) {
+        Ok(tree) => tree,
+        Err(error) => {
+            let _ = std::fs::remove_file(staging);
+            return Err(error);
+        }
+    };
+    if let Err(error) = verify_plaintext_identity(
+        tree.size_bytes,
+        &hex::encode(tree.root),
+        plaintext_bytes,
+        file_root,
+    ) {
+        let _ = std::fs::remove_file(staging);
+        return Err(error);
+    }
+    match publish_no_replace(staging, destination) {
+        Ok(warnings) => Ok(warnings),
+        Err(error) => {
+            let _ = std::fs::remove_file(staging);
+            Err(error)
+        }
+    }
+}
+
+fn publish_no_replace(staging: &Path, destination: &Path) -> Result<Vec<String>, Error> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| Error::InvalidResponse("download destination has no parent".to_owned()))?;
+    std::fs::hard_link(staging, destination).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            Error::InvalidResponse("download destination already exists".to_owned())
+        } else {
+            Error::InvalidResponse(format!(
+                "publish downloaded file without replacement: {error}"
+            ))
+        }
+    })?;
+    let mut warnings = Vec::new();
+    if let Err(error) = sync_directory(parent) {
+        warnings.push(format!(
+            "The verified file was published, but its directory sync failed: {error}"
+        ));
+    }
+    if let Err(error) = std::fs::remove_file(staging) {
+        warnings.push(format!(
+            "The verified file was published, but plaintext staging cleanup was deferred: {error}"
+        ));
+    } else if let Err(error) = sync_directory(parent) {
+        warnings.push(format!(
+            "The verified file was published, but staging cleanup directory sync failed: {error}"
+        ));
+    }
+    Ok(warnings)
+}
+
+fn sync_directory(path: &Path) -> Result<(), Error> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(path)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| Error::InvalidResponse(format!("sync download directory: {error}")))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
     }
 }
 
@@ -633,7 +721,7 @@ fn parse_identifier(value: &str) -> Result<[u8; 16], Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::verify_plaintext_identity;
+    use super::{publish_no_replace, verify_and_publish_plaintext, verify_plaintext_identity};
 
     #[test]
     fn distinguishes_plaintext_merkle_divergence() {
@@ -644,5 +732,35 @@ mod tests {
             Some(crate::FailureKind::CorruptPlaintext)
         );
         assert!(verify_plaintext_identity(3, "expected", 3, "expected").is_ok());
+    }
+
+    #[test]
+    fn merkle_failure_never_publishes_plaintext() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let staging = directory.path().join("staging");
+        let destination = directory.path().join("destination");
+        std::fs::write(&staging, b"untrusted").expect("write plaintext staging");
+
+        verify_and_publish_plaintext(&staging, &destination, 4, 9, &"00".repeat(32))
+            .expect_err("reject plaintext Merkle divergence");
+
+        assert!(!staging.exists());
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn no_replace_publication_preserves_existing_destination() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let staging = directory.path().join("staging");
+        let destination = directory.path().join("destination");
+        std::fs::write(&staging, b"new").expect("write plaintext staging");
+        std::fs::write(&destination, b"old").expect("write existing destination");
+
+        publish_no_replace(&staging, &destination).expect_err("reject replacement");
+
+        assert_eq!(
+            std::fs::read(&destination).expect("read destination"),
+            b"old"
+        );
     }
 }

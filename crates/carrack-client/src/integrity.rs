@@ -101,6 +101,103 @@ pub(crate) fn build_file(path: &Path, block_bytes: u64) -> Result<FileTree, crat
     root_from_blocks(size_bytes, block_bytes, blocks)
 }
 
+pub(crate) fn matches_file(
+    path: &Path,
+    block_bytes: u64,
+    expected_size_bytes: u64,
+    expected_root: &str,
+) -> Result<bool, crate::Error> {
+    let path_metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(crate::Error::InvalidResponse(format!(
+                "inspect local file: {error}"
+            )));
+        }
+    };
+    if !path_metadata.file_type().is_file() || path_metadata.file_type().is_symlink() {
+        return Ok(false);
+    }
+    let mut file = std::fs::File::open(path)
+        .map_err(|error| crate::Error::InvalidResponse(format!("open local file: {error}")))?;
+    let before = file
+        .metadata()
+        .map_err(|error| crate::Error::InvalidResponse(format!("inspect local file: {error}")))?;
+    if !before.is_file() || before.len() != expected_size_bytes {
+        return Ok(false);
+    }
+    let capacity = usize::try_from(block_bytes.min(expected_size_bytes)).map_err(|_| {
+        crate::Error::InvalidResponse("verification block size exceeds this platform".to_owned())
+    })?;
+    let mut buffer = vec![0_u8; capacity];
+    let mut accumulator = carrack_sdk_core::FileMerkleAccumulator::new(block_bytes)
+        .map_err(|error| crate::Error::InvalidResponse(error.to_string()))?;
+    let mut offset = 0_u64;
+    while offset < expected_size_bytes {
+        let length = block_bytes.min(expected_size_bytes - offset);
+        let length = usize::try_from(length).map_err(|_| {
+            crate::Error::InvalidResponse("verification block exceeds this platform".to_owned())
+        })?;
+        file.read_exact(&mut buffer[..length]).map_err(|error| {
+            crate::Error::InvalidResponse(format!("hash local file block: {error}"))
+        })?;
+        accumulator
+            .push_block(&buffer[..length])
+            .map_err(|error| crate::Error::InvalidResponse(error.to_string()))?;
+        offset = offset
+            .checked_add(length as u64)
+            .ok_or_else(|| crate::Error::InvalidResponse("local file size overflow".to_owned()))?;
+    }
+    let mut trailing = [0_u8; 1];
+    if file
+        .read(&mut trailing)
+        .map_err(|error| crate::Error::InvalidResponse(format!("check local file EOF: {error}")))?
+        != 0
+    {
+        return Ok(false);
+    }
+    let after = file
+        .metadata()
+        .map_err(|error| crate::Error::InvalidResponse(format!("reinspect local file: {error}")))?;
+    let current_path = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(crate::Error::InvalidResponse(format!(
+                "reinspect local file path: {error}"
+            )));
+        }
+    };
+    if before.len() != after.len()
+        || before.modified().ok() != after.modified().ok()
+        || !same_file_identity(&before, &current_path)
+    {
+        return Ok(false);
+    }
+    let root = accumulator
+        .finish()
+        .map_err(|error| crate::Error::InvalidResponse(error.to_string()))?;
+    Ok(hex::encode(root) == expected_root)
+}
+
+#[cfg(unix)]
+fn same_file_identity(opened: &std::fs::Metadata, current: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    current.file_type().is_file()
+        && !current.file_type().is_symlink()
+        && opened.dev() == current.dev()
+        && opened.ino() == current.ino()
+}
+
+#[cfg(not(unix))]
+fn same_file_identity(opened: &std::fs::Metadata, current: &std::fs::Metadata) -> bool {
+    current.file_type().is_file()
+        && !current.file_type().is_symlink()
+        && opened.len() == current.len()
+        && opened.modified().ok() == current.modified().ok()
+}
+
 pub(crate) fn manifest(tree: &FileTree) -> Vec<u8> {
     let mut encoded =
         Vec::with_capacity(MANIFEST_DOMAIN.len() + 1 + 24 + tree.blocks.len() * 32 + 32);
@@ -182,7 +279,7 @@ fn domain_hasher(domain: &str) -> Sha256 {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_file, empty_metadata_root, manifest};
+    use super::{build_file, empty_metadata_root, manifest, matches_file};
     use serde::Deserialize;
 
     #[derive(Deserialize)]
@@ -216,5 +313,33 @@ mod tests {
             assert!(!manifest(&tree).is_empty());
         }
         assert_eq!(hex::encode(empty_metadata_root()).len(), 64);
+    }
+
+    #[test]
+    fn streaming_local_verification_matches_root_and_rejects_symlink() {
+        let directory = tempfile::tempdir().expect("local verification directory");
+        let path = directory.path().join("payload");
+        std::fs::write(&path, b"abcdefghijk").expect("write local payload");
+        let expected = build_file(&path, 4).expect("build expected file root");
+        assert!(
+            matches_file(&path, 4, 11, &hex::encode(expected.root))
+                .expect("stream local verification")
+        );
+        assert!(!matches_file(&path, 4, 11, &"00".repeat(32)).expect("reject wrong root"));
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&path, directory.path().join("payload-link"))
+                .expect("create payload symlink");
+            assert!(
+                !matches_file(
+                    &directory.path().join("payload-link"),
+                    4,
+                    11,
+                    &hex::encode(expected.root),
+                )
+                .expect("reject symlink reuse")
+            );
+        }
     }
 }

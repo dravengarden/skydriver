@@ -8,11 +8,13 @@ use hkdf::Hkdf;
 use sha2::{Digest as _, Sha256};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use zeroize::{Zeroize, Zeroizing};
 
 const SUITE: &str = "carrack-vfs-aes256gcm-hkdfsha256-v1";
 const FILE_KEY_INFO: &[u8] = b"carrack.vfs.file-key.v1";
 const FRAME_AAD_DOMAIN: &[u8] = b"carrack.vfs.file-frame.v1\0";
+static DOWNLOAD_TEMPORARY_ORDINAL: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) struct Descriptor {
     pub directory_id: [u8; 16],
@@ -99,30 +101,20 @@ pub(crate) fn stage(
     })
 }
 
-pub(crate) fn restore(
+pub(crate) fn restore_to_staging(
     encoded: &Path,
-    destination: &Path,
+    parent: &Path,
     suite: &str,
     descriptor: &Descriptor,
     directory_key: Option<&[u8; 32]>,
-) -> Result<(), crate::Error> {
-    let parent = destination.parent().ok_or_else(|| {
-        crate::Error::InvalidResponse("download destination has no parent".to_owned())
-    })?;
+) -> Result<PathBuf, crate::Error> {
     std::fs::create_dir_all(parent).map_err(|error| {
         crate::Error::InvalidResponse(format!("create download parent: {error}"))
     })?;
-    let temporary = parent.join(format!(".carrack-download-{}", std::process::id()));
     let mut input = std::io::BufReader::new(std::fs::File::open(encoded).map_err(|error| {
         crate::Error::InvalidResponse(format!("open encoded download: {error}"))
     })?);
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)
-        .map_err(|error| {
-            crate::Error::InvalidResponse(format!("create download temporary: {error}"))
-        })?;
+    let (temporary, file) = create_download_temporary(parent)?;
     let mut output = std::io::BufWriter::new(file);
     let restored = if suite == "plaintext/v1" {
         if directory_key.is_some() {
@@ -152,20 +144,53 @@ pub(crate) fn restore(
         let _ = std::fs::remove_file(&temporary);
         return Err(error);
     }
-    output.flush().map_err(|error| {
-        crate::Error::InvalidResponse(format!("flush download temporary: {error}"))
-    })?;
-    output.get_ref().sync_all().map_err(|error| {
-        crate::Error::InvalidResponse(format!("sync download temporary: {error}"))
-    })?;
-    drop(output);
-    if destination.exists() {
-        return cleanup_error(&temporary, "download destination already exists");
+    if let Err(error) = output.flush() {
+        drop(output);
+        return cleanup_error(&temporary, &format!("flush download temporary: {error}"));
     }
-    std::fs::rename(&temporary, destination).map_err(|error| {
-        crate::Error::InvalidResponse(format!("publish downloaded file: {error}"))
-    })?;
-    Ok(())
+    if let Err(error) = output.get_ref().sync_all() {
+        drop(output);
+        return cleanup_error(&temporary, &format!("sync download temporary: {error}"));
+    }
+    drop(output);
+    Ok(temporary)
+}
+
+fn create_download_temporary(parent: &Path) -> Result<(PathBuf, std::fs::File), crate::Error> {
+    loop {
+        let ordinal = DOWNLOAD_TEMPORARY_ORDINAL.fetch_add(1, Ordering::Relaxed);
+        let path = parent.join(format!(
+            ".carrack-download-{}-{ordinal:016x}.tmp",
+            std::process::id()
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    if let Err(error) = file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                    {
+                        drop(file);
+                        let _ = std::fs::remove_file(&path);
+                        return Err(crate::Error::InvalidResponse(format!(
+                            "protect download temporary: {error}"
+                        )));
+                    }
+                }
+                return Ok((path, file));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(crate::Error::InvalidResponse(format!(
+                    "create download temporary: {error}"
+                )));
+            }
+        }
+    }
 }
 
 fn seal_frames<R: Read, W: Write>(
@@ -416,7 +441,7 @@ fn cleanup_failure<T>(
 
 #[cfg(test)]
 mod tests {
-    use super::{Descriptor, restore, stage};
+    use super::{Descriptor, restore_to_staging, stage};
 
     fn descriptor() -> Descriptor {
         Descriptor {
@@ -461,10 +486,9 @@ mod tests {
         let mut encoded = std::fs::read(&staged.path).expect("read encoded object");
         encoded[0] ^= 1;
         std::fs::write(&staged.path, encoded).expect("tamper encoded object");
-        let destination = directory.path().join("destination");
-        let corrupt = restore(
+        let corrupt = restore_to_staging(
             &staged.path,
-            &destination,
+            directory.path(),
             "carrack-vfs-aes256gcm-hkdfsha256-v1",
             &descriptor(),
             Some(&key),
@@ -474,6 +498,44 @@ mod tests {
             corrupt.failure_kind(),
             Some(crate::FailureKind::CorruptCiphertext)
         );
-        assert!(!destination.exists());
+        assert_eq!(
+            std::fs::read_dir(directory.path())
+                .expect("read temporary directory")
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".carrack-download-"))
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn plaintext_staging_is_unique_within_one_process() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let encoded = directory.path().join("encoded");
+        std::fs::write(&encoded, b"abc").expect("write encoded plaintext");
+
+        let first = restore_to_staging(
+            &encoded,
+            directory.path(),
+            "plaintext/v1",
+            &descriptor(),
+            None,
+        )
+        .expect("restore first plaintext staging");
+        let second = restore_to_staging(
+            &encoded,
+            directory.path(),
+            "plaintext/v1",
+            &descriptor(),
+            None,
+        )
+        .expect("restore second plaintext staging");
+
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(first).expect("read first staging"), b"abc");
+        assert_eq!(std::fs::read(second).expect("read second staging"), b"abc");
     }
 }

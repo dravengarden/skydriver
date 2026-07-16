@@ -40,6 +40,124 @@ const MAXIMUM_BLOCKS: usize = 1_000_000;
 const MAXIMUM_DIRECTORY_ENTRIES: usize = 1_000_000;
 const MAXIMUM_NAME_BYTES: usize = 255;
 
+#[derive(Clone, Copy)]
+struct FileSubtree {
+    first: u64,
+    leaves: u64,
+    digest: [u8; 32],
+}
+
+/// Incrementally computes one canonical Carrack file Merkle root.
+///
+/// The accumulator retains only completed power-of-two subtree digests, so
+/// memory is logarithmic in the number of verification blocks. Every block
+/// except the final block must have exactly the configured size.
+pub struct FileMerkleAccumulator {
+    block_bytes: u64,
+    size_bytes: u64,
+    block_count: u64,
+    final_block_seen: bool,
+    subtrees: Vec<FileSubtree>,
+}
+
+impl FileMerkleAccumulator {
+    /// Creates an empty accumulator for one positive bounded block size.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] for an unsafe block size.
+    pub fn new(block_bytes: u64) -> Result<Self, Error> {
+        if block_bytes == 0 || block_bytes > MAXIMUM_BLOCK_BYTES {
+            return Err(Error::InvalidInput("unsafe verification block size"));
+        }
+        Ok(Self {
+            block_bytes,
+            size_bytes: 0,
+            block_count: 0,
+            final_block_seen: false,
+            subtrees: Vec::new(),
+        })
+    }
+
+    /// Adds the next exact plaintext verification block.
+    ///
+    /// # Errors
+    ///
+    /// Rejects empty, oversized, out-of-order-after-final, or excessive
+    /// blocks and arithmetic overflow.
+    pub fn push_block(&mut self, payload: &[u8]) -> Result<(), Error> {
+        let payload_bytes = payload.len() as u64;
+        if payload_bytes == 0 || payload_bytes > self.block_bytes {
+            return Err(Error::InvalidInput("invalid verification block length"));
+        }
+        if self.final_block_seen {
+            return Err(Error::InvalidInput(
+                "verification block follows final block",
+            ));
+        }
+        if self.block_count >= MAXIMUM_BLOCKS as u64 {
+            return Err(Error::InvalidInput("verification block limit exceeded"));
+        }
+        if payload_bytes < self.block_bytes {
+            self.final_block_seen = true;
+        }
+        let index = self.block_count;
+        self.block_count += 1;
+        self.size_bytes = self
+            .size_bytes
+            .checked_add(payload_bytes)
+            .ok_or(Error::InvalidInput("file size overflow"))?;
+        let mut node = FileSubtree {
+            first: index,
+            leaves: 1,
+            digest: hash_leaf(index, payload),
+        };
+        while self
+            .subtrees
+            .last()
+            .is_some_and(|left| left.leaves == node.leaves)
+        {
+            let Some(left) = self.subtrees.pop() else {
+                return Err(Error::InvalidInput("file Merkle subtree stack is empty"));
+            };
+            node = merge_file_subtrees(left, node)?;
+        }
+        self.subtrees.push(node);
+        Ok(())
+    }
+
+    /// Finishes the exact file identity, including the empty-file root.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a noncanonical block sequence or arithmetic overflow.
+    pub fn finish(mut self) -> Result<[u8; 32], Error> {
+        let expected_blocks = if self.size_bytes == 0 {
+            0
+        } else {
+            1 + (self.size_bytes - 1) / self.block_bytes
+        };
+        if expected_blocks != self.block_count {
+            return Err(Error::InvalidInput("verification block count mismatch"));
+        }
+        let tree = if let Some(mut right) = self.subtrees.pop() {
+            while let Some(left) = self.subtrees.pop() {
+                right = merge_file_subtrees(left, right)?;
+            }
+            right.digest
+        } else {
+            Sha256::digest(FILE_EMPTY_DOMAIN).into()
+        };
+        let mut root = Sha256::new();
+        root.update(FILE_ROOT_DOMAIN);
+        root.update(self.block_bytes.to_be_bytes());
+        root.update(self.size_bytes.to_be_bytes());
+        root.update(self.block_count.to_be_bytes());
+        root.update(tree);
+        Ok(root.finalize().into())
+    }
+}
+
 /// Portable SDK validation failure.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -372,6 +490,31 @@ fn canonical_tree(leaves: &[[u8; 32]], first: u64) -> [u8; 32] {
     canonical_tree_with_domain(FILE_NODE_DOMAIN, leaves, first)
 }
 
+fn merge_file_subtrees(left: FileSubtree, right: FileSubtree) -> Result<FileSubtree, Error> {
+    if left
+        .first
+        .checked_add(left.leaves)
+        .is_none_or(|next| next != right.first)
+    {
+        return Err(Error::InvalidInput("file Merkle subtrees are not adjacent"));
+    }
+    let leaves = left
+        .leaves
+        .checked_add(right.leaves)
+        .ok_or(Error::InvalidInput("verification block count overflow"))?;
+    let mut hash = Sha256::new();
+    hash.update(FILE_NODE_DOMAIN);
+    hash.update(left.first.to_be_bytes());
+    hash.update(leaves.to_be_bytes());
+    hash.update(left.digest);
+    hash.update(right.digest);
+    Ok(FileSubtree {
+        first: left.first,
+        leaves,
+        digest: hash.finalize().into(),
+    })
+}
+
 fn canonical_tree_with_domain(domain: &[u8], leaves: &[[u8; 32]], first: u64) -> [u8; 32] {
     if leaves.len() == 1 {
         return leaves[0];
@@ -522,6 +665,32 @@ mod tests {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
         assert!(proof.round_trip_verified);
+    }
+
+    #[test]
+    fn incremental_file_merkle_matches_batch_for_every_tree_shape() {
+        for length in 0_u8..64 {
+            let payload = (0..length).collect::<Vec<_>>();
+            let mut accumulator = FileMerkleAccumulator::new(4).expect("file accumulator");
+            for block in payload.chunks(4) {
+                accumulator.push_block(block).expect("append exact block");
+            }
+            assert_eq!(
+                accumulator.finish().expect("finish incremental root"),
+                file_merkle_root(&payload, 4).expect("batch file root"),
+                "payload length {length}"
+            );
+        }
+    }
+
+    #[test]
+    fn incremental_file_merkle_rejects_data_after_short_final_block() {
+        let mut accumulator = FileMerkleAccumulator::new(4).expect("file accumulator");
+        accumulator.push_block(b"abc").expect("short final block");
+        assert!(matches!(
+            accumulator.push_block(b"d"),
+            Err(Error::InvalidInput(_))
+        ));
     }
 
     #[test]
