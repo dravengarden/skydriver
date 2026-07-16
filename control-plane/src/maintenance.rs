@@ -15,6 +15,7 @@ const VFS_PUT_DELETE_GRACE_SECONDS: u64 = 86_400;
 const READ_LEASE_EVIDENCE_SECONDS: u64 = 7 * 86_400;
 const R2_CLEANUP_EVIDENCE_SECONDS: u64 = 30 * 86_400;
 const TRANSFER_METRICS_RETENTION_SECONDS: u64 = 400 * 86_400;
+const TRANSFER_HOURLY_RETENTION_SECONDS: u64 = 45 * 86_400;
 const MAXIMUM_TRANSFER_METRIC_ROWS_PER_RUN: u64 = 1_000;
 const MAXIMUM_ACCESS_AUDIT_ROWS_PER_RUN: u64 = 1_000;
 const AUTH_RATE_LIMIT_RETENTION_SECONDS: u64 = 86_400;
@@ -159,8 +160,37 @@ async fn delete_expired_transfer_observability(
     now: u64,
 ) -> Result<()> {
     let before = now.saturating_sub(TRANSFER_METRICS_RETENTION_SECONDS);
+    let hourly_before = now.saturating_sub(TRANSFER_HOURLY_RETENTION_SECONDS);
     database
         .batch(vec![
+            database
+                .prepare(
+                    "DELETE FROM vfs_transfer_hourly_analytics
+                     WHERE (bucket, driver_id, token_id, directory_id, direction) IN (
+                         SELECT bucket, driver_id, token_id, directory_id, direction
+                         FROM vfs_transfer_hourly_analytics
+                         WHERE bucket < ?1
+                         ORDER BY bucket, driver_id, token_id, directory_id, direction LIMIT ?2
+                     )",
+                )
+                .bind(&[
+                    JsValue::from_str(&hourly_before.to_string()),
+                    JsValue::from_str(&MAXIMUM_TRANSFER_METRIC_ROWS_PER_RUN.to_string()),
+                ])?,
+            database
+                .prepare(
+                    "DELETE FROM vfs_transfer_daily_analytics
+                     WHERE (bucket, driver_id, token_id, directory_id, direction) IN (
+                         SELECT bucket, driver_id, token_id, directory_id, direction
+                         FROM vfs_transfer_daily_analytics
+                         WHERE bucket < ?1
+                         ORDER BY bucket, driver_id, token_id, directory_id, direction LIMIT ?2
+                     )",
+                )
+                .bind(&[
+                    JsValue::from_str(&before.to_string()),
+                    JsValue::from_str(&MAXIMUM_TRANSFER_METRIC_ROWS_PER_RUN.to_string()),
+                ])?,
             database
                 .prepare(
                     "DELETE FROM vfs_transfer_daily_metrics

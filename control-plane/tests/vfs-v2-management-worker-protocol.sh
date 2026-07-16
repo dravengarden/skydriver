@@ -87,6 +87,9 @@ unauthenticated_events=$(curl --silent --output /dev/null --write-out '%{http_co
 unauthenticated_metrics=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   "$base_url/api/admin/metrics/global/all")
 [[ "$unauthenticated_metrics" == 401 ]]
+unauthenticated_analytics=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  "$base_url/api/admin/analytics/transfers")
+[[ "$unauthenticated_analytics" == 401 ]]
 
 for retired_get_route in \
   /api/client/session \
@@ -142,6 +145,18 @@ global_metrics=$(curl --silent --show-error --fail-with-body \
 oversized_metrics_window=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   -b "$cookie_jar" "$base_url/api/admin/metrics/global/all?days=401")
 [[ "$oversized_metrics_window" == 400 ]]
+transfer_analytics=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" \
+  "$base_url/api/admin/analytics/transfers?from=1&to=86401&interval=hour&group_by=driver&direction=both")
+[[ "$(jq -r '.schema' <<<"$transfer_analytics")" == carrack.management.transfer-analytics.v1 ]]
+[[ "$(jq -r '.interval' <<<"$transfer_analytics")" == hour ]]
+[[ "$(jq -r '.group_by' <<<"$transfer_analytics")" == driver ]]
+[[ "$(jq -r '.approximate' <<<"$transfer_analytics")" == true ]]
+[[ "$(jq -r '.rows | length' <<<"$transfer_analytics")" == 0 ]]
+invalid_descendant_analytics=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -b "$cookie_jar" \
+  "$base_url/api/admin/analytics/transfers?include_descendants=true")
+[[ "$invalid_descendant_analytics" == 400 ]]
 
 vfs_session=$(curl --silent --show-error --fail-with-body \
   -H "$root_authorization" "$base_url/api/v2/session")

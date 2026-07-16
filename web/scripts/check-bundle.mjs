@@ -29,6 +29,7 @@ const lazySurfaces = [
     "FilesPage",
     "DriversPage",
     "AccessPage",
+    "AnalyticsPage",
     "ActivityPage",
     "SettingsPage",
 ];

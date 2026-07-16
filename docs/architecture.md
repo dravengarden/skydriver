@@ -50,6 +50,14 @@ Payload bytes move directly between a client and a storage driver. The Worker
 never relays a file body. It may contact hosted drivers for credential renewal,
 exact identity checks, multipart abort, and fenced physical deletion.
 
+Transfer observability is outside the correctness kernel. After a verified
+completion, the client may attach one bounded duration/retry observation to its
+normal control-plane checkpoint. The Worker asynchronously and
+deterministically samples it into hourly and daily aggregates that retain the
+driver, token, directory, and direction dimensions together. The management
+SDK, CLI, and UI share a closed, bounded analytics query contract. Missing or
+dropped telemetry only reduces diagnostic coverage and never changes VFS state.
+
 ## Logical and physical model
 
 A directory is simultaneously a named collection, an authorization subtree,

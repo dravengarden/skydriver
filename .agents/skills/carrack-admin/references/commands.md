@@ -4,7 +4,7 @@
 
 | Surface | Environment variable | Authority |
 |---|---|---|
-| `carrackctl snapshot`, `metrics`, `watch`, `directory`, `driver`, `quota`, `token annotate` | `CARRACK_OPERATOR_ACCOUNT`, `CARRACK_OPERATOR_CREDENTIAL` | Redacted environment management |
+| `carrackctl snapshot`, `metrics`, `analytics`, `watch`, `directory`, `driver`, `quota`, `token annotate` | `CARRACK_OPERATOR_ACCOUNT`, `CARRACK_OPERATOR_CREDENTIAL` | Redacted environment management |
 | `carrackctl vfs acl`, `vfs placement`, `vfs token` | `CARRACK_VFS_TOKEN` | Explicit token actions and directory scope |
 
 `CARRACK_OPERATOR_ACCOUNT` is a canonical non-secret lowercase identifier.
@@ -19,6 +19,11 @@ carrackctl metrics global all --control-url "$CARRACK_CONTROL_URL" --format json
 carrackctl metrics driver "$driver_id" --control-url "$CARRACK_CONTROL_URL" --format json
 carrackctl metrics token "$token_id" --control-url "$CARRACK_CONTROL_URL" --format json
 carrackctl metrics directory "$directory_id" --control-url "$CARRACK_CONTROL_URL" --format json
+carrackctl analytics --days 30 --group-by driver \
+  --control-url "$CARRACK_CONTROL_URL" --format json
+carrackctl analytics --days 7 --driver "$driver_id" --token "$token_id" \
+  --directory "$directory_id" --include-descendants --direction download \
+  --control-url "$CARRACK_CONTROL_URL" --format json
 carrackctl watch --after "$event_cursor" --limit 100 \
   --control-url "$CARRACK_CONTROL_URL" --format json
 carrackctl directory "$directory_id" --control-url "$CARRACK_CONTROL_URL" --format json
@@ -47,6 +52,13 @@ agent process. Verify `next_scan_at`, then re-read later to observe completion.
 the environment total. Rates are estimates derived from completed transfers;
 zero rows means no sampled completion, not zero provider availability. The
 command is read-only and must not be used as a transfer correctness signal.
+
+`analytics` retains driver, token, directory, and direction in the same sampled
+aggregate, so its filters may be intersected. Use at most one `--group-by`
+dimension per query. Hourly results are retained for 45 days and daily results
+for 400 days; `--interval auto` selects the safe available grain. Directory
+descendants mean the directory's current active subtree. Results remain
+estimates and are never authorization, integrity, quota, or billing evidence.
 
 `watch` returns one ascending audit page with schema
 `carrack.management.events.v1`; it is deliberately bounded and does not stay

@@ -15,6 +15,7 @@ const SNAPSHOT_SCHEMA: &str = "carrack.management.snapshot.v2";
 const EVENTS_SCHEMA: &str = "carrack.management.events.v1";
 const DIRECTORY_SCHEMA: &str = "carrack.management.directory.v1";
 const TRANSFER_METRICS_SCHEMA: &str = "carrack.management.transfer-metrics.v1";
+const TRANSFER_ANALYTICS_SCHEMA: &str = "carrack.management.transfer-analytics.v1";
 const TOKEN_ANNOTATION_VALIDATION_SCHEMA: &str =
     "carrack.management.token-annotation-validation.v1";
 const TOKEN_ANNOTATION_RECEIPT_SCHEMA: &str = "carrack.management.token-annotation-receipt.v1";
@@ -415,6 +416,89 @@ pub struct TransferMetrics {
     pub retention_days: u64,
     pub window_days: u64,
     pub rows: Vec<TransferMetricRow>,
+}
+
+/// One sampled transfer rollup retaining its selected grouping identity.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(missing_docs, reason = "wire fields preserve management schema names")]
+pub struct TransferAnalyticsRow {
+    pub bucket: u64,
+    pub group_id: String,
+    pub direction: String,
+    pub weighted_transfers: u64,
+    pub weighted_bytes: u64,
+    pub weighted_provider_ms: u64,
+    pub weighted_total_ms: u64,
+    pub weighted_retries: u64,
+    pub speed_b0: u64,
+    pub speed_b1: u64,
+    pub speed_b2: u64,
+    pub speed_b3: u64,
+    pub speed_b4: u64,
+    pub speed_b5: u64,
+    pub speed_b6: u64,
+    pub speed_b7: u64,
+    pub speed_b8: u64,
+    pub speed_b9: u64,
+    pub speed_b10: u64,
+    pub speed_b11: u64,
+}
+
+/// Strict, bounded transfer-analytics query shared by operator consumers.
+#[derive(Clone, Debug)]
+#[allow(
+    missing_docs,
+    reason = "query fields mirror the documented management endpoint"
+)]
+pub struct TransferAnalyticsQuery {
+    pub from: Option<u64>,
+    pub to: Option<u64>,
+    pub interval: String,
+    pub group_by: String,
+    pub driver_id: Option<String>,
+    pub token_id: Option<String>,
+    pub directory_id: Option<String>,
+    pub include_descendants: bool,
+    pub direction: String,
+}
+
+impl Default for TransferAnalyticsQuery {
+    fn default() -> Self {
+        Self {
+            from: None,
+            to: None,
+            interval: "auto".to_owned(),
+            group_by: "none".to_owned(),
+            driver_id: None,
+            token_id: None,
+            directory_id: None,
+            include_descendants: false,
+            direction: "both".to_owned(),
+        }
+    }
+}
+
+/// Bounded approximate transfer analytics returned to an operator.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(missing_docs, reason = "wire fields preserve management schema names")]
+pub struct TransferAnalytics {
+    pub schema: String,
+    pub observed_at: u64,
+    pub from: u64,
+    pub to: u64,
+    pub interval: String,
+    pub group_by: String,
+    pub driver_id: Option<String>,
+    pub token_id: Option<String>,
+    pub directory_id: Option<String>,
+    pub include_descendants: bool,
+    pub direction: String,
+    pub approximate: bool,
+    pub small_transfer_sample_modulus: u64,
+    pub large_transfer_bytes: u64,
+    pub rows: Vec<TransferAnalyticsRow>,
 }
 
 /// One redacted, durable management audit event.
@@ -985,6 +1069,22 @@ impl AdminClient {
             ));
         }
         Ok(metrics)
+    }
+
+    /// Reads one bounded sampled transfer analysis with intersecting filters.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on unsafe dimensions, an unbounded range, authentication,
+    /// transport, schema mismatch, or a response that does not reflect the query.
+    pub async fn transfer_analytics(
+        &self,
+        query: &TransferAnalyticsQuery,
+    ) -> Result<TransferAnalytics, Error> {
+        let path = transfer_analytics_path(query)?;
+        let cookie = self.login().await?;
+        let analytics: TransferAnalytics = self.request(&path, &cookie).await?;
+        validate_transfer_analytics(analytics, query)
     }
 
     /// Reads one ascending, bounded audit-event page after a monotonic cursor.
@@ -1679,12 +1779,144 @@ fn validate_provider_inventory(inventory: ProviderInventory) -> Result<ProviderI
     Ok(inventory)
 }
 
+fn transfer_analytics_path(query: &TransferAnalyticsQuery) -> Result<String, Error> {
+    if !matches!(query.interval.as_str(), "auto" | "hour" | "day")
+        || !matches!(
+            query.group_by.as_str(),
+            "none" | "driver" | "token" | "directory"
+        )
+        || !matches!(query.direction.as_str(), "both" | "upload" | "download")
+        || query
+            .from
+            .zip(query.to)
+            .is_some_and(|(from, to)| from >= to || to - from > 400 * 86_400)
+        || query.include_descendants && query.directory_id.is_none()
+        || [
+            query.driver_id.as_deref(),
+            query.token_id.as_deref(),
+            query.directory_id.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|value| !valid_metric_scope_id(value))
+    {
+        return Err(Error::InvalidResponse(
+            "invalid transfer analytics query".to_owned(),
+        ));
+    }
+    let mut parameters = vec![
+        format!("interval={}", query.interval),
+        format!("group_by={}", query.group_by),
+        format!("direction={}", query.direction),
+    ];
+    for (name, value) in [
+        ("from", query.from.map(|value| value.to_string())),
+        ("to", query.to.map(|value| value.to_string())),
+        ("driver", query.driver_id.clone()),
+        ("token", query.token_id.clone()),
+        ("directory", query.directory_id.clone()),
+    ] {
+        if let Some(value) = value {
+            parameters.push(format!("{name}={value}"));
+        }
+    }
+    if query.include_descendants {
+        parameters.push("include_descendants=true".to_owned());
+    }
+    Ok(format!(
+        "api/admin/analytics/transfers?{}",
+        parameters.join("&")
+    ))
+}
+
+fn validate_transfer_analytics(
+    analytics: TransferAnalytics,
+    query: &TransferAnalyticsQuery,
+) -> Result<TransferAnalytics, Error> {
+    let bucket_seconds = if analytics.interval == "hour" {
+        3_600
+    } else {
+        86_400
+    };
+    let first_bucket = analytics.from - analytics.from % bucket_seconds;
+    if analytics.schema != TRANSFER_ANALYTICS_SCHEMA
+        || analytics.observed_at == 0
+        || analytics.from >= analytics.to
+        || query.from.is_some_and(|from| analytics.from != from)
+        || query
+            .to
+            .is_some_and(|to| analytics.to != to.min(analytics.observed_at))
+        || !matches!(analytics.interval.as_str(), "hour" | "day")
+        || analytics.group_by != query.group_by
+        || analytics.driver_id != query.driver_id
+        || analytics.token_id != query.token_id
+        || analytics.directory_id != query.directory_id
+        || analytics.include_descendants != query.include_descendants
+        || analytics.direction != query.direction
+        || !analytics.approximate
+        || analytics.small_transfer_sample_modulus == 0
+        || analytics.large_transfer_bytes == 0
+        || analytics
+            .rows
+            .iter()
+            .any(|row| invalid_analytics_row(row, &analytics, first_bucket, bucket_seconds))
+    {
+        return Err(Error::InvalidResponse(
+            "invalid transfer analytics response".to_owned(),
+        ));
+    }
+    Ok(analytics)
+}
+
+fn invalid_analytics_row(
+    row: &TransferAnalyticsRow,
+    analytics: &TransferAnalytics,
+    first_bucket: u64,
+    bucket_seconds: u64,
+) -> bool {
+    let histogram_total = [
+        row.speed_b0,
+        row.speed_b1,
+        row.speed_b2,
+        row.speed_b3,
+        row.speed_b4,
+        row.speed_b5,
+        row.speed_b6,
+        row.speed_b7,
+        row.speed_b8,
+        row.speed_b9,
+        row.speed_b10,
+        row.speed_b11,
+    ]
+    .into_iter()
+    .try_fold(0_u64, u64::checked_add);
+    row.bucket < first_bucket
+        || row.bucket > analytics.to
+        || !row.bucket.is_multiple_of(bucket_seconds)
+        || (analytics.group_by == "none" && row.group_id != "all")
+        || (analytics.group_by != "none" && !valid_metric_scope_id(&row.group_id))
+        || !matches!(row.direction.as_str(), "upload" | "download")
+        || (analytics.direction != "both" && row.direction != analytics.direction)
+        || row.weighted_transfers == 0
+        || row.weighted_provider_ms == 0
+        || row.weighted_provider_ms > row.weighted_total_ms
+        || histogram_total != Some(row.weighted_transfers)
+}
+
 fn valid_identifier(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 256
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn valid_metric_scope_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 fn validate_bootstrap_authority(
@@ -1760,8 +1992,17 @@ mod tests {
 
     use super::{
         ManagementEvent, ManagementEventPage, OperatorAccount, OperatorCredential,
-        validate_event_page,
+        TransferAnalyticsQuery, validate_event_page,
     };
+
+    #[test]
+    fn transfer_analytics_defaults_are_bounded_and_ungrouped() {
+        let query = TransferAnalyticsQuery::default();
+        assert_eq!(query.interval, "auto");
+        assert_eq!(query.group_by, "none");
+        assert_eq!(query.direction, "both");
+        assert!(!query.include_descendants);
+    }
 
     #[test]
     fn rejects_noncanonical_operator_accounts() {

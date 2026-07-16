@@ -584,6 +584,12 @@ pub async fn main(request: Request, env: Env, context: Context) -> Result<Respon
             },
         )
         .get_async(
+            "/api/admin/analytics/transfers",
+            |request, context| async move {
+                transfer_metrics::analytics(&request, &context.env).await
+            },
+        )
+        .get_async(
             "/api/admin/directories/:id",
             |request, context| async move {
                 let directory_id = context.param("id").cloned();

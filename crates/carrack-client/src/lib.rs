@@ -44,7 +44,8 @@ pub use admin::{
     ManagementMembership, ManagementPrincipal, ManagementSnapshot, ManagementToken,
     OperatorAccount, OperatorCredential, ProviderInventory, ProviderInventoryStatus, QuotaLimits,
     QuotaReceipt, QuotaValidation, TokenAnnotationReceipt, TokenAnnotationValidation,
-    TransferMetricRow, TransferMetrics,
+    TransferAnalytics, TransferAnalyticsQuery, TransferAnalyticsRow, TransferMetricRow,
+    TransferMetrics,
 };
 
 pub use download::{GetOptions, GetResult};

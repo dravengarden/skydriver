@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     fetchSession,
+    fetchTransferAnalytics,
     login,
     parseHealth,
     parseManagementActivity,
@@ -13,6 +14,55 @@ import { passwordManagerIdentity, resolvePasswordManagerIdentity } from "../auth
 
 afterEach(() => {
     vi.unstubAllGlobals();
+});
+
+describe("transfer analytics", () => {
+    it("serializes intersecting filters and validates the sampled response", async () => {
+        const response = {
+            schema: "carrack.management.transfer-analytics.v1",
+            observed_at: 2_000_000_000,
+            from: 1_999_900_000,
+            to: 2_000_000_000,
+            interval: "hour",
+            group_by: "driver",
+            driver_id: "driver-a",
+            token_id: "token-a",
+            directory_id: "0123456789abcdef0123456789abcdef",
+            include_descendants: true,
+            direction: "download",
+            approximate: true,
+            small_transfer_sample_modulus: 10,
+            large_transfer_bytes: 67_108_864,
+            rows: [],
+        };
+        const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(Response.json(response));
+        vi.stubGlobal("fetch", fetchMock);
+
+        await expect(
+            fetchTransferAnalytics({
+                from: response.from,
+                to: response.to,
+                interval: "auto",
+                groupBy: "driver",
+                driverId: "driver-a",
+                tokenId: "token-a",
+                directoryId: response.directory_id,
+                includeDescendants: true,
+                direction: "download",
+            }),
+        ).resolves.toEqual(response);
+        const requested = new URL(String(fetchMock.mock.calls[0]?.[0]), "https://carrack.test");
+        expect(requested.pathname).toBe("/api/admin/analytics/transfers");
+        expect(Object.fromEntries(requested.searchParams)).toMatchObject({
+            interval: "auto",
+            group_by: "driver",
+            driver: "driver-a",
+            token: "token-a",
+            directory: response.directory_id,
+            include_descendants: "true",
+            direction: "download",
+        });
+    });
 });
 
 describe("parseSession", () => {

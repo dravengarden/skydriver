@@ -8,6 +8,8 @@ const SAMPLE_MODULUS: u64 = 10;
 const MAXIMUM_DURATION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 const MAXIMUM_RETRIES: u64 = 1_000_000;
 const RETENTION_DAYS: u64 = 400;
+const HOURLY_RETENTION_DAYS: u64 = 45;
+const MAXIMUM_ANALYTICS_ROWS: usize = 10_000;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -111,6 +113,71 @@ struct MetricsResponse {
     rows: Vec<MetricRow>,
 }
 
+#[derive(Deserialize, Serialize)]
+struct AnalyticsRow {
+    bucket: u64,
+    group_id: String,
+    direction: String,
+    weighted_transfers: u64,
+    weighted_bytes: u64,
+    weighted_provider_ms: u64,
+    weighted_total_ms: u64,
+    weighted_retries: u64,
+    speed_b0: u64,
+    speed_b1: u64,
+    speed_b2: u64,
+    speed_b3: u64,
+    speed_b4: u64,
+    speed_b5: u64,
+    speed_b6: u64,
+    speed_b7: u64,
+    speed_b8: u64,
+    speed_b9: u64,
+    speed_b10: u64,
+    speed_b11: u64,
+}
+
+#[derive(Serialize)]
+struct AnalyticsResponse {
+    schema: &'static str,
+    observed_at: u64,
+    from: u64,
+    to: u64,
+    interval: &'static str,
+    group_by: String,
+    driver_id: Option<String>,
+    token_id: Option<String>,
+    directory_id: Option<String>,
+    include_descendants: bool,
+    direction: String,
+    approximate: bool,
+    small_transfer_sample_modulus: u64,
+    large_transfer_bytes: u64,
+    rows: Vec<AnalyticsRow>,
+}
+
+#[derive(Default)]
+struct AnalyticsQuery {
+    from: Option<u64>,
+    to: Option<u64>,
+    interval: Option<String>,
+    group_by: Option<String>,
+    driver_id: Option<String>,
+    token_id: Option<String>,
+    directory_id: Option<String>,
+    include_descendants: bool,
+    direction: Option<String>,
+}
+
+struct ResolvedAnalyticsQuery {
+    from: u64,
+    to: u64,
+    interval: &'static str,
+    group_by: &'static str,
+    group_expression: &'static str,
+    direction: &'static str,
+}
+
 pub(crate) async fn record(
     database: &D1Database,
     identity: &TransferIdentity<'_>,
@@ -171,24 +238,21 @@ pub(crate) async fn record(
         return Ok(());
     }
 
-    let day = now - now % 86_400;
     let bucket = speed_bucket(identity.encoded_bytes, telemetry.provider_ms);
-    let scopes = [
-        ("global", "all"),
-        ("driver", identity.driver_id),
-        ("token", identity.token_id),
-        ("directory", identity.directory_id),
-    ];
-    let mut statements = Vec::with_capacity(scopes.len());
-    for (scope_kind, scope_id) in scopes {
+    let mut statements = Vec::with_capacity(2);
+    for (table, bucket_seconds) in [
+        ("vfs_transfer_hourly_analytics", 3_600),
+        ("vfs_transfer_daily_analytics", 86_400),
+    ] {
+        let period = now - now % bucket_seconds;
         let bucket_column = format!("speed_b{bucket}");
         let sql = format!(
-            "INSERT INTO vfs_transfer_daily_metrics (
-                 day, scope_kind, scope_id, direction, weighted_transfers,
-                 weighted_bytes, weighted_provider_ms, weighted_total_ms,
-                 weighted_retries, {bucket_column}, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?5, ?10)
-             ON CONFLICT(day, scope_kind, scope_id, direction) DO UPDATE SET
+            "INSERT INTO {table} (
+                 bucket, driver_id, token_id, directory_id, direction,
+                 weighted_transfers, weighted_bytes, weighted_provider_ms,
+                 weighted_total_ms, weighted_retries, {bucket_column}, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?6, ?11)
+             ON CONFLICT(bucket, driver_id, token_id, directory_id, direction) DO UPDATE SET
                  weighted_transfers = weighted_transfers + excluded.weighted_transfers,
                  weighted_bytes = weighted_bytes + excluded.weighted_bytes,
                  weighted_provider_ms = weighted_provider_ms + excluded.weighted_provider_ms,
@@ -198,9 +262,10 @@ pub(crate) async fn record(
                  updated_at = excluded.updated_at"
         );
         statements.push(database.prepare(&sql).bind(&[
-            number_binding(day),
-            JsValue::from_str(scope_kind),
-            JsValue::from_str(scope_id),
+            number_binding(period),
+            JsValue::from_str(identity.driver_id),
+            JsValue::from_str(identity.token_id),
+            JsValue::from_str(identity.directory_id),
             JsValue::from_str(identity.direction),
             number_binding(weight),
             number_binding(weighted_bytes),
@@ -255,18 +320,10 @@ pub(crate) async fn management(
     }
     let now = worker::Date::now().as_millis() / 1_000;
     let since = now.saturating_sub(window_days * 86_400);
+    let sql = legacy_metrics_sql(scope_kind);
     let rows = env
         .d1("CARRACK_INDEX")?
-        .prepare(
-            "SELECT day, scope_kind, scope_id, direction, weighted_transfers,
-                    weighted_bytes, weighted_provider_ms, weighted_total_ms,
-                    weighted_retries, speed_b0, speed_b1, speed_b2, speed_b3,
-                    speed_b4, speed_b5, speed_b6, speed_b7, speed_b8, speed_b9,
-                    speed_b10, speed_b11, updated_at
-             FROM vfs_transfer_daily_metrics
-             WHERE scope_kind = ?1 AND scope_id = ?2 AND day >= ?3
-             ORDER BY direction, day",
-        )
+        .prepare(&sql)
         .bind(&[
             JsValue::from_str(scope_kind),
             JsValue::from_str(scope_id),
@@ -288,6 +345,266 @@ pub(crate) async fn management(
         .headers_mut()
         .set("Cache-Control", "no-store, max-age=0")?;
     Ok(response)
+}
+
+fn legacy_metrics_sql(scope_kind: &str) -> String {
+    let current_filter = match scope_kind {
+        "global" => "1 = 1",
+        "driver" => "driver_id = ?2",
+        "token" => "token_id = ?2",
+        "directory" => "directory_id = ?2",
+        _ => unreachable!("scope kind was validated"),
+    };
+    format!(
+        "SELECT day, ?1 AS scope_kind, ?2 AS scope_id, direction,
+                SUM(weighted_transfers) AS weighted_transfers,
+                SUM(weighted_bytes) AS weighted_bytes,
+                SUM(weighted_provider_ms) AS weighted_provider_ms,
+                SUM(weighted_total_ms) AS weighted_total_ms,
+                SUM(weighted_retries) AS weighted_retries,
+                SUM(speed_b0) AS speed_b0, SUM(speed_b1) AS speed_b1,
+                SUM(speed_b2) AS speed_b2, SUM(speed_b3) AS speed_b3,
+                SUM(speed_b4) AS speed_b4, SUM(speed_b5) AS speed_b5,
+                SUM(speed_b6) AS speed_b6, SUM(speed_b7) AS speed_b7,
+                SUM(speed_b8) AS speed_b8, SUM(speed_b9) AS speed_b9,
+                SUM(speed_b10) AS speed_b10, SUM(speed_b11) AS speed_b11,
+                MAX(updated_at) AS updated_at
+         FROM (
+             SELECT day, direction, weighted_transfers, weighted_bytes,
+                    weighted_provider_ms, weighted_total_ms, weighted_retries,
+                    speed_b0, speed_b1, speed_b2, speed_b3, speed_b4, speed_b5,
+                    speed_b6, speed_b7, speed_b8, speed_b9, speed_b10, speed_b11,
+                    updated_at
+             FROM vfs_transfer_daily_metrics
+             WHERE scope_kind = ?1 AND scope_id = ?2 AND day >= ?3
+             UNION ALL
+             SELECT bucket AS day, direction, weighted_transfers, weighted_bytes,
+                    weighted_provider_ms, weighted_total_ms, weighted_retries,
+                    speed_b0, speed_b1, speed_b2, speed_b3, speed_b4, speed_b5,
+                    speed_b6, speed_b7, speed_b8, speed_b9, speed_b10, speed_b11,
+                    updated_at
+             FROM vfs_transfer_daily_analytics
+             WHERE bucket >= ?3 AND {current_filter}
+         )
+         GROUP BY day, direction
+         ORDER BY direction, day"
+    )
+}
+
+pub(crate) async fn analytics(request: &Request, env: &Env) -> Result<Response> {
+    if !operator_sessions::authorized(request, env).await? {
+        return Response::error("authentication required", 401);
+    }
+    let query = match parse_analytics_query(request) {
+        Ok(query) => query,
+        Err(message) => return Response::error(message, 400),
+    };
+    let now = worker::Date::now().as_millis() / 1_000;
+    let resolved = match resolve_analytics_query(&query, now) {
+        Ok(resolved) => resolved,
+        Err(message) => return Response::error(message, 400),
+    };
+    let (sql, bindings) = analytics_statement(&query, &resolved);
+    let mut rows = env
+        .d1("CARRACK_INDEX")?
+        .prepare(&sql)
+        .bind(&bindings)?
+        .all()
+        .await?
+        .results::<AnalyticsRow>()?;
+    if rows.len() > MAXIMUM_ANALYTICS_ROWS {
+        return Response::error("analytics result is too large; narrow the query", 413);
+    }
+    rows.shrink_to_fit();
+    let mut response = Response::from_json(&AnalyticsResponse {
+        schema: "carrack.management.transfer-analytics.v1",
+        observed_at: now,
+        from: resolved.from,
+        to: resolved.to,
+        interval: resolved.interval,
+        group_by: resolved.group_by.to_owned(),
+        driver_id: query.driver_id,
+        token_id: query.token_id,
+        directory_id: query.directory_id,
+        include_descendants: query.include_descendants,
+        direction: resolved.direction.to_owned(),
+        approximate: true,
+        small_transfer_sample_modulus: SAMPLE_MODULUS,
+        large_transfer_bytes: LARGE_TRANSFER_BYTES,
+        rows,
+    })?;
+    response
+        .headers_mut()
+        .set("Cache-Control", "private, max-age=60")?;
+    Ok(response)
+}
+
+fn resolve_analytics_query(
+    query: &AnalyticsQuery,
+    now: u64,
+) -> std::result::Result<ResolvedAnalyticsQuery, &'static str> {
+    let to = query.to.unwrap_or(now).min(now);
+    let from = query.from.unwrap_or_else(|| to.saturating_sub(30 * 86_400));
+    if from >= to || to - from > RETENTION_DAYS * 86_400 {
+        return Err("invalid analytics time range");
+    }
+    let short_range = to - from <= HOURLY_RETENTION_DAYS * 86_400;
+    let interval = match query.interval.as_deref().unwrap_or("auto") {
+        "auto" | "hour" if short_range => "hour",
+        "auto" | "day" => "day",
+        "hour" => return Err("hour interval exceeds retention"),
+        _ => return Err("invalid analytics interval"),
+    };
+    let (group_by, group_expression) = match query.group_by.as_deref().unwrap_or("none") {
+        "none" => ("none", "'all'"),
+        "driver" => ("driver", "driver_id"),
+        "token" => ("token", "token_id"),
+        "directory" => ("directory", "directory_id"),
+        _ => return Err("invalid analytics grouping"),
+    };
+    let direction = match query.direction.as_deref().unwrap_or("both") {
+        "both" => "both",
+        "upload" => "upload",
+        "download" => "download",
+        _ => return Err("invalid analytics direction"),
+    };
+    if query.include_descendants && query.directory_id.is_none() {
+        return Err("descendant scope requires a directory");
+    }
+    Ok(ResolvedAnalyticsQuery {
+        from,
+        to,
+        interval,
+        group_by,
+        group_expression,
+        direction,
+    })
+}
+
+fn analytics_statement(
+    query: &AnalyticsQuery,
+    resolved: &ResolvedAnalyticsQuery,
+) -> (String, Vec<JsValue>) {
+    let table = if resolved.interval == "hour" {
+        "vfs_transfer_hourly_analytics"
+    } else {
+        "vfs_transfer_daily_analytics"
+    };
+    let bucket_seconds = if resolved.interval == "hour" {
+        3_600
+    } else {
+        86_400
+    };
+    let mut bindings = vec![
+        number_binding(resolved.from - resolved.from % bucket_seconds),
+        number_binding(resolved.to - resolved.to % bucket_seconds),
+    ];
+    let mut predicates = vec!["bucket >= ?1".to_owned(), "bucket <= ?2".to_owned()];
+    append_identity_predicates(query, &mut bindings, &mut predicates);
+    if resolved.direction != "both" {
+        bindings.push(JsValue::from_str(resolved.direction));
+        predicates.push(format!("direction = ?{}", bindings.len()));
+    }
+    let sql = format!(
+        "SELECT bucket, {} AS group_id, direction,
+                SUM(weighted_transfers) AS weighted_transfers,
+                SUM(weighted_bytes) AS weighted_bytes,
+                SUM(weighted_provider_ms) AS weighted_provider_ms,
+                SUM(weighted_total_ms) AS weighted_total_ms,
+                SUM(weighted_retries) AS weighted_retries,
+                SUM(speed_b0) AS speed_b0, SUM(speed_b1) AS speed_b1,
+                SUM(speed_b2) AS speed_b2, SUM(speed_b3) AS speed_b3,
+                SUM(speed_b4) AS speed_b4, SUM(speed_b5) AS speed_b5,
+                SUM(speed_b6) AS speed_b6, SUM(speed_b7) AS speed_b7,
+                SUM(speed_b8) AS speed_b8, SUM(speed_b9) AS speed_b9,
+                SUM(speed_b10) AS speed_b10, SUM(speed_b11) AS speed_b11
+         FROM {table}
+         WHERE {}
+         GROUP BY bucket, group_id, direction
+         ORDER BY bucket, group_id, direction
+         LIMIT {}",
+        resolved.group_expression,
+        predicates.join(" AND "),
+        MAXIMUM_ANALYTICS_ROWS + 1
+    );
+    (sql, bindings)
+}
+
+fn append_identity_predicates(
+    query: &AnalyticsQuery,
+    bindings: &mut Vec<JsValue>,
+    predicates: &mut Vec<String>,
+) {
+    for (column, value) in [
+        ("driver_id", query.driver_id.as_deref()),
+        ("token_id", query.token_id.as_deref()),
+    ] {
+        if let Some(value) = value {
+            bindings.push(JsValue::from_str(value));
+            predicates.push(format!("{column} = ?{}", bindings.len()));
+        }
+    }
+    let Some(directory_id) = query.directory_id.as_deref() else {
+        return;
+    };
+    bindings.push(JsValue::from_str(directory_id));
+    let parameter = bindings.len();
+    if query.include_descendants {
+        predicates.push(format!(
+            "directory_id IN (
+                WITH RECURSIVE descendants(id) AS (
+                    SELECT id FROM vfs_directories WHERE id = ?{parameter}
+                    UNION ALL
+                    SELECT child.id FROM vfs_directories AS child
+                    JOIN descendants AS parent ON child.parent_id = parent.id
+                    WHERE child.state = 'active'
+                )
+                SELECT id FROM descendants
+            )"
+        ));
+    } else {
+        predicates.push(format!("directory_id = ?{parameter}"));
+    }
+}
+
+fn parse_analytics_query(request: &Request) -> std::result::Result<AnalyticsQuery, &'static str> {
+    let url = request.url().map_err(|_| "invalid analytics query")?;
+    let mut query = AnalyticsQuery::default();
+    for (key, value) in url.query_pairs() {
+        match key.as_ref() {
+            "from" if query.from.is_none() => {
+                query.from = Some(value.parse().map_err(|_| "invalid analytics from")?);
+            }
+            "to" if query.to.is_none() => {
+                query.to = Some(value.parse().map_err(|_| "invalid analytics to")?);
+            }
+            "interval" if query.interval.is_none() => query.interval = Some(value.into_owned()),
+            "group_by" if query.group_by.is_none() => query.group_by = Some(value.into_owned()),
+            "driver" if query.driver_id.is_none() && valid_scope_id(&value) => {
+                query.driver_id = Some(value.into_owned());
+            }
+            "token" if query.token_id.is_none() && valid_scope_id(&value) => {
+                query.token_id = Some(value.into_owned());
+            }
+            "directory" if query.directory_id.is_none() && valid_scope_id(&value) => {
+                query.directory_id = Some(value.into_owned());
+            }
+            "include_descendants" if !query.include_descendants && value == "true" => {
+                query.include_descendants = true;
+            }
+            "direction" if query.direction.is_none() => query.direction = Some(value.into_owned()),
+            _ => return Err("invalid or duplicate analytics query parameter"),
+        }
+    }
+    Ok(query)
+}
+
+fn valid_scope_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 fn valid(value: &TransferTelemetry) -> bool {
@@ -330,7 +647,10 @@ fn number_binding(value: u64) -> JsValue {
 
 #[cfg(test)]
 mod tests {
-    use super::{TransferTelemetry, sample_weight, speed_bucket, valid};
+    use super::{
+        AnalyticsQuery, TransferTelemetry, resolve_analytics_query, sample_weight, speed_bucket,
+        valid,
+    };
 
     #[test]
     fn samples_small_transfers_deterministically_and_keeps_large_transfers() {
@@ -349,5 +669,40 @@ mod tests {
         };
         assert!(valid(&observation));
         assert!(speed_bucket(128 * 1024, 1_000) > speed_bucket(1, 1_000));
+    }
+
+    #[test]
+    fn resolves_bounded_analytics_granularity_without_widening_queries() {
+        let now = 2_000_000_000;
+        let short = AnalyticsQuery {
+            from: Some(now - 7 * 86_400),
+            to: Some(now),
+            interval: Some("auto".to_owned()),
+            group_by: Some("driver".to_owned()),
+            direction: Some("download".to_owned()),
+            ..AnalyticsQuery::default()
+        };
+        let resolved = resolve_analytics_query(&short, now).expect("resolve short query");
+        assert_eq!(resolved.interval, "hour");
+        assert_eq!(resolved.group_expression, "driver_id");
+        assert_eq!(resolved.direction, "download");
+
+        let long = AnalyticsQuery {
+            from: Some(now - 90 * 86_400),
+            to: Some(now),
+            interval: Some("auto".to_owned()),
+            ..AnalyticsQuery::default()
+        };
+        assert_eq!(
+            resolve_analytics_query(&long, now)
+                .expect("resolve long query")
+                .interval,
+            "day"
+        );
+        let forced_hour = AnalyticsQuery {
+            interval: Some("hour".to_owned()),
+            ..long
+        };
+        assert!(resolve_analytics_query(&forced_hour, now).is_err());
     }
 }

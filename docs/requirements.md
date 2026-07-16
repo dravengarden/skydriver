@@ -246,6 +246,25 @@ This document is the normative product and correctness baseline. The key words
 - Rust is the sole product implementation. Retained Go conformance packages
   MUST NOT expose a CLI, SDK, hosted provider, archive model, or product policy.
 
+## Transfer observability
+
+- Transfer telemetry MUST remain advisory and MUST NOT authorize, publish,
+  reject, retry, or otherwise alter a filesystem operation.
+- Payload progress MUST remain client-local. The control plane MAY accept one
+  bounded completion observation after a verified transfer and process it
+  asynchronously; telemetry failure MUST NOT change the transfer result.
+- Transfer analytics MAY use deterministic sampling and weighted estimates.
+  The API and UI MUST label estimated values and MUST NOT present them as
+  billing, integrity, quota, or authorization evidence.
+- Correlated filter dimensions MUST be retained in the same aggregate fact.
+  Independently aggregated driver, token, and directory totals MUST NOT be
+  combined as though they prove an intersection.
+- Analytics queries MUST use a closed set of dimensions, bounded time ranges,
+  bounded result sizes, indexed retention, and server-selected time buckets.
+- Raw bearer values, credentials, filenames, virtual paths, provider keys,
+  plaintext metadata, and client-supplied free-form labels MUST NOT enter
+  transfer analytics.
+
 ## Security and environments
 
 - Secrets and credentials MUST never enter Git, command arguments, logs,

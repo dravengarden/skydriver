@@ -3,14 +3,19 @@ import {
     Box,
     Chip,
     CircularProgress,
-    Divider,
     Paper,
     Stack,
+    Table,
+    TableBody,
+    TableCell,
+    TableContainer,
+    TableHead,
+    TableRow,
     Typography,
 } from "@mui/material";
 import { useQuery } from "@tanstack/react-query";
 import { fetchManagementActivity } from "../../api/client";
-import type { ManagementActivityItem } from "../../api/client";
+import type { ManagementActivityEvent, ManagementActivityItem } from "../../api/client";
 import { PageHeading, formatDate } from "./shared";
 
 function humanize(value: string): string {
@@ -21,73 +26,135 @@ function shortIdentity(value: string): string {
     return value.length <= 26 ? value : `${value.slice(0, 12)}…${value.slice(-8)}`;
 }
 
-function ActivityItemCard({ item }: { readonly item: ManagementActivityItem }) {
+function ActivityTable({ items }: { readonly items: readonly ManagementActivityItem[] }) {
     return (
-        <Paper
-            variant="outlined"
-            sx={{
-                p: { xs: 2, sm: 2.5 },
-                borderColor: item.attention_required ? "warning.main" : "divider",
-            }}
-        >
-            <Stack direction="row" sx={{ justifyContent: "space-between", gap: 2 }}>
-                <Box sx={{ minWidth: 0 }}>
-                    <Typography sx={{ fontWeight: 800 }}>{humanize(item.kind)}</Typography>
-                    <Typography color="text.secondary" variant="body2" sx={{ mt: 0.25 }}>
-                        {humanize(item.subject_kind)} · {shortIdentity(item.subject_id)}
-                    </Typography>
-                </Box>
-                <Chip
-                    label={humanize(item.state).toUpperCase()}
-                    color={item.attention_required ? "warning" : "info"}
-                    size="small"
-                    variant={item.attention_required ? "filled" : "outlined"}
-                />
-            </Stack>
-            <Box
-                sx={{
-                    display: "grid",
-                    gridTemplateColumns: { xs: "1fr", sm: "repeat(3, minmax(0, 1fr))" },
-                    gap: 1.5,
-                    mt: 2,
-                }}
-            >
-                <Box>
-                    <Typography color="text.secondary" variant="caption">
-                        Driver
-                    </Typography>
-                    <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                        {item.driver_id ?? "Control plane"}
-                    </Typography>
-                </Box>
-                <Box>
-                    <Typography color="text.secondary" variant="caption">
-                        Updated
-                    </Typography>
-                    <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                        {formatDate(item.updated_at)}
-                    </Typography>
-                </Box>
-                <Box>
-                    <Typography color="text.secondary" variant="caption">
-                        Deadline / next action
-                    </Typography>
-                    <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                        {formatDate(item.deadline_at)}
-                    </Typography>
-                </Box>
-            </Box>
-            {(item.attempt_count > 0 || item.last_error_code !== null) && (
-                <Typography
-                    color="text.secondary"
-                    variant="caption"
-                    sx={{ mt: 1.5, display: "block" }}
-                >
-                    {item.attempt_count.toLocaleString()} attempts
-                    {item.last_error_code === null ? "" : ` · ${humanize(item.last_error_code)}`}
-                </Typography>
-            )}
-        </Paper>
+        <TableContainer component={Paper} variant="outlined">
+            <Table size="small" sx={{ minWidth: 760 }}>
+                <TableHead>
+                    <TableRow>
+                        <TableCell>State</TableCell>
+                        <TableCell>Work</TableCell>
+                        <TableCell>Subject</TableCell>
+                        <TableCell>Driver</TableCell>
+                        <TableCell align="right">Attempts</TableCell>
+                        <TableCell>Updated</TableCell>
+                        <TableCell>Next action</TableCell>
+                        <TableCell>Error</TableCell>
+                    </TableRow>
+                </TableHead>
+                <TableBody>
+                    {items.map((item) => (
+                        <TableRow
+                            key={`${item.kind}:${item.id}`}
+                            hover
+                            sx={{
+                                bgcolor: item.attention_required ? "warning.50" : undefined,
+                                "& td": { py: 1.1 },
+                            }}
+                        >
+                            <TableCell>
+                                <Chip
+                                    label={humanize(item.state).toUpperCase()}
+                                    color={item.attention_required ? "warning" : "info"}
+                                    size="small"
+                                    variant={item.attention_required ? "filled" : "outlined"}
+                                />
+                            </TableCell>
+                            <TableCell sx={{ fontWeight: 750 }}>{humanize(item.kind)}</TableCell>
+                            <TableCell>
+                                <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                                    {humanize(item.subject_kind)}
+                                </Typography>
+                                <Typography
+                                    title={item.subject_id}
+                                    color="text.secondary"
+                                    variant="caption"
+                                >
+                                    {shortIdentity(item.subject_id)}
+                                </Typography>
+                            </TableCell>
+                            <TableCell>{item.driver_id ?? "Control plane"}</TableCell>
+                            <TableCell align="right">
+                                {item.attempt_count.toLocaleString()}
+                            </TableCell>
+                            <TableCell sx={{ whiteSpace: "nowrap" }}>
+                                {formatDate(item.updated_at)}
+                            </TableCell>
+                            <TableCell sx={{ whiteSpace: "nowrap" }}>
+                                {formatDate(item.deadline_at)}
+                            </TableCell>
+                            <TableCell>
+                                {item.last_error_code === null
+                                    ? "—"
+                                    : humanize(item.last_error_code)}
+                            </TableCell>
+                        </TableRow>
+                    ))}
+                </TableBody>
+            </Table>
+        </TableContainer>
+    );
+}
+
+function AuditTable({ events }: { readonly events: readonly ManagementActivityEvent[] }) {
+    return (
+        <TableContainer component={Paper} variant="outlined">
+            <Table size="small" sx={{ minWidth: 720 }}>
+                <TableHead>
+                    <TableRow>
+                        <TableCell>Event</TableCell>
+                        <TableCell>Subject</TableCell>
+                        <TableCell>Token</TableCell>
+                        <TableCell>Committed</TableCell>
+                        <TableCell>Details</TableCell>
+                    </TableRow>
+                </TableHead>
+                <TableBody>
+                    {events.map((event) => {
+                        const details = JSON.stringify(event.details);
+                        return (
+                            <TableRow key={event.id} hover sx={{ "& td": { py: 1.1 } }}>
+                                <TableCell sx={{ fontWeight: 750 }}>
+                                    {humanize(event.event_kind)}
+                                </TableCell>
+                                <TableCell>
+                                    <Typography variant="body2">
+                                        {humanize(event.subject_kind)}
+                                    </Typography>
+                                    <Typography
+                                        title={event.subject_id}
+                                        color="text.secondary"
+                                        variant="caption"
+                                    >
+                                        {shortIdentity(event.subject_id)}
+                                    </Typography>
+                                </TableCell>
+                                <TableCell title={event.token_id ?? undefined}>
+                                    {event.token_id === null ? "—" : shortIdentity(event.token_id)}
+                                </TableCell>
+                                <TableCell sx={{ whiteSpace: "nowrap" }}>
+                                    {formatDate(event.created_at)}
+                                </TableCell>
+                                <TableCell
+                                    title={details}
+                                    sx={{
+                                        maxWidth: 320,
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
+                                        whiteSpace: "nowrap",
+                                        color: "text.secondary",
+                                        fontFamily: "monospace",
+                                        fontSize: "0.75rem",
+                                    }}
+                                >
+                                    {details === "{}" ? "—" : details}
+                                </TableCell>
+                            </TableRow>
+                        );
+                    })}
+                </TableBody>
+            </Table>
+        </TableContainer>
     );
 }
 
@@ -97,6 +164,8 @@ export function ActivityPage() {
         queryFn: fetchManagementActivity,
         refetchInterval: 10_000,
     });
+    const attention = activity.data?.active_items.filter((item) => item.attention_required) ?? [];
+    const active = activity.data?.active_items.filter((item) => !item.attention_required) ?? [];
 
     return (
         <>
@@ -116,12 +185,9 @@ export function ActivityPage() {
                     <Typography color="error">Unable to load VFS activity.</Typography>
                 </Paper>
             ) : (
-                <Stack spacing={5}>
+                <Stack spacing={4}>
                     <Box>
-                        <Stack
-                            direction="row"
-                            sx={{ alignItems: "baseline", justifyContent: "space-between", mb: 2 }}
-                        >
+                        <Stack direction="row" sx={{ alignItems: "baseline", mb: 1.5 }}>
                             <Box>
                                 <Typography variant="h5" sx={{ fontWeight: 800 }}>
                                     Needs attention
@@ -130,30 +196,20 @@ export function ActivityPage() {
                                     Retry, blocked, or reauthorization states owned by the server.
                                 </Typography>
                             </Box>
-                            <Typography color="text.secondary" variant="caption">
-                                {
-                                    activity.data.active_items.filter(
-                                        (item) => item.attention_required,
-                                    ).length
-                                }{" "}
-                                open
+                            <Typography
+                                color="text.secondary"
+                                variant="caption"
+                                sx={{ ml: "auto" }}
+                            >
+                                {attention.length} open
                             </Typography>
                         </Stack>
-                        {activity.data.active_items.some((item) => item.attention_required) ? (
-                            <Stack spacing={2}>
-                                {activity.data.active_items
-                                    .filter((item) => item.attention_required)
-                                    .map((item) => (
-                                        <ActivityItemCard
-                                            key={`${item.kind}:${item.id}`}
-                                            item={item}
-                                        />
-                                    ))}
-                            </Stack>
-                        ) : (
+                        {attention.length === 0 ? (
                             <Alert severity="success">
                                 No control-plane lifecycle issues need attention.
                             </Alert>
+                        ) : (
+                            <ActivityTable items={attention} />
                         )}
                     </Box>
 
@@ -161,39 +217,30 @@ export function ActivityPage() {
                         <Typography variant="h5" sx={{ fontWeight: 800 }}>
                             Active control work
                         </Typography>
-                        <Typography color="text.secondary" variant="body2" sx={{ mt: 0.5, mb: 2 }}>
+                        <Typography
+                            color="text.secondary"
+                            variant="body2"
+                            sx={{ mt: 0.25, mb: 1.5 }}
+                        >
                             Upload intents, read leases, cleanup jobs, and credential renewal
                             currently fenced by the control plane.
                         </Typography>
-                        {activity.data.active_items.filter((item) => !item.attention_required)
-                            .length === 0 ? (
-                            <Paper variant="outlined" sx={{ p: 3 }}>
+                        {active.length === 0 ? (
+                            <Paper variant="outlined" sx={{ px: 2, py: 1.5 }}>
                                 <Typography sx={{ fontWeight: 700 }}>
                                     No durable work is active
                                 </Typography>
-                                <Typography color="text.secondary" variant="body2" sx={{ mt: 0.5 }}>
+                                <Typography color="text.secondary" variant="body2">
                                     Direct transfers can still be running between API checkpoints.
                                 </Typography>
                             </Paper>
                         ) : (
-                            <Stack spacing={2}>
-                                {activity.data.active_items
-                                    .filter((item) => !item.attention_required)
-                                    .map((item) => (
-                                        <ActivityItemCard
-                                            key={`${item.kind}:${item.id}`}
-                                            item={item}
-                                        />
-                                    ))}
-                            </Stack>
+                            <ActivityTable items={active} />
                         )}
                     </Box>
 
                     <Box>
-                        <Stack
-                            direction="row"
-                            sx={{ alignItems: "baseline", justifyContent: "space-between", mb: 2 }}
-                        >
+                        <Stack direction="row" sx={{ alignItems: "baseline", mb: 1.5 }}>
                             <Box>
                                 <Typography variant="h5" sx={{ fontWeight: 800 }}>
                                     Recent audit events
@@ -203,64 +250,22 @@ export function ActivityPage() {
                                     changes.
                                 </Typography>
                             </Box>
-                            <Typography color="text.secondary" variant="caption">
+                            <Typography
+                                color="text.secondary"
+                                variant="caption"
+                                sx={{ ml: "auto" }}
+                            >
                                 Cursor {activity.data.event_cursor.toLocaleString()}
                             </Typography>
                         </Stack>
                         {activity.data.events.length === 0 ? (
-                            <Paper variant="outlined" sx={{ p: 3 }}>
+                            <Paper variant="outlined" sx={{ px: 2, py: 1.5 }}>
                                 <Typography sx={{ fontWeight: 700 }}>
                                     No audit events yet
                                 </Typography>
                             </Paper>
                         ) : (
-                            <Paper variant="outlined" sx={{ px: { xs: 2, sm: 2.5 } }}>
-                                <Stack divider={<Divider flexItem />}>
-                                    {activity.data.events.map((event) => (
-                                        <Box key={event.id} sx={{ py: 2 }}>
-                                            <Stack
-                                                direction={{ xs: "column", sm: "row" }}
-                                                sx={{ justifyContent: "space-between", gap: 0.75 }}
-                                            >
-                                                <Box sx={{ minWidth: 0 }}>
-                                                    <Typography sx={{ fontWeight: 750 }}>
-                                                        {humanize(event.event_kind)}
-                                                    </Typography>
-                                                    <Typography
-                                                        color="text.secondary"
-                                                        variant="body2"
-                                                        sx={{ overflowWrap: "anywhere" }}
-                                                    >
-                                                        {humanize(event.subject_kind)} ·{" "}
-                                                        {shortIdentity(event.subject_id)}
-                                                    </Typography>
-                                                </Box>
-                                                <Typography
-                                                    color="text.secondary"
-                                                    variant="caption"
-                                                >
-                                                    {formatDate(event.created_at)}
-                                                </Typography>
-                                            </Stack>
-                                            {JSON.stringify(event.details) !== "{}" && (
-                                                <Typography
-                                                    component="pre"
-                                                    variant="caption"
-                                                    sx={{
-                                                        m: 0,
-                                                        mt: 1,
-                                                        color: "text.secondary",
-                                                        whiteSpace: "pre-wrap",
-                                                        overflowWrap: "anywhere",
-                                                    }}
-                                                >
-                                                    {JSON.stringify(event.details, null, 2)}
-                                                </Typography>
-                                            )}
-                                        </Box>
-                                    ))}
-                                </Stack>
-                            </Paper>
+                            <AuditTable events={activity.data.events} />
                         )}
                     </Box>
                 </Stack>

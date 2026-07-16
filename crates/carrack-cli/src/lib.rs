@@ -3,7 +3,7 @@
 use carrack_client::{
     AccessMutationDesired, AdminClient, BootstrapAuthority, BootstrapAuthorityRequest, Client,
     EntryKind, GetOptions, OperatorAccount, OperatorCredential, Placement, ProtocolCompatibility,
-    PutOptions, QuotaLimits, SyncOptions, VfsClient, VfsToken,
+    PutOptions, QuotaLimits, SyncOptions, TransferAnalyticsQuery, VfsClient, VfsToken,
 };
 use clap::{Parser, Subcommand, ValueEnum, error::ErrorKind};
 use serde::Serialize;
@@ -103,6 +103,11 @@ enum ManagementCommand {
         #[arg(long = "format", value_enum, default_value_t = Output::Json)]
         output: Output,
     },
+    /// Query sampled transfer analytics with intersecting dimensions.
+    Analytics {
+        #[command(flatten)]
+        options: AnalyticsOptions,
+    },
     /// Read one bounded audit-event page after a monotonic cursor.
     Watch {
         /// Last event ID already processed; zero starts at the retained beginning.
@@ -161,6 +166,37 @@ enum ManagementCommand {
         #[command(subcommand)]
         command: VfsManagementCommand,
     },
+}
+
+#[derive(Debug, clap::Args)]
+struct AnalyticsOptions {
+    /// Number of trailing UTC days to query.
+    #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=400))]
+    days: u64,
+    /// Time bucket: auto, hour, or day.
+    #[arg(long, default_value = "auto")]
+    interval: String,
+    /// Breakdown dimension: none, driver, token, or directory.
+    #[arg(long, default_value = "none")]
+    group_by: String,
+    /// Restrict results to one driver ID.
+    #[arg(long)]
+    driver: Option<String>,
+    /// Restrict results to one token ID.
+    #[arg(long)]
+    token: Option<String>,
+    /// Restrict results to one directory ID.
+    #[arg(long)]
+    directory: Option<String>,
+    /// Include the directory's current active descendants.
+    #[arg(long, requires = "directory")]
+    include_descendants: bool,
+    /// Transfer direction: both, upload, or download.
+    #[arg(long, default_value = "both")]
+    direction: String,
+    /// Output encoding.
+    #[arg(long = "format", value_enum, default_value_t = Output::Json)]
+    output: Output,
 }
 
 #[derive(Debug, Subcommand)]
@@ -811,6 +847,9 @@ async fn run_management() -> Result<(), Error> {
             client.check_compatibility().await?;
             write_json(output, &client.transfer_metrics(&scope, &id).await?)?;
         }
+        ManagementCommand::Analytics { options } => {
+            run_analytics(arguments.control_url, options).await?;
+        }
         ManagementCommand::Watch {
             after,
             limit,
@@ -870,6 +909,30 @@ async fn run_management() -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+async fn run_analytics(
+    control_url: Option<String>,
+    invocation: AnalyticsOptions,
+) -> Result<(), Error> {
+    let client = admin_client(control_url)?;
+    client.check_compatibility().await?;
+    let to = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| Error::Input(format!("system time precedes Unix epoch: {error}")))?
+        .as_secs();
+    let query = TransferAnalyticsQuery {
+        from: Some(to.saturating_sub(invocation.days * 86_400)),
+        to: Some(to),
+        interval: invocation.interval,
+        group_by: invocation.group_by,
+        driver_id: invocation.driver,
+        token_id: invocation.token,
+        directory_id: invocation.directory,
+        include_descendants: invocation.include_descendants,
+        direction: invocation.direction,
+    };
+    write_json(invocation.output, &client.transfer_analytics(&query).await?)
 }
 
 #[allow(
@@ -2026,6 +2089,20 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(names.contains(&"watch"));
         assert!(names.contains(&"metrics"));
+        assert!(names.contains(&"analytics"));
+        let analytics = ManagementArguments::try_parse_from([
+            "carrackctl",
+            "analytics",
+            "--days",
+            "7",
+            "--driver",
+            "r2-default",
+            "--token",
+            "token-a",
+            "--group-by",
+            "directory",
+        ]);
+        assert!(analytics.is_ok());
         let parsed = ManagementArguments::try_parse_from([
             "carrackctl",
             "inventory",

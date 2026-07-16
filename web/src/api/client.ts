@@ -168,6 +168,47 @@ const TransferMetricsSchema = v.object({
     rows: v.array(TransferMetricRowSchema),
 });
 
+const TransferAnalyticsRowSchema = v.object({
+    bucket: v.number(),
+    group_id: v.string(),
+    direction: v.picklist(["upload", "download"]),
+    weighted_transfers: v.number(),
+    weighted_bytes: v.number(),
+    weighted_provider_ms: v.number(),
+    weighted_total_ms: v.number(),
+    weighted_retries: v.number(),
+    speed_b0: v.number(),
+    speed_b1: v.number(),
+    speed_b2: v.number(),
+    speed_b3: v.number(),
+    speed_b4: v.number(),
+    speed_b5: v.number(),
+    speed_b6: v.number(),
+    speed_b7: v.number(),
+    speed_b8: v.number(),
+    speed_b9: v.number(),
+    speed_b10: v.number(),
+    speed_b11: v.number(),
+});
+
+const TransferAnalyticsSchema = v.object({
+    schema: v.literal("carrack.management.transfer-analytics.v1"),
+    observed_at: v.number(),
+    from: v.number(),
+    to: v.number(),
+    interval: v.picklist(["hour", "day"]),
+    group_by: v.picklist(["none", "driver", "token", "directory"]),
+    driver_id: v.nullable(v.string()),
+    token_id: v.nullable(v.string()),
+    directory_id: v.nullable(v.string()),
+    include_descendants: v.boolean(),
+    direction: v.picklist(["both", "upload", "download"]),
+    approximate: v.literal(true),
+    small_transfer_sample_modulus: v.number(),
+    large_transfer_bytes: v.number(),
+    rows: v.array(TransferAnalyticsRowSchema),
+});
+
 const ManagementDirectorySchema = v.object({
     schema: v.literal("carrack.management.directory.v1"),
     observed_at: v.number(),
@@ -442,6 +483,19 @@ export type ManagementActivityEvent = v.InferOutput<typeof ManagementActivityEve
 export type ManagementActivity = v.InferOutput<typeof ManagementActivitySchema>;
 export type TransferMetrics = v.InferOutput<typeof TransferMetricsSchema>;
 export type TransferMetricScope = TransferMetrics["scope_kind"];
+export type TransferAnalytics = v.InferOutput<typeof TransferAnalyticsSchema>;
+export type TransferAnalyticsRow = v.InferOutput<typeof TransferAnalyticsRowSchema>;
+export interface TransferAnalyticsQuery {
+    readonly from: number;
+    readonly to: number;
+    readonly interval: "auto" | "hour" | "day";
+    readonly groupBy: "none" | "driver" | "token" | "directory";
+    readonly driverId?: string;
+    readonly tokenId?: string;
+    readonly directoryId?: string;
+    readonly includeDescendants?: boolean;
+    readonly direction: "both" | "upload" | "download";
+}
 export type ManagementDirectory = v.InferOutput<typeof ManagementDirectorySchema>;
 export type TokenAnnotationValidation = v.InferOutput<typeof TokenAnnotationValidationSchema>;
 export type TokenAnnotationReceipt = v.InferOutput<typeof TokenAnnotationReceiptSchema>;
@@ -629,6 +683,25 @@ export function fetchTransferMetrics(
         `/api/admin/metrics/${scope}/${encodeURIComponent(scopeId)}?days=30`,
         undefined,
         TransferMetricsSchema,
+    );
+}
+
+export function fetchTransferAnalytics(query: TransferAnalyticsQuery): Promise<TransferAnalytics> {
+    const parameters = new URLSearchParams({
+        from: String(query.from),
+        to: String(query.to),
+        interval: query.interval,
+        group_by: query.groupBy,
+        direction: query.direction,
+    });
+    if (query.driverId !== undefined) parameters.set("driver", query.driverId);
+    if (query.tokenId !== undefined) parameters.set("token", query.tokenId);
+    if (query.directoryId !== undefined) parameters.set("directory", query.directoryId);
+    if (query.includeDescendants === true) parameters.set("include_descendants", "true");
+    return requestJson(
+        `/api/admin/analytics/transfers?${parameters.toString()}`,
+        undefined,
+        TransferAnalyticsSchema,
     );
 }
 

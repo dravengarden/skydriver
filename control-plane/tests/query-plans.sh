@@ -104,6 +104,36 @@ assert_uses_index transfer-metrics-retirement "USING PRIMARY KEY" \
    WHERE day < 1
    ORDER BY day, scope_kind, scope_id, direction LIMIT 1000"
 
+assert_uses_index transfer-analytics-driver idx_vfs_transfer_hourly_driver_bucket \
+  "SELECT bucket, direction, weighted_bytes
+   FROM vfs_transfer_hourly_analytics
+   WHERE driver_id = 'driver-a' AND bucket >= 3600 AND bucket <= 7200
+   ORDER BY bucket"
+
+assert_uses_index transfer-analytics-token idx_vfs_transfer_hourly_token_bucket \
+  "SELECT bucket, direction, weighted_bytes
+   FROM vfs_transfer_hourly_analytics
+   WHERE token_id = 'token-a' AND bucket >= 3600 AND bucket <= 7200
+   ORDER BY bucket"
+
+assert_uses_index transfer-analytics-directory idx_vfs_transfer_daily_directory_bucket \
+  "SELECT bucket, direction, weighted_bytes
+   FROM vfs_transfer_daily_analytics
+   WHERE directory_id = 'directory-a' AND bucket >= 86400
+   ORDER BY bucket"
+
+assert_uses_index transfer-analytics-hourly-retirement "USING PRIMARY KEY" \
+  "SELECT bucket, driver_id, token_id, directory_id, direction
+   FROM vfs_transfer_hourly_analytics
+   WHERE bucket < 3600
+   ORDER BY bucket, driver_id, token_id, directory_id, direction LIMIT 1000"
+
+assert_uses_index transfer-analytics-daily-retirement "USING PRIMARY KEY" \
+  "SELECT bucket, driver_id, token_id, directory_id, direction
+   FROM vfs_transfer_daily_analytics
+   WHERE bucket < 86400
+   ORDER BY bucket, driver_id, token_id, directory_id, direction LIMIT 1000"
+
 assert_uses_index transfer-receipt-retirement idx_vfs_transfer_metric_receipts_retirement \
   "SELECT operation_id FROM vfs_transfer_metric_receipts
    WHERE recorded_at < 1

@@ -3,6 +3,7 @@ import AdminPanelSettingsOutlinedIcon from "@mui/icons-material/AdminPanelSettin
 import DashboardOutlinedIcon from "@mui/icons-material/DashboardOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import KeyOutlinedIcon from "@mui/icons-material/KeyOutlined";
+import InsightsOutlinedIcon from "@mui/icons-material/InsightsOutlined";
 import LogoutOutlinedIcon from "@mui/icons-material/LogoutOutlined";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import StorageOutlinedIcon from "@mui/icons-material/StorageOutlined";
@@ -48,12 +49,13 @@ interface DashboardProps {
     readonly onLogout: () => void;
 }
 
-type Page = "overview" | "files" | "drivers" | "access" | "activity" | "settings";
+type Page = "overview" | "files" | "drivers" | "access" | "analytics" | "activity" | "settings";
 
 const pageLoaders = {
     files: () => import("./pages/FilesPage"),
     drivers: () => import("./pages/DriversPage"),
     access: () => import("./pages/AccessPage"),
+    analytics: () => import("./pages/AnalyticsPage"),
     activity: () => import("./pages/ActivityPage"),
     settings: () => import("./pages/SettingsPage"),
 };
@@ -66,6 +68,9 @@ const DriversPage = lazy(() =>
 );
 const AccessPage = lazy(() =>
     pageLoaders.access().then(({ AccessPage: component }) => ({ default: component })),
+);
+const AnalyticsPage = lazy(() =>
+    pageLoaders.analytics().then(({ AnalyticsPage: component }) => ({ default: component })),
 );
 const ActivityPage = lazy(() =>
     pageLoaders.activity().then(({ ActivityPage: component }) => ({ default: component })),
@@ -89,6 +94,7 @@ const navigation: ReadonlyArray<{
     { id: "files", label: "Files", icon: <FolderOutlinedIcon /> },
     { id: "drivers", label: "Drivers", icon: <StorageOutlinedIcon /> },
     { id: "access", label: "Access", icon: <KeyOutlinedIcon /> },
+    { id: "analytics", label: "Analytics", icon: <InsightsOutlinedIcon /> },
     { id: "activity", label: "Activity", icon: <TimelineOutlinedIcon /> },
     { id: "settings", label: "Settings", icon: <SettingsOutlinedIcon /> },
 ];
@@ -181,6 +187,8 @@ export function Dashboard({ environment, onLogout }: DashboardProps) {
                         onRequestConfiguration={() => setConfigurationDialogOpen(true)}
                     />
                 );
+            case "analytics":
+                return <AnalyticsPage />;
             case "activity":
                 return <ActivityPage />;
             case "settings":

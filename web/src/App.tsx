@@ -33,7 +33,17 @@ export function App() {
         mutationFn: logout,
         onSuccess: (value) => {
             queryClient.setQueryData(["session"], value);
-            queryClient.removeQueries({ queryKey: ["management-activity"] });
+            queryClient.removeQueries({
+                predicate: (query) => {
+                    const scope = query.queryKey[0];
+                    return (
+                        typeof scope === "string" &&
+                        (scope.startsWith("management-") ||
+                            scope.startsWith("transfer-") ||
+                            scope === "configuration-session")
+                    );
+                },
+            });
         },
     });
 
