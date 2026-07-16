@@ -880,6 +880,39 @@ SET state = 'claimed', fencing_token = fencing_token + 1,
 WHERE id = '$location_b';
 "
 
+# Model a Worker that completed the provider Delete under fence 1 but lost its
+# response until after fence 2 reclaimed the expired task. Both statements in
+# the production completion batch must reject that stale outcome. The current
+# owner retains the claimed task and the tombstoned location for an idempotent
+# exact-Stat retry.
+execute "
+INSERT INTO vfs_v2_protocol_assertions
+SELECT fencing_token = 2 AND state = 'claimed'
+FROM vfs_location_delete_tasks WHERE id = '$location_b';
+
+UPDATE vfs_locations
+SET state = 'deleted', revision = revision + 1, updated_at = unixepoch()
+WHERE id = '$location_b' AND state = 'tombstoned'
+  AND EXISTS (
+      SELECT 1 FROM vfs_location_delete_tasks AS task
+      WHERE task.id = '$location_b' AND task.state = 'claimed'
+        AND task.fencing_token = 1
+  );
+
+UPDATE vfs_location_delete_tasks
+SET state = 'deleted', lease_expires_at = NULL,
+    completed_at = unixepoch(), updated_at = unixepoch()
+WHERE id = '$location_b' AND state = 'claimed' AND fencing_token = 1;
+
+INSERT INTO vfs_v2_protocol_assertions
+SELECT location.state = 'tombstoned'
+       AND task.state = 'claimed'
+       AND task.fencing_token = 2
+  FROM vfs_locations AS location
+  JOIN vfs_location_delete_tasks AS task ON task.id = location.id
+ WHERE location.id = '$location_b';
+"
+
 execute "
 UPDATE vfs_location_delete_tasks
 SET state = 'blocked', lease_expires_at = NULL,
