@@ -11,6 +11,18 @@ const SERVICE: &str = "s3";
 const REGION: &str = "auto";
 const ALGORITHM: &str = "AWS4-HMAC-SHA256";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OperationFailure {
+    Retry(&'static str),
+    Reauthenticate(&'static str),
+    Blocked(&'static str),
+}
+
+pub(crate) struct ObjectStat {
+    pub(crate) size_bytes: u64,
+    pub(crate) etag: String,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Credential {
@@ -103,7 +115,7 @@ fn presign_query_at(
     extra_query: &[(&str, &str)],
     timestamp: &str,
 ) -> Option<String> {
-    if !matches!(method, "GET" | "PUT" | "POST" | "DELETE")
+    if !matches!(method, "GET" | "HEAD" | "PUT" | "POST" | "DELETE")
         || !valid_config(config)
         || !valid_credential(credential)
         || expires_seconds == 0
@@ -311,25 +323,66 @@ pub(crate) async fn delete_from_plaintext(
     config_json: &str,
     storage_key: &str,
     plaintext: &[u8],
-) -> Result<(), worker::Error> {
+) -> Result<(), OperationFailure> {
     let config = serde_json::from_str::<Config>(config_json)
-        .map_err(|error| worker::Error::RustError(format!("decode R2 config: {error}")))?;
+        .map_err(|_| OperationFailure::Blocked("configuration_invalid"))?;
     let credential = serde_json::from_slice::<Credential>(plaintext)
-        .map_err(|error| worker::Error::RustError(format!("decode R2 credential: {error}")))?;
-    let key = object_key(&config, storage_key)
-        .ok_or_else(|| worker::Error::RustError("invalid R2 storage key".to_owned()))?;
+        .map_err(|_| OperationFailure::Blocked("credential_invalid"))?;
+    let key =
+        object_key(&config, storage_key).ok_or(OperationFailure::Blocked("storage_key_invalid"))?;
     let url = presign("DELETE", &config, &credential, &key, 60)
-        .ok_or_else(|| worker::Error::RustError("sign R2 delete".to_owned()))?;
-    let request = Request::new(&url, Method::Delete)?;
-    let response = Fetch::Request(request).send().await?;
+        .ok_or(OperationFailure::Blocked("provider_request_invalid"))?;
+    let request = Request::new(&url, Method::Delete)
+        .map_err(|_| OperationFailure::Blocked("provider_request_invalid"))?;
+    let response = Fetch::Request(request)
+        .send()
+        .await
+        .map_err(|_| OperationFailure::Retry("provider_transport_failed"))?;
     if response.status_code() == 404 || (200..300).contains(&response.status_code()) {
         Ok(())
     } else {
-        Err(worker::Error::RustError(format!(
-            "R2 delete returned {}",
-            response.status_code()
-        )))
+        Err(classify_status(response.status_code()))
     }
+}
+
+pub(crate) async fn stat_from_plaintext(
+    config_json: &str,
+    storage_key: &str,
+    plaintext: &[u8],
+) -> Result<Option<ObjectStat>, OperationFailure> {
+    let config = serde_json::from_str::<Config>(config_json)
+        .map_err(|_| OperationFailure::Blocked("configuration_invalid"))?;
+    let credential = serde_json::from_slice::<Credential>(plaintext)
+        .map_err(|_| OperationFailure::Blocked("credential_invalid"))?;
+    let key =
+        object_key(&config, storage_key).ok_or(OperationFailure::Blocked("storage_key_invalid"))?;
+    let url = presign("HEAD", &config, &credential, &key, 60)
+        .ok_or(OperationFailure::Blocked("provider_request_invalid"))?;
+    let request = Request::new(&url, Method::Head)
+        .map_err(|_| OperationFailure::Blocked("provider_request_invalid"))?;
+    let response = Fetch::Request(request)
+        .send()
+        .await
+        .map_err(|_| OperationFailure::Retry("provider_transport_failed"))?;
+    if response.status_code() == 404 {
+        return Ok(None);
+    }
+    if !(200..300).contains(&response.status_code()) {
+        return Err(classify_status(response.status_code()));
+    }
+    let size_bytes = response
+        .headers()
+        .get("Content-Length")
+        .map_err(|_| OperationFailure::Retry("provider_response_invalid"))?
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or(OperationFailure::Retry("provider_response_invalid"))?;
+    let etag = response
+        .headers()
+        .get("ETag")
+        .map_err(|_| OperationFailure::Retry("provider_response_invalid"))?
+        .filter(|value| !value.is_empty() && value.len() <= 1_024)
+        .ok_or(OperationFailure::Retry("provider_response_invalid"))?;
+    Ok(Some(ObjectStat { size_bytes, etag }))
 }
 
 pub(crate) async fn cleanup_upload_from_plaintext(
@@ -363,17 +416,14 @@ pub(crate) async fn cleanup_upload_from_plaintext(
             )));
         }
     }
-    let url = presign("DELETE", &config, &credential, &key, 60)
-        .ok_or_else(|| worker::Error::RustError("sign R2 cleanup delete".to_owned()))?;
-    let request = Request::new(&url, Method::Delete)?;
-    let response = Fetch::Request(request).send().await?;
-    if response.status_code() == 404 || (200..300).contains(&response.status_code()) {
-        Ok(())
-    } else {
-        Err(worker::Error::RustError(format!(
-            "R2 cleanup delete returned {}",
-            response.status_code()
-        )))
+    Ok(())
+}
+
+fn classify_status(status: u16) -> OperationFailure {
+    match status {
+        401 | 403 => OperationFailure::Reauthenticate("provider_authorization_rejected"),
+        408 | 425 | 429 | 500..=599 => OperationFailure::Retry("provider_unavailable"),
+        _ => OperationFailure::Blocked("provider_request_rejected"),
     }
 }
 

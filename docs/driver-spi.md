@@ -68,12 +68,16 @@ signer.
 
 Hosted inventory and lifecycle use two additional orthogonal execution
 facades. `driver_inventory` performs one bounded provider listing page;
-`driver_lifecycle` performs one already-fenced object deletion or incomplete
-upload cleanup. Neither facade may access D1, claim work, publish state, choose
-retention, or retry. Their VFS callers retain generation commits, quarantine,
-reachability and read-lease fences, credential-envelope opening and
-zeroization, and fenced outcome transitions. Therefore adding a provider
-cannot silently weaken lifecycle safety or inventory publication.
+`driver_lifecycle` performs one already-fenced exact Stat followed by an
+identity-matched object deletion, or aborts one exact incomplete upload.
+Neither facade may access D1, claim work, publish state, choose retention, or
+retry. Their VFS callers retain generation commits, quarantine, reachability
+and read-lease fences, credential-envelope opening and zeroization, and fenced
+outcome transitions. Therefore adding a provider cannot silently weaken
+lifecycle safety or inventory publication. A Stat mismatch is permanently
+blocked with its evidence intact. Provider absence is idempotent success only
+under the same final D1 fence. Cleanup without verified complete-object
+evidence may abort a named multipart upload but must not delete by key.
 
 The inventory facade also owns provider execution reachability, strict config
 decoding, credential decoding, and cursor wire schemas. Its caller uses only

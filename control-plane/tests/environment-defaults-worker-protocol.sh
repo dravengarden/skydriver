@@ -226,6 +226,7 @@ blocked_bytes=$(wc -c <"$blocked_source" | tr -d ' ')
 deleted_bytes=$(wc -c <"$deleted_source" | tr -d ' ')
 blocked_sha=$(sha256sum "$blocked_source" | cut -d ' ' -f 1)
 deleted_sha=$(sha256sum "$deleted_source" | cut -d ' ' -f 1)
+deleted_etag=$(md5sum "$deleted_source" | cut -d ' ' -f 1)
 "${wrangler[@]}" r2 object put \
   carrack-payload-local/lifecycle-fault-injection/blocked \
   --local --persist-to "$state_directory" --file "$blocked_source" >/dev/null
@@ -298,11 +299,11 @@ deleted_sha=$(sha256sum "$deleted_source" | cut -d ' ' -f 1)
      1, 4096, $deleted_bytes, '$deleted_sha', unixepoch()
    );
    INSERT INTO vfs_locations (
-     id, version_id, driver_id, storage_key, size_bytes, object_sha256,
+     id, version_id, driver_id, storage_key, etag, size_bytes, object_sha256,
      created_at, updated_at
    ) VALUES (
      'c2222222222222222222222222222222', 'b2222222222222222222222222222222',
-     'r2-default', 'lifecycle-fault-injection/deleted', $deleted_bytes,
+     'r2-default', 'lifecycle-fault-injection/deleted', '$deleted_etag', $deleted_bytes,
      '$deleted_sha', unixepoch(), unixepoch()
    );
    UPDATE vfs_locations
@@ -483,11 +484,17 @@ curl --silent --show-error --fail-with-body \
    WHERE location.id = 'c4444444444444444444444444444444';" --json |
   jq -e '.[0].results == [{"accepted":1}]' >/dev/null
 
-# A provider-side rejection schedules exponential retry instead of hot-looping
-# on every 15-minute Cron pass. This malformed opaque key crosses the durable
-# identity fence, then fails only at the final hosted R2 adapter boundary.
-retry_bytes=31
-retry_sha=5555555555555555555555555555555555555555555555555555555555555555
+# An exact Stat mismatch permanently blocks deletion and retains provider bytes.
+# The provider object may have been replaced outside Carrack; guessing from its
+# key or treating ETag as a content hash would violate complete-object identity.
+retry_source="$state_directory/lifecycle-identity-mismatch"
+retry_readback="$state_directory/lifecycle-identity-mismatch-readback"
+printf 'provider-identity-mismatch!!\n' >"$retry_source"
+retry_bytes=$(wc -c <"$retry_source" | tr -d ' ')
+retry_sha=$(sha256sum "$retry_source" | cut -d ' ' -f 1)
+"${wrangler[@]}" r2 object put \
+  carrack-payload-local/lifecycle-fault-injection/identity-mismatch \
+  --local --persist-to "$state_directory" --file "$retry_source" >/dev/null
 "${wrangler[@]}" d1 execute CARRACK_INDEX \
   --local --persist-to "$state_directory" --command \
   "INSERT INTO vfs_files (id, filesystem_id, created_at, updated_at)
@@ -507,11 +514,11 @@ retry_sha=5555555555555555555555555555555555555555555555555555555555555555
      1, 4096, $retry_bytes, '$retry_sha', unixepoch()
    );
    INSERT INTO vfs_locations (
-     id, version_id, driver_id, storage_key, size_bytes, object_sha256,
+     id, version_id, driver_id, storage_key, etag, size_bytes, object_sha256,
      created_at, updated_at
    ) VALUES (
      'c5555555555555555555555555555555', 'b5555555555555555555555555555555',
-     'r2-default', 'lifecycle-fault-injection/../provider-rejection', $retry_bytes,
+     'r2-default', 'lifecycle-fault-injection/identity-mismatch', 'wrong-etag', $retry_bytes,
      '$retry_sha', unixepoch(), unixepoch()
    );
    UPDATE vfs_locations
@@ -531,31 +538,34 @@ retry_state=$("${wrangler[@]}" d1 execute CARRACK_INDEX \
    WHERE id = 'c5555555555555555555555555555555';" --json)
 jq -e '
   .[0].results[0] |
-  .state == "retry" and .attempt_count == 1 and
-  .last_error_code == "provider_delete_failed" and .retry_at > .updated_at
+  .state == "blocked" and .attempt_count == 1 and
+  .last_error_code == "provider_identity_mismatch" and .retry_at == null
 ' <<<"$retry_state" >/dev/null
-first_retry_at=$(jq -r '.[0].results[0].retry_at' <<<"$retry_state")
 activity=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" "$base_url/api/admin/activity")
-jq -e --argjson retry_at "$first_retry_at" '
+jq -e '
   .active_items[] | select(.id == "c5555555555555555555555555555555") |
-  .state == "retry" and .deadline_at == $retry_at and
+  .state == "blocked" and .deadline_at != null and
   .attention_required == true
 ' <<<"$activity" >/dev/null
 curl --silent --show-error --fail-with-body \
   "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
 "${wrangler[@]}" d1 execute CARRACK_INDEX \
   --local --persist-to "$state_directory" --command \
-  "SELECT CASE WHEN state = 'retry' AND attempt_count = 1
-                       AND retry_at = $first_retry_at
+  "SELECT CASE WHEN state = 'blocked' AND attempt_count = 1
+                       AND last_error_code = 'provider_identity_mismatch'
      THEN 1 ELSE 0 END AS accepted
    FROM vfs_location_delete_tasks
    WHERE id = 'c5555555555555555555555555555555';" --json |
   jq -e '.[0].results == [{"accepted":1}]' >/dev/null
+"${wrangler[@]}" r2 object get \
+  carrack-payload-local/lifecycle-fault-injection/identity-mismatch \
+  --local --persist-to "$state_directory" --file "$retry_readback" >/dev/null
+cmp "$retry_source" "$retry_readback"
 
 # Abandoned complete uploads and unfinished R2 multipart uploads share the
-# hosted lifecycle, but retain independent fences and retry schedules. A
-# credential-less third-party R2 driver fails only at the provider boundary.
+# hosted lifecycle but retain independent fences. A complete object without
+# usable identity is blocked, while an exact multipart abort remains retryable.
 "${wrangler[@]}" d1 execute CARRACK_INDEX \
   --local --persist-to "$state_directory" --command \
   "INSERT INTO driver_instances (
@@ -622,33 +632,34 @@ curl --silent --show-error --fail-with-body \
   "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
 cleanup_retry_state=$("${wrangler[@]}" d1 execute CARRACK_INDEX \
   --local --persist-to "$state_directory" --command \
-  "SELECT 'put' AS kind, state, attempt_count, last_error_code, retry_at, updated_at
+  "SELECT 'put' AS kind, state, attempt_count, last_error_code, retry_at,
+          server_blocked_at, updated_at
    FROM vfs_put_delete_tasks WHERE id = 'd6666666666666666666666666666666'
    UNION ALL
-   SELECT 'r2', state, attempt_count, last_error_code, retry_at, updated_at
+   SELECT 'r2', state, attempt_count, last_error_code, retry_at, NULL, updated_at
    FROM vfs_r2_upload_cleanup_tasks
    WHERE intent_id = 'd6666666666666666666666666666666'
    ORDER BY kind;" --json)
 jq -e '
   .[0].results | length == 2 and
-  all(.[];
+  (map(select(.kind == "put"))[0] |
     .state == "failed" and .attempt_count == 1 and
-    .last_error_code == (if .kind == "put" then "provider_delete_failed"
-                         else "provider_cleanup_failed" end) and
-    .retry_at > .updated_at
-  )
+    .last_error_code == "credential_incomplete" and
+    .retry_at == null and .server_blocked_at >= .updated_at) and
+  (map(select(.kind == "r2"))[0] |
+    .state == "failed" and .attempt_count == 1 and
+    .last_error_code == "provider_cleanup_failed" and
+    .retry_at > .updated_at)
 ' <<<"$cleanup_retry_state" >/dev/null
-put_retry_at=$(jq -r '.[0].results[] | select(.kind == "put") | .retry_at' \
-  <<<"$cleanup_retry_state")
 r2_retry_at=$(jq -r '.[0].results[] | select(.kind == "r2") | .retry_at' \
   <<<"$cleanup_retry_state")
 cleanup_activity=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" "$base_url/api/admin/activity")
-jq -e --argjson put_retry_at "$put_retry_at" --argjson r2_retry_at "$r2_retry_at" '
+jq -e --argjson r2_retry_at "$r2_retry_at" '
   any(.active_items[];
     .kind == "put_cleanup" and
     .id == "d6666666666666666666666666666666" and
-    .deadline_at == $put_retry_at and .attention_required == true
+    .deadline_at != null and .attention_required == true
   ) and
   any(.active_items[];
     .kind == "r2_upload_cleanup" and
@@ -661,7 +672,8 @@ curl --silent --show-error --fail-with-body \
 "${wrangler[@]}" d1 execute CARRACK_INDEX \
   --local --persist-to "$state_directory" --command \
   "SELECT CASE WHEN
-       (SELECT attempt_count = 1 AND retry_at = $put_retry_at
+       (SELECT attempt_count = 1 AND retry_at IS NULL
+               AND server_blocked_at IS NOT NULL
         FROM vfs_put_delete_tasks
         WHERE id = 'd6666666666666666666666666666666')
        AND

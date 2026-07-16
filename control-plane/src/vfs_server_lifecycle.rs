@@ -18,6 +18,9 @@ struct DeleteTask {
     id: String,
     expected_location_revision: u64,
     native_id: Option<String>,
+    provider_version: Option<String>,
+    etag: Option<String>,
+    size_bytes: u64,
     storage_key: String,
     fencing_token: u64,
     kind: String,
@@ -254,18 +257,11 @@ async fn delete_one_abandoned_put(env: &Env, database: &D1Database, now: u64) ->
     }
     let outcome = delete_through_driver(env, driver_kind, &task).await;
     match outcome {
-        Ok(()) => complete_abandoned_put(database, &task, now).await,
-        Err(error) => {
-            worker::console_error!("server abandoned-Put delete {} failed: {error:?}", task.id);
-            fail_abandoned_put(
-                database,
-                &id,
-                task.fencing_token,
-                now,
-                "provider_delete_failed",
-                false,
-            )
-            .await
+        Ok(outcome) => complete_abandoned_put(database, &task, outcome, now).await,
+        Err(failure) => {
+            let (code, blocked) = failure_disposition(failure);
+            worker::console_error!("server abandoned-Put delete {} failed: {code}", task.id);
+            fail_abandoned_put(database, &id, task.fencing_token, now, code, blocked).await
         }
     }
 }
@@ -278,7 +274,9 @@ async fn load_abandoned_put(
     database
         .prepare(
             "SELECT task.id, 1 AS expected_location_revision,
-                    evidence.native_id, intent.storage_key, task.fencing_token,
+                    evidence.native_id, evidence.provider_version, evidence.etag,
+                    evidence.encoded_bytes AS size_bytes,
+                    intent.storage_key, task.fencing_token,
                     driver.kind, driver.config_json,
                     credential.id AS credential_id,
                     credential.envelope_algorithm AS credential_algorithm,
@@ -300,18 +298,27 @@ async fn load_abandoned_put(
         .await
 }
 
-async fn complete_abandoned_put(database: &D1Database, task: &DeleteTask, now: u64) -> Result<()> {
+async fn complete_abandoned_put(
+    database: &D1Database,
+    task: &DeleteTask,
+    outcome: driver_lifecycle::DeleteOutcome,
+    now: u64,
+) -> Result<()> {
     database
         .prepare(
             "UPDATE vfs_put_delete_tasks
              SET state = 'deleted', owner_token_id = NULL, incarnation = NULL,
                  lease_expires_at = NULL, retry_at = NULL,
-                 completion_outcome = 'deleted',
-                 completed_at = ?1, updated_at = ?1
-             WHERE id = ?2 AND state = 'claimed' AND fencing_token = ?3
+                 completion_outcome = ?1,
+                 completed_at = ?2, updated_at = ?2
+             WHERE id = ?3 AND state = 'claimed' AND fencing_token = ?4
                AND id IN (SELECT id FROM safe_vfs_put_delete_tasks)",
         )
         .bind(&[
+            JsValue::from_str(match outcome {
+                driver_lifecycle::DeleteOutcome::Deleted => "deleted",
+                driver_lifecycle::DeleteOutcome::AlreadyAbsent => "already_absent",
+            }),
             integer(now),
             JsValue::from_str(&task.id),
             integer(task.fencing_token),
@@ -339,14 +346,14 @@ async fn fail_abandoned_put(
             "UPDATE vfs_put_delete_tasks
              SET state = 'failed', owner_token_id = NULL, incarnation = NULL,
                  lease_expires_at = NULL, retry_at = ?1, last_error_code = ?2,
-                 server_blocked_at = CASE WHEN ?3 = 1 THEN ?4 ELSE NULL END,
+                 server_blocked_at = ?3,
                  updated_at = ?4
              WHERE id = ?5 AND state = 'claimed' AND fencing_token = ?6",
         )
         .bind(&[
             retry_at,
             JsValue::from_str(code),
-            integer(u64::from(blocked)),
+            if blocked { integer(now) } else { JsValue::NULL },
             integer(now),
             JsValue::from_str(id),
             integer(fencing_token),
@@ -486,16 +493,17 @@ async fn delete_one(env: &Env, database: &D1Database, now: u64) -> Result<()> {
     }
     let outcome = delete_through_driver(env, driver_kind, &task).await;
     match outcome {
-        Ok(()) => complete(database, &task, now).await,
-        Err(error) => {
-            worker::console_error!("server lifecycle delete {} failed: {error:?}", task.id);
+        Ok(_) => complete(database, &task, now).await,
+        Err(failure) => {
+            let (code, blocked) = failure_disposition(failure);
+            worker::console_error!("server lifecycle delete {} failed: {code}", task.id);
             fail(
                 database,
                 &task.id,
                 task.fencing_token,
                 now,
-                "provider_delete_failed",
-                "retry",
+                code,
+                if blocked { "blocked" } else { "retry" },
             )
             .await
         }
@@ -505,7 +513,8 @@ async fn delete_one(env: &Env, database: &D1Database, now: u64) -> Result<()> {
 async fn load_revalidated(database: &D1Database, id: &str, now: u64) -> Result<Option<DeleteTask>> {
     database
         .prepare(
-            "SELECT task.id, task.expected_location_revision, task.native_id, task.storage_key,
+            "SELECT task.id, task.expected_location_revision, task.native_id,
+                    task.provider_version, task.etag, task.size_bytes, task.storage_key,
                     task.fencing_token, driver.kind, driver.config_json,
                     credential.id AS credential_id,
                     credential.envelope_algorithm AS credential_algorithm,
@@ -522,7 +531,11 @@ async fn load_revalidated(database: &D1Database, id: &str, now: u64) -> Result<O
                AND location.revision = task.expected_location_revision
                AND location.driver_id = task.driver_id
                AND location.storage_key = task.storage_key
+               AND location.native_id IS task.native_id
+               AND location.provider_version IS task.provider_version
+               AND location.etag IS task.etag
                AND location.size_bytes = task.size_bytes
+               AND task.delete_after <= ?2
                AND driver.enabled = 1 AND driver.revision = task.driver_revision
                AND NOT EXISTS (
                    SELECT 1 FROM vfs_read_leases AS lease
@@ -535,7 +548,11 @@ async fn load_revalidated(database: &D1Database, id: &str, now: u64) -> Result<O
         .await
 }
 
-async fn delete_through_driver(env: &Env, kind: DriverKind, task: &DeleteTask) -> Result<()> {
+async fn delete_through_driver(
+    env: &Env,
+    kind: DriverKind,
+    task: &DeleteTask,
+) -> std::result::Result<driver_lifecycle::DeleteOutcome, driver_lifecycle::DeleteFailure> {
     let mut plaintext = open_optional_credential(
         env,
         task.credential_id.as_deref(),
@@ -544,13 +561,19 @@ async fn delete_through_driver(env: &Env, kind: DriverKind, task: &DeleteTask) -
         task.credential_nonce.as_deref(),
         task.credential_ciphertext.as_deref(),
         task.credential_revision,
-    )?;
+    )
+    .map_err(|_| driver_lifecycle::DeleteFailure::Blocked("credential_envelope_invalid"))?;
     let result = driver_lifecycle::delete_object(
         env,
         kind,
         &task.config_json,
         &task.storage_key,
-        task.native_id.as_deref(),
+        driver_lifecycle::ExpectedIdentity {
+            native_id: task.native_id.as_deref(),
+            provider_version: task.provider_version.as_deref(),
+            etag: task.etag.as_deref(),
+            size_bytes: task.size_bytes,
+        },
         plaintext.as_deref(),
     )
     .await;
@@ -558,6 +581,15 @@ async fn delete_through_driver(env: &Env, kind: DriverKind, task: &DeleteTask) -
         value.zeroize();
     }
     result
+}
+
+fn failure_disposition(failure: driver_lifecycle::DeleteFailure) -> (&'static str, bool) {
+    match failure {
+        driver_lifecycle::DeleteFailure::Retry(code)
+        | driver_lifecycle::DeleteFailure::Reauthenticate(code) => (code, false),
+        driver_lifecycle::DeleteFailure::IdentityMismatch => ("provider_identity_mismatch", true),
+        driver_lifecycle::DeleteFailure::Blocked(code) => (code, true),
+    }
 }
 
 async fn cleanup_r2_upload_through_driver(env: &Env, task: &R2CleanupTask) -> Result<()> {
@@ -757,5 +789,19 @@ mod tests {
         assert!((60..=120).contains(&retry_delay(1, 60)));
         assert!(retry_delay(2, 2) > retry_delay(1, 1));
         assert!(retry_delay(100, 60) <= 6 * 60 * 60 + 60);
+    }
+
+    #[test]
+    fn identity_mismatch_is_never_retried_or_deleted() {
+        assert_eq!(
+            failure_disposition(driver_lifecycle::DeleteFailure::IdentityMismatch),
+            ("provider_identity_mismatch", true)
+        );
+        assert_eq!(
+            failure_disposition(driver_lifecycle::DeleteFailure::Retry(
+                "provider_unavailable"
+            )),
+            ("provider_unavailable", false)
+        );
     }
 }

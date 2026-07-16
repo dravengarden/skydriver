@@ -192,6 +192,12 @@ if ! rg -q "state = 'scanning' AND cursor IS" control-plane/src/vfs_provider_inv
   echo "provider inventory publication must fence every page by generation and input cursor" >&2
   exit 1
 fi
+if ! rg -q 'provider_identity_mismatch' control-plane/src/vfs_server_lifecycle.rs \
+  || ! rg -q '\.head\(&key\)' control-plane/src/driver_lifecycle.rs \
+  || ! rg -q 'stat_from_plaintext' control-plane/src/driver_lifecycle.rs; then
+  echo "hosted lifecycle must exact-Stat provider identity before Delete" >&2
+  exit 1
+fi
 if rg --line-number 'management_driver_registration::' \
   control-plane/src/management_driver_configuration.rs \
   control-plane/src/management_driver_credentials.rs; then
