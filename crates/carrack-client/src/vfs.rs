@@ -9,11 +9,19 @@ use carrack_sdk_core::{
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+use unicode_normalization::UnicodeNormalization as _;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{Client, Error, OptionalBytesResponse, catalog::CatalogCheckpointCondition};
+use crate::{
+    Client, Error, OptionalBytesResponse,
+    catalog::{CatalogCheckpointCondition, CatalogEntry, merkle_entry},
+};
 
 const TOKEN_BYTES: usize = 32;
+const DEFAULT_DIRECTORY_PAGE_SIZE: usize = 200;
+const MAXIMUM_DIRECTORY_PAGE_SIZE: u32 = 1_000;
+const ENCRYPTED_SUITE: &str = "carrack-vfs-aes256gcm-hkdfsha256-v1";
+const PLAINTEXT_SUITE: &str = "plaintext/v1";
 
 /// One canonical 256-bit VFS bearer.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
@@ -45,7 +53,7 @@ impl VfsToken {
 }
 
 /// Non-secret VFS session identity used for path resolution.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VfsSession {
     /// Stable schema identity.
@@ -78,7 +86,7 @@ pub(crate) enum CatalogCheckpointOutcome {
 }
 
 /// One live directory and its optimistic revisions.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Directory {
     /// Stable directory identity.
@@ -436,9 +444,12 @@ impl VfsClient {
     /// Returns an authentication, protocol, or transport error.
     pub async fn session(&self) -> Result<VfsSession, Error> {
         let token = self.token.encode();
-        self.control
+        let session = self
+            .control
             .send_json::<VfsSession, ()>(Method::GET, "api/v2/session", Some(&token), &[], None)
-            .await
+            .await?;
+        validate_session(&session)?;
+        Ok(session)
     }
 
     #[allow(
@@ -605,6 +616,12 @@ impl VfsClient {
         cursor: Option<&str>,
         limit: u32,
     ) -> Result<DirectoryPage, Error> {
+        validate_nonzero_hex::<16>(directory_id, "VFS directory identity")?;
+        if limit > MAXIMUM_DIRECTORY_PAGE_SIZE {
+            return Err(Error::InvalidEndpoint(
+                "VFS directory page limit exceeds 1000".to_owned(),
+            ));
+        }
         let mut query = Vec::new();
         if let Some(cursor) = cursor {
             query.push(("cursor", cursor.to_owned()));
@@ -613,7 +630,8 @@ impl VfsClient {
             query.push(("limit", limit.to_string()));
         }
         let token = self.token.encode();
-        self.control
+        let page = self
+            .control
             .send_json::<DirectoryPage, ()>(
                 Method::GET,
                 &format!("api/v2/directories/{directory_id}/entries"),
@@ -621,7 +639,17 @@ impl VfsClient {
                 &query,
                 None,
             )
-            .await
+            .await?;
+        validate_directory_page(
+            &page,
+            directory_id,
+            if limit == 0 {
+                DEFAULT_DIRECTORY_PAGE_SIZE
+            } else {
+                limit as usize
+            },
+        )?;
+        Ok(page)
     }
 
     /// Lists every entry in a directory while preserving one revision.
@@ -631,18 +659,32 @@ impl VfsClient {
     /// Returns an error when a page is rejected, malformed, or changes revision.
     pub async fn list_all(&self, directory_id: &str) -> Result<DirectoryPage, Error> {
         let mut page = self.list_directory(directory_id, None, 1_000).await?;
+        let expected_directory = page.directory.clone();
+        let expected_root =
+            validate_nonzero_hex::<32>(&expected_directory.data_root, "VFS directory data root")?;
+        let mut accumulator = carrack_sdk_core::DirectoryMerkleAccumulator::new();
+        authenticate_directory_entries(&mut accumulator, &page.entries)?;
         let mut cursor = page.next_cursor.take();
         while let Some(next) = cursor {
             let mut continuation = self
                 .list_directory(directory_id, Some(&next), 1_000)
                 .await?;
-            if continuation.directory.revision != page.directory.revision {
+            if continuation.directory != expected_directory {
                 return Err(Error::InvalidResponse(
-                    "directory revision changed across pages".to_owned(),
+                    "directory identity changed across pages".to_owned(),
                 ));
             }
+            authenticate_directory_entries(&mut accumulator, &continuation.entries)?;
             page.entries.append(&mut continuation.entries);
             cursor = continuation.next_cursor.take();
+        }
+        let actual_root = accumulator
+            .finish()
+            .map_err(|error| Error::InvalidResponse(error.to_string()))?;
+        if actual_root != expected_root {
+            return Err(Error::InvalidResponse(
+                "paged VFS directory Merkle root differs".to_owned(),
+            ));
         }
         Ok(page)
     }
@@ -1246,6 +1288,102 @@ struct RevokeTokenRequest<'a> {
     idempotency_key: &'a str,
 }
 
+fn validate_session(session: &VfsSession) -> Result<(), Error> {
+    if session.schema != "carrack.vfs.session.v1" || session.expires_at == 0 {
+        return Err(Error::InvalidResponse(
+            "VFS session identity differs".to_owned(),
+        ));
+    }
+    validate_nonzero_hex::<16>(&session.token_id, "VFS session token identity")?;
+    validate_nonzero_hex::<16>(&session.principal_id, "VFS session principal identity")?;
+    validate_nonzero_hex::<16>(
+        &session.root_directory_id,
+        "VFS session root directory identity",
+    )?;
+    Ok(())
+}
+
+fn validate_directory_page(
+    page: &DirectoryPage,
+    requested_directory_id: &str,
+    maximum_entries: usize,
+) -> Result<(), Error> {
+    if page.schema != "carrack.vfs.directory-list.v1"
+        || page.directory.id != requested_directory_id
+        || page.entries.len() > maximum_entries
+        || (page.next_cursor.is_some() && page.entries.is_empty())
+    {
+        return Err(Error::InvalidResponse(
+            "VFS directory page identity differs".to_owned(),
+        ));
+    }
+    validate_directory(&page.directory)?;
+    let mut accumulator = carrack_sdk_core::DirectoryMerkleAccumulator::new();
+    authenticate_directory_entries(&mut accumulator, &page.entries)
+}
+
+fn validate_directory(directory: &Directory) -> Result<(), Error> {
+    validate_nonzero_hex::<16>(&directory.id, "VFS directory identity")?;
+    validate_nonzero_hex::<16>(&directory.filesystem_id, "VFS filesystem identity")?;
+    if let Some(parent_id) = directory.parent_id.as_deref() {
+        validate_nonzero_hex::<16>(parent_id, "VFS parent directory identity")?;
+    }
+    validate_nonzero_hex::<32>(&directory.data_root, "VFS directory data root")?;
+    let root_name = directory.parent_id.is_none() && directory.name.is_empty();
+    let child_name = directory.parent_id.is_some() && canonical_entry_name(&directory.name);
+    if (!root_name && !child_name)
+        || !matches!(
+            directory.crypto_suite.as_str(),
+            ENCRYPTED_SUITE | PLAINTEXT_SUITE
+        )
+        || directory.active_key_epoch == 0
+        || directory.revision == 0
+        || directory.acl_revision == 0
+        || directory.placement_revision == 0
+    {
+        return Err(Error::InvalidResponse(
+            "VFS directory identity is invalid".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn authenticate_directory_entries(
+    accumulator: &mut carrack_sdk_core::DirectoryMerkleAccumulator,
+    entries: &[DirectoryEntry],
+) -> Result<(), Error> {
+    for entry in entries {
+        if entry.revision == 0 || entry.updated_at == 0 {
+            return Err(Error::InvalidResponse(
+                "VFS directory entry revision is invalid".to_owned(),
+            ));
+        }
+        let catalog_entry = CatalogEntry::from(entry);
+        accumulator
+            .push(&merkle_entry(&catalog_entry)?)
+            .map_err(|error| Error::InvalidResponse(error.to_string()))?;
+    }
+    Ok(())
+}
+
+fn validate_nonzero_hex<const N: usize>(value: &str, context: &str) -> Result<[u8; N], Error> {
+    let decoded = carrack_sdk_core::decode_lower_hex::<N>(value)
+        .map_err(|error| Error::InvalidResponse(format!("{context}: {error}")))?;
+    if decoded.iter().all(|byte| *byte == 0) {
+        return Err(Error::InvalidResponse(format!("{context} is zero")));
+    }
+    Ok(decoded)
+}
+
+fn canonical_entry_name(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value.len() <= 255
+        && !value.contains(['/', '\0'])
+        && value.nfc().eq(value.chars())
+}
+
 pub(crate) fn canonical_components(path: &str) -> Result<Vec<String>, Error> {
     if !path.starts_with('/') || path.contains('\0') {
         return Err(Error::InvalidResponse(
@@ -1301,6 +1439,111 @@ mod tests {
             root_directory_id: "202122232425262728292a2b2c2d2e2f".to_owned(),
             expires_at: 2_000_000_000,
         }
+    }
+
+    fn empty_directory_page(data_root: &str) -> serde_json::Value {
+        serde_json::json!({
+            "schema": "carrack.vfs.directory-list.v1",
+            "directory": {
+                "id": "202122232425262728292a2b2c2d2e2f",
+                "filesystem_id": "101112131415161718191a1b1c1d1e1f",
+                "parent_id": null,
+                "name": "",
+                "data_root": data_root,
+                "crypto_suite": "carrack-vfs-aes256gcm-hkdfsha256-v1",
+                "active_key_epoch": 1,
+                "acl_inherits": false,
+                "revision": 1,
+                "acl_revision": 1,
+                "placement_revision": 1
+            },
+            "entries": [],
+            "next_cursor": null
+        })
+    }
+
+    #[tokio::test]
+    async fn session_rejects_noncanonical_server_identity() {
+        let server = MockServer::start_async().await;
+        let delivery = server
+            .mock_async(|when, then| {
+                when.method(GET).path("/api/v2/session");
+                then.status(200).json_body(serde_json::json!({
+                    "schema": "carrack.vfs.session.v1",
+                    "token_id": "NOT-CANONICAL",
+                    "principal_id": "404142434445464748494a4b4c4d4e4f",
+                    "root_directory_id": "202122232425262728292a2b2c2d2e2f",
+                    "expires_at": 2_000_000_000_u64
+                }));
+            })
+            .await;
+
+        assert!(matches!(
+            client(&server).session().await,
+            Err(Error::InvalidResponse(message))
+                if message.contains("VFS session token identity")
+        ));
+        delivery.assert_hits_async(1).await;
+    }
+
+    #[tokio::test]
+    async fn list_directory_rejects_malformed_entry_union() {
+        let server = MockServer::start_async().await;
+        let root = hex::encode(directory_merkle_root(&[]).expect("empty root"));
+        let mut body = empty_directory_page(&root);
+        body["entries"] = serde_json::json!([{
+            "name": "child",
+            "kind": "directory",
+            "file_id": "303132333435363738393a3b3c3d3e3f",
+            "version_id": null,
+            "child_directory_id": "404142434445464748494a4b4c4d4e4f",
+            "size_bytes": 0,
+            "data_root": root,
+            "metadata_root": null,
+            "revision": 1,
+            "updated_at": 1_700_000_000_u64
+        }]);
+        let delivery = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/api/v2/directories/202122232425262728292a2b2c2d2e2f/entries")
+                    .query_param("limit", "1000");
+                then.status(200).json_body(body);
+            })
+            .await;
+
+        assert!(matches!(
+            client(&server)
+                .list_directory("202122232425262728292a2b2c2d2e2f", None, 1_000)
+                .await,
+            Err(Error::InvalidResponse(message))
+                if message == "catalog directory entry union is invalid"
+        ));
+        delivery.assert_hits_async(1).await;
+    }
+
+    #[tokio::test]
+    async fn list_all_authenticates_complete_directory_root() {
+        let server = MockServer::start_async().await;
+        let delivery = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/api/v2/directories/202122232425262728292a2b2c2d2e2f/entries")
+                    .query_param("limit", "1000");
+                then.status(200).json_body(empty_directory_page(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ));
+            })
+            .await;
+
+        assert!(matches!(
+            client(&server)
+                .list_all("202122232425262728292a2b2c2d2e2f")
+                .await,
+            Err(Error::InvalidResponse(message))
+                if message == "paged VFS directory Merkle root differs"
+        ));
+        delivery.assert_hits_async(1).await;
     }
 
     #[tokio::test]

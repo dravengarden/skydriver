@@ -230,6 +230,13 @@ for local incremental planning. Unchanged verified files require no provider
 read, and changed files request grants directly by immutable version rather
 than resolving every path again.
 
+The native metadata boundary rejects noncanonical session and directory
+identities, malformed entry unions, unsupported suites, unordered page
+contents, and oversized responses before exposing them to callers. A complete
+paginated directory additionally requires every continuation to retain the
+exact directory identity and its ordered entries to reconstruct the advertised
+Merkle root. A revision match alone is not an authenticated directory view.
+
 The Worker delivers the current checkpoint when the authenticated token is live
 and nonsnapshot, has both `directory.list` and `content.read`, passes its current
 inherited ACL checks, and has no descendant ACL inheritance break. A physical
