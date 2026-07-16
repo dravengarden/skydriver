@@ -5,7 +5,9 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    io::{Read, Write},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 use zeroize::Zeroize;
@@ -17,6 +19,9 @@ use crate::{
     integrity,
     transfer::TransferTelemetry,
 };
+
+const VERIFIED_OUTPUT_COPY_BUFFER_BYTES: usize = 1024 * 1024;
+static VERIFIED_OUTPUT_ORDINAL: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Serialize)]
 struct CompletionRequest {
@@ -82,6 +87,14 @@ pub struct GetResult {
     pub warnings: Vec<String>,
 }
 
+/// Verified in-memory complete-file download.
+pub struct GetBytesResult {
+    /// Transfer and integrity receipt.
+    pub transfer: GetResult,
+    /// Complete verified plaintext bytes.
+    pub bytes: Vec<u8>,
+}
+
 /// Hidden resumable provider pipeline settings for one file download.
 pub struct GetOptions {
     /// Private absolute encoded-download staging directory.
@@ -130,29 +143,71 @@ impl VfsClient {
         options: &GetOptions,
     ) -> Result<GetResult, Error> {
         validate_options(options)?;
-        let resolved = self.resolve(vfs_path).await?;
-        let entry = resolved
-            .entry
-            .ok_or_else(|| Error::InvalidResponse("cannot download the VFS root".to_owned()))?;
-        if entry.kind != crate::EntryKind::File {
-            return Err(Error::InvalidResponse(
-                "download target is not a file".to_owned(),
-            ));
-        }
-        let file_id = entry
-            .file_id
-            .as_deref()
-            .ok_or_else(|| Error::InvalidResponse("file entry omitted file identity".to_owned()))?;
-        let version_id = entry.version_id.as_deref().ok_or_else(|| {
-            Error::InvalidResponse("file entry omitted version identity".to_owned())
-        })?;
-        self.get_expected_file(
-            vfs_path,
-            DownloadExpectation::new(file_id, version_id, entry.size_bytes, &entry.data_root),
-            destination,
-            options,
-        )
-        .await
+        let resolved = resolve_file_download(self, vfs_path).await?;
+        self.get_file_version(vfs_path, resolved.expectation(), destination, options)
+            .await
+    }
+
+    /// Downloads and verifies one complete file before returning its bytes.
+    ///
+    /// The declared maximum is checked before provider I/O and bounds the
+    /// returned allocation. Plaintext is never returned before its Merkle root
+    /// and exact length have been verified.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the immutable file exceeds `maximum_bytes`, download or
+    /// verification fails, or the private verified-output spool cannot be read.
+    pub async fn get_bytes(
+        &self,
+        vfs_path: &str,
+        maximum_bytes: u64,
+        options: &GetOptions,
+    ) -> Result<GetBytesResult, Error> {
+        validate_options(options)?;
+        validate_output_maximum(maximum_bytes)?;
+        let resolved = resolve_file_download(self, vfs_path).await?;
+        validate_output_bound(resolved.plaintext_bytes, maximum_bytes)?;
+        let spool = VerifiedOutputSpool::new(&options.staging_directory)?;
+        let transfer = self
+            .get_file_version(vfs_path, resolved.expectation(), spool.path(), options)
+            .await?;
+        let mut bytes =
+            Vec::with_capacity(usize::try_from(transfer.plaintext_bytes).map_err(|_| {
+                Error::InvalidResponse("verified output exceeds this platform".to_owned())
+            })?);
+        copy_verified_output(&spool, &mut bytes, transfer.plaintext_bytes, maximum_bytes)?;
+        Ok(GetBytesResult { transfer, bytes })
+    }
+
+    /// Downloads and verifies one complete file before writing it to `writer`.
+    ///
+    /// No bytes are emitted until the private plaintext spool has passed exact
+    /// length and Merkle-root verification. The synchronous writer is consumed
+    /// inline after verification so cancellation cannot leave a detached worker
+    /// mutating it after this future returns.
+    ///
+    /// # Errors
+    ///
+    /// Fails before provider I/O when the immutable file exceeds
+    /// `maximum_bytes`, or when download, verification, or writer I/O fails.
+    pub async fn get_writer<W: Write>(
+        &self,
+        vfs_path: &str,
+        mut writer: W,
+        maximum_bytes: u64,
+        options: &GetOptions,
+    ) -> Result<(GetResult, W), Error> {
+        validate_options(options)?;
+        validate_output_maximum(maximum_bytes)?;
+        let resolved = resolve_file_download(self, vfs_path).await?;
+        validate_output_bound(resolved.plaintext_bytes, maximum_bytes)?;
+        let spool = VerifiedOutputSpool::new(&options.staging_directory)?;
+        let transfer = self
+            .get_file_version(vfs_path, resolved.expectation(), spool.path(), options)
+            .await?;
+        copy_verified_output(&spool, &mut writer, transfer.plaintext_bytes, maximum_bytes)?;
+        Ok((transfer, writer))
     }
 
     pub(crate) async fn get_file_version(
@@ -297,6 +352,184 @@ impl VfsClient {
             provider_elapsed,
         ))
     }
+}
+
+struct ResolvedFileDownload {
+    file_id: String,
+    version_id: String,
+    plaintext_bytes: u64,
+    file_root: String,
+}
+
+impl ResolvedFileDownload {
+    fn expectation(&self) -> DownloadExpectation<'_> {
+        DownloadExpectation::new(
+            &self.file_id,
+            &self.version_id,
+            self.plaintext_bytes,
+            &self.file_root,
+        )
+    }
+}
+
+async fn resolve_file_download(
+    client: &VfsClient,
+    vfs_path: &str,
+) -> Result<ResolvedFileDownload, Error> {
+    let resolved = client.resolve(vfs_path).await?;
+    let entry = resolved
+        .entry
+        .ok_or_else(|| Error::InvalidResponse("cannot download the VFS root".to_owned()))?;
+    if entry.kind != crate::EntryKind::File {
+        return Err(Error::InvalidResponse(
+            "download target is not a file".to_owned(),
+        ));
+    }
+    Ok(ResolvedFileDownload {
+        file_id: entry
+            .file_id
+            .ok_or_else(|| Error::InvalidResponse("file entry omitted file identity".to_owned()))?,
+        version_id: entry.version_id.ok_or_else(|| {
+            Error::InvalidResponse("file entry omitted version identity".to_owned())
+        })?,
+        plaintext_bytes: entry.size_bytes,
+        file_root: entry.data_root,
+    })
+}
+
+struct VerifiedOutputSpool {
+    directory: PathBuf,
+    path: PathBuf,
+}
+
+impl VerifiedOutputSpool {
+    fn new(staging_root: &Path) -> Result<Self, Error> {
+        let root = staging_root.join("verified-outputs");
+        std::fs::create_dir_all(&root).map_err(|error| {
+            Error::InvalidResponse(format!("create verified output root: {error}"))
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).map_err(
+                |error| Error::InvalidResponse(format!("protect verified output root: {error}")),
+            )?;
+        }
+        loop {
+            let ordinal = VERIFIED_OUTPUT_ORDINAL.fetch_add(1, Ordering::Relaxed);
+            let directory = root.join(format!(".output-{}-{ordinal:016x}", std::process::id()));
+            match std::fs::create_dir(&directory) {
+                Ok(()) => {
+                    let spool = Self {
+                        path: directory.join("plaintext"),
+                        directory,
+                    };
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt as _;
+                        std::fs::set_permissions(
+                            &spool.directory,
+                            std::fs::Permissions::from_mode(0o700),
+                        )
+                        .map_err(|error| {
+                            Error::InvalidResponse(format!(
+                                "protect verified output directory: {error}"
+                            ))
+                        })?;
+                    }
+                    return Ok(spool);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => {
+                    return Err(Error::InvalidResponse(format!(
+                        "create verified output directory: {error}"
+                    )));
+                }
+            }
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for VerifiedOutputSpool {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_dir(&self.directory);
+    }
+}
+
+fn validate_output_bound(plaintext_bytes: u64, maximum_bytes: u64) -> Result<(), Error> {
+    validate_output_maximum(maximum_bytes)?;
+    if plaintext_bytes > maximum_bytes {
+        return Err(Error::InvalidResponse(
+            "download exceeds the declared output byte bound".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_output_maximum(maximum_bytes: u64) -> Result<(), Error> {
+    if maximum_bytes == 0 {
+        return Err(Error::InvalidResponse(
+            "download output maximum bytes must be nonzero".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn copy_verified_output<W: Write>(
+    spool: &VerifiedOutputSpool,
+    writer: &mut W,
+    expected_bytes: u64,
+    maximum_bytes: u64,
+) -> Result<(), Error> {
+    validate_output_bound(expected_bytes, maximum_bytes)?;
+    let mut input = std::fs::File::open(spool.path())
+        .map_err(|error| Error::InvalidResponse(format!("open verified output: {error}")))?;
+    let observed_bytes = input
+        .metadata()
+        .map_err(|error| Error::InvalidResponse(format!("inspect verified output: {error}")))?
+        .len();
+    if observed_bytes != expected_bytes {
+        return Err(Error::failure(
+            crate::FailureKind::CorruptPlaintext,
+            "verified output length changed before emission",
+        ));
+    }
+    let mut buffer = vec![0_u8; VERIFIED_OUTPUT_COPY_BUFFER_BYTES];
+    let mut copied = 0_u64;
+    loop {
+        let read = input
+            .read(&mut buffer)
+            .map_err(|error| Error::InvalidResponse(format!("read verified output: {error}")))?;
+        if read == 0 {
+            break;
+        }
+        copied = copied
+            .checked_add(read as u64)
+            .ok_or_else(|| Error::InvalidResponse("verified output size overflow".to_owned()))?;
+        if copied > expected_bytes {
+            return Err(Error::failure(
+                crate::FailureKind::CorruptPlaintext,
+                "verified output grew before emission completed",
+            ));
+        }
+        writer
+            .write_all(&buffer[..read])
+            .map_err(|error| Error::InvalidResponse(format!("write verified output: {error}")))?;
+    }
+    if copied != expected_bytes {
+        return Err(Error::failure(
+            crate::FailureKind::CorruptPlaintext,
+            "verified output changed before emission completed",
+        ));
+    }
+    writer
+        .flush()
+        .map_err(|error| Error::InvalidResponse(format!("flush verified output: {error}")))
 }
 
 fn verify_and_publish_plaintext(
@@ -490,7 +723,12 @@ fn parse_identifier(value: &str) -> Result<[u8; 16], Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{publish_no_replace, verify_and_publish_plaintext, verify_plaintext_identity};
+    use std::io::Cursor;
+
+    use super::{
+        VerifiedOutputSpool, copy_verified_output, publish_no_replace,
+        verify_and_publish_plaintext, verify_plaintext_identity,
+    };
 
     #[test]
     fn distinguishes_plaintext_merkle_divergence() {
@@ -531,5 +769,40 @@ mod tests {
             std::fs::read(&destination).expect("read destination"),
             b"old"
         );
+    }
+
+    #[test]
+    fn verified_output_is_private_bounded_and_raii_cleaned() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let spool = VerifiedOutputSpool::new(temporary.path()).expect("verified output spool");
+        let directory = spool.directory.clone();
+        std::fs::write(spool.path(), b"verified").expect("write verified output");
+        let mut writer = Cursor::new(Vec::new());
+        copy_verified_output(&spool, &mut writer, 8, 8).expect("copy verified output");
+        assert_eq!(writer.into_inner(), b"verified");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(&directory)
+                    .expect("verified output directory metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
+        drop(spool);
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn verified_output_bound_fails_before_writer_emission() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let spool = VerifiedOutputSpool::new(temporary.path()).expect("verified output spool");
+        std::fs::write(spool.path(), b"verified").expect("write verified output");
+        let mut writer = Cursor::new(Vec::new());
+        copy_verified_output(&spool, &mut writer, 8, 7).expect_err("reject output above bound");
+        assert!(writer.into_inner().is_empty());
     }
 }

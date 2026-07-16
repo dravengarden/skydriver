@@ -300,6 +300,14 @@ bound fail before control-plane or provider I/O. Cancellation and every error
 path remove the private spool; the verified complete-object pipeline remains
 the sole publication path.
 
+`get_bytes` and `get_writer` require a nonzero maximum output size and reject an
+oversized immutable version before provider I/O. Both reuse the ordinary
+resumable file pipeline inside a unique mode-0700 private directory. The client
+emits bytes only after exact length and plaintext Merkle verification succeeds;
+it retains no alternate verification-before-completion path. Writer I/O runs
+inline after verification so cancellation cannot detach a background task that
+continues mutating the caller's writer after the future returns.
+
 The canonical Rust client exposes the high-level filesystem methods and owns
 prepare, transfer, and commit internally. Callers may schedule independent file
 operations and supply bytes, local files, replayable readers, bounded range

@@ -48,7 +48,7 @@ pub use admin::{
     TransferMetrics,
 };
 
-pub use download::{GetOptions, GetResult};
+pub use download::{GetBytesResult, GetOptions, GetResult};
 pub use sync::{SyncOptions, SyncResult};
 pub use transfer::{
     BoundedRangeUploadSource, PutOptions, PutReceipt, PutResult, ReplayableUploadSource,
