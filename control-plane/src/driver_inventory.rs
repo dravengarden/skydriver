@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use worker::{Env, Fetch, Headers, Method, Request, RequestInit, Result, wasm_bindgen::JsValue};
 
-use crate::{driver_credentials::AliyunCredential, r2_signing};
+use crate::{driver_credentials::AliyunCredential, environment_defaults, r2_signing};
 
 const PAGE_SIZE: u32 = 100;
 const MAXIMUM_ALIYUN_PAGES_PER_RUN: usize = 8;
@@ -80,19 +80,35 @@ pub(crate) async fn list_page(
     kind: DriverKind,
     config_json: &str,
     cursor: Option<&str>,
-    aliyun_credential: Option<&AliyunCredential>,
+    credential_plaintext: Option<&[u8]>,
 ) -> Result<ProviderPage> {
     match kind {
         DriverKind::R2V1 => list_r2_page(env, config_json, cursor).await,
         DriverKind::AliyunDriveOpenV2 => {
-            let credential = aliyun_credential.ok_or_else(|| {
+            let plaintext = credential_plaintext.ok_or_else(|| {
                 worker::Error::RustError("Aliyun inventory authority is missing".to_owned())
             })?;
-            list_aliyun_page(config_json, cursor, credential).await
+            let credential =
+                serde_json::from_slice::<AliyunCredential>(plaintext).map_err(|error| {
+                    worker::Error::RustError(format!("decode Aliyun inventory credential: {error}"))
+                })?;
+            list_aliyun_page(config_json, cursor, &credential).await
         }
         DriverKind::LocalFilesystemV2 => Err(worker::Error::RustError(
             "agent-host inventory reached hosted adapter".to_owned(),
         )),
+    }
+}
+
+pub(crate) fn execution_available(env: &Env, kind: DriverKind, config_json: &str) -> Result<bool> {
+    match kind {
+        DriverKind::AliyunDriveOpenV2 => Ok(true),
+        DriverKind::R2V1 => {
+            let config = serde_json::from_str::<R2Config>(config_json)
+                .map_err(|error| worker::Error::RustError(error.to_string()))?;
+            environment_defaults::is_managed_r2_config(env, &config)
+        }
+        DriverKind::LocalFilesystemV2 => Ok(false),
     }
 }
 

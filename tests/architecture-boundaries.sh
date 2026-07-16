@@ -158,7 +158,7 @@ if ! rg -q 'project_multipart_grant' control-plane/src/driver_registry.rs \
   exit 1
 fi
 if rg --line-number \
-  'worker::\{[^}]*Fetch|Fetch::|RequestInit|Headers::|aliyun_post|delete_from_plaintext|cleanup_upload_from_plaintext|resume_multipart_upload' \
+  'worker::\{[^}]*Fetch|Fetch::|RequestInit|Headers::|aliyun_post|delete_from_plaintext|cleanup_upload_from_plaintext|resume_multipart_upload|r2_signing::|AliyunCredential|AliyunDriveConfig|R2Config' \
   control-plane/src/vfs_provider_inventory.rs \
   control-plane/src/vfs_server_lifecycle.rs; then
   echo "VFS state machines must enter provider I/O through driver adapters" >&2

@@ -1,15 +1,13 @@
 use std::fmt::Write as _;
 
-use carrack_driver_contract::{DriverKind, InventoryMode};
+use carrack_driver_contract::{CredentialPosture, DriverKind, InventoryMode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use worker::{D1Database, Env, Request, Response, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
 
 use crate::{
-    driver_credentials::{self, AliyunCredential},
-    driver_inventory, environment_defaults, operator_sessions, r2_signing,
-    vfs_envelopes::open_driver_credential,
+    driver_credentials, driver_inventory, operator_sessions, vfs_envelopes::open_driver_credential,
 };
 
 const COMPLETE_SCAN_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
@@ -132,24 +130,17 @@ pub(crate) async fn refresh(request: Request, env: &Env, driver_id: &str) -> Res
             409,
         );
     };
-    match kind.inventory_mode() {
-        InventoryMode::AgentHost => {
-            return Response::error(
-                "provider inventory must run on this driver's agent host",
-                409,
-            );
-        }
-        InventoryMode::EnvironmentBinding => {
-            let config = serde_json::from_str::<r2_signing::Config>(&driver.config_json)
-                .map_err(|error| worker::Error::RustError(error.to_string()))?;
-            if !environment_defaults::is_managed_r2_config(env, &config)? {
-                return Response::error(
-                    "provider inventory requires an environment-owned binding",
-                    409,
-                );
-            }
-        }
-        InventoryMode::Hosted => {}
+    if kind.inventory_mode() == InventoryMode::AgentHost {
+        return Response::error(
+            "provider inventory must run on this driver's agent host",
+            409,
+        );
+    }
+    if !driver_inventory::execution_available(env, kind, &driver.config_json)? {
+        return Response::error(
+            "provider inventory requires an environment-owned binding",
+            409,
+        );
     }
     let updated = database
         .prepare(
@@ -215,34 +206,25 @@ pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
         )
         .await;
     };
-    match driver_kind.inventory_mode() {
-        InventoryMode::AgentHost => {
-            return mark_driver(
-                &database,
-                &candidate.driver_id,
-                "unsupported",
-                "inventory_runs_on_agent_host",
-                now,
-            )
-            .await;
-        }
-        InventoryMode::EnvironmentBinding => {
-            let config = serde_json::from_str::<r2_signing::Config>(&candidate.config_json)
-                .map_err(|error| worker::Error::RustError(error.to_string()))?;
-            if environment_defaults::is_managed_r2_config(env, &config)? {
-                // The environment binding can enumerate this exact bucket.
-            } else {
-                return mark_driver(
-                    &database,
-                    &candidate.driver_id,
-                    "unsupported",
-                    "inventory_requires_environment_binding",
-                    now,
-                )
-                .await;
-            }
-        }
-        InventoryMode::Hosted => {}
+    if driver_kind.inventory_mode() == InventoryMode::AgentHost {
+        return mark_driver(
+            &database,
+            &candidate.driver_id,
+            "unsupported",
+            "inventory_runs_on_agent_host",
+            now,
+        )
+        .await;
+    }
+    if !driver_inventory::execution_available(env, driver_kind, &candidate.config_json)? {
+        return mark_driver(
+            &database,
+            &candidate.driver_id,
+            "unsupported",
+            "inventory_requires_environment_binding",
+            now,
+        )
+        .await;
     }
     let generation = if candidate.state == "scanning" {
         candidate.generation
@@ -319,28 +301,26 @@ async fn list_page(
     candidate: &Candidate,
     driver_kind: DriverKind,
 ) -> Result<driver_inventory::ProviderPage> {
-    match driver_kind {
-        DriverKind::R2V1 => {
-            driver_inventory::list_page(
-                env,
-                driver_kind,
-                &candidate.config_json,
-                candidate.cursor.as_deref(),
-                None,
-            )
-            .await
-        }
-        DriverKind::AliyunDriveOpenV2 => list_aliyun_page(env, database, candidate).await,
-        DriverKind::LocalFilesystemV2 => Err(worker::Error::RustError(
-            "agent-host inventory reached hosted dispatcher".to_owned(),
-        )),
+    if driver_kind.inventory_mode() == InventoryMode::Hosted
+        && driver_kind.credential_posture() == CredentialPosture::Required
+    {
+        return list_hosted_page(env, database, candidate, driver_kind).await;
     }
+    driver_inventory::list_page(
+        env,
+        driver_kind,
+        &candidate.config_json,
+        candidate.cursor.as_deref(),
+        None,
+    )
+    .await
 }
 
-async fn list_aliyun_page(
+async fn list_hosted_page(
     env: &Env,
     database: &D1Database,
     candidate: &Candidate,
+    driver_kind: DriverKind,
 ) -> Result<driver_inventory::ProviderPage> {
     let envelope = load_credential(database, &candidate.driver_id).await?;
     if !driver_credentials::ensure_fresh(env, &candidate.driver_id, envelope.expires_at).await? {
@@ -358,19 +338,15 @@ async fn list_aliyun_page(
         &envelope.nonce,
         &envelope.ciphertext,
     )?;
-    let decoded = serde_json::from_slice::<AliyunCredential>(&plaintext)
-        .map_err(|error| worker::Error::RustError(error.to_string()));
-    plaintext.zeroize();
-    let mut credential = decoded?;
     let result = driver_inventory::list_page(
         env,
-        DriverKind::AliyunDriveOpenV2,
+        driver_kind,
         &candidate.config_json,
         candidate.cursor.as_deref(),
-        Some(&credential),
+        Some(&plaintext),
     )
     .await;
-    credential.access_token.zeroize();
+    plaintext.zeroize();
     result
 }
 

@@ -49,6 +49,12 @@ reachability and read-lease fences, credential-envelope opening and
 zeroization, and fenced outcome transitions. Therefore adding a provider
 cannot silently weaken lifecycle safety or inventory publication.
 
+The inventory facade also owns provider execution reachability, strict config
+decoding, credential decoding, and cursor wire schemas. Its caller uses only
+the shared inventory posture to decide whether a hosted credential envelope
+must be renewed and opened; it never interprets provider configuration or
+credential fields.
+
 An adapter owns:
 
 - typed parsing and validation of its configuration and object-scoped grant;
