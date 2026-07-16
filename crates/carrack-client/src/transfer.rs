@@ -912,7 +912,8 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        BoundedRangeUploadSource, spool_bounded_reader, spool_exact_reader, spool_range_source,
+        BoundedRangeUploadSource, run_source_worker, spool_bounded_reader, spool_exact_reader,
+        spool_range_source,
     };
 
     struct MemoryRanges {
@@ -991,16 +992,51 @@ mod tests {
         assert_no_spool_files(temporary.path());
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_source_worker_cleans_a_late_result() {
+        let temporary = tempfile::tempdir().expect("source spool temporary directory");
+        let staging = temporary.path().to_owned();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (spooled_tx, spooled_rx) = std::sync::mpsc::channel();
+        let task = tokio::spawn(async move {
+            run_source_worker(move || {
+                started_tx.send(()).expect("announce source worker");
+                release_rx.recv().expect("release source worker");
+                let spool = spool_bounded_reader(&staging, Cursor::new(b"late payload"), 12)?;
+                spooled_tx.send(()).expect("announce completed spool");
+                Ok(spool)
+            })
+            .await
+        });
+        started_rx.recv().expect("source worker started");
+        task.abort();
+        release_tx.send(()).expect("release cancelled worker");
+        spooled_rx.recv().expect("cancelled worker completed spool");
+        let joined = task.await;
+        assert!(matches!(joined, Err(error) if error.is_cancelled()));
+
+        for _ in 0..100 {
+            if no_spool_files(temporary.path()) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_no_spool_files(temporary.path());
+    }
+
     fn assert_no_spool_files(root: &std::path::Path) {
+        assert!(no_spool_files(root));
+    }
+
+    fn no_spool_files(root: &std::path::Path) -> bool {
         let directory = root.join("plaintext-sources");
         if !directory.exists() {
-            return;
+            return true;
         }
-        assert!(
-            std::fs::read_dir(directory)
-                .expect("read plaintext source directory")
-                .next()
-                .is_none()
-        );
+        std::fs::read_dir(directory)
+            .expect("read plaintext source directory")
+            .next()
+            .is_none()
     }
 }

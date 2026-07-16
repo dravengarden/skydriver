@@ -400,7 +400,7 @@ pub struct ResolvedEntry {
     pub entry: Option<DirectoryEntry>,
 }
 
-/// Authenticated VFS metadata client. Payload transport is planned separately.
+/// Authenticated complete-object VFS client.
 #[derive(Clone)]
 pub struct VfsClient {
     pub(crate) control: Client,
