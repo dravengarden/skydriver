@@ -441,6 +441,7 @@ version = "0.3.6"
 dependencies = [
  "base64 0.22.1",
  "cap-std",
+ "carrack-driver-contract",
  "carrack-sdk-core",
  "fs2",
  "futures-util",
@@ -466,6 +467,7 @@ version = "0.3.6"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
+ "carrack-driver-contract",
  "carrack-sdk-core",
  "getrandom 0.3.4",
  "hex",
@@ -479,6 +481,10 @@ dependencies = [
  "worker",
  "zeroize",
 ]
+
+[[package]]
+name = "carrack-driver-contract"
+version = "0.3.6"
 
 [[package]]
 name = "carrack-sdk-core"

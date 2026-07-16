@@ -12,7 +12,6 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::Error;
 
-const KIND: &str = "aliyundrive-open/v2";
 const MAXIMUM_API_BODY: usize = 8 * 1024 * 1024;
 const MAXIMUM_PARTS: u64 = 10_000;
 
@@ -171,7 +170,6 @@ pub(crate) struct UploadedObject {
 )]
 pub(crate) async fn upload(
     http: &reqwest::Client,
-    kind: &str,
     config: &Value,
     credential: Value,
     storage_key: &str,
@@ -179,11 +177,6 @@ pub(crate) async fn upload(
     size_bytes: u64,
     encoded_sha256: &str,
 ) -> Result<UploadedObject, Error> {
-    if kind != KIND {
-        return Err(Error::InvalidResponse(
-            "invalid Aliyun driver kind".to_owned(),
-        ));
-    }
     let client = Client::open(http, config, credential).await?;
     let (parent, name) = client.ensure_parent(storage_key).await?;
     let part_count = size_bytes.div_ceil(client.upload_part_bytes).max(1);
@@ -313,7 +306,6 @@ pub(crate) async fn upload(
 )]
 pub(crate) async fn download(
     http: &reqwest::Client,
-    kind: &str,
     config: &Value,
     credential: Value,
     storage_key: &str,
@@ -323,11 +315,6 @@ pub(crate) async fn download(
     expected_bytes: u64,
     expected_sha256: &str,
 ) -> Result<PathBuf, Error> {
-    if kind != KIND {
-        return Err(Error::InvalidResponse(
-            "invalid Aliyun driver kind".to_owned(),
-        ));
-    }
     let client = Client::open(http, config, credential).await?;
     let file_id = match native_id {
         Some(value) if !value.is_empty() => value.to_owned(),
@@ -832,7 +819,6 @@ mod tests {
         });
         let object = upload(
             &reqwest::Client::new(),
-            "aliyundrive-open/v2",
             &config,
             json!({"access_token": "secret"}),
             "object",
@@ -847,7 +833,6 @@ mod tests {
 
         let restored = download(
             &reqwest::Client::new(),
-            "aliyundrive-open/v2",
             &config,
             json!({"access_token": "secret"}),
             "object",

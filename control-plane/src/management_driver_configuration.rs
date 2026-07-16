@@ -1,6 +1,7 @@
 use std::fmt::Write as _;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use carrack_driver_contract::DriverKind;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -353,7 +354,7 @@ fn valid_driver_configuration(driver: &DriverRow) -> bool {
         driver.credential_present == 1,
     );
     structurally_valid
-        && (driver.kind != "aliyundrive-open/v2"
+        && (DriverKind::parse(&driver.kind) != Some(DriverKind::AliyunDriveOpenV2)
             || driver.credential_refresh_state.as_deref() == Some("ready"))
 }
 
@@ -435,11 +436,11 @@ fn now_seconds() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{DriverRow, valid_driver_configuration, valid_string};
+    use super::{DriverKind, DriverRow, valid_driver_configuration, valid_string};
 
     fn local_driver(config_json: &str) -> DriverRow {
         DriverRow {
-            kind: "local-filesystem/v2".to_owned(),
+            kind: DriverKind::LocalFilesystemV2.as_str().to_owned(),
             config_json: config_json.to_owned(),
             credential_present: 0,
             credential_refresh_state: None,
@@ -471,7 +472,7 @@ mod tests {
         let mut aliyun = local_driver(
             r#"{"api_base_url":"https://openapi.alipan.com","drive_type":"resource","root_folder_id":"root","upload_part_bytes":20971520}"#,
         );
-        aliyun.kind = "aliyundrive-open/v2".to_owned();
+        aliyun.kind = DriverKind::AliyunDriveOpenV2.as_str().to_owned();
         aliyun.credential_present = 1;
         assert!(!valid_driver_configuration(&aliyun));
         aliyun.credential_refresh_state = Some("ready".to_owned());

@@ -3,6 +3,7 @@ members = [
   "control-plane",
   "crates/carrack-client",
   "crates/carrack-cli",
+  "crates/carrack-driver-contract",
   "crates/carrack-sdk-core",
 ]
 resolver = "3"

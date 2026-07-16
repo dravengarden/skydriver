@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+carrack-driver-contract = { path = "../carrack-driver-contract" }
 carrack-sdk-core = { path = "../carrack-sdk-core" }
 base64 = "0.22.1"
 cap-std = "3.4.5"

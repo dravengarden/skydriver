@@ -5,6 +5,12 @@ Carrack storage drivers. [requirements.md](requirements.md) remains normative.
 
 ## Boundary
 
+`carrack-driver-contract` is a dependency-free shared model containing every
+compiled versioned kind, its native data-path capabilities, credential posture,
+grant mode, inventory location, and lifecycle location. It performs no I/O and
+contains no provider implementation. Both `carrack-client` and the Worker use
+its exhaustive enum, so their interpretation of a kind cannot silently drift.
+
 `carrack-client` exposes one compiled `DriverRegistry` to native transfer
 orchestration. The registry accepts a versioned driver kind, JSON grant
 envelopes, and one uniform immutable upload or download request. It rejects an
@@ -50,8 +56,10 @@ compiled, configured, and tested for SOCKS operation.
 
 A new driver change is complete only when it:
 
-1. adds a versioned adapter with private typed configuration and grant types;
-2. registers the exact wire kind in `driver.rs` and declares all capabilities;
+1. adds the exact versioned kind and complete posture to
+   `carrack-driver-contract`;
+2. adds a native adapter with private typed configuration and grant types and
+   registers it in `driver.rs`;
 3. implements the uniform upload and download requests without changing their
    provider-independent meaning;
 4. verifies complete encoded length and SHA-256 before returning success;
@@ -61,8 +69,9 @@ A new driver change is complete only when it:
    capability-fallback tests appropriate to the adapter;
 7. leaves `carrack-sdk-core`, `transfer.rs`, and `download.rs` free of provider
    identifiers and provider-module calls;
-8. documents server-owned Stat, Delete, renewal, and GC behavior and tests it
-   independently when the Worker can reach the provider.
+8. implements and tests the matching Worker registration, grant, inventory,
+   renewal, Stat, Delete, and GC branches where its declared posture requires
+   control-plane ownership.
 
 `tests/architecture-boundaries.sh` mechanically enforces the most important
 dependency directions. Adapter conformance tests prove behavior; the registry

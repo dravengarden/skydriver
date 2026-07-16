@@ -8,6 +8,9 @@ ingestion schedules, trading semantics, or other consumer-specific behavior.
 
 - `crates/carrack-sdk-core/`: stable, portable correctness kernel split into
   orthogonal canonical, integrity, crypto, catalog, and acceptance modules.
+- `crates/carrack-driver-contract/`: I/O-free shared driver-kind, capability,
+  grant, inventory, and lifecycle contract used by both native client and
+  control plane registries.
 - `crates/carrack-client/`: native I/O, recovery, and publication orchestration
   that delegates wire correctness to `carrack-sdk-core`; `driver.rs` is the
   only provider registry and `aliyun.rs`, `r2.rs`, and `local.rs` are isolated
@@ -44,6 +47,9 @@ agent processes are SDK consumers, not a third architectural component.
   `DriverRegistry`. Provider kinds, configuration fields, credentials, and
   adapter calls belong behind that boundary; adding a driver must not modify
   portable core modules or teach orchestration provider names.
+- Versioned driver-kind strings and static capability posture belong only in
+  `carrack-driver-contract`; client and Worker modules must use its exhaustive
+  enum instead of duplicating provider-kind string dispatch.
 - Secrets and credentials never enter Git. D1 stores only password hashes,
   token verifiers, encrypted provider-credential envelopes, and wrapped VFS
   directory keys. VFS master keys stay in Cloudflare secrets or Secrets Store

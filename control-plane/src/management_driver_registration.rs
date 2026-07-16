@@ -1,6 +1,7 @@
 use std::fmt::Write as _;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use carrack_driver_contract::{CredentialPosture, DriverKind};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -14,9 +15,9 @@ const DATABASE_BINDING: &str = "CARRACK_INDEX";
 const VALIDATION_LIFETIME_SECONDS: u64 = 5 * 60;
 const REGISTRATION_KIND: &str = "driver.register";
 const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.driver-registration.v1\0";
-const LOCAL_FILESYSTEM_KIND: &str = "local-filesystem/v2";
-const ALIYUN_DRIVE_KIND: &str = "aliyundrive-open/v2";
-pub(crate) const R2_KIND: &str = "r2/v1";
+#[cfg(test)]
+const ALIYUN_DRIVE_KIND: &str = DriverKind::AliyunDriveOpenV2.as_str();
+pub(crate) const R2_KIND: &str = DriverKind::R2V1.as_str();
 const DEFAULT_ALIYUN_API_BASE_URL: &str = "https://openapi.alipan.com";
 const DEFAULT_ALIYUN_UPLOAD_PART_BYTES: u64 = 20 << 20;
 const MAXIMUM_ALIYUN_UPLOAD_PART_BYTES: u64 = 512 << 20;
@@ -124,7 +125,8 @@ pub(crate) async fn validate(request: &mut Request, env: &Env) -> Result<Respons
     let validation_digest = validation_digest(env, &normalized, validation_expires_at)?;
     no_store_json(&ValidationResponse {
         schema: "carrack.management.driver-registration-validation.v1",
-        requires_credential: matches!(normalized.kind.as_str(), ALIYUN_DRIVE_KIND | R2_KIND),
+        requires_credential: DriverKind::parse(&normalized.kind)
+            .is_some_and(|kind| kind.credential_posture() == CredentialPosture::Required),
         warnings: registration_warnings(&normalized.kind),
         driver_id: normalized.driver_id,
         kind: normalized.kind,
@@ -276,8 +278,11 @@ fn normalize_registration(requested: RegistrationRequest) -> Result<Registration
         ));
     }
 
-    let config = match requested.kind.as_str() {
-        LOCAL_FILESYSTEM_KIND => {
+    let kind = DriverKind::parse(&requested.kind).ok_or_else(|| {
+        worker::Error::RustError("driver kind is not compiled by this Carrack release".to_owned())
+    })?;
+    let config = match kind {
+        DriverKind::LocalFilesystemV2 => {
             let config: LocalFilesystemConfig =
                 serde_json::from_value(requested.config).map_err(|error| json_error(&error))?;
             if !valid_local_root(&config.root) {
@@ -287,7 +292,7 @@ fn normalize_registration(requested: RegistrationRequest) -> Result<Registration
             }
             serde_json::to_value(config).map_err(|error| json_error(&error))?
         }
-        ALIYUN_DRIVE_KIND => {
+        DriverKind::AliyunDriveOpenV2 => {
             let config: AliyunDriveConfig =
                 serde_json::from_value(requested.config).map_err(|error| json_error(&error))?;
             if !valid_aliyun_config(&config) {
@@ -297,7 +302,7 @@ fn normalize_registration(requested: RegistrationRequest) -> Result<Registration
             }
             serde_json::to_value(config).map_err(|error| json_error(&error))?
         }
-        R2_KIND => {
+        DriverKind::R2V1 => {
             let config: r2_signing::Config =
                 serde_json::from_value(requested.config).map_err(|error| json_error(&error))?;
             if !r2_signing::valid_config(&config) {
@@ -306,11 +311,6 @@ fn normalize_registration(requested: RegistrationRequest) -> Result<Registration
                 ));
             }
             serde_json::to_value(config).map_err(|error| json_error(&error))?
-        }
-        _ => {
-            return Err(worker::Error::RustError(
-                "driver kind is not compiled by this Carrack release".to_owned(),
-            ));
         }
     };
 
@@ -321,7 +321,7 @@ fn normalize_registration(requested: RegistrationRequest) -> Result<Registration
 }
 
 fn valid_environment_registration(request: &RegistrationRequest, _env: &Env) -> Result<bool> {
-    if request.kind != R2_KIND {
+    if DriverKind::parse(&request.kind) != Some(DriverKind::R2V1) {
         return Ok(true);
     }
     let config = serde_json::from_value::<r2_signing::Config>(request.config.clone())
@@ -349,40 +349,43 @@ pub(crate) fn valid_stored_configuration(
     config_json: &str,
     credential_present: bool,
 ) -> bool {
-    match kind {
-        LOCAL_FILESYSTEM_KIND => serde_json::from_str::<LocalFilesystemConfig>(config_json)
-            .is_ok_and(|config| valid_local_root(&config.root) && !credential_present),
-        ALIYUN_DRIVE_KIND => serde_json::from_str::<AliyunDriveConfig>(config_json)
-            .is_ok_and(|config| valid_aliyun_config(&config) && credential_present),
-        R2_KIND => serde_json::from_str::<r2_signing::Config>(config_json)
+    match DriverKind::parse(kind) {
+        Some(DriverKind::LocalFilesystemV2) => {
+            serde_json::from_str::<LocalFilesystemConfig>(config_json)
+                .is_ok_and(|config| valid_local_root(&config.root) && !credential_present)
+        }
+        Some(DriverKind::AliyunDriveOpenV2) => {
+            serde_json::from_str::<AliyunDriveConfig>(config_json)
+                .is_ok_and(|config| valid_aliyun_config(&config) && credential_present)
+        }
+        Some(DriverKind::R2V1) => serde_json::from_str::<r2_signing::Config>(config_json)
             .is_ok_and(|config| r2_signing::valid_config(&config) && credential_present),
-        _ => false,
+        None => false,
     }
 }
 
 fn registration_warnings(kind: &str) -> Vec<String> {
-    if kind == R2_KIND {
-        return vec![
+    match DriverKind::parse(kind) {
+        Some(DriverKind::R2V1) => vec![
             "The driver is registered disabled and requires a write-only R2 access-key credential before enablement."
                 .to_owned(),
             "Payload bytes transfer directly between the client and R2 through short-lived object-scoped signed URLs; long-lived keys never leave the control plane."
                 .to_owned(),
             "Complete-object upload uses streaming single PUT below 100 MiB and a resumable concurrent multipart journal above it; download uses concurrent signed ranges when requested."
                 .to_owned(),
-        ];
-    }
-    if kind == ALIYUN_DRIVE_KIND {
-        return vec![
+        ],
+        Some(DriverKind::AliyunDriveOpenV2) => vec![
             "The driver is registered disabled and requires a write-only access-token credential before enablement."
                 .to_owned(),
             "Aliyun Drive uses native complete-object multipart upload and exact range readback; upload concurrency is intentionally one until provider canaries justify more."
                 .to_owned(),
             "Physical deletion is delayed and performed only by the control plane after reachability, grace, read-lease, identity, and driver-revision fences; accelerated inventory is unavailable."
                 .to_owned(),
-        ];
+        ],
+        Some(DriverKind::LocalFilesystemV2) | None => {
+            vec!["The driver is registered disabled and must be enabled separately.".to_owned()]
+        }
     }
-
-    vec!["The driver is registered disabled and must be enabled separately.".to_owned()]
 }
 
 async fn driver_exists(database: &worker::D1Database, driver_id: &str) -> Result<bool> {

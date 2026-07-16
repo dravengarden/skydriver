@@ -4,133 +4,11 @@
 //! binary. Provider-specific configuration, credentials, and behavior remain
 //! behind this module; transfer orchestration sees one uniform interface.
 
+use carrack_driver_contract::{CredentialPosture, DriverCapabilities, DriverKind, SupportMode};
 use serde_json::Value;
 use std::path::{Component, Path, PathBuf};
 
 use crate::{Error, crypto::StagedObject};
-
-/// How an adapter preserves one capability.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SupportMode {
-    Native,
-    Emulated,
-    Unavailable,
-}
-
-impl SupportMode {
-    const fn available(self) -> bool {
-        !matches!(self, Self::Unavailable)
-    }
-}
-
-/// Complete explicit capability posture of one compiled adapter.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct DriverCapabilities {
-    pub(crate) complete_upload: SupportMode,
-    pub(crate) exact_range_read: SupportMode,
-    pub(crate) resumable_upload: SupportMode,
-    pub(crate) parallel_upload_parts: SupportMode,
-    pub(crate) parallel_range_reads: SupportMode,
-    pub(crate) strong_upload_checksum: SupportMode,
-    pub(crate) stable_object_identity: SupportMode,
-    pub(crate) stat: SupportMode,
-    pub(crate) abort: SupportMode,
-    pub(crate) delete: SupportMode,
-    /// Zero means no adapter-specific bound below the Carrack protocol bound.
-    pub(crate) maximum_object_bytes: u64,
-    pub(crate) external_http_proxy: bool,
-    pub(crate) external_socks_proxy: bool,
-}
-
-impl DriverCapabilities {
-    fn validate(self) -> Result<(), Error> {
-        if !self.complete_upload.available()
-            || !self.exact_range_read.available()
-            || !self.strong_upload_checksum.available()
-            || !self.stable_object_identity.available()
-            || !self.stat.available()
-            || !self.delete.available()
-            || (self.parallel_upload_parts.available() && !self.resumable_upload.available())
-            || (self.external_socks_proxy && !self.external_http_proxy)
-        {
-            return Err(Error::InvalidResponse(
-                "compiled driver capability descriptor is contradictory".to_owned(),
-            ));
-        }
-        let _ = (self.abort, self.maximum_object_bytes);
-        Ok(())
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DriverKind {
-    AliyunDriveOpenV2,
-    R2V1,
-    LocalFilesystemV2,
-}
-
-impl DriverKind {
-    fn parse(value: &str) -> Result<Self, Error> {
-        match value {
-            "aliyundrive-open/v2" => Ok(Self::AliyunDriveOpenV2),
-            "r2/v1" => Ok(Self::R2V1),
-            "local-filesystem/v2" => Ok(Self::LocalFilesystemV2),
-            _ => Err(Error::InvalidResponse(format!(
-                "native driver kind is not compiled: {value}"
-            ))),
-        }
-    }
-
-    const fn capabilities(self) -> DriverCapabilities {
-        match self {
-            Self::AliyunDriveOpenV2 => DriverCapabilities {
-                complete_upload: SupportMode::Native,
-                exact_range_read: SupportMode::Native,
-                resumable_upload: SupportMode::Unavailable,
-                parallel_upload_parts: SupportMode::Unavailable,
-                parallel_range_reads: SupportMode::Unavailable,
-                strong_upload_checksum: SupportMode::Emulated,
-                stable_object_identity: SupportMode::Native,
-                stat: SupportMode::Native,
-                abort: SupportMode::Unavailable,
-                delete: SupportMode::Native,
-                maximum_object_bytes: 0,
-                external_http_proxy: true,
-                external_socks_proxy: false,
-            },
-            Self::R2V1 => DriverCapabilities {
-                complete_upload: SupportMode::Native,
-                exact_range_read: SupportMode::Native,
-                resumable_upload: SupportMode::Native,
-                parallel_upload_parts: SupportMode::Native,
-                parallel_range_reads: SupportMode::Native,
-                strong_upload_checksum: SupportMode::Emulated,
-                stable_object_identity: SupportMode::Native,
-                stat: SupportMode::Native,
-                abort: SupportMode::Native,
-                delete: SupportMode::Native,
-                maximum_object_bytes: 0,
-                external_http_proxy: true,
-                external_socks_proxy: false,
-            },
-            Self::LocalFilesystemV2 => DriverCapabilities {
-                complete_upload: SupportMode::Native,
-                exact_range_read: SupportMode::Native,
-                resumable_upload: SupportMode::Emulated,
-                parallel_upload_parts: SupportMode::Emulated,
-                parallel_range_reads: SupportMode::Emulated,
-                strong_upload_checksum: SupportMode::Emulated,
-                stable_object_identity: SupportMode::Emulated,
-                stat: SupportMode::Native,
-                abort: SupportMode::Emulated,
-                delete: SupportMode::Native,
-                maximum_object_bytes: 0,
-                external_http_proxy: false,
-                external_socks_proxy: false,
-            },
-        }
-    }
-}
 
 /// One authorized, typed instance opened from the compiled registry.
 pub(crate) struct OpenedDriver {
@@ -184,14 +62,20 @@ impl DriverRegistry {
                 "driver grant must contain typed JSON objects".to_owned(),
             ));
         }
-        let kind = DriverKind::parse(kind)?;
-        kind.capabilities().validate()?;
-        if matches!(kind, DriverKind::LocalFilesystemV2) && credential.is_some() {
+        let kind = DriverKind::parse(kind).ok_or_else(|| {
+            Error::InvalidResponse(format!("native driver kind is not compiled: {kind}"))
+        })?;
+        if !kind.capabilities().is_consistent() {
+            return Err(Error::InvalidResponse(
+                "compiled driver capability descriptor is contradictory".to_owned(),
+            ));
+        }
+        if kind.credential_posture() == CredentialPosture::Forbidden && credential.is_some() {
             return Err(Error::InvalidResponse(
                 "local driver unexpectedly received credentials".to_owned(),
             ));
         }
-        if !matches!(kind, DriverKind::LocalFilesystemV2) && credential.is_none() {
+        if kind.credential_posture() == CredentialPosture::Required && credential.is_none() {
             return Err(Error::InvalidResponse(
                 "hosted driver omitted its object-scoped credential".to_owned(),
             ));
@@ -238,7 +122,6 @@ impl OpenedDriver {
                 let credential = self.take_credential()?;
                 let object = crate::aliyun::upload(
                     request.http(),
-                    "aliyundrive-open/v2",
                     &self.config,
                     credential,
                     request.storage_key,
@@ -303,7 +186,6 @@ impl OpenedDriver {
                 let credential = self.take_credential()?;
                 crate::aliyun::download(
                     request.http,
-                    "aliyundrive-open/v2",
                     &self.config,
                     credential,
                     request.storage_key,
@@ -382,14 +264,17 @@ pub(crate) fn safe_storage_key(value: &str) -> Result<PathBuf, Error> {
 mod tests {
     use serde_json::json;
 
-    use super::{DriverRegistry, SupportMode};
+    use super::{DriverKind, DriverRegistry, SupportMode};
 
     #[test]
     fn registry_is_closed_and_capabilities_are_explicit() {
         assert!(DriverRegistry::open("plugin/from-server", json!({}), None).is_err());
-        let local =
-            DriverRegistry::open("local-filesystem/v2", json!({"root": "/tmp/carrack"}), None)
-                .expect("open compiled local adapter");
+        let local = DriverRegistry::open(
+            DriverKind::LocalFilesystemV2.as_str(),
+            json!({"root": "/tmp/carrack"}),
+            None,
+        )
+        .expect("open compiled local adapter");
         let capabilities = local.capabilities();
         assert_eq!(capabilities.complete_upload, SupportMode::Native);
         assert_eq!(capabilities.resumable_upload, SupportMode::Emulated);
@@ -401,19 +286,19 @@ mod tests {
     fn registry_enforces_credential_posture_before_io() {
         assert!(
             DriverRegistry::open(
-                "local-filesystem/v2",
+                DriverKind::LocalFilesystemV2.as_str(),
                 json!({"root": "/tmp/carrack"}),
                 Some(json!({"secret": "wrong"})),
             )
             .is_err()
         );
-        assert!(DriverRegistry::open("r2/v1", json!({}), None).is_err());
+        assert!(DriverRegistry::open(DriverKind::R2V1.as_str(), json!({}), None).is_err());
     }
 
     #[test]
     fn capability_fallbacks_are_explicit_and_name_a_replacement() {
         let aliyun = DriverRegistry::open(
-            "aliyundrive-open/v2",
+            DriverKind::AliyunDriveOpenV2.as_str(),
             json!({}),
             Some(json!({"access_token": "object-scoped"})),
         )
@@ -427,8 +312,12 @@ mod tests {
         assert!(download[0].contains("degrades"));
         assert!(download[0].contains("R2"));
 
-        let r2 = DriverRegistry::open("r2/v1", json!({}), Some(json!({"method": "GET"})))
-            .expect("open compiled R2 adapter");
+        let r2 = DriverRegistry::open(
+            DriverKind::R2V1.as_str(),
+            json!({}),
+            Some(json!({"method": "GET"})),
+        )
+        .expect("open compiled R2 adapter");
         assert!(r2.upload_warnings(4).is_empty());
         assert!(r2.download_warnings(4).is_empty());
     }

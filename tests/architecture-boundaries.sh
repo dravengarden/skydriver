@@ -12,6 +12,26 @@ if rg --line-number --ignore-case \
   exit 1
 fi
 
+if rg --line-number \
+  '"(aliyundrive-open/v2|r2/v1|local-filesystem/v2)"' \
+  crates/carrack-client/src control-plane/src; then
+  echo "driver wire kinds must have one source in carrack-driver-contract" >&2
+  exit 1
+fi
+if ! rg -q 'carrack-driver-contract' crates/carrack-client/Cargo.toml \
+  || ! rg -q 'carrack-driver-contract' control-plane/Cargo.toml; then
+  echo "native and control-plane registries must share carrack-driver-contract" >&2
+  exit 1
+fi
+if rg --line-number 'carrack-driver-contract' crates/carrack-sdk-core/Cargo.toml; then
+  echo "portable correctness core must remain independent of driver kinds" >&2
+  exit 1
+fi
+if rg --line-number '^\[dependencies\]' crates/carrack-driver-contract/Cargo.toml; then
+  echo "driver contract must remain I/O-free and dependency-free" >&2
+  exit 1
+fi
+
 if rg --line-number --ignore-case \
   '(^|[[:space:]])(reqwest|tokio|rusqlite|worker|cap-std|fs2)[[:space:]]*=' \
   crates/carrack-sdk-core/Cargo.toml; then

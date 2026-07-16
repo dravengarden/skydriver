@@ -4,6 +4,7 @@
 //! authority stays encrypted in D1 and is rotated by a fenced Cron worker.
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use carrack_driver_contract::DriverKind;
 use serde::{Deserialize, Serialize};
 use worker::{D1Database, Env, Fetch, Method, Request, RequestInit, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
@@ -68,7 +69,7 @@ pub(crate) fn access_grant_from_plaintext(
     driver_kind: &str,
     plaintext: &[u8],
 ) -> Result<serde_json::Value> {
-    if driver_kind != "aliyundrive-open/v2" {
+    if DriverKind::parse(driver_kind) != Some(DriverKind::AliyunDriveOpenV2) {
         return serde_json::from_slice(plaintext)
             .map_err(|error| worker::Error::RustError(error.to_string()));
     }

@@ -1,5 +1,6 @@
 //! Environment-owned storage identities derived from Worker bindings.
 
+use carrack_driver_contract::DriverKind;
 use serde::Deserialize;
 use worker::{D1Database, Env, Result, wasm_bindgen::JsValue};
 
@@ -8,8 +9,8 @@ use crate::r2_signing;
 pub(crate) const DEFAULT_R2_DRIVER_ID: &str = "r2-default";
 const DEFAULT_R2_MAX_PHYSICAL_BYTES_BINDING: &str = "CARRACK_DEFAULT_R2_MAX_PHYSICAL_BYTES";
 const MAXIMUM_D1_INTEGER: u64 = 9_007_199_254_740_991;
-const R2_KIND: &str = "r2/v1";
-const LOCAL_FILESYSTEM_KIND: &str = "local-filesystem/v2";
+const R2_KIND: &str = DriverKind::R2V1.as_str();
+const LOCAL_FILESYSTEM_KIND: &str = DriverKind::LocalFilesystemV2.as_str();
 
 #[derive(Deserialize)]
 struct DriverRow {

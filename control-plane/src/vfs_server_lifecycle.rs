@@ -1,5 +1,6 @@
 //! Bounded, server-owned lifecycle for unreachable complete provider objects.
 
+use carrack_driver_contract::{DriverKind, LifecycleMode};
 use serde::Deserialize;
 use serde_json::json;
 use worker::{
@@ -253,7 +254,19 @@ async fn delete_one_abandoned_put(env: &Env, database: &D1Database, now: u64) ->
         .await?;
         return Ok(());
     };
-    if task.kind == "local-filesystem/v2" {
+    let Some(driver_kind) = DriverKind::parse(&task.kind) else {
+        fail_abandoned_put(
+            database,
+            &id,
+            task.fencing_token,
+            now,
+            "unsupported_server_delete_driver",
+            true,
+        )
+        .await?;
+        return Ok(());
+    };
+    if driver_kind.lifecycle_mode() == LifecycleMode::AgentHost {
         fail_abandoned_put(
             database,
             &id,
@@ -265,22 +278,10 @@ async fn delete_one_abandoned_put(env: &Env, database: &D1Database, now: u64) ->
         .await?;
         return Ok(());
     }
-    if !matches!(task.kind.as_str(), "aliyundrive-open/v2" | "r2/v1") {
-        fail_abandoned_put(
-            database,
-            &id,
-            task.fencing_token,
-            now,
-            "unsupported_server_delete_driver",
-            true,
-        )
-        .await?;
-        return Ok(());
-    }
-    let outcome = if task.kind == "r2/v1" {
-        delete_r2(env, &task).await
-    } else {
-        delete_aliyun(env, &task).await
+    let outcome = match driver_kind {
+        DriverKind::R2V1 => delete_r2(env, &task).await,
+        DriverKind::AliyunDriveOpenV2 => delete_aliyun(env, &task).await,
+        DriverKind::LocalFilesystemV2 => unreachable!("agent-host driver was rejected"),
     };
     match outcome {
         Ok(()) => complete_abandoned_put(database, &task, now).await,
@@ -489,7 +490,19 @@ async fn delete_one(env: &Env, database: &D1Database, now: u64) -> Result<()> {
         .await?;
         return Ok(());
     };
-    if task.kind == "local-filesystem/v2" {
+    let Some(driver_kind) = DriverKind::parse(&task.kind) else {
+        fail(
+            database,
+            &id,
+            task.fencing_token,
+            now,
+            "unsupported_server_delete_driver",
+            "blocked",
+        )
+        .await?;
+        return Ok(());
+    };
+    if driver_kind.lifecycle_mode() == LifecycleMode::AgentHost {
         fail(
             database,
             &id,
@@ -501,22 +514,10 @@ async fn delete_one(env: &Env, database: &D1Database, now: u64) -> Result<()> {
         .await?;
         return Ok(());
     }
-    if !matches!(task.kind.as_str(), "aliyundrive-open/v2" | "r2/v1") {
-        fail(
-            database,
-            &id,
-            task.fencing_token,
-            now,
-            "unsupported_server_delete_driver",
-            "blocked",
-        )
-        .await?;
-        return Ok(());
-    }
-    let outcome = if task.kind == "r2/v1" {
-        delete_r2(env, &task).await
-    } else {
-        delete_aliyun(env, &task).await
+    let outcome = match driver_kind {
+        DriverKind::R2V1 => delete_r2(env, &task).await,
+        DriverKind::AliyunDriveOpenV2 => delete_aliyun(env, &task).await,
+        DriverKind::LocalFilesystemV2 => unreachable!("agent-host driver was rejected"),
     };
     match outcome {
         Ok(()) => complete(database, &task, now).await,

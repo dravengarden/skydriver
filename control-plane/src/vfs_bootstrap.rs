@@ -1,5 +1,6 @@
 use std::fmt::Write as _;
 
+use carrack_driver_contract::DriverKind;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use worker::{
@@ -19,7 +20,7 @@ use crate::{
 };
 
 const BOOTSTRAP_SCHEMA: &str = "carrack.vfs.bootstrap-receipt.v1";
-const LOCAL_FILESYSTEM_KIND: &str = "local-filesystem/v2";
+const LOCAL_FILESYSTEM_KIND: &str = DriverKind::LocalFilesystemV2.as_str();
 const DEFAULT_TOKEN_LIFETIME_SECONDS: u64 = 30 * 24 * 60 * 60;
 const MINIMUM_TOKEN_LIFETIME_SECONDS: u64 = 60 * 60;
 const MAXIMUM_TOKEN_LIFETIME_SECONDS: u64 = 365 * 24 * 60 * 60;
@@ -632,7 +633,7 @@ async fn resolve_driver(
             };
             Ok(Some(BootstrapDriver {
                 id: environment_defaults::DEFAULT_R2_DRIVER_ID.to_owned(),
-                kind: "r2/v1",
+                kind: DriverKind::R2V1.as_str(),
                 config_json: serde_json::to_string(&config)?,
                 create: false,
                 place: false,

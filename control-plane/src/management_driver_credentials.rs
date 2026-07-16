@@ -1,6 +1,7 @@
 use std::fmt::Write as _;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use carrack_driver_contract::DriverKind;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -19,7 +20,7 @@ const DATABASE_BINDING: &str = "CARRACK_INDEX";
 const VALIDATION_LIFETIME_SECONDS: u64 = 5 * 60;
 const CREDENTIAL_KIND: &str = "driver.credential";
 const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.driver-credential.v1\0";
-const ALIYUN_DRIVE_KIND: &str = "aliyundrive-open/v2";
+const ALIYUN_DRIVE_KIND: &str = DriverKind::AliyunDriveOpenV2.as_str();
 const AUTHORIZATION_CLAIM_SECONDS: u64 = 5 * 60;
 const LONG_LIVED_CREDENTIAL_EXPIRES_AT: u64 = 253_402_300_799;
 

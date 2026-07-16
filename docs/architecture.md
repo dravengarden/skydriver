@@ -133,6 +133,12 @@ checksum, identity, Stat, abort, Delete, proxy, and size-limit capabilities.
 Unsupported capabilities produce a warning and a correctness-preserving
 fallback; they never weaken verification.
 
+`carrack-driver-contract` is the single I/O-free source for compiled driver
+kinds and their data-path, credential, grant, inventory, and lifecycle posture.
+Both the native SDK and Worker depend on it; the portable correctness kernel
+does not. This makes a new kind an explicit exhaustive change on both sides
+without mixing provider behavior into cryptographic or Merkle modules.
+
 The native SDK has one closed, versioned registry boundary. Upload and download
 orchestration submit the same immutable request types to that boundary and do
 not know provider names, configuration fields, credential shapes, or transport
