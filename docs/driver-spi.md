@@ -24,6 +24,9 @@ verification live behind `driver_authorization`. The management transaction
 validates authority before taking its D1 claim, then releases the exact fenced
 claim on every provider rejection, retryable outage, or adapter error. It alone
 seals the returned credential material and commits receipts and audit state.
+Replacement also opens the existing envelope and asks the adapter to prove
+provider authority continuity. A valid credential for another account is
+rejected; changing storage identity requires a new driver and verified copy.
 Filesystem grant paths authorize the caller before any synchronous renewal can
 perform provider I/O or mutate credential state. Directory-key grants never
 renew provider credentials; only an authorized operation that actually returns

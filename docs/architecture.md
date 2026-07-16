@@ -153,6 +153,11 @@ The implemented adapters are local filesystem, Aliyun Drive Open, and
 Cloudflare R2. The environment-owned `r2-default` is provisioned with the
 environment and uses bucket-scoped credentials; operator-owned R2 identities
 use the same contract and write-only credential workflow.
+Credential material may rotate without changing this logical storage identity:
+the Worker proves provider account continuity against the existing encrypted
+credential before commit. A different account or bucket is a new driver and
+requires explicit verified migration, so existing locations cannot be silently
+rebound by pasting another valid credential.
 
 Local filesystem lifecycle work is retained as server-blocked because a Worker
 cannot safely reach an agent path. Hosted drivers eligible for automatic

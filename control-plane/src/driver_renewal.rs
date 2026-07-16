@@ -91,6 +91,25 @@ pub(crate) fn access_grant_from_plaintext(
     Ok(credential.access_grant())
 }
 
+/// Proves that credential rotation preserves the provider account identity.
+/// Expiry is irrelevant here: an old token remains valid identity evidence
+/// after its bearer authority has expired.
+pub(crate) fn same_authority(existing: &[u8], replacement: &[u8]) -> bool {
+    let Ok(existing) = serde_json::from_slice::<AliyunCredential>(existing) else {
+        return false;
+    };
+    let Ok(replacement) = serde_json::from_slice::<AliyunCredential>(replacement) else {
+        return false;
+    };
+    let Some(existing) = jwt_claims(&existing.access_token) else {
+        return false;
+    };
+    let Some(replacement) = jwt_claims(&replacement.access_token) else {
+        return false;
+    };
+    existing.sub == replacement.sub && existing.aud == replacement.aud
+}
+
 pub(crate) fn refresh_claims(token: &str) -> Option<JwtClaims> {
     jwt_claims(token)
 }
@@ -283,7 +302,7 @@ mod tests {
 
     use super::{
         AliyunCredential, OPENLIST_ONLINE_ISSUER, jwt_claims, permanent_provider_rejection,
-        refresh_after,
+        refresh_after, same_authority,
     };
 
     fn jwt(sub: &str, aud: &str, exp: u64) -> String {
@@ -314,6 +333,24 @@ mod tests {
         assert!(grant.get("access_token").is_some());
         assert!(grant.get("refresh_token").is_none());
         assert!(grant.get("refresh_issuer").is_none());
+    }
+
+    #[test]
+    fn rotation_preserves_exact_provider_account_identity() {
+        let credential = |sub: &str, aud: &str| AliyunCredential {
+            access_token: jwt(sub, aud, 1234),
+            refresh_token: Some(jwt(sub, aud, 5678)),
+            refresh_issuer: Some(OPENLIST_ONLINE_ISSUER.to_owned()),
+        };
+        let existing = serde_json::to_vec(&credential("account", "client")).expect("existing");
+        let same = serde_json::to_vec(&credential("account", "client")).expect("same");
+        let other_account =
+            serde_json::to_vec(&credential("other", "client")).expect("other account");
+        let other_client =
+            serde_json::to_vec(&credential("account", "other-client")).expect("other client");
+        assert!(same_authority(&existing, &same));
+        assert!(!same_authority(&existing, &other_account));
+        assert!(!same_authority(&existing, &other_client));
     }
 
     #[test]

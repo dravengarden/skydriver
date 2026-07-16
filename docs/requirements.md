@@ -140,6 +140,9 @@ This document is the normative product and correctness baseline. The key words
 - Every fallback MUST preserve complete-object identity and full verification.
 - Driver configuration and credentials MUST pass client-side checks and
   authoritative server-side validation before persistence.
+- Credential rotation MUST preserve the driver's provider authority identity.
+  Rebinding a driver to another provider account or bucket requires a distinct
+  driver identity and an explicit verified data migration.
 - Refresh authority MUST stay in the control plane. Filesystem clients MUST
   receive only short-lived object-scoped grants and MUST NOT implement
   credential renewal.

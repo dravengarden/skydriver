@@ -11,7 +11,10 @@ use zeroize::Zeroize as _;
 use crate::{
     driver_authorization::{self, AuthorizationFailure, CredentialAuthorization},
     driver_configuration, operator_sessions,
-    vfs_envelopes::{ENVELOPE_ALGORITHM, MASTER_KEY_VERSION, blob_binding, seal_driver_credential},
+    vfs_envelopes::{
+        ENVELOPE_ALGORITHM, MASTER_KEY_VERSION, blob_binding, open_driver_credential,
+        seal_driver_credential,
+    },
     vfs_identifiers,
 };
 
@@ -46,6 +49,10 @@ struct DriverRow {
     kind: String,
     config_json: String,
     credential_id: Option<String>,
+    credential_algorithm: Option<String>,
+    credential_key_version: Option<String>,
+    credential_nonce: Option<Vec<u8>>,
+    credential_ciphertext: Option<Vec<u8>>,
     credential_revision: Option<u64>,
     revision: u64,
 }
@@ -264,6 +271,40 @@ pub(crate) async fn apply(
     let credential_expires_at = material.credential_expires_at;
     let refresh_token_expires_at = material.refresh_token_expires_at;
     let managed_issuer = material.managed_issuer;
+
+    let existing = open_existing_credential(env, &driver);
+    let mut existing = match existing {
+        Ok(existing) => existing,
+        Err(error) => {
+            plaintext.zeroize();
+            release_authorization(
+                &database,
+                driver_id,
+                authorization_fence,
+                &requested.idempotency_key,
+            )
+            .await?;
+            return Err(error);
+        }
+    };
+    if let Some(existing) = existing.as_deref_mut() {
+        let continuous = driver_authorization::same_authority(driver_kind, existing, &plaintext);
+        existing.zeroize();
+        if !continuous {
+            plaintext.zeroize();
+            release_authorization(
+                &database,
+                driver_id,
+                authorization_fence,
+                &requested.idempotency_key,
+            )
+            .await?;
+            return Response::error(
+                "credential replacement would change the provider authority identity",
+                409,
+            );
+        }
+    }
 
     let credential_id = match driver.credential_id {
         Some(value) => value,
@@ -524,6 +565,10 @@ async fn load_driver(database: &worker::D1Database, driver_id: &str) -> Result<O
         .prepare(
             r"SELECT driver.kind, driver.config_json,
                     credential.id AS credential_id,
+                    credential.envelope_algorithm AS credential_algorithm,
+                    credential.key_version AS credential_key_version,
+                    credential.nonce AS credential_nonce,
+                    credential.ciphertext AS credential_ciphertext,
                     credential.revision AS credential_revision,
                     driver.revision
              FROM driver_instances AS driver
@@ -533,6 +578,31 @@ async fn load_driver(database: &worker::D1Database, driver_id: &str) -> Result<O
         .bind(&[JsValue::from_str(driver_id)])?
         .first::<DriverRow>(None)
         .await
+}
+
+fn open_existing_credential(env: &Env, driver: &DriverRow) -> Result<Option<Vec<u8>>> {
+    match (
+        driver.credential_id.as_deref(),
+        driver.credential_algorithm.as_deref(),
+        driver.credential_key_version.as_deref(),
+        driver.credential_nonce.as_deref(),
+        driver.credential_ciphertext.as_deref(),
+        driver.credential_revision,
+    ) {
+        (None, None, None, None, None, None) => Ok(None),
+        (
+            Some(id),
+            Some(algorithm),
+            Some(key_version),
+            Some(nonce),
+            Some(ciphertext),
+            Some(revision),
+        ) => open_driver_credential(env, id, revision, algorithm, key_version, nonce, ciphertext)
+            .map(Some),
+        _ => Err(worker::Error::RustError(
+            "stored driver credential envelope is incomplete".to_owned(),
+        )),
+    }
 }
 
 async fn load_receipt(

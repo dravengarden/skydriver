@@ -209,6 +209,10 @@ if ! rg -q 'driver_authorization::validate' control-plane/src/management_driver_
   echo "credential validation and apply must share the provider authorization adapter" >&2
   exit 1
 fi
+if ! rg -q 'driver_authorization::same_authority' control-plane/src/management_driver_credentials.rs; then
+  echo "credential replacement must preserve the existing provider authority identity" >&2
+  exit 1
+fi
 
 put_key_body="$(sed -n '/pub(crate) async fn grant_put_key(/,/pub(crate) async fn grant_put_driver(/p' control-plane/src/vfs_grants.rs)"
 if rg -q 'ensure_fresh' <<<"$put_key_body"; then

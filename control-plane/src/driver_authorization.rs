@@ -43,6 +43,16 @@ pub(crate) fn refresh_after(expires_at: u64, now: u64) -> u64 {
     driver_renewal::refresh_after(expires_at, now)
 }
 
+pub(crate) fn same_authority(kind: DriverKind, existing: &[u8], replacement: &[u8]) -> bool {
+    match kind {
+        DriverKind::AliyunDriveOpenV2 => driver_renewal::same_authority(existing, replacement),
+        // R2 configuration pins the endpoint, bucket, and object prefix, and
+        // authorize() has already proved the replacement against that bucket.
+        DriverKind::R2V1 => true,
+        DriverKind::LocalFilesystemV2 => false,
+    }
+}
+
 pub(crate) fn validate(
     kind: DriverKind,
     authorization: &CredentialAuthorization,
