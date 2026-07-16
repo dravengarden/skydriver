@@ -1,11 +1,14 @@
 //! Incremental, verified VFS-directory synchronization to a local tree.
 
 use futures_util::{StreamExt as _, stream};
-use serde::{Deserialize, Serialize};
+use rusqlite::OptionalExtension as _;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest as _, Sha256};
 use std::{
-    collections::{HashMap, VecDeque},
+    cell::Cell,
+    collections::VecDeque,
     io::{BufReader, BufWriter, Read as _, Write as _},
+    marker::PhantomData,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -18,9 +21,10 @@ use crate::{
     vfs::{CatalogCheckpointOutcome, canonical_components},
 };
 
-const STATE_SCHEMA: &str = "carrack.local-sync-state.v1";
+const LEGACY_STATE_SCHEMA: &str = "carrack.local-sync-state.v1";
+const STATE_SCHEMA: &str = "carrack.local-sync-state.v2";
 const CATALOG_PAGE_SIZE: u32 = 1_000;
-const MAXIMUM_PLAN_RECORD_BYTES: usize = 1024 * 1024;
+const MAXIMUM_SPOOL_RECORD_BYTES: usize = 1024 * 1024;
 static PLAN_SPOOL_ORDINAL: AtomicU64 = AtomicU64::new(0);
 static STATE_TEMPORARY_ORDINAL: AtomicU64 = AtomicU64::new(0);
 
@@ -80,12 +84,104 @@ struct StateRecord {
     verification_block_bytes: u64,
 }
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SyncState {
+struct LegacySyncState {
     schema: String,
     source: String,
     records: Vec<StateRecord>,
+}
+
+struct StateIndex {
+    connection: rusqlite::Connection,
+    healthy: Cell<bool>,
+}
+
+impl StateIndex {
+    fn open(path: &Path, source: &str) -> Result<Self, Error> {
+        let metadata = std::fs::symlink_metadata(path)
+            .map_err(local_error("inspect indexed local sync state"))?;
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            return Err(Error::InvalidResponse(
+                "indexed local sync state is not a regular file".to_owned(),
+            ));
+        }
+        let connection = rusqlite::Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(state_database_error("open indexed local sync state"))?;
+        connection
+            .execute_batch("PRAGMA trusted_schema = OFF; PRAGMA query_only = ON;")
+            .map_err(state_database_error("harden indexed local sync state"))?;
+        // This index is only a hint: every reused file is still hashed against the
+        // server-pinned root. Avoid an O(N) quick_check on every warm sync; SQLite
+        // read errors and malformed rows instead disable or miss the hint safely.
+        let identity = connection
+            .query_row("SELECT schema, source FROM state_identity", [], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .optional()
+            .map_err(state_database_error("read indexed local sync identity"))?;
+        if identity
+            .as_ref()
+            .map(|(schema, source)| (schema.as_str(), source.as_str()))
+            != Some((STATE_SCHEMA, source))
+        {
+            return Err(Error::InvalidResponse(
+                "indexed local sync state identity differs".to_owned(),
+            ));
+        }
+        Ok(Self {
+            connection,
+            healthy: Cell::new(true),
+        })
+    }
+
+    fn lookup(&self, relative_path: &Path) -> Option<StateRecord> {
+        if !self.healthy.get() {
+            return None;
+        }
+        let path = relative_path.to_str()?;
+        let result = self
+            .connection
+            .query_row(
+                "SELECT version_id, size_bytes, file_root, verification_block_bytes FROM state_records WHERE relative_path = ?1",
+                [path],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional();
+        let row = if let Ok(row) = result {
+            row
+        } else {
+            self.healthy.set(false);
+            return None;
+        }?;
+        let size_bytes = canonical_u64(&row.1)?;
+        let verification_block_bytes = canonical_u64(&row.3)?;
+        if row.0.is_empty()
+            || row.2.len() != 64
+            || hex::decode(&row.2).is_err()
+            || verification_block_bytes == 0
+            || verification_block_bytes > 256 * 1024 * 1024
+        {
+            return None;
+        }
+        Some(StateRecord {
+            relative_path: relative_path.to_owned(),
+            version_id: row.0,
+            size_bytes,
+            file_root: row.2,
+            verification_block_bytes,
+        })
+    }
 }
 
 struct Downloaded {
@@ -93,14 +189,16 @@ struct Downloaded {
     warnings: Vec<String>,
 }
 
-struct PlanSpool {
+struct RecordSpool<T> {
     path: Option<PathBuf>,
     writer: Option<BufWriter<std::fs::File>>,
+    record: PhantomData<T>,
 }
 
-struct PlanSpoolReader {
+struct RecordSpoolReader<T> {
     path: Option<PathBuf>,
     file: std::fs::File,
+    record: PhantomData<T>,
 }
 
 #[derive(Debug)]
@@ -109,7 +207,7 @@ struct DestinationLock {
     _destination: std::fs::File,
 }
 
-impl PlanSpool {
+impl<T> RecordSpool<T> {
     fn create(state_directory: &Path) -> Result<Self, Error> {
         let directory = state_directory.join("sync/plans");
         protect_directory(&directory)?;
@@ -130,74 +228,79 @@ impl PlanSpool {
                         {
                             drop(file);
                             let _ = std::fs::remove_file(&path);
-                            return Err(local_error("protect sync plan spool")(error));
+                            return Err(local_error("protect sync record spool")(error));
                         }
                     }
                     return Ok(Self {
                         path: Some(path),
                         writer: Some(BufWriter::new(file)),
+                        record: PhantomData,
                     });
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(local_error("create sync plan spool")(error)),
+                Err(error) => return Err(local_error("create sync record spool")(error)),
             }
         }
     }
 
-    fn append(&mut self, file: &PlannedFile) -> Result<(), Error> {
-        let encoded = serde_json::to_vec(file)
-            .map_err(|error| Error::InvalidResponse(format!("encode sync plan: {error}")))?;
-        if encoded.is_empty() || encoded.len() > MAXIMUM_PLAN_RECORD_BYTES {
+    fn append(&mut self, record: &T) -> Result<(), Error>
+    where
+        T: Serialize,
+    {
+        let encoded = serde_json::to_vec(record).map_err(|error| {
+            Error::InvalidResponse(format!("encode sync spool record: {error}"))
+        })?;
+        if encoded.is_empty() || encoded.len() > MAXIMUM_SPOOL_RECORD_BYTES {
             return Err(Error::InvalidResponse(
-                "sync plan record exceeds its local bound".to_owned(),
+                "sync spool record exceeds its local bound".to_owned(),
             ));
         }
         let length = u32::try_from(encoded.len()).map_err(|_| {
-            Error::InvalidResponse("sync plan record length exceeds u32".to_owned())
+            Error::InvalidResponse("sync spool record length exceeds u32".to_owned())
         })?;
         let writer = self
             .writer
             .as_mut()
-            .ok_or_else(|| Error::InvalidResponse("sync plan spool is sealed".to_owned()))?;
+            .ok_or_else(|| Error::InvalidResponse("sync record spool is sealed".to_owned()))?;
         writer
             .write_all(&length.to_be_bytes())
             .and_then(|()| writer.write_all(&encoded))
-            .map_err(local_error("write sync plan spool"))?;
+            .map_err(local_error("write sync record spool"))?;
         Ok(())
     }
 
-    fn finish(mut self) -> Result<PlanSpoolReader, Error> {
+    fn finish(mut self) -> Result<RecordSpoolReader<T>, Error> {
         let mut writer = self
             .writer
             .take()
-            .ok_or_else(|| Error::InvalidResponse("sync plan spool is sealed".to_owned()))?;
+            .ok_or_else(|| Error::InvalidResponse("sync record spool is sealed".to_owned()))?;
         writer
             .flush()
-            .map_err(local_error("flush sync plan spool"))?;
+            .map_err(local_error("flush sync record spool"))?;
         writer
             .get_ref()
             .sync_all()
-            .map_err(local_error("sync plan spool"))?;
+            .map_err(local_error("sync record spool"))?;
         drop(writer);
-        let path = self
-            .path
-            .take()
-            .ok_or_else(|| Error::InvalidResponse("sync plan spool path is missing".to_owned()))?;
+        let path = self.path.take().ok_or_else(|| {
+            Error::InvalidResponse("sync record spool path is missing".to_owned())
+        })?;
         let file = match std::fs::File::open(&path) {
             Ok(file) => file,
             Err(error) => {
                 let _ = std::fs::remove_file(&path);
-                return Err(local_error("open sync plan spool")(error));
+                return Err(local_error("open sync record spool")(error));
             }
         };
-        Ok(PlanSpoolReader {
+        Ok(RecordSpoolReader {
             path: Some(path),
             file,
+            record: PhantomData,
         })
     }
 }
 
-impl Drop for PlanSpool {
+impl<T> Drop for RecordSpool<T> {
     fn drop(&mut self) {
         if let Some(path) = self.path.take() {
             let _ = std::fs::remove_file(path);
@@ -205,8 +308,11 @@ impl Drop for PlanSpool {
     }
 }
 
-impl Iterator for PlanSpoolReader {
-    type Item = Result<PlannedFile, Error>;
+impl<T> Iterator for RecordSpoolReader<T>
+where
+    T: DeserializeOwned,
+{
+    type Item = Result<T, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut encoded_length = [0_u8; 4];
@@ -214,30 +320,30 @@ impl Iterator for PlanSpoolReader {
             Ok(0) => return None,
             Ok(1) => {}
             Ok(_) => unreachable!("one-byte read returned more than one byte"),
-            Err(error) => return Some(Err(local_error("read sync plan spool")(error))),
+            Err(error) => return Some(Err(local_error("read sync record spool")(error))),
         }
         if let Err(error) = self.file.read_exact(&mut encoded_length[1..]) {
-            return Some(Err(local_error("read sync plan record length")(error)));
+            return Some(Err(local_error("read sync spool record length")(error)));
         }
         let length = u32::from_be_bytes(encoded_length) as usize;
-        if length == 0 || length > MAXIMUM_PLAN_RECORD_BYTES {
+        if length == 0 || length > MAXIMUM_SPOOL_RECORD_BYTES {
             return Some(Err(Error::InvalidResponse(
-                "sync plan record length is invalid".to_owned(),
+                "sync spool record length is invalid".to_owned(),
             )));
         }
         let mut encoded = vec![0_u8; length];
         if let Err(error) = self.file.read_exact(&mut encoded) {
-            return Some(Err(local_error("read sync plan record")(error)));
+            return Some(Err(local_error("read sync spool record")(error)));
         }
         Some(
             serde_json::from_slice(&encoded).map_err(|error| {
-                Error::InvalidResponse(format!("decode sync plan record: {error}"))
+                Error::InvalidResponse(format!("decode sync spool record: {error}"))
             }),
         )
     }
 }
 
-impl Drop for PlanSpoolReader {
+impl<T> Drop for RecordSpoolReader<T> {
     fn drop(&mut self) {
         if let Some(path) = self.path.take() {
             let _ = std::fs::remove_file(path);
@@ -306,19 +412,15 @@ impl VfsClient {
             CatalogCheckpointOutcome::Unavailable => false,
         };
         let state_path = state_path(&options.state_directory, &session.token_id, source);
-        let previous = read_state(&state_path, source)?;
-        let mut previous_by_path = HashMap::with_capacity(previous.records.len());
-        for record in &previous.records {
-            if previous_by_path
-                .insert(record.relative_path.as_path(), record)
-                .is_some()
-            {
-                return Err(Error::InvalidResponse(
-                    "local sync state contains duplicate paths".to_owned(),
-                ));
-            }
-        }
-        let plan_spool = PlanSpool::create(&options.state_directory)?;
+        let legacy_state_path =
+            legacy_state_path(&options.state_directory, &session.token_id, source);
+        let (previous, mut warnings) = open_state_index(
+            &options.state_directory,
+            &state_path,
+            &legacy_state_path,
+            source,
+        )?;
+        let plan_spool = RecordSpool::<PlannedFile>::create(&options.state_directory)?;
         let (fence, directories, files) = self
             .plan_tree(
                 source,
@@ -330,25 +432,26 @@ impl VfsClient {
                 plan_spool,
             )
             .await?;
-        let mut records = Vec::new();
-        let mut downloads = PlanSpool::create(&options.state_directory)?;
+        let mut records = RecordSpool::<StateRecord>::create(&options.state_directory)?;
+        let mut downloads = RecordSpool::<PlannedFile>::create(&options.state_directory)?;
         let mut reused_files = 0_u64;
         for file in files.finish()? {
             let file = file?;
             let local_path = destination.join(&file.relative_path);
-            let reusable = previous_by_path
-                .get(file.relative_path.as_path())
-                .copied()
-                .filter(|record| {
-                    record.relative_path == file.relative_path
-                        && record.version_id == file.version_id
-                        && record.size_bytes == file.size_bytes
-                        && record.file_root == file.file_root
-                });
+            let reusable = match &previous {
+                Some(index) => index.lookup(&file.relative_path),
+                None => None,
+            }
+            .filter(|record| {
+                record.relative_path == file.relative_path
+                    && record.version_id == file.version_id
+                    && record.size_bytes == file.size_bytes
+                    && record.file_root == file.file_root
+            });
             if let Some(record) = reusable
-                && local_matches(&local_path, record)?
+                && local_matches(&local_path, &record)?
             {
-                records.push(record.clone());
+                records.append(&record)?;
                 reused_files += 1;
             } else {
                 downloads.append(&file)?;
@@ -380,7 +483,6 @@ impl VfsClient {
             }
         }))
         .buffer_unordered(maximum_concurrency);
-        let mut warnings = Vec::new();
         let mut downloaded_bytes = 0_u64;
         let mut downloaded_files = 0_u64;
         while let Some(downloaded) = pending.next().await {
@@ -388,7 +490,7 @@ impl VfsClient {
             downloaded_bytes = downloaded_bytes.saturating_add(downloaded.record.size_bytes);
             downloaded_files += 1;
             warnings.extend(downloaded.warnings);
-            records.push(downloaded.record);
+            records.append(&downloaded.record)?;
         }
         let final_page = self.list_directory(&fence.directory_id, None, 1).await?;
         validate_page_identity(
@@ -397,15 +499,15 @@ impl VfsClient {
             &fence.data_root,
             Some((&fence.filesystem_id, fence.revision)),
         )?;
-        records.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-        warnings.extend(write_state(
-            &state_path,
-            &SyncState {
-                schema: STATE_SCHEMA.to_owned(),
-                source: source.to_owned(),
-                records,
-            },
-        )?);
+        drop(previous);
+        warnings.extend(write_state(&state_path, source, records.finish()?)?);
+        if let Err(error) = std::fs::remove_file(&legacy_state_path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            warnings.push(format!(
+                "The indexed sync state was published, but legacy state cleanup was deferred: {error}"
+            ));
+        }
         warnings.sort();
         warnings.dedup();
         Ok(SyncResult {
@@ -433,8 +535,8 @@ impl VfsClient {
         session: &crate::VfsSession,
         maximum_concurrency: usize,
         bulk_catalog_authorized: bool,
-        mut files: PlanSpool,
-    ) -> Result<(CatalogFence, u64, PlanSpool), Error> {
+        mut files: RecordSpool<PlannedFile>,
+    ) -> Result<(CatalogFence, u64, RecordSpool<PlannedFile>), Error> {
         let (fence, root) = self
             .source_catalog(source, catalog, session, bulk_catalog_authorized)
             .await?;
@@ -780,16 +882,83 @@ fn acquire_sync_lock(destination: &Path) -> Result<DestinationLock, Error> {
 
 fn state_path(root: &Path, token_id: &str, source: &str) -> PathBuf {
     root.join("sync/tokens").join(token_id).join(format!(
+        "{}.sqlite3",
+        hex::encode(Sha256::digest(source.as_bytes()))
+    ))
+}
+
+fn legacy_state_path(root: &Path, token_id: &str, source: &str) -> PathBuf {
+    root.join("sync/tokens").join(token_id).join(format!(
         "{}.json",
         hex::encode(Sha256::digest(source.as_bytes()))
     ))
 }
 
-fn read_state(path: &Path, source: &str) -> Result<SyncState, Error> {
+fn open_state_index(
+    state_directory: &Path,
+    path: &Path,
+    legacy_path: &Path,
+    source: &str,
+) -> Result<(Option<StateIndex>, Vec<String>), Error> {
+    let mut warnings = Vec::new();
+    if path.exists() {
+        return match StateIndex::open(path, source) {
+            Ok(index) => Ok((Some(index), warnings)),
+            Err(error) => {
+                warnings.push(format!(
+                    "The local sync index is invalid and will be rebuilt without trusting it: {error}"
+                ));
+                Ok((None, warnings))
+            }
+        };
+    }
+    if !legacy_path.exists() {
+        return Ok((None, warnings));
+    }
+    let legacy = match read_legacy_state(legacy_path, source) {
+        Ok(legacy) => legacy,
+        Err(error) => {
+            warnings.push(format!(
+                "The legacy local sync state is invalid and will be rebuilt without trusting it: {error}"
+            ));
+            return Ok((None, warnings));
+        }
+    };
+    let mut records = RecordSpool::<StateRecord>::create(state_directory)?;
+    for record in legacy.records {
+        records.append(&record)?;
+    }
+    if let Err(error) = write_state(path, source, records.finish()?) {
+        warnings.push(format!(
+            "The legacy local sync state could not be indexed and will be rebuilt: {error}"
+        ));
+        return Ok((None, warnings));
+    }
+    match StateIndex::open(path, source) {
+        Ok(index) => {
+            if let Err(error) = std::fs::remove_file(legacy_path)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                warnings.push(format!(
+                    "The indexed sync state is ready, but legacy state cleanup was deferred: {error}"
+                ));
+            }
+            Ok((Some(index), warnings))
+        }
+        Err(error) => {
+            warnings.push(format!(
+                "The migrated local sync index failed validation and will not be trusted: {error}"
+            ));
+            Ok((None, warnings))
+        }
+    }
+}
+
+fn read_legacy_state(path: &Path, source: &str) -> Result<LegacySyncState, Error> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(SyncState::default());
+            return Ok(LegacySyncState::default());
         }
         Err(error) => return Err(local_error("inspect local sync state")(error)),
     };
@@ -799,9 +968,9 @@ fn read_state(path: &Path, source: &str) -> Result<SyncState, Error> {
         ));
     }
     let file = std::fs::File::open(path).map_err(local_error("open local sync state"))?;
-    let state: SyncState = serde_json::from_reader(BufReader::new(file))
+    let state: LegacySyncState = serde_json::from_reader(BufReader::new(file))
         .map_err(|error| Error::InvalidResponse(format!("decode local sync state: {error}")))?;
-    if state.schema != STATE_SCHEMA || state.source != source {
+    if state.schema != LEGACY_STATE_SCHEMA || state.source != source {
         return Err(Error::InvalidResponse(
             "local sync state identity differs".to_owned(),
         ));
@@ -809,31 +978,22 @@ fn read_state(path: &Path, source: &str) -> Result<SyncState, Error> {
     Ok(state)
 }
 
-fn write_state(path: &Path, state: &SyncState) -> Result<Vec<String>, Error> {
+fn write_state(
+    path: &Path,
+    source: &str,
+    records: RecordSpoolReader<StateRecord>,
+) -> Result<Vec<String>, Error> {
     let parent = path
         .parent()
         .ok_or_else(|| Error::InvalidResponse("local sync state has no parent".to_owned()))?;
     protect_directory(parent)?;
     let (temporary, file) = create_state_temporary(parent)?;
-    let mut writer = BufWriter::new(file);
-    if let Err(error) = serde_json::to_writer(&mut writer, state) {
-        drop(writer);
+    drop(file);
+    let built = build_state_database(&temporary, source, records);
+    if let Err(error) = built {
         let _ = std::fs::remove_file(&temporary);
-        return Err(Error::InvalidResponse(format!(
-            "encode local sync state: {error}"
-        )));
+        return Err(error);
     }
-    if let Err(error) = writer.flush() {
-        drop(writer);
-        let _ = std::fs::remove_file(&temporary);
-        return Err(local_error("flush local sync state")(error));
-    }
-    if let Err(error) = writer.get_ref().sync_all() {
-        drop(writer);
-        let _ = std::fs::remove_file(&temporary);
-        return Err(local_error("sync local sync state")(error));
-    }
-    drop(writer);
     if let Err(error) = std::fs::rename(&temporary, path) {
         let _ = std::fs::remove_file(&temporary);
         return Err(local_error("publish local sync state")(error));
@@ -845,6 +1005,121 @@ fn write_state(path: &Path, state: &SyncState) -> Result<Vec<String>, Error> {
         ));
     }
     Ok(warnings)
+}
+
+fn build_state_database(
+    path: &Path,
+    source: &str,
+    records: RecordSpoolReader<StateRecord>,
+) -> Result<(), Error> {
+    let mut connection = rusqlite::Connection::open(path)
+        .map_err(state_database_error("create indexed local sync state"))?;
+    connection
+        .execute_batch(
+            "PRAGMA journal_mode = OFF;
+             PRAGMA synchronous = OFF;
+             PRAGMA trusted_schema = OFF;
+             PRAGMA user_version = 2;
+             CREATE TABLE state_identity (
+                 schema TEXT NOT NULL,
+                 source TEXT NOT NULL
+             ) STRICT;
+             CREATE TABLE state_records (
+                 relative_path TEXT PRIMARY KEY,
+                 version_id TEXT NOT NULL,
+                 size_bytes TEXT NOT NULL,
+                 file_root TEXT NOT NULL,
+                 verification_block_bytes TEXT NOT NULL
+             ) STRICT, WITHOUT ROWID;",
+        )
+        .map_err(state_database_error("initialize indexed local sync state"))?;
+    let transaction = connection
+        .transaction()
+        .map_err(state_database_error("begin indexed local sync state"))?;
+    transaction
+        .execute(
+            "INSERT INTO state_identity (schema, source) VALUES (?1, ?2)",
+            (STATE_SCHEMA, source),
+        )
+        .map_err(state_database_error("write indexed local sync identity"))?;
+    {
+        let mut insert = transaction
+            .prepare_cached(
+                "INSERT INTO state_records (
+                    relative_path,
+                    version_id,
+                    size_bytes,
+                    file_root,
+                    verification_block_bytes
+                 ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            )
+            .map_err(state_database_error("prepare indexed local sync record"))?;
+        for record in records {
+            let record = record?;
+            let relative_path = validate_state_record(&record)?;
+            insert
+                .execute((
+                    relative_path,
+                    record.version_id.as_str(),
+                    record.size_bytes.to_string(),
+                    record.file_root.as_str(),
+                    record.verification_block_bytes.to_string(),
+                ))
+                .map_err(state_database_error("write indexed local sync record"))?;
+        }
+    }
+    transaction
+        .commit()
+        .map_err(state_database_error("commit indexed local sync state"))?;
+    let integrity: String = connection
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .map_err(state_database_error("verify indexed local sync state"))?;
+    if integrity != "ok" {
+        return Err(Error::InvalidResponse(
+            "new indexed local sync state failed its integrity check".to_owned(),
+        ));
+    }
+    connection
+        .close()
+        .map_err(|(_, error)| state_database_error("close indexed local sync state")(error))?;
+    std::fs::File::open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(local_error("sync indexed local sync state"))
+}
+
+fn validate_state_record(record: &StateRecord) -> Result<&str, Error> {
+    let path = record
+        .relative_path
+        .to_str()
+        .ok_or_else(|| Error::InvalidResponse("local sync state path is not UTF-8".to_owned()))?;
+    if path.is_empty()
+        || record.relative_path.is_absolute()
+        || record
+            .relative_path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        || record.version_id.is_empty()
+        || record.file_root.len() != 64
+        || hex::decode(&record.file_root)
+            .ok()
+            .is_none_or(|decoded| hex::encode(decoded) != record.file_root)
+        || record.verification_block_bytes == 0
+        || record.verification_block_bytes > 256 * 1024 * 1024
+    {
+        return Err(Error::InvalidResponse(
+            "local sync state record is not canonical".to_owned(),
+        ));
+    }
+    Ok(path)
+}
+
+fn canonical_u64(value: &str) -> Option<u64> {
+    let decoded = value.parse::<u64>().ok()?;
+    (decoded.to_string() == value).then_some(decoded)
+}
+
+fn state_database_error(context: &'static str) -> impl FnOnce(rusqlite::Error) -> Error {
+    move |error| Error::InvalidResponse(format!("{context}: {error}"))
 }
 
 fn create_state_temporary(parent: &Path) -> Result<(PathBuf, std::fs::File), Error> {
@@ -929,15 +1204,16 @@ mod tests {
     use sha2::{Digest as _, Sha256};
 
     use super::{
-        PlanSpool, PlannedFile, STATE_SCHEMA, StateRecord, SyncOptions, SyncState, VfsClient,
-        acquire_sync_lock, read_state, write_state,
+        LEGACY_STATE_SCHEMA, PlannedFile, RecordSpool, StateIndex, StateRecord, SyncOptions,
+        VfsClient, acquire_sync_lock, open_state_index, write_state,
     };
     use crate::VfsToken;
 
     #[test]
     fn plan_spool_streams_records_and_removes_private_file() {
         let temporary = tempfile::tempdir().expect("sync plan temporary directory");
-        let mut spool = PlanSpool::create(temporary.path()).expect("create sync plan spool");
+        let mut spool =
+            RecordSpool::<PlannedFile>::create(temporary.path()).expect("create sync plan spool");
         let first = PlannedFile {
             vfs_path: "/first.parquet".to_owned(),
             relative_path: "first.parquet".into(),
@@ -977,52 +1253,134 @@ mod tests {
     #[test]
     fn plan_spools_are_unique_within_one_process() {
         let temporary = tempfile::tempdir().expect("sync plan temporary directory");
-        let first = PlanSpool::create(temporary.path()).expect("first sync plan spool");
-        let second = PlanSpool::create(temporary.path()).expect("second sync plan spool");
+        let first =
+            RecordSpool::<PlannedFile>::create(temporary.path()).expect("first sync plan spool");
+        let second =
+            RecordSpool::<PlannedFile>::create(temporary.path()).expect("second sync plan spool");
         assert_ne!(first.path, second.path);
     }
 
     #[test]
     fn sync_state_publication_is_atomic_and_ignores_legacy_temporary_name() {
         let temporary = tempfile::tempdir().expect("sync state temporary directory");
-        let path = temporary.path().join("tokens/token/source.json");
+        let path = temporary.path().join("tokens/token/source.sqlite3");
         let parent = path.parent().expect("sync state parent");
         std::fs::create_dir_all(parent).expect("create sync state parent");
-        let legacy_temporary = path.with_extension("json.tmp");
+        let legacy_temporary = path.with_extension("sqlite3.tmp");
         std::fs::write(&legacy_temporary, b"other concurrent writer")
             .expect("write legacy temporary collision");
-        let first = SyncState {
-            schema: STATE_SCHEMA.to_owned(),
-            source: "/docs".to_owned(),
-            records: vec![StateRecord {
-                relative_path: "first.parquet".into(),
-                version_id: "first-version".to_owned(),
-                size_bytes: 11,
-                file_root: "11".repeat(32),
-                verification_block_bytes: 4,
-            }],
+        let source = "/docs/\"quoted\"";
+        let first = StateRecord {
+            relative_path: "first.parquet".into(),
+            version_id: "first-version".to_owned(),
+            size_bytes: 11,
+            file_root: "11".repeat(32),
+            verification_block_bytes: 4,
         };
-        write_state(&path, &first).expect("publish first sync state");
-        let second = SyncState {
-            schema: STATE_SCHEMA.to_owned(),
-            source: "/docs".to_owned(),
-            records: vec![StateRecord {
-                relative_path: "second.parquet".into(),
-                version_id: "second-version".to_owned(),
-                size_bytes: 22,
-                file_root: "22".repeat(32),
-                verification_block_bytes: 8,
-            }],
+        let mut first_records =
+            RecordSpool::<StateRecord>::create(temporary.path()).expect("first state spool");
+        first_records.append(&first).expect("append first state");
+        write_state(
+            &path,
+            source,
+            first_records.finish().expect("seal first state spool"),
+        )
+        .expect("publish first sync state");
+        let second = StateRecord {
+            relative_path: "second.parquet".into(),
+            version_id: "second-version".to_owned(),
+            size_bytes: 22,
+            file_root: "22".repeat(32),
+            verification_block_bytes: 8,
         };
-        write_state(&path, &second).expect("replace sync state atomically");
+        let mut second_records =
+            RecordSpool::<StateRecord>::create(temporary.path()).expect("second state spool");
+        second_records.append(&second).expect("append second state");
+        second_records
+            .append(&first)
+            .expect("append another streamed state");
+        write_state(
+            &path,
+            source,
+            second_records.finish().expect("seal second state spool"),
+        )
+        .expect("replace sync state atomically");
 
-        let loaded = read_state(&path, "/docs").expect("read latest sync state");
-        assert_eq!(loaded.records.len(), 1);
-        assert_eq!(loaded.records[0].version_id, "second-version");
+        let loaded = StateIndex::open(&path, source).expect("open latest sync state");
+        assert_eq!(
+            loaded
+                .lookup(std::path::Path::new("second.parquet"))
+                .expect("second indexed record")
+                .version_id,
+            "second-version"
+        );
+        assert!(
+            loaded
+                .lookup(std::path::Path::new("first.parquet"))
+                .is_some()
+        );
         assert_eq!(
             std::fs::read(&legacy_temporary).expect("read legacy temporary"),
             b"other concurrent writer"
         );
+    }
+
+    #[test]
+    fn legacy_sync_state_migrates_to_the_indexed_format() {
+        let temporary = tempfile::tempdir().expect("sync state temporary directory");
+        let state_directory = temporary.path().join("state");
+        let path = state_directory.join("tokens/token/source.sqlite3");
+        let legacy_path = state_directory.join("tokens/token/source.json");
+        std::fs::create_dir_all(legacy_path.parent().expect("legacy state parent"))
+            .expect("create legacy state parent");
+        let source = "/archive";
+        std::fs::write(
+            &legacy_path,
+            serde_json::to_vec(&json!({
+                "schema": LEGACY_STATE_SCHEMA,
+                "source": source,
+                "records": [{
+                    "relative_path": "partition/file.parquet",
+                    "version_id": "version-1",
+                    "size_bytes": 42,
+                    "file_root": "ab".repeat(32),
+                    "verification_block_bytes": 4_194_304
+                }]
+            }))
+            .expect("encode legacy state"),
+        )
+        .expect("write legacy state");
+
+        let (index, warnings) = open_state_index(&state_directory, &path, &legacy_path, source)
+            .expect("migrate legacy state");
+
+        assert!(warnings.is_empty());
+        let record = index
+            .expect("indexed state")
+            .lookup(std::path::Path::new("partition/file.parquet"))
+            .expect("migrated record");
+        assert_eq!(record.version_id, "version-1");
+        assert_eq!(record.size_bytes, 42);
+        assert!(path.is_file());
+        assert!(!legacy_path.exists());
+    }
+
+    #[test]
+    fn corrupt_sync_index_is_ignored_for_a_safe_rebuild() {
+        let temporary = tempfile::tempdir().expect("sync state temporary directory");
+        let state_directory = temporary.path().join("state");
+        let path = state_directory.join("tokens/token/source.sqlite3");
+        let legacy_path = state_directory.join("tokens/token/source.json");
+        std::fs::create_dir_all(path.parent().expect("indexed state parent"))
+            .expect("create indexed state parent");
+        std::fs::write(&path, b"not a sqlite database").expect("write corrupt index");
+
+        let (index, warnings) = open_state_index(&state_directory, &path, &legacy_path, "/archive")
+            .expect("fall back from corrupt index");
+
+        assert!(index.is_none());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("will be rebuilt without trusting it"));
     }
 
     #[test]
