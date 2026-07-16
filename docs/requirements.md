@@ -108,6 +108,9 @@ This document is the normative product and correctness baseline. The key words
   redownload it or copy an independently complete local candidate into private
   staging and fully reverify the expected immutable version, size, and plaintext
   Merkle root before publication.
+- Background acceleration workers MUST publish only private staging artifacts.
+  The active synchronization coordinator MUST own final destination publication
+  so cancellation cannot mutate an official path after the call returns.
 - A final live-root recheck MUST reject a plan whose namespace changed during
   synchronization unless the caller explicitly requested a pinned snapshot.
 

@@ -22,7 +22,7 @@ thiserror = "2.0.17"
 unicode-normalization = "0.1.25"
 url = "2.5.7"
 zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
-tokio = { version = "1.48.0", features = ["fs", "io-util"] }
+tokio = { version = "1.48.0", features = ["fs", "io-util", "rt"] }
 tokio-util = { version = "0.7.17", features = ["io"] }
 
 [dev-dependencies]

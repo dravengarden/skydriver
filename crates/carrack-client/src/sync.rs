@@ -234,6 +234,49 @@ struct Downloaded {
     warnings: Vec<String>,
 }
 
+struct LocalReusePlan {
+    file: PlannedFile,
+    exact: Option<StateRecord>,
+    relocated: Vec<StateRecord>,
+}
+
+enum LocalDisposition {
+    Reused(StateRecord),
+    Staged(StagedLocalReuse),
+    Download(PlannedFile),
+}
+
+struct LocalEvaluation {
+    disposition: LocalDisposition,
+    warnings: Vec<String>,
+}
+
+struct StagedLocalReuse {
+    temporary: Option<PathBuf>,
+    target: PathBuf,
+    record: StateRecord,
+}
+
+impl StagedLocalReuse {
+    fn publish(mut self) -> Result<StateRecord, Error> {
+        let temporary = self.temporary.as_ref().ok_or_else(|| {
+            Error::InvalidResponse("local reuse staging identity is missing".to_owned())
+        })?;
+        std::fs::rename(temporary, &self.target)
+            .map_err(local_error("publish immutable local reuse"))?;
+        self.temporary = None;
+        Ok(self.record.clone())
+    }
+}
+
+impl Drop for StagedLocalReuse {
+    fn drop(&mut self) {
+        if let Some(temporary) = self.temporary.take() {
+            let _ = std::fs::remove_file(temporary);
+        }
+    }
+}
+
 struct RecordSpool<T> {
     path: Option<PathBuf>,
     writer: Option<BufWriter<std::fs::File>>,
@@ -459,8 +502,9 @@ impl VfsClient {
     /// The complete remote catalog is fetched before provider reads begin.
     /// Unchanged local files are reused only after recomputing their exact
     /// plaintext Merkle root with the previously authenticated block size.
-    /// Changed files download concurrently and each file retains its own
-    /// resumable exact-range pipeline. Untracked local files are preserved.
+    /// Local verification and changed-file downloads use bounded concurrency;
+    /// each changed file retains its own resumable exact-range pipeline.
+    /// Untracked local files are preserved.
     ///
     /// # Errors
     ///
@@ -523,54 +567,58 @@ impl VfsClient {
         let mut records = RecordSpool::<StateRecord>::create(&options.state_directory)?;
         let mut downloads = RecordSpool::<PlannedFile>::create(&options.state_directory)?;
         let mut reused_files = 0_u64;
-        for file in files.finish()? {
-            let file = file?;
-            let local_path = destination.join(&file.relative_path);
-            let reusable = match &previous {
-                Some(index) => index.lookup(&file.relative_path),
-                None => None,
+        let maximum_concurrency = options.maximum_concurrency;
+        let local_destination = destination.to_owned();
+        let mut local_pending = stream::iter(files.finish()?.map(|file| {
+            let plan = file.map(|file| build_local_reuse_plan(previous.as_ref(), file));
+            let destination = local_destination.clone();
+            async move {
+                let plan = plan?;
+                tokio::task::spawn_blocking(move || evaluate_local_file(&destination, plan))
+                    .await
+                    .map_err(|error| {
+                        Error::InvalidResponse(format!("local verification worker failed: {error}"))
+                    })?
             }
-            .filter(|record| {
-                record.relative_path == file.relative_path
-                    && record.version_id == file.version_id
-                    && record.size_bytes == file.size_bytes
-                    && record.file_root == file.file_root
-            });
-            if let Some(record) = reusable
-                && local_matches(&local_path, &record)?
-            {
-                records.append(&record)?;
-                reused_files += 1;
-            } else {
-                let mut relocated = None;
-                if let Some(index) = &previous {
-                    for candidate in index.lookup_version(&file.version_id) {
-                        if candidate.relative_path == file.relative_path
-                            || candidate.size_bytes != file.size_bytes
-                            || candidate.file_root != file.file_root
-                        {
-                            continue;
+        }))
+        .buffer_unordered(maximum_concurrency);
+        let mut local_error = None;
+        while let Some(evaluated) = local_pending.next().await {
+            match evaluated {
+                Ok(evaluated) => {
+                    warnings.extend(evaluated.warnings);
+                    match evaluated.disposition {
+                        LocalDisposition::Reused(record) => {
+                            records.append(&record)?;
+                            reused_files += 1;
                         }
-                        match reuse_local_version(destination, &file, &candidate) {
-                            Ok(Some(record)) => {
-                                relocated = Some(record);
-                                break;
+                        LocalDisposition::Staged(staged) => match staged.publish() {
+                            Ok(record) => {
+                                records.append(&record)?;
+                                reused_files += 1;
                             }
-                            Ok(None) => {}
-                            Err(error) => warnings.push(format!(
-                                "Local immutable-version reuse for {} failed and provider download was retained: {error}",
-                                file.relative_path.display()
-                            )),
-                        }
+                            Err(error) => {
+                                if local_error.is_none() {
+                                    local_error = Some(error);
+                                }
+                            }
+                        },
+                        LocalDisposition::Download(file) => downloads.append(&file)?,
                     }
                 }
-                if let Some(record) = relocated {
-                    records.append(&record)?;
-                    reused_files += 1;
-                } else {
-                    downloads.append(&file)?;
+                Err(error) => {
+                    // Blocking verification workers cannot be cancelled safely.
+                    // Drain the bounded pool before returning so no local file
+                    // publication can occur after the sync call has completed.
+                    if local_error.is_none() {
+                        local_error = Some(error);
+                    }
                 }
             }
+        }
+        drop(local_pending);
+        if let Some(error) = local_error {
+            return Err(error);
         }
 
         let client = self.clone();
@@ -579,7 +627,6 @@ impl VfsClient {
         let state_directory = options.state_directory.clone();
         let transfer_part_bytes = options.transfer_part_bytes;
         let file_concurrency = options.maximum_file_concurrency;
-        let maximum_concurrency = options.maximum_concurrency;
         let mut pending = stream::iter(downloads.finish()?.map(move |file| {
             let client = client.clone();
             let destination = destination.clone();
@@ -1007,11 +1054,69 @@ fn local_matches(path: &Path, record: &StateRecord) -> Result<bool, Error> {
     )
 }
 
-fn reuse_local_version(
+fn build_local_reuse_plan(previous: Option<&StateIndex>, file: PlannedFile) -> LocalReusePlan {
+    let exact = previous
+        .and_then(|index| index.lookup(&file.relative_path))
+        .filter(|record| {
+            record.relative_path == file.relative_path
+                && record.version_id == file.version_id
+                && record.size_bytes == file.size_bytes
+                && record.file_root == file.file_root
+        });
+    let relocated = previous.map_or_else(Vec::new, |index| {
+        index
+            .lookup_version(&file.version_id)
+            .into_iter()
+            .filter(|candidate| {
+                candidate.relative_path != file.relative_path
+                    && candidate.size_bytes == file.size_bytes
+                    && candidate.file_root == file.file_root
+            })
+            .collect()
+    });
+    LocalReusePlan {
+        file,
+        exact,
+        relocated,
+    }
+}
+
+fn evaluate_local_file(destination: &Path, plan: LocalReusePlan) -> Result<LocalEvaluation, Error> {
+    if let Some(record) = plan.exact
+        && local_matches(&destination.join(&record.relative_path), &record)?
+    {
+        return Ok(LocalEvaluation {
+            disposition: LocalDisposition::Reused(record),
+            warnings: Vec::new(),
+        });
+    }
+    let mut warnings = Vec::new();
+    for candidate in plan.relocated {
+        match stage_local_version(destination, &plan.file, &candidate) {
+            Ok(Some(staged)) => {
+                return Ok(LocalEvaluation {
+                    disposition: LocalDisposition::Staged(staged),
+                    warnings,
+                });
+            }
+            Ok(None) => {}
+            Err(error) => warnings.push(format!(
+                "Local immutable-version reuse for {} failed and provider download was retained: {error}",
+                plan.file.relative_path.display()
+            )),
+        }
+    }
+    Ok(LocalEvaluation {
+        disposition: LocalDisposition::Download(plan.file),
+        warnings,
+    })
+}
+
+fn stage_local_version(
     destination: &Path,
     file: &PlannedFile,
     candidate: &StateRecord,
-) -> Result<Option<StateRecord>, Error> {
+) -> Result<Option<StagedLocalReuse>, Error> {
     let source = destination.join(&candidate.relative_path);
     if !local_matches(&source, candidate)? {
         return Ok(None);
@@ -1075,20 +1180,22 @@ fn reuse_local_version(
                 "local immutable-version copy changed during verification".to_owned(),
             ));
         }
-        std::fs::rename(&temporary, &target)
-            .map_err(local_error("publish immutable local reuse"))?;
         Ok(())
     })();
     if let Err(error) = copied {
         let _ = std::fs::remove_file(&temporary);
         return Err(error);
     }
-    Ok(Some(StateRecord {
-        relative_path: file.relative_path.clone(),
-        version_id: file.version_id.clone(),
-        size_bytes: file.size_bytes,
-        file_root: file.file_root.clone(),
-        verification_block_bytes: candidate.verification_block_bytes,
+    Ok(Some(StagedLocalReuse {
+        temporary: Some(temporary),
+        target,
+        record: StateRecord {
+            relative_path: file.relative_path.clone(),
+            version_id: file.version_id.clone(),
+            size_bytes: file.size_bytes,
+            file_root: file.file_root.clone(),
+            verification_block_bytes: candidate.verification_block_bytes,
+        },
     }))
 }
 
@@ -1473,7 +1580,7 @@ mod tests {
 
     use super::{
         LEGACY_STATE_SCHEMA, PlannedFile, RecordSpool, StateIndex, StateRecord, SyncOptions,
-        VfsClient, acquire_sync_lock, open_state_index, retain_bounded, reuse_local_version,
+        VfsClient, acquire_sync_lock, open_state_index, retain_bounded, stage_local_version,
         write_state,
     };
     use crate::VfsToken;
@@ -1698,9 +1805,11 @@ mod tests {
             file_root: candidate.file_root.clone(),
         };
 
-        let record = reuse_local_version(&destination, &planned, &candidate)
-            .expect("reuse immutable local version")
+        let staged = stage_local_version(&destination, &planned, &candidate)
+            .expect("stage immutable local version")
             .expect("matching immutable version");
+        assert!(!destination.join(&planned.relative_path).exists());
+        let record = staged.publish().expect("publish immutable local version");
 
         assert_eq!(record.relative_path, planned.relative_path);
         assert_eq!(
@@ -1721,6 +1830,23 @@ mod tests {
                     .contains("carrack-reuse"))
         );
 
+        let cancelled = PlannedFile {
+            relative_path: "cancelled/data.parquet".into(),
+            vfs_path: "/cancelled/data.parquet".to_owned(),
+            ..planned.clone()
+        };
+        let staged = stage_local_version(&destination, &cancelled, &candidate)
+            .expect("stage cancelled local version")
+            .expect("matching cancelled version");
+        let staged_path = staged
+            .temporary
+            .clone()
+            .expect("cancelled staging identity");
+        assert!(staged_path.is_file());
+        drop(staged);
+        assert!(!staged_path.exists());
+        assert!(!destination.join(cancelled.relative_path).exists());
+
         std::fs::write(&old_path, b"corrupt immutable payload").expect("corrupt old path");
         let rejected = PlannedFile {
             relative_path: "rejected/data.parquet".into(),
@@ -1728,7 +1854,7 @@ mod tests {
             ..planned
         };
         assert!(
-            reuse_local_version(&destination, &rejected, &candidate)
+            stage_local_version(&destination, &rejected, &candidate)
                 .expect("reject corrupt local candidate")
                 .is_none()
         );

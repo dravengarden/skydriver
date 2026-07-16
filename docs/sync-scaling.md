@@ -32,6 +32,13 @@ without creating a shared inode, then verifies the complete staging file again
 before atomic publication. Any lookup, copy, or proof failure retains the
 provider download path, so this acceleration cannot publish unverified bytes.
 
+Warm-file hashing and rename staging run through the same configured bounded
+file concurrency as provider downloads, but in a separate phase so the two
+budgets do not multiply. Blocking workers may return only RAII-owned private
+staging files; the active coordinator performs final rename. Cancellation drops
+and removes returned staging, and no worker can publish after the sync future
+has gone away.
+
 An optional future fs-verity backend may skip that read only when it can bind a
 previously recorded measurement to a kernel-enforced immutable inode. Missing
 support, a measurement mismatch, unsupported filesystems, or any adapter error
