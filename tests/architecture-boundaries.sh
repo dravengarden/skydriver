@@ -126,6 +126,17 @@ if rg --line-number 'crate::driver|crate::(aliyun|r2|local)' crates/carrack-sdk-
   echo "portable correctness modules must remain independent of native drivers" >&2
   exit 1
 fi
+if rg --line-number 'access_grant_from_plaintext' \
+  control-plane/src/vfs_download.rs control-plane/src/vfs_grants.rs; then
+  echo "VFS authorization modules must project provider authority through driver_registry" >&2
+  exit 1
+fi
+if ! rg -q 'project_access_grant' control-plane/src/driver_registry.rs \
+  || ! rg -q 'driver_registry::project_access_grant' control-plane/src/vfs_download.rs \
+  || ! rg -q 'driver_registry::project_access_grant' control-plane/src/vfs_grants.rs; then
+  echo "Worker object grants must use the stable control-plane driver registry" >&2
+  exit 1
+fi
 
 if test -e cmd/carrack/main.go || test -e cmd/carrackctl/main.go; then
   echo "public Carrack CLIs must be the native Rust binaries" >&2

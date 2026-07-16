@@ -50,6 +50,9 @@ agent processes are SDK consumers, not a third architectural component.
 - Versioned driver-kind strings and static capability posture belong only in
   `carrack-driver-contract`; client and Worker modules must use its exhaustive
   enum instead of duplicating provider-kind string dispatch.
+- Worker VFS planners and grant handlers MUST project provider authority only
+  through `control-plane/src/driver_registry.rs`; provider signing and stored
+  access-token minimization must not be duplicated in authorization modules.
 - Secrets and credentials never enter Git. D1 stores only password hashes,
   token verifiers, encrypted provider-credential envelopes, and wrapped VFS
   directory keys. VFS master keys stay in Cloudflare secrets or Secrets Store

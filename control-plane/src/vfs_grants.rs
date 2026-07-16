@@ -5,7 +5,7 @@ use worker::{D1Database, Date, Env, Request, Response, Result, wasm_bindgen::JsV
 use zeroize::Zeroize as _;
 
 use crate::{
-    driver_credentials, r2_signing,
+    driver_credentials, driver_registry, r2_signing,
     vfs_envelopes::{
         DirectoryEnvelopeRef, PLAINTEXT_SUITE, open_directory_key, open_driver_credential,
     },
@@ -200,7 +200,7 @@ pub(crate) async fn grant_put_driver(
     if !grant_allowed(&database, token, &context).await? {
         return Response::error("VFS driver grant is not authorized", 403);
     }
-    let driver_kind = compiled_kind(&context.driver_kind)?;
+    let driver_kind = driver_registry::compiled_kind(&context.driver_kind)?;
     if driver_kind.grant_mode() == GrantMode::SignedObject && context.state != "prepared" {
         return Response::error("VFS Put is no longer uploadable", 409);
     }
@@ -279,7 +279,7 @@ pub(crate) async fn grant_put_r2_multipart(
     if context.state != "prepared" {
         return Response::error("VFS Put is no longer uploadable", 409);
     }
-    if compiled_kind(&context.driver_kind)? != DriverKind::R2V1 {
+    if driver_registry::compiled_kind(&context.driver_kind)? != DriverKind::R2V1 {
         return Response::error("VFS driver does not support R2 multipart grants", 400);
     }
     let Some(credential_id) = context.credential_id.as_deref() else {
@@ -474,25 +474,15 @@ fn decrypt_credential(
         nonce,
         ciphertext,
     )?;
-    let decoded = match compiled_kind(&context.driver_kind)?.grant_mode() {
-        GrantMode::SignedObject => r2_signing::access_grant_from_plaintext(
-            method,
-            &context.driver_config_json,
-            &context.storage_key,
-            &plaintext,
-            expires_at,
-        )
-        .ok_or_else(|| worker::Error::RustError("sign R2 VFS driver grant".to_owned())),
-        GrantMode::StoredAccess => {
-            driver_credentials::access_grant_from_plaintext(&context.driver_kind, &plaintext)
-                .map_err(|error| {
-                    worker::Error::RustError(format!("decode VFS driver credential JSON: {error}"))
-                })
-        }
-        GrantMode::None => Err(worker::Error::RustError(
-            "credential-free driver unexpectedly stored authority".to_owned(),
-        )),
-    };
+    let kind = driver_registry::compiled_kind(&context.driver_kind)?;
+    let decoded = driver_registry::project_access_grant(
+        kind,
+        method,
+        &context.driver_config_json,
+        &context.storage_key,
+        &plaintext,
+        expires_at,
+    );
     plaintext.zeroize();
     Ok(Some(decoded?))
 }
@@ -526,33 +516,17 @@ fn decrypt_put_delete_credential(
         nonce,
         ciphertext,
     )?;
-    let decoded = match compiled_kind(&context.driver_kind)?.grant_mode() {
-        GrantMode::SignedObject => r2_signing::access_grant_from_plaintext(
-            method,
-            &context.driver_config_json,
-            &context.storage_key,
-            &plaintext,
-            expires_at,
-        )
-        .ok_or_else(|| worker::Error::RustError("sign R2 delete driver grant".to_owned())),
-        GrantMode::StoredAccess => {
-            driver_credentials::access_grant_from_plaintext(&context.driver_kind, &plaintext)
-                .map_err(|error| {
-                    worker::Error::RustError(format!("decode VFS driver credential JSON: {error}"))
-                })
-        }
-        GrantMode::None => Err(worker::Error::RustError(
-            "credential-free driver unexpectedly stored authority".to_owned(),
-        )),
-    };
+    let kind = driver_registry::compiled_kind(&context.driver_kind)?;
+    let decoded = driver_registry::project_access_grant(
+        kind,
+        method,
+        &context.driver_config_json,
+        &context.storage_key,
+        &plaintext,
+        expires_at,
+    );
     plaintext.zeroize();
     Ok(Some(decoded?))
-}
-
-fn compiled_kind(value: &str) -> Result<DriverKind> {
-    DriverKind::parse(value).ok_or_else(|| {
-        worker::Error::RustError(format!("VFS driver kind is not compiled: {value}"))
-    })
 }
 
 async fn load_context(database: &D1Database, intent_id: &str) -> Result<Option<PutGrantRow>> {

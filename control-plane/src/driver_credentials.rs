@@ -66,10 +66,10 @@ impl Drop for AliyunCredential {
 /// Decodes a stored provider credential and returns the least-authority JSON
 /// that a filesystem client needs. Refresh material is deliberately omitted.
 pub(crate) fn access_grant_from_plaintext(
-    driver_kind: &str,
+    driver_kind: DriverKind,
     plaintext: &[u8],
 ) -> Result<serde_json::Value> {
-    if DriverKind::parse(driver_kind) != Some(DriverKind::AliyunDriveOpenV2) {
+    if driver_kind != DriverKind::AliyunDriveOpenV2 {
         return serde_json::from_slice(plaintext)
             .map_err(|error| worker::Error::RustError(error.to_string()));
     }

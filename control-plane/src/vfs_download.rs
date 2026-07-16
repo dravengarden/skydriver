@@ -1,11 +1,10 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use carrack_driver_contract::{DriverKind, GrantMode};
 use serde::{Deserialize, Serialize};
 use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
 
 use crate::{
-    driver_credentials, r2_signing,
+    driver_credentials, driver_registry,
     transfer_metrics::{self, OwnedTransferIdentity, TransferTelemetry},
     vfs_access,
     vfs_envelopes::{
@@ -428,32 +427,15 @@ fn decrypt_credential(
     };
     let mut plaintext =
         open_driver_credential(env, id, revision, algorithm, version, nonce, ciphertext)?;
-    let kind = DriverKind::parse(&row.driver_kind).ok_or_else(|| {
-        worker::Error::RustError(format!(
-            "download driver kind is not compiled: {}",
-            row.driver_kind
-        ))
-    })?;
-    let decoded = match kind.grant_mode() {
-        GrantMode::SignedObject => r2_signing::access_grant_from_plaintext(
-            "GET",
-            &row.driver_config_json,
-            &row.storage_key,
-            &plaintext,
-            expires_at,
-        )
-        .ok_or_else(|| worker::Error::RustError("sign R2 download grant".to_owned())),
-        GrantMode::StoredAccess => {
-            driver_credentials::access_grant_from_plaintext(&row.driver_kind, &plaintext).map_err(
-                |error| {
-                    worker::Error::RustError(format!("decode download driver credential: {error}"))
-                },
-            )
-        }
-        GrantMode::None => Err(worker::Error::RustError(
-            "credential-free download driver unexpectedly stored authority".to_owned(),
-        )),
-    };
+    let kind = driver_registry::compiled_kind(&row.driver_kind)?;
+    let decoded = driver_registry::project_access_grant(
+        kind,
+        "GET",
+        &row.driver_config_json,
+        &row.storage_key,
+        &plaintext,
+        expires_at,
+    );
     plaintext.zeroize();
     Ok(Some(decoded?))
 }

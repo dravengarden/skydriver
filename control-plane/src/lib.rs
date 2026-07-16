@@ -4,6 +4,7 @@
 //! directly between Carrack agents and storage providers.
 
 mod driver_credentials;
+mod driver_registry;
 mod environment_defaults;
 mod maintenance;
 mod management;

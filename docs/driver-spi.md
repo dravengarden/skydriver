@@ -25,6 +25,14 @@ The registry owns:
 - uniform correctness-preserving fallback warnings;
 - conversion of adapter results into complete provider-object evidence.
 
+The Worker has a separate `driver_registry` execution facade over the same
+shared contract. After a VFS subsystem has authorized an operation, opened its
+credential envelope, and pinned all revisions and expiry, that facade alone
+projects provider authority into a least-privilege object grant. The caller
+retains zeroization and D1 fencing; the registry retains provider signing and
+refresh-authority omission. This keeps authorization modules provider-neutral
+without hiding their correctness-critical transactions.
+
 An adapter owns:
 
 - typed parsing and validation of its configuration and object-scoped grant;
