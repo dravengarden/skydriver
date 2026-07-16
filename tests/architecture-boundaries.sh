@@ -147,6 +147,25 @@ if ! rg -q 'project_access_grant' control-plane/src/driver_registry.rs \
   echo "Worker object grants must use the stable control-plane driver registry" >&2
   exit 1
 fi
+if rg --line-number \
+  'worker::\{[^}]*Fetch|Fetch::|RequestInit|Headers::|aliyun_post|delete_from_plaintext|cleanup_upload_from_plaintext|resume_multipart_upload' \
+  control-plane/src/vfs_provider_inventory.rs \
+  control-plane/src/vfs_server_lifecycle.rs; then
+  echo "VFS state machines must enter provider I/O through driver adapters" >&2
+  exit 1
+fi
+if ! rg -q 'driver_inventory::list_page' control-plane/src/vfs_provider_inventory.rs \
+  || ! rg -q 'driver_lifecycle::delete_object' control-plane/src/vfs_server_lifecycle.rs \
+  || ! rg -q 'driver_lifecycle::cleanup_r2_upload' control-plane/src/vfs_server_lifecycle.rs; then
+  echo "Worker inventory and lifecycle must use stable driver adapter boundaries" >&2
+  exit 1
+fi
+if rg --line-number \
+  'D1Database|\.prepare\(|SELECT |INSERT |UPDATE |DELETE FROM ' \
+  control-plane/src/driver_inventory.rs control-plane/src/driver_lifecycle.rs; then
+  echo "provider adapters must not own D1 state, claims, fences, or publication" >&2
+  exit 1
+fi
 
 if test -e cmd/carrack/main.go || test -e cmd/carrackctl/main.go; then
   echo "public Carrack CLIs must be the native Rust binaries" >&2

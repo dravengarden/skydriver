@@ -34,6 +34,15 @@ retains zeroization and D1 fencing; the registry retains provider signing and
 refresh-authority omission. This keeps authorization modules provider-neutral
 without hiding their correctness-critical transactions.
 
+Hosted inventory and lifecycle use two additional orthogonal execution
+facades. `driver_inventory` performs one bounded provider listing page;
+`driver_lifecycle` performs one already-fenced object deletion or incomplete
+upload cleanup. Neither facade may access D1, claim work, publish state, choose
+retention, or retry. Their VFS callers retain generation commits, quarantine,
+reachability and read-lease fences, credential-envelope opening and
+zeroization, and fenced outcome transitions. Therefore adding a provider
+cannot silently weaken lifecycle safety or inventory publication.
+
 An adapter owns:
 
 - typed parsing and validation of its configuration and object-scoped grant;
@@ -81,6 +90,11 @@ A new driver change is complete only when it:
 8. implements and tests the matching Worker registration, grant, inventory,
    renewal, Stat, Delete, and GC branches where its declared posture requires
    control-plane ownership.
+
+Provider HTTP and wire schemas belong in the corresponding driver facade, not
+in VFS authorization, inventory-state, or lifecycle-state modules. A new
+hosted provider must enter these exhaustive dispatchers; an agent-host-only
+provider must fail closed before hosted provider I/O.
 
 `tests/architecture-boundaries.sh` mechanically enforces the most important
 dependency directions. Adapter conformance tests prove behavior; the registry

@@ -53,6 +53,10 @@ agent processes are SDK consumers, not a third architectural component.
 - Worker VFS planners and grant handlers MUST project provider authority only
   through `control-plane/src/driver_registry.rs`; provider signing and stored
   access-token minimization must not be duplicated in authorization modules.
+- Worker provider listing and deletion MUST enter provider HTTP through
+  `driver_inventory.rs` and `driver_lifecycle.rs`. Those adapters MUST NOT own
+  D1 claims, revision or read-lease fences, quarantine publication, retries,
+  retention, credential-envelope opening, or outcome state transitions.
 - Secrets and credentials never enter Git. D1 stores only password hashes,
   token verifiers, encrypted provider-credential envelopes, and wrapped VFS
   directory keys. VFS master keys stay in Cloudflare secrets or Secrets Store

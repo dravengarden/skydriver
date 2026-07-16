@@ -1,17 +1,11 @@
 //! Bounded, server-owned lifecycle for unreachable complete provider objects.
 
-use carrack_driver_contract::{AliyunDriveConfig as AliyunConfig, DriverKind, LifecycleMode};
+use carrack_driver_contract::{DriverKind, LifecycleMode};
 use serde::Deserialize;
-use serde_json::json;
-use worker::{
-    D1Database, Env, Fetch, Headers, Method, Request, RequestInit, Result, wasm_bindgen::JsValue,
-};
+use worker::{D1Database, Env, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
 
-use crate::{
-    driver_credentials::AliyunCredential, environment_defaults, r2_signing,
-    vfs_envelopes::open_driver_credential,
-};
+use crate::{driver_lifecycle, vfs_envelopes::open_driver_credential};
 
 const MAXIMUM_MARKS_PER_RUN: u64 = 100;
 const MAXIMUM_TASKS_PER_RUN: u64 = 100;
@@ -49,17 +43,6 @@ struct R2CleanupTask {
     credential_nonce: Option<Vec<u8>>,
     credential_ciphertext: Option<Vec<u8>>,
     credential_revision: Option<u64>,
-}
-
-#[derive(Deserialize)]
-#[allow(
-    clippy::struct_field_names,
-    reason = "fields match the Aliyun wire schema"
-)]
-struct DriveInfo {
-    default_drive_id: String,
-    resource_drive_id: String,
-    backup_drive_id: String,
 }
 
 /// Performs one bounded lifecycle pass. It is safe for overlapping cron
@@ -144,7 +127,7 @@ async fn cleanup_one_r2_upload(env: &Env, database: &D1Database, now: u64) -> Re
     let Some(task) = task else {
         return Ok(());
     };
-    let result = cleanup_r2_upload(env, &task).await;
+    let result = cleanup_r2_upload_through_driver(env, &task).await;
     let (state, error, completed_at, retry_at) = if result.is_ok() {
         ("cleaned", JsValue::NULL, integer(now), JsValue::NULL)
     } else {
@@ -269,11 +252,7 @@ async fn delete_one_abandoned_put(env: &Env, database: &D1Database, now: u64) ->
         .await?;
         return Ok(());
     }
-    let outcome = match driver_kind {
-        DriverKind::R2V1 => delete_r2(env, &task).await,
-        DriverKind::AliyunDriveOpenV2 => delete_aliyun(env, &task).await,
-        DriverKind::LocalFilesystemV2 => unreachable!("agent-host driver was rejected"),
-    };
+    let outcome = delete_through_driver(env, driver_kind, &task).await;
     match outcome {
         Ok(()) => complete_abandoned_put(database, &task, now).await,
         Err(error) => {
@@ -505,11 +484,7 @@ async fn delete_one(env: &Env, database: &D1Database, now: u64) -> Result<()> {
         .await?;
         return Ok(());
     }
-    let outcome = match driver_kind {
-        DriverKind::R2V1 => delete_r2(env, &task).await,
-        DriverKind::AliyunDriveOpenV2 => delete_aliyun(env, &task).await,
-        DriverKind::LocalFilesystemV2 => unreachable!("agent-host driver was rejected"),
-    };
+    let outcome = delete_through_driver(env, driver_kind, &task).await;
     match outcome {
         Ok(()) => complete(database, &task, now).await,
         Err(error) => {
@@ -560,178 +535,79 @@ async fn load_revalidated(database: &D1Database, id: &str, now: u64) -> Result<O
         .await
 }
 
-async fn delete_aliyun(env: &Env, task: &DeleteTask) -> Result<()> {
-    let native_id = task.native_id.as_deref().ok_or_else(|| {
-        worker::Error::RustError("Aliyun lifecycle task has no native file ID".to_owned())
-    })?;
-    let config: AliyunConfig = serde_json::from_str(&task.config_json).map_err(|error| {
-        worker::Error::RustError(format!("decode Aliyun lifecycle configuration: {error}"))
-    })?;
-    let _ = (&config.root_folder_id, config.upload_part_bytes);
-    if !config.api_base_url.starts_with("https://") || config.api_base_url.ends_with('/') {
-        return Err(worker::Error::RustError(
-            "unsafe Aliyun API base URL".to_owned(),
-        ));
-    }
-    let (Some(id), Some(algorithm), Some(version), Some(nonce), Some(ciphertext), Some(revision)) = (
+async fn delete_through_driver(env: &Env, kind: DriverKind, task: &DeleteTask) -> Result<()> {
+    let mut plaintext = open_optional_credential(
+        env,
         task.credential_id.as_deref(),
         task.credential_algorithm.as_deref(),
         task.credential_key_version.as_deref(),
         task.credential_nonce.as_deref(),
         task.credential_ciphertext.as_deref(),
         task.credential_revision,
-    ) else {
-        return Err(worker::Error::RustError(
-            "Aliyun lifecycle credential is incomplete".to_owned(),
-        ));
-    };
-    let mut plaintext =
-        open_driver_credential(env, id, revision, algorithm, version, nonce, ciphertext)?;
-    let decoded = serde_json::from_slice::<AliyunCredential>(&plaintext).map_err(|error| {
-        worker::Error::RustError(format!("decode Aliyun lifecycle credential: {error}"))
-    });
-    plaintext.zeroize();
-    let mut credential = decoded?;
-    let drive: DriveInfo = aliyun_post(
-        &config.api_base_url,
-        "/adrive/v1.0/user/getDriveInfo",
-        &credential.access_token,
-        &json!({}),
-    )
-    .await?;
-    let drive_id = match config.drive_type.as_str() {
-        "default" => drive.default_drive_id,
-        "resource" => drive.resource_drive_id,
-        "backup" => drive.backup_drive_id,
-        _ => {
-            return Err(worker::Error::RustError(
-                "invalid Aliyun drive type".to_owned(),
-            ));
-        }
-    };
-    let result = aliyun_post::<serde_json::Value>(
-        &config.api_base_url,
-        "/adrive/v1.0/openFile/delete",
-        &credential.access_token,
-        &json!({"drive_id": drive_id, "file_id": native_id}),
+    )?;
+    let result = driver_lifecycle::delete_object(
+        env,
+        kind,
+        &task.config_json,
+        &task.storage_key,
+        task.native_id.as_deref(),
+        plaintext.as_deref(),
     )
     .await;
-    credential.access_token.zeroize();
-    result.map(|_| ())
-}
-
-async fn delete_r2(env: &Env, task: &DeleteTask) -> Result<()> {
-    let config =
-        serde_json::from_str::<r2_signing::Config>(&task.config_json).map_err(|error| {
-            worker::Error::RustError(format!("decode R2 lifecycle configuration: {error}"))
-        })?;
-    let key = r2_signing::object_key(&config, &task.storage_key)
-        .ok_or_else(|| worker::Error::RustError("invalid R2 lifecycle storage key".to_owned()))?;
-    if environment_defaults::is_managed_r2_config(env, &config)? {
-        return env.bucket("CARRACK_PAYLOAD")?.delete(key).await;
+    if let Some(value) = plaintext.as_mut() {
+        value.zeroize();
     }
-    let (Some(id), Some(algorithm), Some(version), Some(nonce), Some(ciphertext), Some(revision)) = (
-        task.credential_id.as_deref(),
-        task.credential_algorithm.as_deref(),
-        task.credential_key_version.as_deref(),
-        task.credential_nonce.as_deref(),
-        task.credential_ciphertext.as_deref(),
-        task.credential_revision,
-    ) else {
-        return Err(worker::Error::RustError(
-            "R2 lifecycle credential is incomplete".to_owned(),
-        ));
-    };
-    let mut plaintext =
-        open_driver_credential(env, id, revision, algorithm, version, nonce, ciphertext)?;
-    let result =
-        r2_signing::delete_from_plaintext(&task.config_json, &task.storage_key, &plaintext).await;
-    plaintext.zeroize();
     result
 }
 
-async fn cleanup_r2_upload(env: &Env, task: &R2CleanupTask) -> Result<()> {
-    let config =
-        serde_json::from_str::<r2_signing::Config>(&task.config_json).map_err(|error| {
-            worker::Error::RustError(format!("decode R2 cleanup configuration: {error}"))
-        })?;
-    let key = r2_signing::object_key(&config, &task.storage_key)
-        .ok_or_else(|| worker::Error::RustError("invalid R2 cleanup storage key".to_owned()))?;
-    if environment_defaults::is_managed_r2_config(env, &config)? {
-        let bucket = env.bucket("CARRACK_PAYLOAD")?;
-        if let Some(upload_id) = task.upload_id.as_deref() {
-            let upload = bucket.resume_multipart_upload(&key, upload_id)?;
-            if let Err(error) = upload.abort().await {
-                let rendered = format!("{error:?}");
-                if !missing_multipart_upload(&rendered) {
-                    return Err(error);
-                }
-            }
-        }
-        return bucket.delete(key).await;
-    }
-
-    let (Some(id), Some(algorithm), Some(version), Some(nonce), Some(ciphertext), Some(revision)) = (
+async fn cleanup_r2_upload_through_driver(env: &Env, task: &R2CleanupTask) -> Result<()> {
+    let mut plaintext = open_optional_credential(
+        env,
         task.credential_id.as_deref(),
         task.credential_algorithm.as_deref(),
         task.credential_key_version.as_deref(),
         task.credential_nonce.as_deref(),
         task.credential_ciphertext.as_deref(),
         task.credential_revision,
-    ) else {
-        return Err(worker::Error::RustError(
-            "R2 cleanup credential is incomplete".to_owned(),
-        ));
-    };
-    let mut plaintext =
-        open_driver_credential(env, id, revision, algorithm, version, nonce, ciphertext)?;
-    let result = r2_signing::cleanup_upload_from_plaintext(
+    )?;
+    let result = driver_lifecycle::cleanup_r2_upload(
+        env,
         &task.config_json,
         &task.storage_key,
         task.upload_id.as_deref(),
-        &plaintext,
+        plaintext.as_deref(),
     )
     .await;
-    plaintext.zeroize();
+    if let Some(value) = plaintext.as_mut() {
+        value.zeroize();
+    }
     result
 }
 
-fn missing_multipart_upload(rendered_error: &str) -> bool {
-    rendered_error.contains("NoSuchUpload")
-        || (rendered_error.contains("multipart upload")
-            && rendered_error.contains("does not exist"))
-}
-
-async fn aliyun_post<T: for<'de> Deserialize<'de>>(
-    base: &str,
-    path: &str,
-    token: &str,
-    body: &serde_json::Value,
-) -> Result<T> {
-    let headers = Headers::new();
-    headers.set("Authorization", &format!("Bearer {token}"))?;
-    headers.set("Content-Type", "application/json")?;
-    let mut init = RequestInit::new();
-    init.with_method(Method::Post)
-        .with_headers(headers)
-        .with_body(Some(JsValue::from_str(&body.to_string())));
-    let request = Request::new_with_init(&format!("{base}{path}"), &init)?;
-    let mut response = Fetch::Request(request).send().await?;
-    if response.status_code() == 404 {
-        return serde_json::from_value(json!({}))
-            .map_err(|error| worker::Error::RustError(error.to_string()));
+fn open_optional_credential(
+    env: &Env,
+    id: Option<&str>,
+    algorithm: Option<&str>,
+    version: Option<&str>,
+    nonce: Option<&[u8]>,
+    ciphertext: Option<&[u8]>,
+    revision: Option<u64>,
+) -> Result<Option<Vec<u8>>> {
+    match (id, algorithm, version, nonce, ciphertext, revision) {
+        (None, None, None, None, None, None) => Ok(None),
+        (
+            Some(id),
+            Some(algorithm),
+            Some(version),
+            Some(nonce),
+            Some(ciphertext),
+            Some(revision),
+        ) => open_driver_credential(env, id, revision, algorithm, version, nonce, ciphertext)
+            .map(Some),
+        _ => Err(worker::Error::RustError(
+            "driver lifecycle credential envelope is incomplete".to_owned(),
+        )),
     }
-    if !(200..300).contains(&response.status_code()) {
-        return Err(worker::Error::RustError(format!(
-            "Aliyun delete API returned HTTP {}",
-            response.status_code()
-        )));
-    }
-    if response.status_code() == 204 {
-        return serde_json::from_value(json!({}))
-            .map_err(|error| worker::Error::RustError(error.to_string()));
-    }
-    response.json::<T>().await
 }
 
 async fn complete(database: &D1Database, task: &DeleteTask, now: u64) -> Result<()> {
@@ -875,13 +751,6 @@ fn changes(meta: Option<worker::D1ResultMeta>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn recognizes_only_idempotent_missing_multipart_errors() {
-        assert!(missing_multipart_upload("R2Error: NoSuchUpload"));
-        assert!(missing_multipart_upload("multipart upload does not exist"));
-        assert!(!missing_multipart_upload("R2Error: AccessDenied"));
-    }
 
     #[test]
     fn provider_delete_retry_is_bounded_and_jittered() {
