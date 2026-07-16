@@ -124,6 +124,17 @@ pub(crate) async fn plan(
     let Some(mut row) = load(&database, version_id).await? else {
         return Response::error("published VFS version was not found", 404);
     };
+    if !vfs_access::authorized(
+        &database,
+        token,
+        &row.authorization_directory_id,
+        "content.read",
+    )
+    .await?
+    {
+        return Response::error("VFS content-read authority required", 403);
+    }
+    // Authorization must precede provider I/O and credential-state mutation.
     if let Some(expires_at) = row.credential_expires_at
         && expires_at <= Date::now().as_millis() / 1_000 + 5 * 60
     {
@@ -135,6 +146,8 @@ pub(crate) async fn plan(
         };
         row = reloaded;
     }
+    // Renewal can race ACL revocation or a location change. Revalidate the
+    // live authority before issuing the immutable provider capability.
     if !vfs_access::authorized(
         &database,
         token,

@@ -57,6 +57,9 @@ agent processes are SDK consumers, not a third architectural component.
 - Worker credential transactions MUST enter provider credential parsing,
   exchange, and verification through `driver_authorization.rs`. They retain
   claim/release fencing, envelope sealing, CAS, receipts, and audit state.
+- Filesystem grant handlers MUST establish caller authority before provider I/O
+  or credential mutation. Key-only grants must not depend on provider renewal;
+  provider-authority grants recheck live authorization after renewal.
 - Worker VFS planners and grant handlers MUST project provider authority only
   through `control-plane/src/driver_registry.rs`; provider signing and stored
   access-token minimization, including multipart grant signing, must not be

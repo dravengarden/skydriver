@@ -119,20 +119,9 @@ pub(crate) async fn grant_put_key(
     intent_id: &str,
 ) -> Result<Response> {
     let database = env.d1("CARRACK_INDEX")?;
-    let Some(mut context) = load_context(&database, intent_id).await? else {
+    let Some(context) = load_context(&database, intent_id).await? else {
         return Response::error("VFS put intent was not found", 404);
     };
-    if let Some(expires_at) = context.credential_expires_at
-        && expires_at <= current_unix_seconds() + 5 * 60
-    {
-        if !driver_credentials::ensure_fresh(env, &context.driver_id, expires_at).await? {
-            return Response::error("VFS driver credential requires reauthentication", 503);
-        }
-        let Some(reloaded) = load_context(&database, intent_id).await? else {
-            return Response::error("VFS put intent changed during credential renewal", 409);
-        };
-        context = reloaded;
-    }
     if !grant_allowed(&database, token, &context).await? {
         return Response::error("VFS directory-key grant is not authorized", 403);
     }
@@ -194,11 +183,26 @@ pub(crate) async fn grant_put_driver(
     intent_id: &str,
 ) -> Result<Response> {
     let database = env.d1("CARRACK_INDEX")?;
-    let Some(context) = load_context(&database, intent_id).await? else {
+    let Some(mut context) = load_context(&database, intent_id).await? else {
         return Response::error("VFS put intent was not found", 404);
     };
     if !grant_allowed(&database, token, &context).await? {
         return Response::error("VFS driver grant is not authorized", 403);
+    }
+    // Authorization must precede provider I/O and credential-state mutation.
+    if let Some(expires_at) = context.credential_expires_at
+        && expires_at <= current_unix_seconds() + 5 * 60
+    {
+        if !driver_credentials::ensure_fresh(env, &context.driver_id, expires_at).await? {
+            return Response::error("VFS driver credential requires reauthentication", 503);
+        }
+        let Some(reloaded) = load_context(&database, intent_id).await? else {
+            return Response::error("VFS put intent changed during credential renewal", 409);
+        };
+        if !grant_allowed(&database, token, &reloaded).await? {
+            return Response::error("VFS driver grant changed during credential renewal", 409);
+        }
+        context = reloaded;
     }
     let driver_kind = driver_registry::compiled_kind(&context.driver_kind)?;
     if driver_kind.grant_mode() == GrantMode::SignedObject && context.state != "prepared" {

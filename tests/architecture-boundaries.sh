@@ -200,6 +200,27 @@ if ! rg -q 'driver_authorization::validate' control-plane/src/management_driver_
   exit 1
 fi
 
+put_key_body="$(sed -n '/pub(crate) async fn grant_put_key(/,/pub(crate) async fn grant_put_driver(/p' control-plane/src/vfs_grants.rs)"
+if rg -q 'ensure_fresh' <<<"$put_key_body"; then
+  echo "directory-key grants must not depend on or mutate provider credential state" >&2
+  exit 1
+fi
+put_driver_body="$(sed -n '/pub(crate) async fn grant_put_driver(/,/pub(crate) async fn grant_put_r2_multipart(/p' control-plane/src/vfs_grants.rs)"
+put_driver_authorized_line="$(rg -n 'if !grant_allowed' <<<"$put_driver_body" | head -n1 | cut -d: -f1)"
+put_driver_refresh_line="$(rg -n 'driver_credentials::ensure_fresh' <<<"$put_driver_body" | head -n1 | cut -d: -f1)"
+if test -z "$put_driver_authorized_line" || test -z "$put_driver_refresh_line" \
+  || test "$put_driver_authorized_line" -ge "$put_driver_refresh_line"; then
+  echo "Put driver grants must authorize before provider credential renewal" >&2
+  exit 1
+fi
+download_authorized_line="$(rg -n 'if !vfs_access::authorized' control-plane/src/vfs_download.rs | head -n1 | cut -d: -f1)"
+download_refresh_line="$(rg -n 'driver_credentials::ensure_fresh' control-plane/src/vfs_download.rs | head -n1 | cut -d: -f1)"
+if test -z "$download_authorized_line" || test -z "$download_refresh_line" \
+  || test "$download_authorized_line" -ge "$download_refresh_line"; then
+  echo "download planning must authorize before provider credential renewal" >&2
+  exit 1
+fi
+
 if test -e cmd/carrack/main.go || test -e cmd/carrackctl/main.go; then
   echo "public Carrack CLIs must be the native Rust binaries" >&2
   exit 1
