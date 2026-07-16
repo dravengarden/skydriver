@@ -91,10 +91,9 @@ pub(crate) fn upload(
     let bytes = std::io::copy(&mut file, &mut hash)
         .map_err(|error| Error::InvalidResponse(format!("verify local object: {error}")))?;
     if bytes != encoded_bytes || hex::encode(hash.finalize()) != encoded_sha256 {
-        let _ = directory.remove_file(&relative);
         return Err(Error::failure(
             FailureKind::CorruptCiphertext,
-            "local provider readback differs",
+            "local provider readback differs; the ambiguous object was retained",
         ));
     }
     for ordinal in 0..part_count {
@@ -425,5 +424,42 @@ mod tests {
         )
         .expect_err("corrupt provider object must fail");
         assert_eq!(error.failure_kind(), Some(FailureKind::CorruptCiphertext));
+    }
+
+    #[test]
+    fn upload_never_deletes_an_ambiguous_existing_provider_object() {
+        let temporary = tempfile::tempdir().expect("temporary driver root");
+        let root = temporary.path().join("provider");
+        let staging = temporary.path().join("staging");
+        std::fs::create_dir(&root).expect("create provider root");
+        std::fs::create_dir(&staging).expect("create staging root");
+        let source = staging.join("encoded");
+        std::fs::write(&source, b"expected bytes").expect("write staging");
+        let destination = root.join("objects/ab/object");
+        std::fs::create_dir_all(destination.parent().expect("object parent"))
+            .expect("create object parent");
+        std::fs::write(&destination, b"preexisting provider bytes")
+            .expect("write preexisting object");
+        let expected_sha256 = hex::encode(Sha256::digest(b"expected bytes"));
+
+        let result = upload(
+            root.to_str().expect("UTF-8 root"),
+            "other-intent",
+            "objects/ab/object",
+            &source,
+            14,
+            &expected_sha256,
+            8,
+            2,
+        );
+        let Err(error) = result else {
+            panic!("ambiguous provider object must fail closed");
+        };
+
+        assert_eq!(error.failure_kind(), Some(FailureKind::CorruptCiphertext));
+        assert_eq!(
+            std::fs::read(&destination).expect("read retained provider object"),
+            b"preexisting provider bytes"
+        );
     }
 }
