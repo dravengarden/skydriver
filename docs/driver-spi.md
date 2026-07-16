@@ -34,6 +34,12 @@ retains zeroization and D1 fencing; the registry retains provider signing and
 refresh-authority omission. This keeps authorization modules provider-neutral
 without hiding their correctness-critical transactions.
 
+Provider-specific multipart grant projection also enters through this facade.
+The VFS handler owns immutable intent authorization, upload-identity binding,
+cleanup-task fencing, audit, and credential zeroization; the registry checks
+the declared capability posture and dispatches only to a compiled multipart
+signer.
+
 Hosted inventory and lifecycle use two additional orthogonal execution
 facades. `driver_inventory` performs one bounded provider listing page;
 `driver_lifecycle` performs one already-fenced object deletion or incomplete

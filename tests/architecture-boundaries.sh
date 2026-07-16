@@ -141,10 +141,20 @@ if rg --line-number 'access_grant_from_plaintext' \
   echo "VFS authorization modules must project provider authority through driver_registry" >&2
   exit 1
 fi
+if rg --line-number 'r2_signing::|multipart_grant_from_plaintext' \
+  control-plane/src/vfs_grants.rs; then
+  echo "VFS grant state machines must project provider authority through driver_registry" >&2
+  exit 1
+fi
 if ! rg -q 'project_access_grant' control-plane/src/driver_registry.rs \
   || ! rg -q 'driver_registry::project_access_grant' control-plane/src/vfs_download.rs \
   || ! rg -q 'driver_registry::project_access_grant' control-plane/src/vfs_grants.rs; then
   echo "Worker object grants must use the stable control-plane driver registry" >&2
+  exit 1
+fi
+if ! rg -q 'project_multipart_grant' control-plane/src/driver_registry.rs \
+  || ! rg -q 'driver_registry::project_multipart_grant' control-plane/src/vfs_grants.rs; then
+  echo "Worker multipart grants must use the stable control-plane driver registry" >&2
   exit 1
 fi
 if rg --line-number \

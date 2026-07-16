@@ -52,7 +52,8 @@ agent processes are SDK consumers, not a third architectural component.
   enum instead of duplicating provider-kind string dispatch.
 - Worker VFS planners and grant handlers MUST project provider authority only
   through `control-plane/src/driver_registry.rs`; provider signing and stored
-  access-token minimization must not be duplicated in authorization modules.
+  access-token minimization, including multipart grant signing, must not be
+  duplicated in authorization modules.
 - Worker provider listing and deletion MUST enter provider HTTP through
   `driver_inventory.rs` and `driver_lifecycle.rs`. Those adapters MUST NOT own
   D1 claims, revision or read-lease fences, quarantine publication, retries,

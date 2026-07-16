@@ -42,11 +42,52 @@ pub(crate) fn project_access_grant(
     }
 }
 
+pub(crate) struct MultipartGrantRequest<'a> {
+    pub(crate) config_json: &'a str,
+    pub(crate) storage_key: &'a str,
+    pub(crate) plaintext: &'a [u8],
+    pub(crate) upload_id: &'a str,
+    pub(crate) first_part: u32,
+    pub(crate) part_count: u32,
+    pub(crate) maximum_expires_at: u64,
+}
+
+pub(crate) fn project_multipart_grant(
+    kind: DriverKind,
+    request: &MultipartGrantRequest<'_>,
+) -> Result<serde_json::Value> {
+    if !kind.capabilities().resumable_upload.available()
+        || !kind.capabilities().parallel_upload_parts.available()
+        || !kind.capabilities().abort.available()
+    {
+        return Err(worker::Error::RustError(
+            "driver does not support resumable multipart grants".to_owned(),
+        ));
+    }
+    match kind {
+        DriverKind::R2V1 => r2_signing::multipart_grant_from_plaintext(
+            request.config_json,
+            request.storage_key,
+            request.plaintext,
+            request.upload_id,
+            request.first_part,
+            request.part_count,
+            request.maximum_expires_at,
+        )
+        .ok_or_else(|| worker::Error::RustError("invalid multipart grant request".to_owned())),
+        DriverKind::AliyunDriveOpenV2 | DriverKind::LocalFilesystemV2 => Err(
+            worker::Error::RustError("driver has no hosted multipart grant adapter".to_owned()),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use carrack_driver_contract::DriverKind;
 
-    use super::{compiled_kind, project_access_grant};
+    use super::{
+        MultipartGrantRequest, compiled_kind, project_access_grant, project_multipart_grant,
+    };
 
     #[test]
     fn registry_rejects_unknown_and_credential_free_grants() {
@@ -76,5 +117,26 @@ mod tests {
         )
         .expect("project Aliyun access authority");
         assert_eq!(projected, serde_json::json!({"access_token": "short"}));
+    }
+
+    #[test]
+    fn hosted_multipart_projection_fails_closed_for_unregistered_adapters() {
+        for kind in [DriverKind::AliyunDriveOpenV2, DriverKind::LocalFilesystemV2] {
+            assert!(
+                project_multipart_grant(
+                    kind,
+                    &MultipartGrantRequest {
+                        config_json: "{}",
+                        storage_key: "object",
+                        plaintext: b"{}",
+                        upload_id: "upload",
+                        first_part: 1,
+                        part_count: 1,
+                        maximum_expires_at: 1,
+                    },
+                )
+                .is_err()
+            );
+        }
     }
 }

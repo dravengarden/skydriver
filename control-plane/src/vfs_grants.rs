@@ -5,7 +5,7 @@ use worker::{D1Database, Date, Env, Request, Response, Result, wasm_bindgen::JsV
 use zeroize::Zeroize as _;
 
 use crate::{
-    driver_credentials, driver_registry, r2_signing,
+    driver_credentials, driver_registry,
     vfs_envelopes::{
         DirectoryEnvelopeRef, PLAINTEXT_SUITE, open_directory_key, open_driver_credential,
     },
@@ -305,17 +305,20 @@ pub(crate) async fn grant_put_r2_multipart(
         nonce,
         ciphertext,
     )?;
-    let grant = r2_signing::multipart_grant_from_plaintext(
-        &context.driver_config_json,
-        &context.storage_key,
-        &plaintext,
-        &requested.upload_id,
-        requested.first_part,
-        requested.part_count,
-        context.expires_at.min(token.expires_at),
+    let grant = driver_registry::project_multipart_grant(
+        driver_registry::compiled_kind(&context.driver_kind)?,
+        &driver_registry::MultipartGrantRequest {
+            config_json: &context.driver_config_json,
+            storage_key: &context.storage_key,
+            plaintext: &plaintext,
+            upload_id: &requested.upload_id,
+            first_part: requested.first_part,
+            part_count: requested.part_count,
+            maximum_expires_at: context.expires_at.min(token.expires_at),
+        },
     );
     plaintext.zeroize();
-    let Some(grant) = grant else {
+    let Ok(grant) = grant else {
         return Response::error("invalid R2 multipart grant request", 400);
     };
     let bound = database
