@@ -24,6 +24,8 @@ carrackctl watch --after "$event_cursor" --limit 100 \
 carrackctl directory "$directory_id" --control-url "$CARRACK_CONTROL_URL" --format json
 carrackctl access show --control-url "$CARRACK_CONTROL_URL" --format json
 carrackctl inventory --control-url "$CARRACK_CONTROL_URL" --format json
+carrackctl inventory --refresh-driver "$driver_id" \
+  --control-url "$CARRACK_CONTROL_URL" --format json
 carrackctl vfs acl show /collection --control-url "$CARRACK_CONTROL_URL" --format json
 carrackctl vfs placement show /collection --control-url "$CARRACK_CONTROL_URL" --format json
 ```
@@ -37,6 +39,9 @@ and Aliyun Drive run server-side; the latter uses only its sealed and
 automatically renewed access authority. Local filesystem inventory remains an
 agent-host capability and therefore reports `unsupported` in this control-
 plane view. Never treat quarantine as deletion authorization.
+`--refresh-driver` only schedules the named enabled hosted driver for the next
+bounded server Cron pass; it never lists or deletes provider objects from the
+agent process. Verify `next_scan_at`, then re-read later to observe completion.
 
 `metrics` returns up to 400 days of sampled daily rollups. Use `global all` for
 the environment total. Rates are estimates derived from completed transfers;

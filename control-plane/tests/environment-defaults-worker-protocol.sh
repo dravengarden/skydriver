@@ -191,11 +191,21 @@ if ! jq -e '
   .drivers[] | select(.driver_id == "r2-default") |
   .state == "complete" and .scanned_objects == 1 and
   .unknown_objects == 1 and .quarantined_objects == 1 and
-  .quarantined_bytes == 24 and .last_error_code == null
+  .quarantined_bytes == 24 and .last_error_code == null and
+  .attempt_count == 0 and .next_scan_at > .last_completed_at
 ' <<<"$inventory" >/dev/null; then
   jq . <<<"$inventory" >&2
   exit 1
 fi
+scheduled_inventory=$(curl --silent --show-error --fail-with-body \
+  -X POST -b "$cookie_jar" \
+  "$base_url/api/admin/provider-inventory/r2-default/refresh")
+jq -e '
+  .observed_at as $observed_at |
+  .drivers[] | select(.driver_id == "r2-default") |
+  .state == "idle" and .attempt_count == 0 and
+  .last_error_code == null and .next_scan_at <= $observed_at
+' <<<"$scheduled_inventory" >/dev/null
 "${wrangler[@]}" r2 object get \
   carrack-payload-local/inventory-fault-injection/unknown \
   --local --persist-to "$state_directory" --file "$unknown_readback" >/dev/null
@@ -658,6 +668,42 @@ curl --silent --show-error --fail-with-body \
         FROM vfs_r2_upload_cleanup_tasks
         WHERE intent_id = 'd6666666666666666666666666666666')
      THEN 1 ELSE 0 END AS accepted;" --json |
+  jq -e '.[0].results == [{"accepted":1}]' >/dev/null
+
+# Provider listing failures retain a visible error and a future retry instead
+# of spending one Aliyun request on every Cron pass.
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" --command \
+  "INSERT INTO driver_instances (
+       id, kind, config_json, enabled, revision, created_at, updated_at
+   ) VALUES (
+       'aliyun-inventory-fault', 'aliyundrive-open/v2',
+       '{\"api_base_url\":\"https://openapi.alipan.com\",\"drive_type\":\"resource\",\"root_folder_id\":\"root\",\"upload_part_bytes\":4194304}',
+       1, 1, unixepoch(), unixepoch()
+   );" >/dev/null
+curl --silent --show-error --fail-with-body \
+  "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
+inventory_retry_state=$("${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" --command \
+  "SELECT state, attempt_count, last_error_code, next_scan_at, updated_at
+   FROM vfs_provider_inventory_state
+   WHERE driver_id = 'aliyun-inventory-fault';" --json)
+jq -e '
+  .[0].results[0] |
+  .state == "error" and .attempt_count == 1 and
+  .last_error_code == "provider_list_failed" and .next_scan_at > .updated_at
+' <<<"$inventory_retry_state" >/dev/null
+inventory_retry_at=$(jq -r '.[0].results[0].next_scan_at' \
+  <<<"$inventory_retry_state")
+curl --silent --show-error --fail-with-body \
+  "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" --command \
+  "SELECT CASE WHEN state = 'error' AND attempt_count = 1
+                       AND next_scan_at = $inventory_retry_at
+     THEN 1 ELSE 0 END AS accepted
+   FROM vfs_provider_inventory_state
+   WHERE driver_id = 'aliyun-inventory-fault';" --json |
   jq -e '.[0].results == [{"accepted":1}]' >/dev/null
 
 "${wrangler[@]}" d1 execute CARRACK_INDEX \

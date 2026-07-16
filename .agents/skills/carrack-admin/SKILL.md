@@ -149,6 +149,9 @@ unless an approved VFS operation needs secret injection.
   scan. Managed R2 and Aliyun Drive are scanned by the control plane; local
   filesystems report an explicit agent-host fallback. Quarantine is evidence,
   never permission for an agent to adopt or delete provider objects.
+- `carrackctl inventory --refresh-driver <id>` schedules an enabled hosted
+  driver for the next bounded Cron pass. It does not run provider I/O in the
+  CLI. Confirm the returned `next_scan_at`, then re-read inventory later.
 
 ## Finish
 

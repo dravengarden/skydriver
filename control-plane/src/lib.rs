@@ -536,6 +536,15 @@ pub async fn main(request: Request, env: Env, context: Context) -> Result<Respon
             },
         )
         .post_async(
+            "/api/admin/provider-inventory/:driver_id/refresh",
+            |request, context| async move {
+                let Some(driver_id) = context.param("driver_id") else {
+                    return Response::error("driver ID is required", 400);
+                };
+                vfs_provider_inventory::refresh(request, &context.env, driver_id).await
+            },
+        )
+        .post_async(
             "/api/admin/access/validate",
             |mut request, context| async move {
                 management_access::validate(&mut request, &context.env).await

@@ -120,9 +120,14 @@ assert_uses_index credential-refresh-claim idx_driver_credential_refreshes_claim
    ORDER BY COALESCE(retry_at, refresh_after), driver_id LIMIT 1"
 
 assert_uses_index provider-inventory-due vfs_provider_inventory_due \
-  "SELECT driver_id FROM vfs_provider_inventory_state
-   WHERE state IN ('idle', 'scanning', 'complete', 'error')
-   ORDER BY state, updated_at, driver_id LIMIT 1"
+  "SELECT driver.id FROM vfs_provider_inventory_state AS state
+       INDEXED BY vfs_provider_inventory_due
+   JOIN driver_instances AS driver ON driver.id = state.driver_id
+   WHERE driver.enabled = 1 AND driver.retired_at IS NULL
+     AND driver.kind IN ('r2/v1', 'aliyundrive-open/v2')
+     AND state.state IN ('idle', 'scanning', 'complete', 'error')
+     AND state.next_scan_at IS NOT NULL AND state.next_scan_at <= 1
+   ORDER BY state.next_scan_at, driver.id LIMIT 1"
 
 assert_uses_index provider-quarantine-driver vfs_provider_quarantine_by_driver_state \
   "SELECT storage_key FROM vfs_provider_quarantine

@@ -191,6 +191,8 @@ pub struct ProviderInventoryStatus {
     pub last_started_at: Option<u64>,
     pub last_completed_at: Option<u64>,
     pub last_error_code: Option<String>,
+    pub next_scan_at: Option<u64>,
+    pub attempt_count: u64,
     pub updated_at: u64,
 }
 
@@ -827,23 +829,30 @@ impl AdminClient {
         let inventory: ProviderInventory = self
             .request("api/admin/provider-inventory", &cookie)
             .await?;
-        if inventory.schema != PROVIDER_INVENTORY_SCHEMA
-            || inventory.observed_at == 0
-            || inventory.drivers.iter().any(|driver| {
-                !valid_identifier(&driver.driver_id)
-                    || driver.driver_kind.is_empty()
-                    || driver.updated_at == 0
-                    || !matches!(
-                        driver.state.as_str(),
-                        "idle" | "scanning" | "complete" | "unsupported" | "error"
-                    )
-            })
-        {
+        validate_provider_inventory(inventory)
+    }
+
+    /// Schedules one hosted driver inventory for the next server Cron pass.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on authentication, unsupported drivers, or invalid status.
+    pub async fn refresh_provider_inventory(
+        &self,
+        driver_id: &str,
+    ) -> Result<ProviderInventory, Error> {
+        if !valid_identifier(driver_id) {
             return Err(Error::InvalidResponse(
-                "invalid provider inventory response".to_owned(),
+                "invalid management driver ID".to_owned(),
             ));
         }
-        Ok(inventory)
+        let inventory: ProviderInventory = self
+            .post_authenticated(
+                &format!("api/admin/provider-inventory/{driver_id}/refresh"),
+                &serde_json::json!({}),
+            )
+            .await?;
+        validate_provider_inventory(inventory)
     }
 
     /// Validates one exact principal, group, or membership mutation.
@@ -1647,6 +1656,27 @@ impl AdminClient {
         }
         decode_json(response, MAXIMUM_CONTROL_BODY_BYTES, false).await
     }
+}
+
+fn validate_provider_inventory(inventory: ProviderInventory) -> Result<ProviderInventory, Error> {
+    if inventory.schema != PROVIDER_INVENTORY_SCHEMA
+        || inventory.observed_at == 0
+        || inventory.drivers.iter().any(|driver| {
+            !valid_identifier(&driver.driver_id)
+                || driver.driver_kind.is_empty()
+                || driver.updated_at == 0
+                || (driver.state == "unsupported") != driver.next_scan_at.is_none()
+                || !matches!(
+                    driver.state.as_str(),
+                    "idle" | "scanning" | "complete" | "unsupported" | "error"
+                )
+        })
+    {
+        return Err(Error::InvalidResponse(
+            "invalid provider inventory response".to_owned(),
+        ));
+    }
+    Ok(inventory)
 }
 
 fn valid_identifier(value: &str) -> bool {

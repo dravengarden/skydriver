@@ -18,6 +18,7 @@ use crate::{
 const PAGE_SIZE: u32 = 100;
 const MAXIMUM_ALIYUN_PAGES_PER_RUN: usize = 8;
 const MAXIMUM_ALIYUN_CURSOR_BYTES: usize = 64 * 1024;
+const COMPLETE_SCAN_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 
 #[derive(Deserialize)]
 struct Candidate {
@@ -27,6 +28,7 @@ struct Candidate {
     generation: u64,
     state: String,
     cursor: Option<String>,
+    attempt_count: u64,
 }
 
 #[derive(Deserialize)]
@@ -110,6 +112,8 @@ struct InventoryStatus {
     last_started_at: Option<u64>,
     last_completed_at: Option<u64>,
     last_error_code: Option<String>,
+    next_scan_at: Option<u64>,
+    attempt_count: u64,
     updated_at: u64,
 }
 
@@ -145,14 +149,16 @@ pub(crate) async fn snapshot(request: Request, env: &Env) -> Result<Response> {
                     COALESCE(SUM(quarantine.size_bytes), 0) AS quarantined_bytes,
                     MIN(quarantine.first_seen_at) AS oldest_quarantined_at,
                     state.last_started_at, state.last_completed_at,
-                    state.last_error_code, state.updated_at
+                    state.last_error_code, state.next_scan_at,
+                    state.attempt_count, state.updated_at
              FROM vfs_provider_inventory_state AS state
              JOIN driver_instances AS driver ON driver.id = state.driver_id
              LEFT JOIN vfs_provider_quarantine AS quarantine
                ON quarantine.driver_id = state.driver_id AND quarantine.state = 'observed'
              GROUP BY state.driver_id, driver.kind, state.generation, state.state,
                       state.scanned_objects, state.unknown_objects, state.last_started_at,
-                      state.last_completed_at, state.last_error_code, state.updated_at
+                      state.last_completed_at, state.last_error_code,
+                      state.next_scan_at, state.attempt_count, state.updated_at
              ORDER BY state.driver_id",
         )
         .all()
@@ -163,6 +169,41 @@ pub(crate) async fn snapshot(request: Request, env: &Env) -> Result<Response> {
         observed_at: now_seconds(),
         drivers,
     })
+}
+
+/// Schedules one supported hosted driver for the next bounded Cron pass.
+pub(crate) async fn refresh(request: Request, env: &Env, driver_id: &str) -> Result<Response> {
+    if !operator_sessions::authorized(&request, env).await? {
+        return Response::error("authentication required", 401);
+    }
+    let database = env.d1("CARRACK_INDEX")?;
+    let now = now_seconds();
+    ensure_rows(&database, now).await?;
+    let updated = database
+        .prepare(
+            "UPDATE vfs_provider_inventory_state
+             SET state = CASE WHEN state = 'scanning' THEN state ELSE 'idle' END,
+                 cursor = CASE WHEN state = 'scanning' THEN cursor ELSE NULL END,
+                 next_scan_at = ?1, attempt_count = 0, last_error_code = NULL,
+                 updated_at = ?1
+             WHERE driver_id = ?2
+               AND EXISTS (
+                   SELECT 1 FROM driver_instances AS driver
+                   WHERE driver.id = ?2 AND driver.enabled = 1
+                     AND driver.retired_at IS NULL
+                     AND driver.kind IN ('r2/v1', 'aliyundrive-open/v2')
+               )",
+        )
+        .bind(&[integer(now), JsValue::from_str(driver_id)])?
+        .run()
+        .await?;
+    if changes(updated.meta()?) != 1 {
+        return Response::error(
+            "hosted provider inventory is unavailable for this driver",
+            409,
+        );
+    }
+    snapshot(request, env).await
 }
 
 /// Runs one bounded provider listing page. Unknown objects are quarantined as
@@ -178,15 +219,18 @@ pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
     let candidate = database
         .prepare(
             "SELECT driver.id AS driver_id, driver.kind AS driver_kind, driver.config_json,
-                    state.generation, state.state, state.cursor
+                    state.generation, state.state, state.cursor, state.attempt_count
              FROM vfs_provider_inventory_state AS state
+                  INDEXED BY vfs_provider_inventory_due
              JOIN driver_instances AS driver ON driver.id = state.driver_id
              WHERE driver.enabled = 1 AND driver.retired_at IS NULL
                AND driver.kind IN ('r2/v1', 'aliyundrive-open/v2')
-               AND state.state IN ('idle', 'scanning', 'complete', 'error', 'unsupported')
-             ORDER BY CASE WHEN state.state = 'scanning' THEN 0 ELSE 1 END,
-                      state.updated_at, driver.id LIMIT 1",
+               AND state.state IN ('idle', 'scanning', 'complete', 'error')
+               AND state.next_scan_at IS NOT NULL
+               AND state.next_scan_at <= ?1
+             ORDER BY state.next_scan_at, driver.id LIMIT 1",
         )
+        .bind(&[integer(now)])?
         .first::<Candidate>(None)
         .await?;
     let Some(candidate) = candidate else {
@@ -212,17 +256,18 @@ pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
         candidate.generation + 1
     };
     if candidate.state != "scanning" {
-        database.prepare("UPDATE vfs_provider_inventory_state SET generation = ?1, state = 'scanning', cursor = NULL, scanned_objects = 0, unknown_objects = 0, last_started_at = ?2, last_error_code = NULL, updated_at = ?2 WHERE driver_id = ?3")
+        database.prepare("UPDATE vfs_provider_inventory_state SET generation = ?1, state = 'scanning', cursor = NULL, scanned_objects = 0, unknown_objects = 0, last_started_at = ?2, next_scan_at = ?2, last_error_code = NULL, updated_at = ?2 WHERE driver_id = ?3")
             .bind(&[integer(generation), integer(now), JsValue::from_str(&candidate.driver_id)])?.run().await?;
     }
     let page = match list_page(env, &database, &candidate).await {
         Ok(page) => page,
         Err(error) => {
-            mark_driver(
+            mark_driver_error(
                 &database,
                 &candidate.driver_id,
-                "error",
                 "provider_list_failed",
+                candidate.attempt_count + 1,
+                generation,
                 now,
             )
             .await?;
@@ -243,25 +288,35 @@ pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
                 .bind(&[JsValue::from_str(&candidate.driver_id), JsValue::from_str(&observed.storage_key), JsValue::from_str(&sha256(&observed.storage_key)), JsValue::from_str(&observed.provider_version), integer(observed.size_bytes), integer(generation), integer(now)])?);
         }
     }
-    let (state, cursor, completed) = if let Some(cursor) = page.next_cursor {
-        ("scanning", JsValue::from_str(&cursor), JsValue::NULL)
+    let (state, cursor, completed, next_scan_at) = if let Some(cursor) = page.next_cursor {
+        (
+            "scanning",
+            JsValue::from_str(&cursor),
+            JsValue::NULL,
+            integer(now),
+        )
     } else {
-        ("complete", JsValue::NULL, integer(now))
+        (
+            "complete",
+            JsValue::NULL,
+            integer(now),
+            integer(now + COMPLETE_SCAN_INTERVAL_SECONDS),
+        )
     };
-    statements.push(database.prepare("UPDATE vfs_provider_inventory_state SET state = ?1, cursor = ?2, scanned_objects = scanned_objects + ?3, unknown_objects = unknown_objects + ?4, last_completed_at = COALESCE(?5, last_completed_at), updated_at = ?6 WHERE driver_id = ?7 AND generation = ?8 AND state = 'scanning'")
-        .bind(&[JsValue::from_str(state), cursor, integer(scanned), integer(unknown), completed, integer(now), JsValue::from_str(&candidate.driver_id), integer(generation)])?);
+    statements.push(database.prepare("UPDATE vfs_provider_inventory_state SET state = ?1, cursor = ?2, scanned_objects = scanned_objects + ?3, unknown_objects = unknown_objects + ?4, last_completed_at = COALESCE(?5, last_completed_at), next_scan_at = ?6, attempt_count = 0, last_error_code = NULL, updated_at = ?7 WHERE driver_id = ?8 AND generation = ?9 AND state = 'scanning'")
+        .bind(&[JsValue::from_str(state), cursor, integer(scanned), integer(unknown), completed, next_scan_at, integer(now), JsValue::from_str(&candidate.driver_id), integer(generation)])?);
     database.batch(statements).await?;
     Ok(())
 }
 
 async fn ensure_rows(database: &D1Database, now: u64) -> Result<()> {
-    database.prepare("INSERT INTO vfs_provider_inventory_state (driver_id, updated_at) SELECT id, ?1 FROM driver_instances WHERE retired_at IS NULL ON CONFLICT(driver_id) DO NOTHING")
+    database.prepare("INSERT INTO vfs_provider_inventory_state (driver_id, next_scan_at, updated_at) SELECT id, ?1, ?1 FROM driver_instances WHERE retired_at IS NULL ON CONFLICT(driver_id) DO NOTHING")
         .bind(&[integer(now)])?.run().await?;
     Ok(())
 }
 
 async fn mark_unsupported(database: &D1Database, now: u64) -> Result<()> {
-    let rows = database.prepare("SELECT id, kind FROM driver_instances WHERE enabled = 1 AND retired_at IS NULL AND kind NOT IN ('r2/v1', 'aliyundrive-open/v2')")
+    let rows = database.prepare("SELECT driver.id, driver.kind FROM driver_instances AS driver JOIN vfs_provider_inventory_state AS state ON state.driver_id = driver.id WHERE driver.enabled = 1 AND driver.retired_at IS NULL AND driver.kind NOT IN ('r2/v1', 'aliyundrive-open/v2') AND (state.state != 'unsupported' OR state.last_error_code IS NULL)")
         .all().await?.results::<serde_json::Value>()?;
     for row in rows {
         let Some(id) = row.get("id").and_then(serde_json::Value::as_str) else {
@@ -525,8 +580,21 @@ async fn mark_driver(
     error: &str,
     now: u64,
 ) -> Result<()> {
-    database.prepare("UPDATE vfs_provider_inventory_state SET state = ?1, last_error_code = ?2, updated_at = ?3 WHERE driver_id = ?4 AND state != 'scanning'")
+    database.prepare("UPDATE vfs_provider_inventory_state SET state = ?1, next_scan_at = NULL, last_error_code = ?2, updated_at = ?3 WHERE driver_id = ?4")
         .bind(&[JsValue::from_str(state), JsValue::from_str(error), integer(now), JsValue::from_str(driver_id)])?.run().await?;
+    Ok(())
+}
+
+async fn mark_driver_error(
+    database: &D1Database,
+    driver_id: &str,
+    error: &str,
+    attempt: u64,
+    generation: u64,
+    now: u64,
+) -> Result<()> {
+    database.prepare("UPDATE vfs_provider_inventory_state SET state = 'error', cursor = NULL, next_scan_at = ?1, attempt_count = ?2, last_error_code = ?3, updated_at = ?4 WHERE driver_id = ?5 AND state = 'scanning' AND generation = ?6")
+        .bind(&[integer(now + retry_delay(attempt, generation)), integer(attempt), JsValue::from_str(error), integer(now), JsValue::from_str(driver_id), integer(generation)])?.run().await?;
     Ok(())
 }
 
@@ -548,6 +616,13 @@ fn sha256(value: &str) -> String {
     }
     encoded
 }
+fn retry_delay(attempt: u64, generation: u64) -> u64 {
+    let exponent = attempt.saturating_sub(1).min(8) as u32;
+    (60_u64.saturating_mul(1_u64 << exponent)).min(6 * 60 * 60) + generation % 61
+}
+fn changes(meta: Option<worker::D1ResultMeta>) -> usize {
+    meta.and_then(|value| value.changes).unwrap_or_default()
+}
 fn integer(value: u64) -> JsValue {
     JsValue::from_str(&value.to_string())
 }
@@ -560,4 +635,16 @@ fn no_store_json<T: Serialize>(value: &T) -> Result<Response> {
         .headers_mut()
         .set("Cache-Control", "no-store, max-age=0")?;
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inventory_retry_is_bounded_and_jittered() {
+        assert!((60..=120).contains(&retry_delay(1, 60)));
+        assert!(retry_delay(2, 2) > retry_delay(1, 1));
+        assert!(retry_delay(100, 60) <= 6 * 60 * 60 + 60);
+    }
 }

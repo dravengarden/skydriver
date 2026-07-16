@@ -2,6 +2,7 @@ import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutlineOutlin
 import AddOutlinedIcon from "@mui/icons-material/AddOutlined";
 import KeyOutlinedIcon from "@mui/icons-material/KeyOutlined";
 import PowerSettingsNewOutlinedIcon from "@mui/icons-material/PowerSettingsNewOutlined";
+import RefreshOutlinedIcon from "@mui/icons-material/RefreshOutlined";
 import TuneOutlinedIcon from "@mui/icons-material/TuneOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import {
@@ -28,6 +29,7 @@ import {
     applyDriverState,
     fetchManagementSnapshot,
     fetchProviderInventory,
+    refreshProviderInventory,
     validateDriverCredential,
     validateDriverRegistration,
     validateDriverState,
@@ -156,6 +158,10 @@ export function DriversPage({
         queryKey: ["provider-inventory"],
         queryFn: fetchProviderInventory,
         refetchInterval: 60_000,
+    });
+    const inventoryRefresh = useMutation({
+        mutationFn: refreshProviderInventory,
+        onSuccess: (value) => queryClient.setQueryData(["provider-inventory"], value),
     });
     const [selected, setSelected] = useState<DriverView | null>(null);
     const [validation, setValidation] = useState<DriverStateValidation | null>(null);
@@ -565,6 +571,13 @@ export function DriversPage({
                                                 ? "No completed provider scan"
                                                 : `Last completed ${formatDate(inventoryStatus.last_completed_at)}`}
                                         </Typography>
+                                        {inventoryStatus?.next_scan_at !== null &&
+                                            inventoryStatus?.next_scan_at !== undefined && (
+                                                <Typography color="text.secondary" variant="body2">
+                                                    Next scan{" "}
+                                                    {formatDate(inventoryStatus.next_scan_at)}
+                                                </Typography>
+                                            )}
                                     </Box>
                                     <Box sx={{ textAlign: { sm: "right" } }}>
                                         <Typography sx={{ fontWeight: 750 }}>
@@ -577,8 +590,36 @@ export function DriversPage({
                                             Unknown objects are evidence only; Carrack never adopts
                                             or deletes them automatically.
                                         </Typography>
+                                        {driver.enabled &&
+                                            (driver.kind === "r2/v1" ||
+                                                driver.kind === "aliyundrive-open/v2") && (
+                                                <Button
+                                                    disabled={
+                                                        inventoryRefresh.isPending &&
+                                                        inventoryRefresh.variables === driver.id
+                                                    }
+                                                    onClick={() =>
+                                                        inventoryRefresh.mutate(driver.id)
+                                                    }
+                                                    size="small"
+                                                    startIcon={<RefreshOutlinedIcon />}
+                                                    sx={{ mt: 1 }}
+                                                    variant="outlined"
+                                                >
+                                                    {inventoryRefresh.isPending &&
+                                                    inventoryRefresh.variables === driver.id
+                                                        ? "Scheduling"
+                                                        : "Scan next"}
+                                                </Button>
+                                            )}
                                     </Box>
                                 </Stack>
+                                {inventoryRefresh.isError &&
+                                    inventoryRefresh.variables === driver.id && (
+                                        <Alert severity="error" sx={{ mt: 2 }}>
+                                            Provider scan could not be scheduled.
+                                        </Alert>
+                                    )}
                                 {inventoryStatus?.last_error_code !== null &&
                                     inventoryStatus?.last_error_code !== undefined && (
                                         <Alert
@@ -590,6 +631,9 @@ export function DriversPage({
                                             sx={{ mt: 2 }}
                                         >
                                             {inventoryStatus.last_error_code}
+                                            {inventoryStatus.attempt_count > 0
+                                                ? ` · retry ${inventoryStatus.attempt_count}`
+                                                : ""}
                                         </Alert>
                                     )}
                             </Box>

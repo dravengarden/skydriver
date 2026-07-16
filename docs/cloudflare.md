@@ -386,6 +386,12 @@ review and physical deletion stages belong to the control plane, require the
 same final reachability and identity fences as normal lifecycle GC, and must
 pass production fault-injection before Cron enables them.
 
+A completed inventory is scheduled again after 24 hours. Multi-page scans
+continue one bounded page per Cron pass, while provider failures use durable
+exponential retry capped at roughly six hours. The dashboard and
+`carrackctl inventory` expose the next scan time and failure-attempt count;
+clients never schedule or perform inventory work.
+
 ## Activity and lifecycle health
 
 The authenticated dashboard polls `GET /api/admin/activity`. Its bounded V2

@@ -422,6 +422,8 @@ const ProviderInventorySchema = v.object({
             last_started_at: v.nullable(v.number()),
             last_completed_at: v.nullable(v.number()),
             last_error_code: v.nullable(v.string()),
+            next_scan_at: v.nullable(v.number()),
+            attempt_count: v.number(),
             updated_at: v.number(),
         }),
     ),
@@ -572,6 +574,14 @@ export function fetchManagementAccess(): Promise<ManagementAccess> {
 
 export function fetchProviderInventory(): Promise<ProviderInventory> {
     return requestJson("/api/admin/provider-inventory", undefined, ProviderInventorySchema);
+}
+
+export function refreshProviderInventory(driverId: string): Promise<ProviderInventory> {
+    return requestJson(
+        `/api/admin/provider-inventory/${encodeURIComponent(driverId)}/refresh`,
+        { method: "POST" },
+        ProviderInventorySchema,
+    );
 }
 
 export function validateAccessMutation(

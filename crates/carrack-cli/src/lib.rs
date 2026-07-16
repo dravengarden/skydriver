@@ -135,6 +135,9 @@ enum ManagementCommand {
     },
     /// Read server-owned provider inventory and quarantine status.
     Inventory {
+        /// Schedule one hosted driver for the next server inventory pass.
+        #[arg(long)]
+        refresh_driver: Option<String>,
         #[arg(long = "format", value_enum, default_value_t = Output::Json)]
         output: Output,
     },
@@ -832,10 +835,18 @@ async fn run_management() -> Result<(), Error> {
             client.check_compatibility().await?;
             run_access_command(&client, command).await?;
         }
-        ManagementCommand::Inventory { output } => {
+        ManagementCommand::Inventory {
+            refresh_driver,
+            output,
+        } => {
             let client = admin_client(arguments.control_url)?;
             client.check_compatibility().await?;
-            write_json(output, &client.provider_inventory().await?)?;
+            let inventory = if let Some(driver_id) = refresh_driver {
+                client.refresh_provider_inventory(&driver_id).await?
+            } else {
+                client.provider_inventory().await?
+            };
+            write_json(output, &inventory)?;
         }
         ManagementCommand::Token { command } => {
             let client = admin_client(arguments.control_url)?;
@@ -2015,6 +2026,13 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(names.contains(&"watch"));
         assert!(names.contains(&"metrics"));
+        let parsed = ManagementArguments::try_parse_from([
+            "carrackctl",
+            "inventory",
+            "--refresh-driver",
+            "r2-default",
+        ]);
+        assert!(parsed.is_ok());
     }
 
     #[test]
