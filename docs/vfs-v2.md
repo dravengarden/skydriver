@@ -237,6 +237,15 @@ paginated directory additionally requires every continuation to retain the
 exact directory identity and its ordered entries to reconstruct the advertised
 Merkle root. A revision match alone is not an authenticated directory view.
 
+Filesystem mutations and policy or token management use the same strict
+boundary. The native client canonicalizes caller scopes before submission and
+accepts a successful response only when its operation identity, requested
+directory or token scope, normalized policy, revision transition, timestamp,
+and terminal state form one valid receipt. Child-token issuance and revocation
+also bind the receipt to a freshly authenticated parent session; a returned
+bearer is never exposed until its canonical secret shape and exact narrowed
+scope have been checked.
+
 The Worker delivers the current checkpoint when the authenticated token is live
 and nonsnapshot, has both `directory.list` and `content.read`, passes its current
 inherited ACL checks, and has no descendant ACL inheritance break. A physical

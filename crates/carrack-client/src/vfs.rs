@@ -1,5 +1,7 @@
 //! Filesystem-oriented VFS metadata client.
 
+use std::collections::BTreeSet;
+
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use carrack_sdk_core::{
     CatalogCheckpoint, CatalogDelta, MAXIMUM_CATALOG_CHECKPOINT_BYTES, MAXIMUM_CATALOG_DELTA_BYTES,
@@ -22,6 +24,8 @@ const DEFAULT_DIRECTORY_PAGE_SIZE: usize = 200;
 const MAXIMUM_DIRECTORY_PAGE_SIZE: u32 = 1_000;
 const ENCRYPTED_SUITE: &str = "carrack-vfs-aes256gcm-hkdfsha256-v1";
 const PLAINTEXT_SUITE: &str = "plaintext/v1";
+const MAXIMUM_IDEMPOTENCY_BYTES: usize = 256;
+const MAXIMUM_DRIVER_ID_BYTES: usize = 256;
 
 /// One canonical 256-bit VFS bearer.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
@@ -616,7 +620,7 @@ impl VfsClient {
         cursor: Option<&str>,
         limit: u32,
     ) -> Result<DirectoryPage, Error> {
-        validate_nonzero_hex::<16>(directory_id, "VFS directory identity")?;
+        validate_nonzero_hex_input::<16>(directory_id, "VFS directory identity")?;
         if limit > MAXIMUM_DIRECTORY_PAGE_SIZE {
             return Err(Error::InvalidEndpoint(
                 "VFS directory page limit exceeds 1000".to_owned(),
@@ -769,6 +773,7 @@ impl VfsClient {
         path: &str,
         idempotency_key: &str,
     ) -> Result<DirectoryCreation, Error> {
+        validate_idempotency_key(idempotency_key)?;
         let components = canonical_components(path)?;
         let (name, parent_components) = components
             .split_last()
@@ -787,7 +792,8 @@ impl VfsClient {
             idempotency_key: idempotency_key.to_owned(),
         };
         let token = self.token.encode();
-        self.control
+        let receipt = self
+            .control
             .send_json(
                 Method::POST,
                 &format!("api/v2/directories/{parent_id}/children"),
@@ -795,7 +801,9 @@ impl VfsClient {
                 &[],
                 Some(&body),
             )
-            .await
+            .await?;
+        validate_directory_creation(&receipt, &parent_id, name)?;
+        Ok(receipt)
     }
 
     /// Logically removes one file or empty directory by path.
@@ -805,6 +813,7 @@ impl VfsClient {
     /// Returns an error for missing paths, revision races, nonempty directories,
     /// authorization failures, or invalid tombstone receipts.
     pub async fn remove(&self, path: &str, idempotency_key: &str) -> Result<RemoveReceipt, Error> {
+        validate_idempotency_key(idempotency_key)?;
         let components = canonical_components(path)?;
         let (name, parent_components) = components
             .split_last()
@@ -861,6 +870,7 @@ impl VfsClient {
         destination: &str,
         idempotency_key: &str,
     ) -> Result<RenameReceipt, Error> {
+        validate_idempotency_key(idempotency_key)?;
         let source_components = canonical_components(source)?;
         let (source_name, source_parent_components) = source_components
             .split_last()
@@ -935,7 +945,8 @@ impl VfsClient {
     pub async fn acl(&self, path: &str) -> Result<AclPolicy, Error> {
         let directory_id = self.resolve_directory_id(path).await?;
         let token = self.token.encode();
-        self.control
+        let policy = self
+            .control
             .send_json::<AclPolicy, ()>(
                 Method::GET,
                 &format!("api/v2/directories/{directory_id}/acl"),
@@ -943,7 +954,9 @@ impl VfsClient {
                 &[],
                 None,
             )
-            .await
+            .await?;
+        validate_acl_policy(&policy, &directory_id)?;
+        Ok(policy)
     }
 
     /// Atomically replaces one principal's complete direct ACL grant set.
@@ -959,9 +972,19 @@ impl VfsClient {
         expected_acl_revision: u64,
         idempotency_key: &str,
     ) -> Result<PolicyMutationReceipt, Error> {
+        validate_nonzero_hex_input::<16>(principal_id, "VFS principal identity")?;
+        let actions = canonical_actions(actions)?;
+        validate_mutation_input(expected_acl_revision, idempotency_key)?;
         let directory_id = self.resolve_directory_id(path).await?;
         let token = self.token.encode();
-        self.control
+        let expected_policy = serde_json::json!({
+            "principal_id": principal_id,
+            "group_id": null,
+            "actions": actions.clone(),
+            "source_role": null
+        });
+        let receipt = self
+            .control
             .send_json(
                 Method::POST,
                 &format!("api/v2/directories/{directory_id}/acl/replace"),
@@ -975,7 +998,15 @@ impl VfsClient {
                     idempotency_key,
                 }),
             )
-            .await
+            .await?;
+        validate_policy_receipt(
+            &receipt,
+            "acl.replace",
+            &directory_id,
+            expected_acl_revision,
+            &expected_policy,
+        )?;
+        Ok(receipt)
     }
 
     /// Atomically replaces one group's complete direct ACL grant set.
@@ -991,9 +1022,19 @@ impl VfsClient {
         expected_acl_revision: u64,
         idempotency_key: &str,
     ) -> Result<PolicyMutationReceipt, Error> {
+        validate_nonzero_hex_input::<16>(group_id, "VFS group identity")?;
+        let actions = canonical_actions(actions)?;
+        validate_mutation_input(expected_acl_revision, idempotency_key)?;
         let directory_id = self.resolve_directory_id(path).await?;
         let token = self.token.encode();
-        self.control
+        let expected_policy = serde_json::json!({
+            "principal_id": null,
+            "group_id": group_id,
+            "actions": actions.clone(),
+            "source_role": null
+        });
+        let receipt = self
+            .control
             .send_json(
                 Method::POST,
                 &format!("api/v2/directories/{directory_id}/acl/replace"),
@@ -1007,7 +1048,15 @@ impl VfsClient {
                     idempotency_key,
                 }),
             )
-            .await
+            .await?;
+        validate_policy_receipt(
+            &receipt,
+            "acl.replace",
+            &directory_id,
+            expected_acl_revision,
+            &expected_policy,
+        )?;
+        Ok(receipt)
     }
 
     /// Reads the ordered driver placement policy for one directory path.
@@ -1018,7 +1067,8 @@ impl VfsClient {
     pub async fn placements(&self, path: &str) -> Result<PlacementPolicy, Error> {
         let directory_id = self.resolve_directory_id(path).await?;
         let token = self.token.encode();
-        self.control
+        let policy = self
+            .control
             .send_json::<PlacementPolicy, ()>(
                 Method::GET,
                 &format!("api/v2/directories/{directory_id}/placements"),
@@ -1026,7 +1076,9 @@ impl VfsClient {
                 &[],
                 None,
             )
-            .await
+            .await?;
+        validate_placement_policy(&policy, &directory_id)?;
+        Ok(policy)
     }
 
     /// Atomically replaces a directory's complete driver placement policy.
@@ -1037,13 +1089,17 @@ impl VfsClient {
     pub async fn replace_placements(
         &self,
         path: &str,
-        placements: Vec<Placement>,
+        mut placements: Vec<Placement>,
         expected_placement_revision: u64,
         idempotency_key: &str,
     ) -> Result<PolicyMutationReceipt, Error> {
+        validate_mutation_input(expected_placement_revision, idempotency_key)?;
+        canonicalize_placements(&mut placements)?;
         let directory_id = self.resolve_directory_id(path).await?;
         let token = self.token.encode();
-        self.control
+        let expected_policy = serde_json::json!({ "placements": placements.clone() });
+        let receipt = self
+            .control
             .send_json(
                 Method::POST,
                 &format!("api/v2/directories/{directory_id}/placements/replace"),
@@ -1055,7 +1111,15 @@ impl VfsClient {
                     idempotency_key,
                 }),
             )
-            .await
+            .await?;
+        validate_policy_receipt(
+            &receipt,
+            "placement.replace",
+            &directory_id,
+            expected_placement_revision,
+            &expected_policy,
+        )?;
+        Ok(receipt)
     }
 
     /// Issues a same-principal child token that can only narrow this token.
@@ -1071,8 +1135,19 @@ impl VfsClient {
         expires_at: u64,
         idempotency_key: &str,
     ) -> Result<IssuedToken, Error> {
+        validate_nonzero_hex_input::<16>(root_directory_id, "VFS token root identity")?;
+        let actions = canonical_actions(actions)?;
+        let driver_ids = canonical_driver_scope(driver_ids)?;
+        if expires_at == 0 || expires_at > i64::MAX as u64 {
+            return Err(Error::InvalidEndpoint(
+                "VFS token expiry must be nonzero".to_owned(),
+            ));
+        }
+        validate_idempotency_key(idempotency_key)?;
+        let session = self.session().await?;
         let token = self.token.encode();
-        self.control
+        let issued = self
+            .control
             .send_json(
                 Method::POST,
                 "api/v2/tokens",
@@ -1080,13 +1155,22 @@ impl VfsClient {
                 &[],
                 Some(&IssueTokenRequest {
                     root_directory_id,
-                    actions,
-                    driver_ids,
+                    actions: actions.clone(),
+                    driver_ids: driver_ids.clone(),
                     expires_at,
                     idempotency_key,
                 }),
             )
-            .await
+            .await?;
+        validate_issued_token(
+            &issued,
+            &session,
+            root_directory_id,
+            &actions,
+            driver_ids.as_deref(),
+            expires_at,
+        )?;
+        Ok(issued)
     }
 
     /// Revokes one same-principal child token idempotently.
@@ -1099,8 +1183,12 @@ impl VfsClient {
         token_id: &str,
         idempotency_key: &str,
     ) -> Result<RevokedToken, Error> {
+        validate_nonzero_hex_input::<16>(token_id, "VFS revoked token identity")?;
+        validate_idempotency_key(idempotency_key)?;
+        let session = self.session().await?;
         let token = self.token.encode();
-        self.control
+        let revoked = self
+            .control
             .send_json(
                 Method::POST,
                 &format!("api/v2/tokens/{token_id}/revoke"),
@@ -1108,7 +1196,9 @@ impl VfsClient {
                 &[],
                 Some(&RevokeTokenRequest { idempotency_key }),
             )
-            .await
+            .await?;
+        validate_revoked_token(&revoked, &session, token_id)?;
+        Ok(revoked)
     }
 
     async fn resolve_directory_id(&self, path: &str) -> Result<String, Error> {
@@ -1187,6 +1277,9 @@ fn validate_remove_receipt(
     name: &str,
     expected_kind: Option<EntryKind>,
 ) -> Result<(), Error> {
+    validate_nonzero_hex::<16>(&receipt.operation_id, "VFS remove operation identity")?;
+    validate_nonzero_hex::<16>(&receipt.filesystem_id, "VFS remove filesystem identity")?;
+    validate_nonzero_hex::<16>(&receipt.subject_id, "VFS removed subject identity")?;
     if receipt.schema != "carrack.vfs.remove-receipt.v1"
         || receipt.directory_id != parent_id
         || receipt.name != name
@@ -1216,6 +1309,9 @@ fn validate_rename_receipt(
     expected_kind: Option<EntryKind>,
     previous_revision: Option<u64>,
 ) -> Result<(), Error> {
+    validate_nonzero_hex::<16>(&receipt.operation_id, "VFS rename operation identity")?;
+    validate_nonzero_hex::<16>(&receipt.filesystem_id, "VFS rename filesystem identity")?;
+    validate_nonzero_hex::<16>(&receipt.subject_id, "VFS renamed subject identity")?;
     if receipt.schema != "carrack.vfs.rename-receipt.v1"
         || receipt.source_directory_id != source_directory_id
         || receipt.source_name != source_name
@@ -1286,6 +1382,275 @@ struct IssueTokenRequest<'a> {
 #[derive(Serialize)]
 struct RevokeTokenRequest<'a> {
     idempotency_key: &'a str,
+}
+
+fn validate_directory_creation(
+    receipt: &DirectoryCreation,
+    parent_directory_id: &str,
+    name: &str,
+) -> Result<(), Error> {
+    validate_nonzero_hex::<16>(&receipt.operation_id, "VFS mkdir operation identity")?;
+    validate_nonzero_hex::<16>(&receipt.filesystem_id, "VFS mkdir filesystem identity")?;
+    validate_nonzero_hex::<16>(&receipt.directory_id, "VFS created directory identity")?;
+    let empty_root = carrack_sdk_core::directory_merkle_root(&[])
+        .map_err(|error| Error::InvalidResponse(error.to_string()))?;
+    if receipt.schema != "carrack.vfs.directory-create-receipt.v1"
+        || receipt.parent_directory_id != parent_directory_id
+        || receipt.name != name
+        || validate_nonzero_hex::<32>(&receipt.data_root, "VFS created directory root")?
+            != empty_root
+        || !matches!(
+            receipt.crypto_suite.as_str(),
+            ENCRYPTED_SUITE | PLAINTEXT_SUITE
+        )
+        || receipt.key_epoch == 0
+        || receipt.catalog_revision_id == 0
+        || receipt.created_at == 0
+        || receipt.state != "committed"
+    {
+        return Err(Error::InvalidResponse(
+            "invalid VFS directory creation receipt".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_acl_policy(policy: &AclPolicy, directory_id: &str) -> Result<(), Error> {
+    if policy.schema != "carrack.vfs.acl.v1"
+        || policy.directory_id != directory_id
+        || policy.acl_revision == 0
+    {
+        return Err(Error::InvalidResponse("invalid VFS ACL policy".to_owned()));
+    }
+    let mut previous: Option<(String, String)> = None;
+    for grant in &policy.grants {
+        validate_nonzero_hex::<16>(&grant.id, "VFS ACL grant identity")?;
+        let subject = match (grant.principal_id.as_deref(), grant.group_id.as_deref()) {
+            (Some(principal_id), None) => {
+                validate_nonzero_hex::<16>(principal_id, "VFS ACL principal identity")?;
+                principal_id
+            }
+            (None, Some(group_id)) => {
+                validate_nonzero_hex::<16>(group_id, "VFS ACL group identity")?;
+                group_id
+            }
+            _ => {
+                return Err(Error::InvalidResponse(
+                    "invalid VFS ACL grant subject".to_owned(),
+                ));
+            }
+        };
+        if !carrack_sdk_core::VFS_ACTIONS.contains(&grant.action.as_str())
+            || grant
+                .source_role
+                .as_deref()
+                .is_some_and(|role| !valid_bounded_string(role, 64))
+        {
+            return Err(Error::InvalidResponse(
+                "invalid VFS ACL grant scope".to_owned(),
+            ));
+        }
+        let identity = (subject.to_owned(), grant.action.clone());
+        if previous.as_ref().is_some_and(|value| value >= &identity) {
+            return Err(Error::InvalidResponse(
+                "VFS ACL grants are not canonically ordered".to_owned(),
+            ));
+        }
+        previous = Some(identity);
+    }
+    Ok(())
+}
+
+fn validate_placement_policy(policy: &PlacementPolicy, directory_id: &str) -> Result<(), Error> {
+    if policy.schema != "carrack.vfs.placements.v1"
+        || policy.directory_id != directory_id
+        || policy.placement_revision == 0
+        || policy.placements.is_empty()
+    {
+        return Err(Error::InvalidResponse(
+            "invalid VFS placement policy".to_owned(),
+        ));
+    }
+    let mut previous: Option<(u64, String)> = None;
+    for placement in &policy.placements {
+        if !valid_bounded_string(&placement.driver_id, MAXIMUM_DRIVER_ID_BYTES)
+            || carrack_driver_contract::DriverKind::parse(&placement.driver_kind).is_none()
+            || placement.driver_revision == 0
+            || placement.write_priority > i64::MAX as u64
+            || placement.state != "active"
+        {
+            return Err(Error::InvalidResponse(
+                "invalid VFS placement identity".to_owned(),
+            ));
+        }
+        let identity = (placement.write_priority, placement.driver_id.clone());
+        if previous.as_ref().is_some_and(|value| value >= &identity) {
+            return Err(Error::InvalidResponse(
+                "VFS placements are not canonically ordered".to_owned(),
+            ));
+        }
+        previous = Some(identity);
+    }
+    Ok(())
+}
+
+fn validate_policy_receipt(
+    receipt: &PolicyMutationReceipt,
+    kind: &str,
+    directory_id: &str,
+    previous_revision: u64,
+    expected_policy: &serde_json::Value,
+) -> Result<(), Error> {
+    validate_nonzero_hex::<16>(&receipt.operation_id, "VFS policy operation identity")?;
+    if receipt.schema != "carrack.vfs.policy-mutation-receipt.v1"
+        || receipt.kind != kind
+        || receipt.directory_id != directory_id
+        || receipt.final_revision <= previous_revision
+        || receipt.policy != *expected_policy
+        || receipt.committed_at == 0
+        || receipt.state != "committed"
+    {
+        return Err(Error::InvalidResponse(
+            "invalid VFS policy mutation receipt".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_issued_token(
+    issued: &IssuedToken,
+    parent: &VfsSession,
+    root_directory_id: &str,
+    actions: &[String],
+    driver_ids: Option<&[String]>,
+    expires_at: u64,
+) -> Result<(), Error> {
+    validate_nonzero_hex::<16>(&issued.token_id, "VFS issued token identity")?;
+    validate_nonzero_hex::<16>(&issued.principal_id, "VFS issued principal identity")?;
+    validate_nonzero_hex::<16>(&issued.parent_token_id, "VFS parent token identity")?;
+    validate_nonzero_hex::<16>(&issued.root_directory_id, "VFS issued root identity")?;
+    VfsToken::parse(&issued.token).map_err(|error| {
+        Error::InvalidResponse(format!("VFS issued bearer is invalid: {error}"))
+    })?;
+    if issued.schema != "carrack.vfs.token-issue-receipt.v1"
+        || issued.principal_id != parent.principal_id
+        || issued.parent_token_id != parent.token_id
+        || issued.root_directory_id != root_directory_id
+        || issued.actions != actions
+        || issued.driver_ids.as_deref() != driver_ids
+        || issued.expires_at != expires_at
+    {
+        return Err(Error::InvalidResponse(
+            "invalid VFS token issue receipt".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_revoked_token(
+    revoked: &RevokedToken,
+    authorizer: &VfsSession,
+    token_id: &str,
+) -> Result<(), Error> {
+    validate_nonzero_hex::<16>(&revoked.principal_id, "VFS revoked principal identity")?;
+    validate_nonzero_hex::<16>(&revoked.root_directory_id, "VFS revoked root identity")?;
+    if revoked.schema != "carrack.vfs.token-revoke-receipt.v1"
+        || revoked.token_id != token_id
+        || revoked.principal_id != authorizer.principal_id
+        || revoked.revoked_at == 0
+        || revoked.state != "revoked"
+    {
+        return Err(Error::InvalidResponse(
+            "invalid VFS token revoke receipt".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn canonical_actions(actions: Vec<String>) -> Result<Vec<String>, Error> {
+    carrack_sdk_core::canonicalize_vfs_actions(actions)
+        .map_err(|error| Error::InvalidEndpoint(error.to_string()))
+}
+
+fn canonical_driver_scope(
+    mut driver_ids: Option<Vec<String>>,
+) -> Result<Option<Vec<String>>, Error> {
+    if let Some(values) = &mut driver_ids {
+        values.sort();
+        values.dedup();
+        if values.is_empty()
+            || values.len() > 256
+            || !values
+                .iter()
+                .all(|value| valid_bounded_string(value, MAXIMUM_DRIVER_ID_BYTES))
+        {
+            return Err(Error::InvalidEndpoint(
+                "VFS token driver scope is invalid".to_owned(),
+            ));
+        }
+    }
+    Ok(driver_ids)
+}
+
+fn canonicalize_placements(placements: &mut [Placement]) -> Result<(), Error> {
+    placements.sort_by(|left, right| {
+        left.write_priority
+            .cmp(&right.write_priority)
+            .then_with(|| left.driver_id.cmp(&right.driver_id))
+    });
+    let unique_drivers = placements
+        .iter()
+        .map(|placement| placement.driver_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let unique_priorities = placements
+        .iter()
+        .map(|placement| placement.write_priority)
+        .collect::<BTreeSet<_>>();
+    if placements.is_empty()
+        || placements.len() > 256
+        || placements.iter().any(|placement| {
+            !valid_bounded_string(&placement.driver_id, MAXIMUM_DRIVER_ID_BYTES)
+                || placement.write_priority > i64::MAX as u64
+        })
+        || unique_drivers.len() != placements.len()
+        || unique_priorities.len() != placements.len()
+    {
+        return Err(Error::InvalidEndpoint(
+            "VFS placements are invalid".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_mutation_input(revision: u64, idempotency_key: &str) -> Result<(), Error> {
+    if revision == 0 || revision > i64::MAX as u64 {
+        return Err(Error::InvalidEndpoint(
+            "VFS policy revision must be nonzero".to_owned(),
+        ));
+    }
+    validate_idempotency_key(idempotency_key)
+}
+
+fn validate_idempotency_key(idempotency_key: &str) -> Result<(), Error> {
+    if !valid_bounded_string(idempotency_key, MAXIMUM_IDEMPOTENCY_BYTES) {
+        return Err(Error::InvalidEndpoint(
+            "VFS idempotency key is invalid".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_nonzero_hex_input<const N: usize>(value: &str, context: &str) -> Result<(), Error> {
+    let decoded = carrack_sdk_core::decode_lower_hex::<N>(value)
+        .map_err(|error| Error::InvalidEndpoint(format!("{context}: {error}")))?;
+    if decoded.iter().all(|byte| *byte == 0) {
+        return Err(Error::InvalidEndpoint(format!("{context} is zero")));
+    }
+    Ok(())
+}
+
+fn valid_bounded_string(value: &str, maximum_bytes: usize) -> bool {
+    !value.is_empty() && value.trim() == value && value.len() <= maximum_bytes
 }
 
 fn validate_session(session: &VfsSession) -> Result<(), Error> {
@@ -1392,7 +1757,7 @@ pub(crate) fn canonical_components(path: &str) -> Result<Vec<String>, Error> {
     }
     let mut components = Vec::new();
     for component in path.split('/').filter(|component| !component.is_empty()) {
-        if component == "." || component == ".." || component.len() > 255 {
+        if !canonical_entry_name(component) {
             return Err(Error::InvalidResponse(
                 "VFS path contains an invalid component".to_owned(),
             ));
@@ -1419,7 +1784,11 @@ mod tests {
     };
     use httpmock::{Method::GET, MockServer};
 
-    use super::{CatalogCheckpointOutcome, VfsClient, VfsSession, VfsToken};
+    use super::{
+        CatalogCheckpointOutcome, DirectoryCreation, IssuedToken, PolicyMutationReceipt, VfsClient,
+        VfsSession, VfsToken, validate_directory_creation, validate_issued_token,
+        validate_policy_receipt,
+    };
     use crate::{Error, catalog::CatalogCheckpointCondition};
 
     fn client(server: &MockServer) -> VfsClient {
@@ -1544,6 +1913,89 @@ mod tests {
                 if message == "paged VFS directory Merkle root differs"
         ));
         delivery.assert_hits_async(1).await;
+    }
+
+    #[test]
+    fn directory_creation_receipt_binds_empty_root_and_request() {
+        let receipt = DirectoryCreation {
+            schema: "carrack.vfs.directory-create-receipt.v1".to_owned(),
+            operation_id: "101112131415161718191a1b1c1d1e1f".to_owned(),
+            filesystem_id: "202122232425262728292a2b2c2d2e2f".to_owned(),
+            parent_directory_id: "303132333435363738393a3b3c3d3e3f".to_owned(),
+            directory_id: "404142434445464748494a4b4c4d4e4f".to_owned(),
+            name: "docs".to_owned(),
+            data_root: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_owned(),
+            crypto_suite: "carrack-vfs-aes256gcm-hkdfsha256-v1".to_owned(),
+            key_epoch: 1,
+            catalog_revision_id: 1,
+            created_at: 1_700_000_000,
+            state: "committed".to_owned(),
+        };
+
+        assert!(matches!(
+            validate_directory_creation(
+                &receipt,
+                "303132333435363738393a3b3c3d3e3f",
+                "docs"
+            ),
+            Err(Error::InvalidResponse(message))
+                if message == "invalid VFS directory creation receipt"
+        ));
+    }
+
+    #[test]
+    fn token_issue_receipt_binds_parent_and_requested_scope() {
+        let issued = IssuedToken {
+            schema: "carrack.vfs.token-issue-receipt.v1".to_owned(),
+            token_id: "101112131415161718191a1b1c1d1e1f".to_owned(),
+            principal_id: session().principal_id.clone(),
+            parent_token_id: session().token_id.clone(),
+            root_directory_id: session().root_directory_id.clone(),
+            actions: vec!["content.read".to_owned()],
+            driver_ids: None,
+            expires_at: 2_000_000_000,
+            token: URL_SAFE_NO_PAD.encode([9_u8; 32]),
+        };
+
+        assert!(matches!(
+            validate_issued_token(
+                &issued,
+                &session(),
+                &issued.root_directory_id,
+                &["directory.list".to_owned()],
+                None,
+                issued.expires_at
+            ),
+            Err(Error::InvalidResponse(message))
+                if message == "invalid VFS token issue receipt"
+        ));
+    }
+
+    #[test]
+    fn policy_receipt_binds_exact_normalized_payload() {
+        let receipt = PolicyMutationReceipt {
+            schema: "carrack.vfs.policy-mutation-receipt.v1".to_owned(),
+            operation_id: "101112131415161718191a1b1c1d1e1f".to_owned(),
+            kind: "acl.replace".to_owned(),
+            directory_id: "202122232425262728292a2b2c2d2e2f".to_owned(),
+            final_revision: 3,
+            policy: serde_json::json!({ "actions": ["content.read"] }),
+            committed_at: 1_700_000_000,
+            state: "committed".to_owned(),
+        };
+
+        assert!(matches!(
+            validate_policy_receipt(
+                &receipt,
+                "acl.replace",
+                &receipt.directory_id,
+                2,
+                &serde_json::json!({ "actions": ["directory.list"] })
+            ),
+            Err(Error::InvalidResponse(message))
+                if message == "invalid VFS policy mutation receipt"
+        ));
     }
 
     #[tokio::test]

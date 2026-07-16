@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use worker::{D1Database, Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 
+use carrack_sdk_core::VFS_ACTIONS as ACTIONS;
+
 use crate::{vfs_access, vfs_identifiers::new_uuid_v7_hex, vfs_tokens::AuthenticatedVfsToken};
 
 const ACL_SCHEMA: &str = "carrack.vfs.acl.v1";
@@ -11,20 +13,6 @@ const PLACEMENT_SCHEMA: &str = "carrack.vfs.placements.v1";
 const POLICY_RECEIPT_SCHEMA: &str = "carrack.vfs.policy-mutation-receipt.v1";
 const MAXIMUM_IDEMPOTENCY_BYTES: usize = 256;
 const MAXIMUM_DRIVER_ID_BYTES: usize = 256;
-const ACTIONS: [&str; 12] = [
-    "directory.list",
-    "content.read",
-    "content.write",
-    "entry.delete",
-    "snapshot.publish",
-    "acl.manage",
-    "token.issue",
-    "driver.use",
-    "driver.manage",
-    "gc.run",
-    "audit.read",
-    "system.manage",
-];
 
 #[derive(Deserialize, Serialize)]
 struct ACLGrant {

@@ -6,6 +6,8 @@ use worker::{
     D1Database, D1PreparedStatement, Date, Env, Request, Response, Result, wasm_bindgen::JsValue,
 };
 
+use carrack_sdk_core::VFS_ACTIONS as ACTIONS;
+
 use crate::{
     vfs_access,
     vfs_envelopes::derive_child_token,
@@ -19,20 +21,6 @@ const MINIMUM_TOKEN_LIFETIME_SECONDS: u64 = 60;
 const MAXIMUM_IDEMPOTENCY_BYTES: usize = 256;
 const MAXIMUM_DRIVER_ID_BYTES: usize = 256;
 const MAXIMUM_DRIVER_SCOPE: usize = 256;
-const ACTIONS: [&str; 12] = [
-    "directory.list",
-    "content.read",
-    "content.write",
-    "entry.delete",
-    "snapshot.publish",
-    "acl.manage",
-    "token.issue",
-    "driver.use",
-    "driver.manage",
-    "gc.run",
-    "audit.read",
-    "system.manage",
-];
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

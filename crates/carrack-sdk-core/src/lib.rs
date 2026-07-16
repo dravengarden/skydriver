@@ -16,7 +16,7 @@ pub mod error;
 pub mod integrity;
 
 pub use acceptance::{WasmAcceptanceProof, wasm_acceptance_proof};
-pub use canonical::decode_lower_hex;
+pub use canonical::{VFS_ACTIONS, canonicalize_vfs_actions, decode_lower_hex};
 pub use catalog::{
     CATALOG_CHECKPOINT_SCHEMA, CATALOG_DELTA_SCHEMA, CatalogCheckpoint, CatalogCheckpointDirectory,
     CatalogCheckpointEntry, CatalogCheckpointEntryKind, CatalogDelta,
