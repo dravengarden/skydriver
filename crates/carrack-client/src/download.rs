@@ -610,15 +610,41 @@ fn sync_directory(path: &Path) -> Result<(), Error> {
 }
 
 fn validate_plan(plan: &DownloadPlan, expected: DownloadExpectation<'_>) -> Result<(), Error> {
+    for identifier in [
+        plan.filesystem_id.as_str(),
+        plan.directory_id.as_str(),
+        plan.file_id.as_str(),
+        plan.version_id.as_str(),
+        plan.location_id.as_str(),
+        plan.read_lease_id.as_str(),
+    ] {
+        parse_identifier(identifier)
+            .map_err(|_| Error::InvalidResponse("invalid download plan identity".to_owned()))?;
+    }
+    for digest in [
+        plan.file_root.as_str(),
+        plan.metadata_root.as_str(),
+        plan.block_manifest_sha256.as_str(),
+        plan.encoded_sha256.as_str(),
+    ] {
+        parse_digest(digest)
+            .map_err(|_| Error::InvalidResponse("invalid download plan digest".to_owned()))?;
+    }
+    if !matches!(
+        plan.crypto_suite.as_str(),
+        "plaintext/v1" | "carrack-vfs-aes256gcm-hkdfsha256-v1"
+    ) {
+        return Err(Error::failure(
+            crate::FailureKind::UnsupportedSuite,
+            format!("unsupported download crypto suite {}", plan.crypto_suite),
+        ));
+    }
+    let mut validated_key = decode_directory_key(plan)?;
+    if let Some(key) = validated_key.as_mut() {
+        key.zeroize();
+    }
     let _ = (
-        &plan.filesystem_id,
-        &plan.file_id,
-        &plan.metadata_root,
-        &plan.block_manifest_sha256,
         plan.block_manifest_bytes,
-        &plan.block_manifest_r2_key,
-        &plan.block_manifest_r2_version,
-        &plan.location_id,
         &plan.native_id,
         &plan.provider_version,
         &plan.etag,
@@ -629,6 +655,7 @@ fn validate_plan(plan: &DownloadPlan, expected: DownloadExpectation<'_>) -> Resu
         || expected.plaintext_bytes != plan.plaintext_bytes
         || expected.file_root != plan.file_root
         || plan.verification_block_bytes == 0
+        || plan.verification_block_bytes > 256 * 1024 * 1024
         || plan.verification_block_count
             != if plan.plaintext_bytes == 0 {
                 0
@@ -637,10 +664,17 @@ fn validate_plan(plan: &DownloadPlan, expected: DownloadExpectation<'_>) -> Resu
             }
         || plan.key_epoch == 0
         || plan.encryption_frame_bytes == 0
-        || plan.encoded_sha256.len() != 64
+        || plan.encryption_frame_bytes > plan.verification_block_bytes
+        || !plan
+            .verification_block_bytes
+            .is_multiple_of(plan.encryption_frame_bytes)
+        || plan.block_manifest_bytes == 0
+        || plan.driver_id.is_empty()
+        || plan.driver_kind.is_empty()
         || plan.driver_revision == 0
         || plan.storage_key.is_empty()
-        || plan.read_lease_id.len() != 32
+        || plan.block_manifest_r2_key.is_empty()
+        || plan.block_manifest_r2_version.is_empty()
         || plan.expires_at == 0
         || !plan.config.is_object()
         || plan
@@ -711,24 +745,77 @@ fn decode_directory_key(plan: &DownloadPlan) -> Result<Option<[u8; 32]>, Error> 
 }
 
 fn parse_identifier(value: &str) -> Result<[u8; 16], Error> {
-    let decoded = hex::decode(value)
+    let decoded = carrack_sdk_core::decode_lower_hex::<16>(value)
         .map_err(|_| Error::InvalidResponse("invalid VFS identifier".to_owned()))?;
-    if decoded.len() != 16 || decoded.iter().all(|byte| *byte == 0) {
+    if decoded == [0; 16] {
         return Err(Error::InvalidResponse("invalid VFS identifier".to_owned()));
     }
-    let mut result = [0_u8; 16];
-    result.copy_from_slice(&decoded);
-    Ok(result)
+    Ok(decoded)
+}
+
+fn parse_digest(value: &str) -> Result<[u8; 32], Error> {
+    carrack_sdk_core::decode_lower_hex::<32>(value)
+        .map_err(|_| Error::InvalidResponse("invalid SHA-256 digest".to_owned()))
 }
 
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
 
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use carrack_driver_contract::DriverKind;
+    use serde_json::json;
+
     use super::{
-        VerifiedOutputSpool, copy_verified_output, publish_no_replace,
-        verify_and_publish_plaintext, verify_plaintext_identity,
+        DownloadExpectation, DownloadPlan, VerifiedOutputSpool, copy_verified_output,
+        publish_no_replace, validate_plan, verify_and_publish_plaintext, verify_plaintext_identity,
     };
+
+    fn valid_plan() -> DownloadPlan {
+        DownloadPlan {
+            schema: "carrack.vfs.download-plan.v1".to_owned(),
+            filesystem_id: "11111111111111111111111111111111".to_owned(),
+            directory_id: "22222222222222222222222222222222".to_owned(),
+            file_id: "33333333333333333333333333333333".to_owned(),
+            version_id: "44444444444444444444444444444444".to_owned(),
+            plaintext_bytes: 0,
+            verification_block_bytes: 4,
+            verification_block_count: 0,
+            file_root: "11".repeat(32),
+            metadata_root: "22".repeat(32),
+            block_manifest_sha256: "33".repeat(32),
+            block_manifest_bytes: 1,
+            block_manifest_r2_key: "manifest-key".to_owned(),
+            block_manifest_r2_version: "manifest-version".to_owned(),
+            crypto_suite: "carrack-vfs-aes256gcm-hkdfsha256-v1".to_owned(),
+            key_epoch: 1,
+            encryption_frame_bytes: 4,
+            encoded_bytes: 0,
+            encoded_sha256: "44".repeat(32),
+            location_id: "55555555555555555555555555555555".to_owned(),
+            driver_id: "r2-default".to_owned(),
+            storage_key: "opaque-key".to_owned(),
+            native_id: Some("native".to_owned()),
+            provider_version: Some("provider-version".to_owned()),
+            etag: Some("etag".to_owned()),
+            driver_kind: DriverKind::R2V1.as_str().to_owned(),
+            driver_revision: 1,
+            config: json!({}),
+            credential: Some(json!({})),
+            directory_key: Some(URL_SAFE_NO_PAD.encode([7_u8; 32])),
+            read_lease_id: "66666666666666666666666666666666".to_owned(),
+            expires_at: 1,
+        }
+    }
+
+    fn expectation(plan: &DownloadPlan) -> DownloadExpectation<'_> {
+        DownloadExpectation::new(
+            &plan.file_id,
+            &plan.version_id,
+            plan.plaintext_bytes,
+            &plan.file_root,
+        )
+    }
 
     #[test]
     fn distinguishes_plaintext_merkle_divergence() {
@@ -739,6 +826,53 @@ mod tests {
             Some(crate::FailureKind::CorruptPlaintext)
         );
         assert!(verify_plaintext_identity(3, "expected", 3, "expected").is_ok());
+    }
+
+    #[test]
+    fn download_plan_rejects_noncanonical_identity_before_transfer() {
+        let plan = valid_plan();
+        validate_plan(&plan, expectation(&plan)).expect("valid download plan");
+
+        let mut traversal = valid_plan();
+        traversal.read_lease_id = "../lease/../../outside............".to_owned();
+        validate_plan(&traversal, expectation(&traversal)).expect_err("reject URL path injection");
+
+        let mut uppercase = valid_plan();
+        uppercase.location_id = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned();
+        validate_plan(&uppercase, expectation(&uppercase))
+            .expect_err("reject noncanonical uppercase identity");
+
+        let mut malformed_digest = valid_plan();
+        malformed_digest.encoded_sha256 = "z".repeat(64);
+        validate_plan(&malformed_digest, expectation(&malformed_digest))
+            .expect_err("reject malformed encoded digest");
+
+        let mut oversized_block = valid_plan();
+        oversized_block.verification_block_bytes = 256 * 1024 * 1024 + 1;
+        validate_plan(&oversized_block, expectation(&oversized_block))
+            .expect_err("reject oversized verification allocation");
+    }
+
+    #[test]
+    fn download_plan_rejects_crypto_mismatch_before_transfer() {
+        let mut unsupported = valid_plan();
+        unsupported.crypto_suite = "future/unknown".to_owned();
+        let error = validate_plan(&unsupported, expectation(&unsupported))
+            .expect_err("reject unsupported suite");
+        assert_eq!(
+            error.failure_kind(),
+            Some(crate::FailureKind::UnsupportedSuite)
+        );
+
+        let mut plaintext_with_key = valid_plan();
+        plaintext_with_key.crypto_suite = "plaintext/v1".to_owned();
+        validate_plan(&plaintext_with_key, expectation(&plaintext_with_key))
+            .expect_err("reject plaintext key exposure");
+
+        let mut encrypted_without_key = valid_plan();
+        encrypted_without_key.directory_key = None;
+        validate_plan(&encrypted_without_key, expectation(&encrypted_without_key))
+            .expect_err("reject missing encrypted key");
     }
 
     #[test]

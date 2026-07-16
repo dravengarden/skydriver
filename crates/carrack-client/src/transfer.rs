@@ -783,17 +783,33 @@ fn validate_preparation(
     entry_name: &str,
     options: &PutOptions,
 ) -> Result<(), Error> {
+    for identifier in [
+        value.intent_id.as_str(),
+        value.filesystem_id.as_str(),
+        value.directory_id.as_str(),
+        value.file_id.as_str(),
+        value.version_id.as_str(),
+        value.location_id.as_str(),
+    ] {
+        parse_identifier(identifier)
+            .map_err(|_| Error::InvalidResponse("invalid Put preparation identity".to_owned()))?;
+    }
+    if !matches!(
+        value.crypto_suite.as_str(),
+        "plaintext/v1" | "carrack-vfs-aes256gcm-hkdfsha256-v1"
+    ) {
+        return Err(Error::failure(
+            crate::FailureKind::UnsupportedSuite,
+            format!("unsupported crypto suite {}", value.crypto_suite),
+        ));
+    }
     if value.schema != "carrack.vfs.put-preparation.v1"
         || value.directory_id != directory_id
         || value.entry_name != entry_name
         || value.expected_entry_revision != options.expected_entry_revision
-        || value.intent_id.len() != 32
-        || value.version_id.len() != 32
-        || value.file_id.len() != 32
-        || value.location_id.len() != 32
-        || value.filesystem_id.len() != 32
         || value.driver_id.is_empty()
         || value.storage_key.is_empty()
+        || value.block_manifest_r2_key.is_empty()
         || value.key_epoch == 0
         || value.encryption_frame_bytes != options.encryption_frame_bytes
         || value.requires_encryption_key != (value.crypto_suite != "plaintext/v1")
@@ -868,14 +884,12 @@ fn decode_directory_key(grant: &KeyGrant) -> Result<Option<[u8; 32]>, Error> {
 }
 
 fn parse_identifier(value: &str) -> Result<[u8; 16], Error> {
-    let decoded = hex::decode(value)
+    let decoded = carrack_sdk_core::decode_lower_hex::<16>(value)
         .map_err(|_| Error::InvalidResponse("invalid VFS identifier".to_owned()))?;
-    if decoded.len() != 16 || decoded.iter().all(|byte| *byte == 0) {
+    if decoded == [0; 16] {
         return Err(Error::InvalidResponse("invalid VFS identifier".to_owned()));
     }
-    let mut result = [0_u8; 16];
-    result.copy_from_slice(&decoded);
-    Ok(result)
+    Ok(decoded)
 }
 
 fn validate_receipt(
@@ -912,9 +926,45 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        BoundedRangeUploadSource, run_source_worker, spool_bounded_reader, spool_exact_reader,
-        spool_range_source,
+        BoundedRangeUploadSource, Preparation, PutOptions, run_source_worker, spool_bounded_reader,
+        spool_exact_reader, spool_range_source, validate_preparation,
     };
+
+    fn put_options(staging_directory: &std::path::Path) -> PutOptions {
+        PutOptions {
+            expected_entry_revision: 0,
+            preferred_driver_id: None,
+            idempotency_key: "test-put".to_owned(),
+            verification_block_bytes: 4,
+            encryption_frame_bytes: 4,
+            staging_directory: staging_directory.to_owned(),
+            transfer_part_bytes: 4,
+            maximum_concurrency: 1,
+        }
+    }
+
+    fn valid_preparation() -> Preparation {
+        Preparation {
+            schema: "carrack.vfs.put-preparation.v1".to_owned(),
+            intent_id: "11111111111111111111111111111111".to_owned(),
+            filesystem_id: "22222222222222222222222222222222".to_owned(),
+            directory_id: "33333333333333333333333333333333".to_owned(),
+            entry_name: "file".to_owned(),
+            expected_entry_revision: 0,
+            file_id: "44444444444444444444444444444444".to_owned(),
+            version_id: "55555555555555555555555555555555".to_owned(),
+            location_id: "66666666666666666666666666666666".to_owned(),
+            driver_id: "r2-default".to_owned(),
+            storage_key: "opaque-key".to_owned(),
+            block_manifest_r2_key: "manifest-key".to_owned(),
+            crypto_suite: "carrack-vfs-aes256gcm-hkdfsha256-v1".to_owned(),
+            key_epoch: 1,
+            encryption_frame_bytes: 4,
+            requires_encryption_key: true,
+            state: "prepared".to_owned(),
+            expires_at: 1,
+        }
+    }
 
     struct MemoryRanges {
         bytes: Vec<u8>,
@@ -939,6 +989,54 @@ mod tests {
             }
             Ok(Box::new(Cursor::new(range)))
         }
+    }
+
+    #[test]
+    fn put_preparation_requires_canonical_identifiers_and_suite() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let options = put_options(temporary.path());
+        let preparation = valid_preparation();
+        validate_preparation(
+            &preparation,
+            &preparation.directory_id,
+            &preparation.entry_name,
+            &options,
+        )
+        .expect("valid Put preparation");
+
+        let mut traversal = valid_preparation();
+        traversal.intent_id = "../intent/../../outside...........".to_owned();
+        validate_preparation(
+            &traversal,
+            &traversal.directory_id,
+            &traversal.entry_name,
+            &options,
+        )
+        .expect_err("reject Put URL and staging path injection");
+
+        let mut uppercase = valid_preparation();
+        uppercase.version_id = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned();
+        validate_preparation(
+            &uppercase,
+            &uppercase.directory_id,
+            &uppercase.entry_name,
+            &options,
+        )
+        .expect_err("reject noncanonical Put identity");
+
+        let mut unsupported = valid_preparation();
+        unsupported.crypto_suite = "future/unknown".to_owned();
+        let error = validate_preparation(
+            &unsupported,
+            &unsupported.directory_id,
+            &unsupported.entry_name,
+            &options,
+        )
+        .expect_err("reject unsupported Put suite");
+        assert_eq!(
+            error.failure_kind(),
+            Some(crate::FailureKind::UnsupportedSuite)
+        );
     }
 
     #[test]
