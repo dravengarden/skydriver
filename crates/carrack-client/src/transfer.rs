@@ -1,23 +1,19 @@
 //! Complete-object Put orchestration and rooted local-driver transport.
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use cap_std::{
-    ambient_authority,
-    fs::{Dir, OpenOptions},
-};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
-use std::io::{Read, Seek as _, Write};
-use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 use zeroize::Zeroize;
 
 use crate::{
     Error, VfsClient,
     crypto::{Descriptor, stage},
+    driver::{DriverRegistry, UploadRequest},
     integrity,
     vfs::{canonical_components, canonical_path},
 };
@@ -365,28 +361,24 @@ impl VfsClient {
         }
         let manifest_stage = self.stage_manifest(&token, &preparation, &manifest).await?;
         let provider_started = Instant::now();
-        let object = upload_driver(
-            &self.control,
-            &token,
-            &mut driver,
-            &preparation.intent_id,
-            &preparation.storage_key,
-            &staged,
-            options.transfer_part_bytes,
-            options.maximum_concurrency,
-        )
-        .await?;
+        let mut opened_driver = DriverRegistry::open(
+            &driver.driver_kind,
+            std::mem::take(&mut driver.config),
+            driver.credential.take(),
+        )?;
+        let object = opened_driver
+            .upload(UploadRequest {
+                control: &self.control,
+                token: &token,
+                intent_id: &preparation.intent_id,
+                storage_key: &preparation.storage_key,
+                staged: &staged,
+                part_bytes: options.transfer_part_bytes,
+                maximum_concurrency: options.maximum_concurrency,
+            })
+            .await?;
         let provider_elapsed = provider_started.elapsed();
-        let warnings = if driver.driver_kind == "aliyundrive-open/v2"
-            && options.maximum_concurrency > 1
-        {
-            vec![
-                "Aliyun upload concurrency is safely degraded to one; use an S3 or R2 driver when parallel multipart upload is required."
-                    .to_owned(),
-            ]
-        } else {
-            Vec::new()
-        };
+        let warnings = opened_driver.upload_warnings(options.maximum_concurrency);
         let commit: PutReceipt = self
             .control
             .send_json(
@@ -477,273 +469,6 @@ fn duration_ms(duration: std::time::Duration) -> u64 {
     u64::try_from(duration.as_millis())
         .unwrap_or(u64::MAX)
         .max(1)
-}
-
-struct ProviderObject {
-    native_id: String,
-    provider_version: String,
-    etag: String,
-}
-
-#[allow(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "provider dispatch binds the control capability, immutable intent, staged object, and pipeline controls at one readback boundary"
-)]
-async fn upload_driver(
-    control: &crate::Client,
-    token: &str,
-    driver: &mut DriverGrant,
-    intent_id: &str,
-    storage_key: &str,
-    staged: &crate::crypto::StagedObject,
-    part_bytes: u64,
-    maximum_concurrency: usize,
-) -> Result<ProviderObject, Error> {
-    if driver.driver_kind == "aliyundrive-open/v2" {
-        let credential = driver.credential.take().ok_or_else(|| {
-            Error::InvalidResponse("Aliyun driver omitted its credential".to_owned())
-        })?;
-        let object = crate::aliyun::upload(
-            &control.http,
-            &driver.driver_kind,
-            &driver.config,
-            credential,
-            storage_key,
-            &staged.path,
-            staged.encoded_bytes,
-            &staged.encoded_sha256,
-        )
-        .await?;
-        return Ok(ProviderObject {
-            native_id: object.native_id,
-            provider_version: object.provider_version,
-            etag: object.etag,
-        });
-    }
-    if driver.driver_kind == "r2/v1" {
-        let credential = driver.credential.take().ok_or_else(|| {
-            Error::InvalidResponse("R2 driver omitted its signed grant".to_owned())
-        })?;
-        let (native_id, provider_version, etag) = crate::r2::upload(
-            control,
-            token,
-            intent_id,
-            credential,
-            &staged.path,
-            staged.encoded_bytes,
-            &staged.encoded_sha256,
-            part_bytes,
-            maximum_concurrency,
-        )
-        .await?;
-        return Ok(ProviderObject {
-            native_id,
-            provider_version,
-            etag,
-        });
-    }
-    if driver.driver_kind != "local-filesystem/v2" {
-        return Err(Error::InvalidResponse(format!(
-            "unsupported native driver kind {}",
-            driver.driver_kind
-        )));
-    }
-    if driver.credential.is_some() {
-        return Err(Error::InvalidResponse(
-            "local driver unexpectedly received credentials".to_owned(),
-        ));
-    }
-    let root = driver
-        .config
-        .get("root")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::InvalidResponse("local driver root is missing".to_owned()))?;
-    let relative = safe_storage_key(storage_key)?;
-    let directory = Dir::open_ambient_dir(root, ambient_authority())
-        .map_err(|error| Error::InvalidResponse(format!("open local driver root: {error}")))?;
-    if let Some(parent) = relative.parent() {
-        directory
-            .create_dir_all(parent)
-            .map_err(|error| Error::InvalidResponse(format!("create object parent: {error}")))?;
-    }
-    let part_count = staged.encoded_bytes.div_ceil(part_bytes);
-    let part_root = PathBuf::from(format!(".carrack/uploads/{intent_id}"));
-    directory
-        .create_dir_all(&part_root)
-        .map_err(|error| Error::InvalidResponse(format!("create upload journal: {error}")))?;
-    upload_parts(
-        &directory,
-        &staged.path,
-        &part_root,
-        staged.encoded_bytes,
-        part_bytes,
-        part_count,
-        maximum_concurrency,
-    )?;
-    let temporary = PathBuf::from(format!("{}.carrack-upload-{intent_id}", relative.display()));
-    if directory.metadata(&temporary).is_ok() {
-        directory
-            .remove_file(&temporary)
-            .map_err(|error| Error::InvalidResponse(format!("reset upload assembly: {error}")))?;
-    }
-    let mut output = directory
-        .open_with(&temporary, OpenOptions::new().write(true).create_new(true))
-        .map_err(|error| Error::InvalidResponse(format!("create local upload: {error}")))?;
-    for ordinal in 0..part_count {
-        let mut part = directory
-            .open(part_root.join(part_name(ordinal)))
-            .map_err(|error| Error::InvalidResponse(format!("open upload part: {error}")))?;
-        std::io::copy(&mut part, &mut output)
-            .map_err(|error| Error::InvalidResponse(format!("assemble local upload: {error}")))?;
-    }
-    output
-        .sync_all()
-        .map_err(|error| Error::InvalidResponse(format!("sync local upload: {error}")))?;
-    drop(output);
-    if directory.metadata(&relative).is_ok() {
-        directory
-            .remove_file(&temporary)
-            .map_err(|error| Error::InvalidResponse(format!("remove replay temporary: {error}")))?;
-    } else {
-        directory
-            .rename(&temporary, &directory, &relative)
-            .map_err(|error| Error::InvalidResponse(format!("publish local object: {error}")))?;
-    }
-    let mut file = directory
-        .open(&relative)
-        .map_err(|error| Error::InvalidResponse(format!("read back local object: {error}")))?;
-    let mut hash = Sha256::new();
-    let bytes = std::io::copy(&mut file, &mut hash)
-        .map_err(|error| Error::InvalidResponse(format!("verify local object: {error}")))?;
-    if bytes != staged.encoded_bytes || hex::encode(hash.finalize()) != staged.encoded_sha256 {
-        let _ = directory.remove_file(&relative);
-        return Err(Error::failure(
-            crate::FailureKind::CorruptCiphertext,
-            "local provider readback differs",
-        ));
-    }
-    for ordinal in 0..part_count {
-        directory
-            .remove_file(part_root.join(part_name(ordinal)))
-            .map_err(|error| Error::InvalidResponse(format!("remove upload part: {error}")))?;
-    }
-    directory
-        .remove_dir(&part_root)
-        .map_err(|error| Error::InvalidResponse(format!("remove upload journal: {error}")))?;
-    Ok(ProviderObject {
-        native_id: format!("sha256:{}", staged.encoded_sha256),
-        provider_version: format!("sha256:{}", staged.encoded_sha256),
-        etag: staged.encoded_sha256.clone(),
-    })
-}
-
-fn upload_parts(
-    directory: &Dir,
-    source: &Path,
-    part_root: &Path,
-    total_bytes: u64,
-    part_bytes: u64,
-    part_count: u64,
-    maximum_concurrency: usize,
-) -> Result<(), Error> {
-    let next = AtomicU64::new(0);
-    let worker_count =
-        maximum_concurrency.min(usize::try_from(part_count.max(1)).unwrap_or(usize::MAX));
-    std::thread::scope(|scope| {
-        let mut workers = Vec::new();
-        for _ in 0..worker_count {
-            let next = &next;
-            let worker_directory = directory.try_clone().map_err(|error| {
-                Error::InvalidResponse(format!("clone local driver root: {error}"))
-            })?;
-            workers.push(scope.spawn(move || -> Result<(), Error> {
-                loop {
-                    let ordinal = next.fetch_add(1, Ordering::Relaxed);
-                    if ordinal >= part_count {
-                        return Ok(());
-                    }
-                    let offset = ordinal * part_bytes;
-                    let length = part_bytes.min(total_bytes - offset);
-                    let part_path = part_root.join(part_name(ordinal));
-                    if worker_directory
-                        .metadata(&part_path)
-                        .is_ok_and(|metadata| metadata.len() == length)
-                    {
-                        continue;
-                    }
-                    if worker_directory.metadata(&part_path).is_ok() {
-                        worker_directory.remove_file(&part_path).map_err(|error| {
-                            Error::InvalidResponse(format!("reset upload part: {error}"))
-                        })?;
-                    }
-                    let mut input = std::fs::File::open(source).map_err(|error| {
-                        Error::InvalidResponse(format!("open encoded staging: {error}"))
-                    })?;
-                    input
-                        .seek(std::io::SeekFrom::Start(offset))
-                        .map_err(|error| {
-                            Error::InvalidResponse(format!("seek encoded staging: {error}"))
-                        })?;
-                    let mut output = worker_directory
-                        .open_with(&part_path, OpenOptions::new().write(true).create_new(true))
-                        .map_err(|error| {
-                            Error::InvalidResponse(format!("create upload part: {error}"))
-                        })?;
-                    copy_exact_bytes(&mut input, &mut output, length)?;
-                    output.sync_all().map_err(|error| {
-                        Error::InvalidResponse(format!("sync upload part: {error}"))
-                    })?;
-                }
-            }));
-        }
-        for worker in workers {
-            worker
-                .join()
-                .map_err(|_| Error::InvalidResponse("local upload worker panicked".to_owned()))??;
-        }
-        Ok(())
-    })
-}
-
-fn copy_exact_bytes(
-    input: &mut impl Read,
-    output: &mut impl Write,
-    bytes: u64,
-) -> Result<(), Error> {
-    let mut remaining = bytes;
-    let mut buffer = vec![0_u8; 1024 * 1024];
-    while remaining != 0 {
-        let wanted = usize::try_from(remaining.min(buffer.len() as u64))
-            .map_err(|error| Error::InvalidResponse(error.to_string()))?;
-        input
-            .read_exact(&mut buffer[..wanted])
-            .map_err(|error| Error::InvalidResponse(format!("read transfer part: {error}")))?;
-        output
-            .write_all(&buffer[..wanted])
-            .map_err(|error| Error::InvalidResponse(format!("write transfer part: {error}")))?;
-        remaining -= wanted as u64;
-    }
-    Ok(())
-}
-
-fn part_name(ordinal: u64) -> String {
-    format!("{ordinal:016x}.part")
-}
-
-pub(crate) fn safe_storage_key(value: &str) -> Result<PathBuf, Error> {
-    let path = Path::new(value);
-    if value.is_empty()
-        || value.contains('\\')
-        || path
-            .components()
-            .any(|part| !matches!(part, Component::Normal(_)))
-    {
-        return Err(Error::InvalidResponse(
-            "unsafe provider storage key".to_owned(),
-        ));
-    }
-    Ok(path.to_owned())
 }
 
 fn validate_options(options: &PutOptions) -> Result<(), Error> {

@@ -133,6 +133,16 @@ checksum, identity, Stat, abort, Delete, proxy, and size-limit capabilities.
 Unsupported capabilities produce a warning and a correctness-preserving
 fallback; they never weaken verification.
 
+The native SDK has one closed, versioned registry boundary. Upload and download
+orchestration submit the same immutable request types to that boundary and do
+not know provider names, configuration fields, credential shapes, or transport
+APIs. Each adapter owns those details and returns only verified complete-object
+evidence. Adding a provider therefore extends the adapter and registry modules;
+it does not modify the portable correctness kernel or publication orchestration.
+Server data can select a compiled version but can never supply executable code.
+The detailed extension and conformance contract is in
+[driver-spi.md](driver-spi.md).
+
 The implemented adapters are local filesystem, Aliyun Drive Open, and
 Cloudflare R2. The environment-owned `r2-default` is provisioned with the
 environment and uses bucket-scoped credentials; operator-owned R2 identities

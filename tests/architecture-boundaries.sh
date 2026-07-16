@@ -86,6 +86,27 @@ if rg --line-number --ignore-case \
   exit 1
 fi
 
+driver_orchestrators=(
+  crates/carrack-client/src/transfer.rs
+  crates/carrack-client/src/download.rs
+)
+if rg --line-number \
+  'aliyundrive-open/v2|r2/v1|local-filesystem/v2|crate::(aliyun|r2|local)::' \
+  "${driver_orchestrators[@]}"; then
+  echo "transfer orchestration must use the stable driver registry, not provider knowledge" >&2
+  exit 1
+fi
+for driver_orchestrator in "${driver_orchestrators[@]}"; do
+  if ! rg -q 'DriverRegistry' "$driver_orchestrator"; then
+    echo "transfer orchestration must enter providers through DriverRegistry: $driver_orchestrator" >&2
+    exit 1
+  fi
+done
+if rg --line-number 'crate::driver|crate::(aliyun|r2|local)' crates/carrack-sdk-core/src; then
+  echo "portable correctness modules must remain independent of native drivers" >&2
+  exit 1
+fi
+
 if test -e cmd/carrack/main.go || test -e cmd/carrackctl/main.go; then
   echo "public Carrack CLIs must be the native Rust binaries" >&2
   exit 1

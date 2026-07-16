@@ -440,7 +440,7 @@ impl Client {
     }
 
     async fn resolve(&self, key: &str) -> Result<FileRecord, Error> {
-        let segments = crate::transfer::safe_storage_key(key)?;
+        let segments = crate::driver::safe_storage_key(key)?;
         let mut current = FileRecord {
             file_id: self.root_folder_id.clone(),
             name: "root".to_owned(),
@@ -459,7 +459,7 @@ impl Client {
     }
 
     async fn ensure_parent(&self, key: &str) -> Result<(FileRecord, String), Error> {
-        let path = crate::transfer::safe_storage_key(key)?;
+        let path = crate::driver::safe_storage_key(key)?;
         let segments = path.iter().collect::<Vec<_>>();
         let (name, parents) = segments
             .split_last()
