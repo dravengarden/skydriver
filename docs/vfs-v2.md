@@ -243,8 +243,8 @@ accepts a successful response only when its operation identity, requested
 directory or token scope, normalized policy, revision transition, timestamp,
 and terminal state form one valid receipt. Child-token issuance and revocation
 also bind the receipt to a freshly authenticated parent session; a returned
-bearer is never exposed until its canonical secret shape and exact narrowed
-scope have been checked.
+bearer is never exposed until its canonical secret shape, exact narrowed
+scope, and a fresh child session matching the receipt have been checked.
 
 The Worker delivers the current checkpoint when the authenticated token is live
 and nonsnapshot, has both `directory.list` and `content.read`, passes its current

@@ -1162,7 +1162,7 @@ impl VfsClient {
                 }),
             )
             .await?;
-        validate_issued_token(
+        let issued_bearer = validate_issued_token(
             &issued,
             &session,
             root_directory_id,
@@ -1170,6 +1170,13 @@ impl VfsClient {
             driver_ids.as_deref(),
             expires_at,
         )?;
+        let issued_session = Self {
+            control: self.control.clone(),
+            token: issued_bearer,
+        }
+        .session()
+        .await?;
+        validate_issued_session(&issued_session, &issued)?;
         Ok(issued)
     }
 
@@ -1524,12 +1531,12 @@ fn validate_issued_token(
     actions: &[String],
     driver_ids: Option<&[String]>,
     expires_at: u64,
-) -> Result<(), Error> {
+) -> Result<VfsToken, Error> {
     validate_nonzero_hex::<16>(&issued.token_id, "VFS issued token identity")?;
     validate_nonzero_hex::<16>(&issued.principal_id, "VFS issued principal identity")?;
     validate_nonzero_hex::<16>(&issued.parent_token_id, "VFS parent token identity")?;
     validate_nonzero_hex::<16>(&issued.root_directory_id, "VFS issued root identity")?;
-    VfsToken::parse(&issued.token).map_err(|error| {
+    let bearer = VfsToken::parse(&issued.token).map_err(|error| {
         Error::InvalidResponse(format!("VFS issued bearer is invalid: {error}"))
     })?;
     if issued.schema != "carrack.vfs.token-issue-receipt.v1"
@@ -1542,6 +1549,19 @@ fn validate_issued_token(
     {
         return Err(Error::InvalidResponse(
             "invalid VFS token issue receipt".to_owned(),
+        ));
+    }
+    Ok(bearer)
+}
+
+fn validate_issued_session(session: &VfsSession, issued: &IssuedToken) -> Result<(), Error> {
+    if session.token_id != issued.token_id
+        || session.principal_id != issued.principal_id
+        || session.root_directory_id != issued.root_directory_id
+        || session.expires_at != issued.expires_at
+    {
+        return Err(Error::InvalidResponse(
+            "issued VFS bearer session differs from its receipt".to_owned(),
         ));
     }
     Ok(())
@@ -1786,8 +1806,8 @@ mod tests {
 
     use super::{
         CatalogCheckpointOutcome, DirectoryCreation, IssuedToken, PolicyMutationReceipt, VfsClient,
-        VfsSession, VfsToken, validate_directory_creation, validate_issued_token,
-        validate_policy_receipt,
+        VfsSession, VfsToken, validate_directory_creation, validate_issued_session,
+        validate_issued_token, validate_policy_receipt,
     };
     use crate::{Error, catalog::CatalogCheckpointCondition};
 
@@ -1969,6 +1989,29 @@ mod tests {
             ),
             Err(Error::InvalidResponse(message))
                 if message == "invalid VFS token issue receipt"
+        ));
+    }
+
+    #[test]
+    fn issued_bearer_session_must_match_the_receipt() {
+        let issued = IssuedToken {
+            schema: "carrack.vfs.token-issue-receipt.v1".to_owned(),
+            token_id: "101112131415161718191a1b1c1d1e1f".to_owned(),
+            principal_id: session().principal_id.clone(),
+            parent_token_id: session().token_id.clone(),
+            root_directory_id: session().root_directory_id.clone(),
+            actions: vec!["content.read".to_owned()],
+            driver_ids: None,
+            expires_at: 2_000_000_000,
+            token: URL_SAFE_NO_PAD.encode([9_u8; 32]),
+        };
+        let mut authenticated = session();
+        authenticated.token_id = "303132333435363738393a3b3c3d3e3f".to_owned();
+
+        assert!(matches!(
+            validate_issued_session(&authenticated, &issued),
+            Err(Error::InvalidResponse(message))
+                if message == "issued VFS bearer session differs from its receipt"
         ));
     }
 
