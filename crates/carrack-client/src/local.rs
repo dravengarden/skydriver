@@ -155,6 +155,7 @@ pub(crate) fn download(
         std::fs::remove_file(&path)
             .map_err(|error| Error::InvalidResponse(format!("reset download assembly: {error}")))?;
     }
+    verify_provider_metadata(&directory, &relative, encoded_bytes)?;
     if encoded_bytes == 0 {
         verify_empty_provider_object(&directory, &relative)?;
     }
@@ -195,10 +196,28 @@ pub(crate) fn download(
             "provider object checksum differs",
         ));
     }
+    verify_provider_metadata(&directory, &relative, encoded_bytes)?;
     std::fs::remove_dir_all(&part_root)
         .map_err(|error| Error::InvalidResponse(format!("remove download journal: {error}")))?;
     let _ = std::fs::remove_dir(staging_root.join("parts"));
     Ok(path)
+}
+
+fn verify_provider_metadata(
+    directory: &Dir,
+    source: &Path,
+    expected_bytes: u64,
+) -> Result<(), Error> {
+    let metadata = directory
+        .symlink_metadata(source)
+        .map_err(|error| local_provider_error("stat provider object", &error))?;
+    if !metadata.file_type().is_file() || metadata.len() != expected_bytes {
+        return Err(Error::failure(
+            FailureKind::CorruptCiphertext,
+            "local provider object type or length differs",
+        ));
+    }
+    Ok(())
 }
 
 fn verify_empty_provider_object(directory: &Dir, source: &Path) -> Result<(), Error> {
@@ -428,6 +447,29 @@ mod tests {
         )
         .expect_err("missing provider object must not satisfy zero-byte identity");
         assert_eq!(missing.failure_kind(), Some(FailureKind::PermanentLoss));
+    }
+
+    #[test]
+    fn download_rejects_a_provider_object_with_an_extra_suffix() {
+        let temporary = tempfile::tempdir().expect("temporary driver root");
+        let root = temporary.path().join("provider");
+        let object = root.join("objects/ab/object");
+        std::fs::create_dir_all(object.parent().expect("object parent"))
+            .expect("create provider root");
+        std::fs::write(&object, b"expected-extra").expect("write provider object");
+
+        let error = download(
+            root.to_str().expect("UTF-8 provider root"),
+            "objects/ab/object",
+            &temporary.path().join("downloads"),
+            "version-prefix",
+            8,
+            &hex::encode(Sha256::digest(b"expected")),
+            4,
+            2,
+        )
+        .expect_err("a correct prefix must not hide extra provider bytes");
+        assert_eq!(error.failure_kind(), Some(FailureKind::CorruptCiphertext));
     }
 
     #[test]
