@@ -5,6 +5,65 @@
 //! execution; server data can select a kind but cannot supply executable code.
 
 use core::fmt;
+use serde::{Deserialize, Serialize};
+
+/// Root-confined local filesystem driver configuration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalFilesystemConfig {
+    /// Absolute provider root available to the filesystem agent.
+    pub root: String,
+}
+
+/// Aliyun Drive Open adapter configuration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AliyunDriveConfig {
+    /// HTTPS Open API origin without a trailing slash.
+    #[serde(default = "default_aliyun_api_base_url")]
+    pub api_base_url: String,
+    /// Provider drive selector: default, resource, or backup.
+    #[serde(default = "default_aliyun_drive_type")]
+    pub drive_type: String,
+    /// Provider folder beneath which opaque complete objects are stored.
+    #[serde(default = "default_aliyun_root_folder_id")]
+    pub root_folder_id: String,
+    /// Provider multipart upload unit.
+    #[serde(default = "default_aliyun_upload_part_bytes")]
+    pub upload_part_bytes: u64,
+}
+
+/// Cloudflare R2 S3-compatible adapter configuration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct R2Config {
+    /// Account-scoped HTTPS S3 endpoint.
+    pub endpoint: String,
+    /// Exact bucket name.
+    pub bucket: String,
+    /// Optional object-key prefix ending in `/`.
+    #[serde(default)]
+    pub prefix: String,
+    /// Whether a Worker environment binding owns inventory and lifecycle I/O.
+    #[serde(default)]
+    pub managed: bool,
+}
+
+fn default_aliyun_api_base_url() -> String {
+    "https://openapi.alipan.com".to_owned()
+}
+
+fn default_aliyun_drive_type() -> String {
+    "resource".to_owned()
+}
+
+fn default_aliyun_root_folder_id() -> String {
+    "root".to_owned()
+}
+
+const fn default_aliyun_upload_part_bytes() -> u64 {
+    20 << 20
+}
 
 /// How a compiled adapter preserves one capability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -246,7 +305,10 @@ impl DriverCapabilities {
 
 #[cfg(test)]
 mod tests {
-    use super::{CredentialPosture, DriverKind, GrantMode, InventoryMode, LifecycleMode};
+    use super::{
+        AliyunDriveConfig, CredentialPosture, DriverKind, GrantMode, InventoryMode, LifecycleMode,
+        R2Config,
+    };
 
     #[test]
     fn all_wire_kinds_round_trip_and_descriptors_are_consistent() {
@@ -271,6 +333,29 @@ mod tests {
         assert_eq!(
             DriverKind::LocalFilesystemV2.lifecycle_mode(),
             LifecycleMode::AgentHost
+        );
+    }
+
+    #[test]
+    fn configuration_shapes_are_strict_and_defaults_are_canonical() {
+        let aliyun = serde_json::from_str::<AliyunDriveConfig>("{}")
+            .expect("normalize default Aliyun configuration");
+        assert_eq!(aliyun.api_base_url, "https://openapi.alipan.com");
+        assert_eq!(aliyun.drive_type, "resource");
+        assert_eq!(aliyun.root_folder_id, "root");
+        assert_eq!(aliyun.upload_part_bytes, 20 << 20);
+        assert!(serde_json::from_str::<AliyunDriveConfig>(r#"{"unknown":true}"#).is_err());
+
+        let r2 = R2Config {
+            endpoint: "https://account.r2.cloudflarestorage.com".to_owned(),
+            bucket: "payload".to_owned(),
+            prefix: "objects/".to_owned(),
+            managed: true,
+        };
+        let encoded = serde_json::to_string(&r2).expect("encode R2 configuration");
+        assert_eq!(
+            serde_json::from_str::<R2Config>(&encoded).expect("decode R2 configuration"),
+            r2
         );
     }
 }

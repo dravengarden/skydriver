@@ -8,9 +8,9 @@ ingestion schedules, trading semantics, or other consumer-specific behavior.
 
 - `crates/carrack-sdk-core/`: stable, portable correctness kernel split into
   orthogonal canonical, integrity, crypto, catalog, and acceptance modules.
-- `crates/carrack-driver-contract/`: I/O-free shared driver-kind, capability,
-  grant, inventory, and lifecycle contract used by both native client and
-  control plane registries.
+- `crates/carrack-driver-contract/`: I/O-free shared driver-kind, configuration,
+  capability, grant, inventory, and lifecycle contract used by both native
+  client and control plane registries.
 - `crates/carrack-client/`: native I/O, recovery, and publication orchestration
   that delegates wire correctness to `carrack-sdk-core`; `driver.rs` is the
   only provider registry and `aliyun.rs`, `r2.rs`, and `local.rs` are isolated

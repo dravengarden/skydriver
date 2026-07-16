@@ -1,6 +1,6 @@
 //! Bounded, server-owned lifecycle for unreachable complete provider objects.
 
-use carrack_driver_contract::{DriverKind, LifecycleMode};
+use carrack_driver_contract::{AliyunDriveConfig as AliyunConfig, DriverKind, LifecycleMode};
 use serde::Deserialize;
 use serde_json::json;
 use worker::{
@@ -49,15 +49,6 @@ struct R2CleanupTask {
     credential_nonce: Option<Vec<u8>>,
     credential_ciphertext: Option<Vec<u8>>,
     credential_revision: Option<u64>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AliyunConfig {
-    api_base_url: String,
-    drive_type: String,
-    root_folder_id: String,
-    upload_part_bytes: u64,
 }
 
 #[derive(Deserialize)]

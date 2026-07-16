@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use carrack_driver_contract::{DriverKind, InventoryMode};
+use carrack_driver_contract::{AliyunDriveConfig as AliyunConfig, DriverKind, InventoryMode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -36,15 +36,6 @@ struct Candidate {
 struct RefreshDriver {
     kind: String,
     config_json: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AliyunConfig {
-    api_base_url: String,
-    drive_type: String,
-    root_folder_id: String,
-    upload_part_bytes: u64,
 }
 
 #[derive(Deserialize)]

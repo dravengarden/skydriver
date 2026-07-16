@@ -1,5 +1,6 @@
 //! Native Aliyun Drive Open API complete-object transport.
 
+use carrack_driver_contract::AliyunDriveConfig as Config;
 use reqwest::{StatusCode, Url};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -14,15 +15,6 @@ use crate::Error;
 
 const MAXIMUM_API_BODY: usize = 8 * 1024 * 1024;
 const MAXIMUM_PARTS: u64 = 10_000;
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Config {
-    api_base_url: String,
-    drive_type: String,
-    root_folder_id: String,
-    upload_part_bytes: u64,
-}
 
 #[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(deny_unknown_fields)]

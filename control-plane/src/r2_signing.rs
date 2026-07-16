@@ -1,3 +1,4 @@
+pub(crate) use carrack_driver_contract::R2Config as Config;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -22,17 +23,6 @@ impl Drop for Credential {
         self.access_key_id.zeroize();
         self.secret_access_key.zeroize();
     }
-}
-
-#[derive(Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct Config {
-    pub(crate) endpoint: String,
-    pub(crate) bucket: String,
-    #[serde(default)]
-    pub(crate) prefix: String,
-    #[serde(default)]
-    pub(crate) managed: bool,
 }
 
 pub(crate) fn valid_config(config: &Config) -> bool {

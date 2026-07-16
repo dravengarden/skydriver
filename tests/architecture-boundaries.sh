@@ -18,6 +18,14 @@ if rg --line-number \
   echo "driver wire kinds must have one source in carrack-driver-contract" >&2
   exit 1
 fi
+if rg --line-number \
+  '^struct (AliyunConfig|AliyunDriveConfig|LocalFilesystemConfig|R2Config|Config)[[:space:]]*\{' \
+  crates/carrack-client/src/aliyun.rs control-plane/src/r2_signing.rs \
+  control-plane/src/management_driver_registration.rs \
+  control-plane/src/vfs_provider_inventory.rs control-plane/src/vfs_server_lifecycle.rs; then
+  echo "serialized driver configuration shapes must live in carrack-driver-contract" >&2
+  exit 1
+fi
 if ! rg -q 'carrack-driver-contract' crates/carrack-client/Cargo.toml \
   || ! rg -q 'carrack-driver-contract' control-plane/Cargo.toml; then
   echo "native and control-plane registries must share carrack-driver-contract" >&2
@@ -27,8 +35,10 @@ if rg --line-number 'carrack-driver-contract' crates/carrack-sdk-core/Cargo.toml
   echo "portable correctness core must remain independent of driver kinds" >&2
   exit 1
 fi
-if rg --line-number '^\[dependencies\]' crates/carrack-driver-contract/Cargo.toml; then
-  echo "driver contract must remain I/O-free and dependency-free" >&2
+if rg --line-number \
+  '(^|[[:space:]])(reqwest|tokio|rusqlite|worker|cap-std|fs2|aes-gcm|hkdf|sha2)[[:space:]]*=' \
+  crates/carrack-driver-contract/Cargo.toml; then
+  echo "driver contract must remain free of I/O, runtime, database, provider, and crypto dependencies" >&2
   exit 1
 fi
 

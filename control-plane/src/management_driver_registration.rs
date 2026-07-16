@@ -1,7 +1,9 @@
 use std::fmt::Write as _;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use carrack_driver_contract::{CredentialPosture, DriverKind};
+use carrack_driver_contract::{
+    AliyunDriveConfig, CredentialPosture, DriverKind, LocalFilesystemConfig,
+};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,8 +20,6 @@ const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.driver-registra
 #[cfg(test)]
 const ALIYUN_DRIVE_KIND: &str = DriverKind::AliyunDriveOpenV2.as_str();
 pub(crate) const R2_KIND: &str = DriverKind::R2V1.as_str();
-const DEFAULT_ALIYUN_API_BASE_URL: &str = "https://openapi.alipan.com";
-const DEFAULT_ALIYUN_UPLOAD_PART_BYTES: u64 = 20 << 20;
 const MAXIMUM_ALIYUN_UPLOAD_PART_BYTES: u64 = 512 << 20;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -48,25 +48,6 @@ struct CanonicalRegistration<'a> {
     driver_id: &'a str,
     kind: &'a str,
     config: &'a Value,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct LocalFilesystemConfig {
-    root: String,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct AliyunDriveConfig {
-    #[serde(default = "default_aliyun_api_base_url")]
-    api_base_url: String,
-    #[serde(default = "default_aliyun_drive_type")]
-    drive_type: String,
-    #[serde(default = "default_aliyun_root_folder_id")]
-    root_folder_id: String,
-    #[serde(default = "default_aliyun_upload_part_bytes")]
-    upload_part_bytes: u64,
 }
 
 #[derive(Serialize)]
@@ -522,22 +503,6 @@ fn json_error(error: &serde_json::Error) -> worker::Error {
 
 fn now_seconds() -> u64 {
     Date::now().as_millis() / 1_000
-}
-
-fn default_aliyun_api_base_url() -> String {
-    DEFAULT_ALIYUN_API_BASE_URL.to_owned()
-}
-
-fn default_aliyun_drive_type() -> String {
-    "resource".to_owned()
-}
-
-fn default_aliyun_root_folder_id() -> String {
-    "root".to_owned()
-}
-
-const fn default_aliyun_upload_part_bytes() -> u64 {
-    DEFAULT_ALIYUN_UPLOAD_PART_BYTES
 }
 
 #[cfg(test)]

@@ -5,11 +5,12 @@ Carrack storage drivers. [requirements.md](requirements.md) remains normative.
 
 ## Boundary
 
-`carrack-driver-contract` is a dependency-free shared model containing every
+`carrack-driver-contract` is an I/O-free shared model containing every
 compiled versioned kind, its native data-path capabilities, credential posture,
-grant mode, inventory location, and lifecycle location. It performs no I/O and
-contains no provider implementation. Both `carrack-client` and the Worker use
-its exhaustive enum, so their interpretation of a kind cannot silently drift.
+grant mode, inventory location, lifecycle location, and strict serialized
+configuration shape. It contains no provider implementation or policy-bound
+environment validation. Both `carrack-client` and the Worker use its exhaustive
+enum and config types, so their interpretation of a kind cannot silently drift.
 
 `carrack-client` exposes one compiled `DriverRegistry` to native transfer
 orchestration. The registry accepts a versioned driver kind, JSON grant
