@@ -468,11 +468,9 @@ async fn download_ranges(
             .then_some((index, start, length, path))
         })
         .collect::<Vec<_>>();
-    let results = stream::iter(
-        pending
-            .into_iter()
-            .map(|(_, start, length, path)| download_range(http, url, start, length, path)),
-    )
+    let results = stream::iter(pending.into_iter().map(|(_, start, length, path)| {
+        download_range(http, url, start, length, expected_bytes, path)
+    }))
     .buffer_unordered(maximum_concurrency.min(64))
     .collect::<Vec<_>>()
     .await;
@@ -521,6 +519,7 @@ async fn download_range(
     url: &str,
     start: u64,
     length: u64,
+    total_bytes: u64,
     path: PathBuf,
 ) -> Result<(), Error> {
     let end = start
@@ -535,6 +534,18 @@ async fn download_range(
         .map_err(|error| provider_transport("download R2 range", &error))?;
     if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
         return Err(provider_status("R2 range", response.status(), true));
+    }
+    let expected_content_range = format!("bytes {start}-{end}/{total_bytes}");
+    if response
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        != Some(expected_content_range.as_str())
+    {
+        return Err(Error::failure(
+            crate::FailureKind::CorruptCiphertext,
+            "R2 range did not bind the exact provider object length",
+        ));
     }
     let bytes = response
         .bytes()
@@ -1010,7 +1021,9 @@ mod tests {
                 when.method(GET)
                     .path("/object")
                     .header("Range", "bytes=0-4");
-                then.status(206).body("abcde");
+                then.status(206)
+                    .header("Content-Range", "bytes 0-4/10")
+                    .body("abcde");
             })
             .await;
         let second = server
@@ -1018,7 +1031,9 @@ mod tests {
                 when.method(GET)
                     .path("/object")
                     .header("Range", "bytes=5-9");
-                then.status(206).body("fghij");
+                then.status(206)
+                    .header("Content-Range", "bytes 5-9/10")
+                    .body("fghij");
             })
             .await;
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -1041,6 +1056,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn range_download_rejects_a_correct_prefix_of_a_larger_object() {
+        let server = MockServer::start_async().await;
+        let range = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/object")
+                    .header("Range", "bytes=0-4");
+                then.status(206)
+                    .header("Content-Range", "bytes 0-4/6")
+                    .body("abcde");
+            })
+            .await;
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let error = download_ranges(
+            &reqwest::Client::new(),
+            &server.url("/object"),
+            directory.path(),
+            "larger-version",
+            5,
+            &hex::encode(Sha256::digest(b"abcde")),
+            5,
+            1,
+        )
+        .await
+        .expect_err("a correct prefix must not hide extra provider bytes");
+        assert_eq!(
+            error.failure_kind(),
+            Some(crate::FailureKind::CorruptCiphertext)
+        );
+        range.assert_async().await;
+    }
+
+    #[tokio::test]
     async fn classifies_corrupt_range_assembly_without_message_parsing() {
         let server = MockServer::start_async().await;
         let first = server
@@ -1048,7 +1096,9 @@ mod tests {
                 when.method(GET)
                     .path("/corrupt")
                     .header("Range", "bytes=0-4");
-                then.status(206).body("abcde");
+                then.status(206)
+                    .header("Content-Range", "bytes 0-4/10")
+                    .body("abcde");
             })
             .await;
         let second = server
@@ -1056,7 +1106,9 @@ mod tests {
                 when.method(GET)
                     .path("/corrupt")
                     .header("Range", "bytes=5-9");
-                then.status(206).body("xxxxx");
+                then.status(206)
+                    .header("Content-Range", "bytes 5-9/10")
+                    .body("xxxxx");
             })
             .await;
         let directory = tempfile::tempdir().expect("temporary directory");
