@@ -218,7 +218,8 @@ impl Client {
         let http = reqwest::Client::builder()
             .https_only(endpoint.scheme() == "https")
             .redirect(reqwest::redirect::Policy::none())
-            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .read_timeout(std::time::Duration::from_secs(30))
             .build()?;
         Ok(Self { endpoint, http })
     }
