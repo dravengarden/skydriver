@@ -84,6 +84,10 @@ An inventory generation resolves a missing unknown object only after its final
 page commits. Partial and failed scans retain evidence. Resolved evidence is
 kept for 30 days, then removed by bounded maintenance using the state/seen
 index; live quarantine rows have no age-based deletion.
+Every page publication is an optimistic generation-and-input-cursor CAS. Its
+quarantine mutations carry the same predicate, so a slow duplicate fetch may
+waste provider I/O but cannot rewind the cursor, inflate counters, resurrect
+stale evidence, or publish after another invocation advances the scan.
 
 An adapter owns:
 

@@ -187,6 +187,11 @@ if ! rg -q 'driver_renewal::renew' control-plane/src/driver_credentials.rs; then
   echo "credential renewal must enter provider I/O through driver_renewal" >&2
   exit 1
 fi
+if ! rg -q "state = 'scanning' AND cursor IS" control-plane/src/vfs_provider_inventory.rs \
+  || ! rg -q 'last_seen_generation <' control-plane/src/vfs_provider_inventory.rs; then
+  echo "provider inventory publication must fence every page by generation and input cursor" >&2
+  exit 1
+fi
 if rg --line-number 'management_driver_registration::' \
   control-plane/src/management_driver_configuration.rs \
   control-plane/src/management_driver_credentials.rs; then

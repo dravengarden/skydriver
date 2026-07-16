@@ -76,7 +76,8 @@ agent processes are SDK consumers, not a third architectural component.
   retention, credential-envelope opening, or outcome state transitions.
 - Provider inventory may resolve absence only at a complete generation fence.
   Partial or failed scans retain unknown-object evidence; resolved evidence is
-  removed only by bounded indexed retention.
+  removed only by bounded indexed retention. Every page and quarantine write
+  must share the exact generation and input-cursor publication fence.
 - Secrets and credentials never enter Git. D1 stores only password hashes,
   token verifiers, encrypted provider-credential envelopes, and wrapped VFS
   directory keys. VFS master keys stay in Cloudflare secrets or Secrets Store

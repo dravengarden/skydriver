@@ -231,9 +231,17 @@ pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
     } else {
         candidate.generation + 1
     };
+    let expected_cursor = if candidate.state == "scanning" {
+        candidate.cursor.clone()
+    } else {
+        None
+    };
     if candidate.state != "scanning" {
-        database.prepare("UPDATE vfs_provider_inventory_state SET generation = ?1, state = 'scanning', cursor = NULL, scanned_objects = 0, unknown_objects = 0, last_started_at = ?2, next_scan_at = ?2, last_error_code = NULL, updated_at = ?2 WHERE driver_id = ?3")
-            .bind(&[integer(generation), integer(now), JsValue::from_str(&candidate.driver_id)])?.run().await?;
+        let started = database.prepare("UPDATE vfs_provider_inventory_state SET generation = ?1, state = 'scanning', cursor = NULL, scanned_objects = 0, unknown_objects = 0, last_started_at = ?2, next_scan_at = ?2, last_error_code = NULL, updated_at = ?2 WHERE driver_id = ?3 AND generation = ?4 AND state = ?5 AND cursor IS ?6")
+            .bind(&[integer(generation), integer(now), JsValue::from_str(&candidate.driver_id), integer(candidate.generation), JsValue::from_str(&candidate.state), JsValue::NULL])?.run().await?;
+        if changes(started.meta()?) != 1 {
+            return Ok(());
+        }
     }
     let page = match list_page(env, &database, &candidate, driver_kind).await {
         Ok(page) => page,
@@ -244,6 +252,7 @@ pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
                 "provider_list_failed",
                 candidate.attempt_count + 1,
                 generation,
+                expected_cursor.as_deref(),
                 now,
             )
             .await?;
@@ -260,12 +269,12 @@ pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
     for observed in page.objects {
         let known = known(&database, &candidate.driver_id, &observed.storage_key).await?;
         if known {
-            statements.push(database.prepare("UPDATE vfs_provider_quarantine SET state = 'resolved', resolved_at = ?1, last_seen_generation = ?2, last_seen_at = ?1 WHERE driver_id = ?3 AND storage_key = ?4 AND state = 'observed'")
-                .bind(&[integer(now), integer(generation), JsValue::from_str(&candidate.driver_id), JsValue::from_str(&observed.storage_key)])?);
+            statements.push(database.prepare("UPDATE vfs_provider_quarantine SET state = 'resolved', resolved_at = ?1, last_seen_generation = ?2, last_seen_at = ?1 WHERE driver_id = ?3 AND storage_key = ?4 AND state = 'observed' AND EXISTS (SELECT 1 FROM vfs_provider_inventory_state WHERE driver_id = ?3 AND generation = ?2 AND state = 'scanning' AND cursor IS ?5)")
+                .bind(&[integer(now), integer(generation), JsValue::from_str(&candidate.driver_id), JsValue::from_str(&observed.storage_key), optional_string(expected_cursor.as_deref())])?);
         } else {
             unknown += 1;
-            statements.push(database.prepare("INSERT INTO vfs_provider_quarantine (driver_id, storage_key, storage_key_sha256, state, provider_version, size_bytes, first_seen_generation, last_seen_generation, observation_count, first_seen_at, last_seen_at, resolved_at) VALUES (?1, ?2, ?3, 'observed', ?4, ?5, ?6, ?6, 1, ?7, ?7, NULL) ON CONFLICT(driver_id, storage_key) DO UPDATE SET state = 'observed', provider_version = excluded.provider_version, size_bytes = excluded.size_bytes, last_seen_generation = excluded.last_seen_generation, observation_count = vfs_provider_quarantine.observation_count + 1, last_seen_at = excluded.last_seen_at, resolved_at = NULL")
-                .bind(&[JsValue::from_str(&candidate.driver_id), JsValue::from_str(&observed.storage_key), JsValue::from_str(&sha256(&observed.storage_key)), JsValue::from_str(&observed.provider_version), integer(observed.size_bytes), integer(generation), integer(now)])?);
+            statements.push(database.prepare("INSERT INTO vfs_provider_quarantine (driver_id, storage_key, storage_key_sha256, state, provider_version, size_bytes, first_seen_generation, last_seen_generation, observation_count, first_seen_at, last_seen_at, resolved_at) SELECT ?1, ?2, ?3, 'observed', ?4, ?5, ?6, ?6, 1, ?7, ?7, NULL WHERE EXISTS (SELECT 1 FROM vfs_provider_inventory_state WHERE driver_id = ?1 AND generation = ?6 AND state = 'scanning' AND cursor IS ?8) ON CONFLICT(driver_id, storage_key) DO UPDATE SET state = 'observed', provider_version = excluded.provider_version, size_bytes = excluded.size_bytes, last_seen_generation = excluded.last_seen_generation, observation_count = vfs_provider_quarantine.observation_count + 1, last_seen_at = excluded.last_seen_at, resolved_at = NULL")
+                .bind(&[JsValue::from_str(&candidate.driver_id), JsValue::from_str(&observed.storage_key), JsValue::from_str(&sha256(&observed.storage_key)), JsValue::from_str(&observed.provider_version), integer(observed.size_bytes), integer(generation), integer(now), optional_string(expected_cursor.as_deref())])?);
         }
     }
     if page.next_cursor.is_none() {
@@ -277,12 +286,18 @@ pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
                     "UPDATE vfs_provider_quarantine
                      SET state = 'resolved', resolved_at = ?1
                      WHERE driver_id = ?2 AND state = 'observed'
-                       AND last_seen_generation < ?3",
+                       AND last_seen_generation < ?3
+                       AND EXISTS (
+                           SELECT 1 FROM vfs_provider_inventory_state
+                           WHERE driver_id = ?2 AND generation = ?3
+                             AND state = 'scanning' AND cursor IS ?4
+                       )",
                 )
                 .bind(&[
                     integer(now),
                     JsValue::from_str(&candidate.driver_id),
                     integer(generation),
+                    optional_string(expected_cursor.as_deref()),
                 ])?,
         );
     }
@@ -301,8 +316,8 @@ pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
             integer(now + COMPLETE_SCAN_INTERVAL_SECONDS),
         )
     };
-    statements.push(database.prepare("UPDATE vfs_provider_inventory_state SET state = ?1, cursor = ?2, scanned_objects = scanned_objects + ?3, unknown_objects = unknown_objects + ?4, last_completed_at = COALESCE(?5, last_completed_at), next_scan_at = ?6, attempt_count = 0, last_error_code = NULL, updated_at = ?7 WHERE driver_id = ?8 AND generation = ?9 AND state = 'scanning'")
-        .bind(&[JsValue::from_str(state), cursor, integer(scanned), integer(unknown), completed, next_scan_at, integer(now), JsValue::from_str(&candidate.driver_id), integer(generation)])?);
+    statements.push(database.prepare("UPDATE vfs_provider_inventory_state SET state = ?1, cursor = ?2, scanned_objects = scanned_objects + ?3, unknown_objects = unknown_objects + ?4, last_completed_at = COALESCE(?5, last_completed_at), next_scan_at = ?6, attempt_count = 0, last_error_code = NULL, updated_at = ?7 WHERE driver_id = ?8 AND generation = ?9 AND state = 'scanning' AND cursor IS ?10")
+        .bind(&[JsValue::from_str(state), cursor, integer(scanned), integer(unknown), completed, next_scan_at, integer(now), JsValue::from_str(&candidate.driver_id), integer(generation), optional_string(expected_cursor.as_deref())])?);
     database.batch(statements).await?;
     Ok(())
 }
@@ -404,10 +419,11 @@ async fn mark_driver_error(
     error: &str,
     attempt: u64,
     generation: u64,
+    expected_cursor: Option<&str>,
     now: u64,
 ) -> Result<()> {
-    database.prepare("UPDATE vfs_provider_inventory_state SET state = 'error', cursor = NULL, next_scan_at = ?1, attempt_count = ?2, last_error_code = ?3, updated_at = ?4 WHERE driver_id = ?5 AND state = 'scanning' AND generation = ?6")
-        .bind(&[integer(now + retry_delay(attempt, generation)), integer(attempt), JsValue::from_str(error), integer(now), JsValue::from_str(driver_id), integer(generation)])?.run().await?;
+    database.prepare("UPDATE vfs_provider_inventory_state SET state = 'error', cursor = NULL, next_scan_at = ?1, attempt_count = ?2, last_error_code = ?3, updated_at = ?4 WHERE driver_id = ?5 AND state = 'scanning' AND generation = ?6 AND cursor IS ?7")
+        .bind(&[integer(now + retry_delay(attempt, generation)), integer(attempt), JsValue::from_str(error), integer(now), JsValue::from_str(driver_id), integer(generation), optional_string(expected_cursor)])?.run().await?;
     Ok(())
 }
 
@@ -438,6 +454,9 @@ fn changes(meta: Option<worker::D1ResultMeta>) -> usize {
 }
 fn integer(value: u64) -> JsValue {
     JsValue::from_str(&value.to_string())
+}
+fn optional_string(value: Option<&str>) -> JsValue {
+    value.map_or(JsValue::NULL, JsValue::from_str)
 }
 fn now_seconds() -> u64 {
     worker::Date::now().as_millis() / 1_000
