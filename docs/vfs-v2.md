@@ -291,11 +291,22 @@ file by default so hashing, retry, and recovery remain possible. `Get` to an
 ordinary writer similarly stages and verifies before emitting bytes unless the
 caller explicitly requests a non-resumable stream.
 
+The Rust client exposes `ReplayableUploadSource` with an exact declared length,
+`BoundedRangeUploadSource` with exact bounded range readers, and `put_reader`
+with a mandatory maximum byte count for one-shot inputs. Non-file inputs are
+normalized on a blocking worker into a unique mode-0600 RAII plaintext spool.
+Short or overlong replayable/range readers and one-shot readers exceeding their
+bound fail before control-plane or provider I/O. Cancellation and every error
+path remove the private spool; the verified complete-object pipeline remains
+the sole publication path.
+
 The canonical Rust client exposes the high-level filesystem methods and owns
 prepare, transfer, and commit internally. Callers may schedule independent file
-operations and supply byte or local-file sources, but they cannot bypass
-Carrack hashing, encryption, provider verification, or conditional
-publication. No compatibility SDK implements a second product path.
+operations and supply bytes, local files, replayable readers, bounded range
+sources, or explicitly bounded one-shot readers, but they cannot bypass Carrack
+hashing, encryption, provider verification, or conditional publication. Every
+source normalizes into that same path rather than creating a second transfer
+implementation. No compatibility SDK implements a second product path.
 
 `vfs-bootstrap-v1.md` defines the one-shot authority bootstrap.
 `vfs-put-v1.md` defines the implemented prepare, key and driver grants,

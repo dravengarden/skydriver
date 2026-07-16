@@ -5,8 +5,9 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use zeroize::Zeroize;
 
@@ -17,6 +18,10 @@ use crate::{
     integrity,
     vfs::{canonical_components, canonical_path},
 };
+
+const SOURCE_COPY_BUFFER_BYTES: usize = 1024 * 1024;
+const MAXIMUM_RANGE_BYTES: u64 = 256 * 1024 * 1024;
+static PLAINTEXT_SPOOL_ORDINAL: AtomicU64 = AtomicU64::new(0);
 
 /// High-level immutable Put requirements.
 pub struct PutOptions {
@@ -36,6 +41,65 @@ pub struct PutOptions {
     pub transfer_part_bytes: u64,
     /// Maximum concurrent provider part operations.
     pub maximum_concurrency: usize,
+}
+
+/// A source that can open the same complete byte sequence again.
+///
+/// Carrack normalizes the first opened reader into a private durable spool so
+/// provider retry and recovery never depend on the caller remaining alive.
+pub trait ReplayableUploadSource: Send + Sync {
+    /// Exact number of bytes returned by every opened reader.
+    fn size_bytes(&self) -> u64;
+
+    /// Opens the complete byte sequence at offset zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the source cannot open a fresh reader.
+    fn open(&self) -> std::io::Result<Box<dyn Read + Send>>;
+}
+
+/// A complete source that can open independently bounded exact ranges.
+pub trait BoundedRangeUploadSource: Send + Sync {
+    /// Exact complete source length.
+    fn size_bytes(&self) -> u64;
+
+    /// Opens exactly `length` bytes beginning at `offset`.
+    ///
+    /// Returning fewer or additional bytes fails closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the exact requested range cannot be opened.
+    fn open_range(&self, offset: u64, length: u64) -> std::io::Result<Box<dyn Read + Send>>;
+}
+
+struct PlaintextSpool {
+    path: Option<PathBuf>,
+}
+
+impl PlaintextSpool {
+    fn path(&self) -> Result<&Path, Error> {
+        self.path.as_deref().ok_or_else(|| {
+            Error::InvalidResponse("plaintext source spool identity is missing".to_owned())
+        })
+    }
+
+    fn remove(mut self) -> Result<(), Error> {
+        let path = self.path.take().ok_or_else(|| {
+            Error::InvalidResponse("plaintext source spool identity is missing".to_owned())
+        })?;
+        std::fs::remove_file(path)
+            .map_err(|error| Error::InvalidResponse(format!("remove plaintext spool: {error}")))
+    }
+}
+
+impl Drop for PlaintextSpool {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 /// Durable Put publication receipt.
@@ -213,38 +277,119 @@ impl VfsClient {
         options: &PutOptions,
     ) -> Result<PutResult, Error> {
         validate_options(options)?;
-        let spool_directory = options.staging_directory.join("plaintext");
-        std::fs::create_dir_all(&spool_directory).map_err(|error| {
-            Error::InvalidResponse(format!("create private plaintext spool: {error}"))
-        })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&spool_directory, std::fs::Permissions::from_mode(0o700))
-                .map_err(|error| {
-                    Error::InvalidResponse(format!("protect private plaintext spool: {error}"))
-                })?;
-        }
-        let identity = hex::encode(Sha256::digest(
-            [options.idempotency_key.as_bytes(), bytes].concat(),
-        ));
-        let spool = spool_directory.join(identity);
-        let mut output = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&spool)
-            .map_err(|error| Error::InvalidResponse(format!("create plaintext spool: {error}")))?;
+        let (spool, mut output) = create_plaintext_spool(&options.staging_directory)?;
         output
             .write_all(bytes)
             .and_then(|()| output.sync_all())
             .map_err(|error| Error::InvalidResponse(format!("write plaintext spool: {error}")))?;
         drop(output);
-        let result = self.put_file(&spool, vfs_path, options).await;
-        let cleanup = std::fs::remove_file(&spool)
-            .map_err(|error| Error::InvalidResponse(format!("remove plaintext spool: {error}")));
-        let _ = std::fs::remove_dir(&spool_directory);
-        let value = result?;
-        cleanup?;
+        self.put_spooled_source(spool, vfs_path, options).await
+    }
+
+    /// Uploads a one-shot reader after privately spooling at most `maximum_bytes`.
+    ///
+    /// The reader is consumed on a blocking worker. Reading one byte beyond the
+    /// explicit bound fails before control-plane or provider I/O.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the bound is zero or exceeded, private spooling
+    /// fails, or the ordinary complete-object Put pipeline rejects the object.
+    pub async fn put_reader<R>(
+        &self,
+        reader: R,
+        maximum_bytes: u64,
+        vfs_path: &str,
+        options: &PutOptions,
+    ) -> Result<PutResult, Error>
+    where
+        R: Read + Send + 'static,
+    {
+        validate_options(options)?;
+        if maximum_bytes == 0 {
+            return Err(Error::InvalidResponse(
+                "one-shot upload maximum bytes must be nonzero".to_owned(),
+            ));
+        }
+        let staging_directory = options.staging_directory.clone();
+        let spool = run_source_worker(move || {
+            spool_bounded_reader(&staging_directory, reader, maximum_bytes)
+        })
+        .await?;
+        self.put_spooled_source(spool, vfs_path, options).await
+    }
+
+    /// Uploads one replayable complete source through a private durable spool.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the declared length differs from the opened
+    /// reader, private spooling fails, or complete-object Put fails.
+    pub async fn put_replayable_source<S>(
+        &self,
+        source: S,
+        vfs_path: &str,
+        options: &PutOptions,
+    ) -> Result<PutResult, Error>
+    where
+        S: ReplayableUploadSource + 'static,
+    {
+        validate_options(options)?;
+        let staging_directory = options.staging_directory.clone();
+        let spool = run_source_worker(move || {
+            let size_bytes = source.size_bytes();
+            let reader = source
+                .open()
+                .map_err(source_io_error("open replayable source"))?;
+            spool_exact_reader(&staging_directory, reader, size_bytes)
+        })
+        .await?;
+        self.put_spooled_source(spool, vfs_path, options).await
+    }
+
+    /// Uploads one complete range source through bounded exact range readers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the range bound is unsafe, any reader is short or
+    /// overlong, private spooling fails, or complete-object Put fails.
+    pub async fn put_range_source<S>(
+        &self,
+        source: S,
+        range_bytes: u64,
+        vfs_path: &str,
+        options: &PutOptions,
+    ) -> Result<PutResult, Error>
+    where
+        S: BoundedRangeUploadSource + 'static,
+    {
+        validate_options(options)?;
+        if range_bytes == 0 || range_bytes > MAXIMUM_RANGE_BYTES {
+            return Err(Error::InvalidResponse(
+                "upload source range bytes are outside the safe bound".to_owned(),
+            ));
+        }
+        let staging_directory = options.staging_directory.clone();
+        let spool =
+            run_source_worker(move || spool_range_source(&staging_directory, &source, range_bytes))
+                .await?;
+        self.put_spooled_source(spool, vfs_path, options).await
+    }
+
+    async fn put_spooled_source(
+        &self,
+        spool: PlaintextSpool,
+        vfs_path: &str,
+        options: &PutOptions,
+    ) -> Result<PutResult, Error> {
+        let result = self.put_file(spool.path()?, vfs_path, options).await;
+        let cleanup = spool.remove();
+        let mut value = result?;
+        if let Err(error) = cleanup {
+            value.warnings.push(format!(
+                "The verified file was published, but plaintext source spool cleanup was deferred: {error}"
+            ));
+        }
         Ok(value)
     }
 
@@ -465,6 +610,147 @@ impl VfsClient {
     }
 }
 
+async fn run_source_worker<F>(work: F) -> Result<PlaintextSpool, Error>
+where
+    F: FnOnce() -> Result<PlaintextSpool, Error> + Send + 'static,
+{
+    tokio::task::spawn_blocking(work).await.map_err(|error| {
+        Error::InvalidResponse(format!("plaintext source spool worker failed: {error}"))
+    })?
+}
+
+fn spool_bounded_reader<R: Read>(
+    staging_root: &Path,
+    reader: R,
+    maximum_bytes: u64,
+) -> Result<PlaintextSpool, Error> {
+    let (spool, mut output) = create_plaintext_spool(staging_root)?;
+    copy_reader(reader, &mut output, maximum_bytes, false)?;
+    finish_plaintext_spool(&output)?;
+    Ok(spool)
+}
+
+fn spool_exact_reader<R: Read>(
+    staging_root: &Path,
+    reader: R,
+    size_bytes: u64,
+) -> Result<PlaintextSpool, Error> {
+    let (spool, mut output) = create_plaintext_spool(staging_root)?;
+    copy_reader(reader, &mut output, size_bytes, true)?;
+    finish_plaintext_spool(&output)?;
+    Ok(spool)
+}
+
+fn spool_range_source<S: BoundedRangeUploadSource>(
+    staging_root: &Path,
+    source: &S,
+    range_bytes: u64,
+) -> Result<PlaintextSpool, Error> {
+    let (spool, mut output) = create_plaintext_spool(staging_root)?;
+    let size_bytes = source.size_bytes();
+    let mut offset = 0_u64;
+    while offset < size_bytes {
+        let length = range_bytes.min(size_bytes - offset);
+        let reader = source
+            .open_range(offset, length)
+            .map_err(source_io_error("open bounded upload range"))?;
+        copy_reader(reader, &mut output, length, true)?;
+        offset = offset
+            .checked_add(length)
+            .ok_or_else(|| Error::InvalidResponse("upload source offset overflow".to_owned()))?;
+    }
+    finish_plaintext_spool(&output)?;
+    Ok(spool)
+}
+
+fn create_plaintext_spool(staging_root: &Path) -> Result<(PlaintextSpool, std::fs::File), Error> {
+    let directory = staging_root.join("plaintext-sources");
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| Error::InvalidResponse(format!("create plaintext spool: {error}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| Error::InvalidResponse(format!("protect plaintext spool: {error}")))?;
+    }
+    loop {
+        let ordinal = PLAINTEXT_SPOOL_ORDINAL.fetch_add(1, Ordering::Relaxed);
+        let path = directory.join(format!(
+            ".source-{}-{ordinal:016x}.spool",
+            std::process::id()
+        ));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        match options.open(&path) {
+            Ok(file) => {
+                return Ok((PlaintextSpool { path: Some(path) }, file));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(Error::InvalidResponse(format!(
+                    "create plaintext source spool: {error}"
+                )));
+            }
+        }
+    }
+}
+
+fn copy_reader<R: Read>(
+    mut reader: R,
+    output: &mut std::fs::File,
+    bound_bytes: u64,
+    exact: bool,
+) -> Result<(), Error> {
+    let mut buffer = vec![0_u8; SOURCE_COPY_BUFFER_BYTES];
+    let mut copied = 0_u64;
+    while copied < bound_bytes {
+        let remaining = bound_bytes - copied;
+        let length =
+            usize::try_from(remaining.min(SOURCE_COPY_BUFFER_BYTES as u64)).map_err(|_| {
+                Error::InvalidResponse("upload source range exceeds platform".to_owned())
+            })?;
+        let read = reader
+            .read(&mut buffer[..length])
+            .map_err(source_io_error("read upload source"))?;
+        if read == 0 {
+            break;
+        }
+        output
+            .write_all(&buffer[..read])
+            .map_err(source_io_error("write plaintext source spool"))?;
+        copied = copied
+            .checked_add(read as u64)
+            .ok_or_else(|| Error::InvalidResponse("upload source size overflow".to_owned()))?;
+    }
+    let mut extra = [0_u8; 1];
+    let has_extra = reader
+        .read(&mut extra)
+        .map_err(source_io_error("check upload source bound"))?
+        != 0;
+    if has_extra || (exact && copied != bound_bytes) {
+        return Err(Error::InvalidResponse(if has_extra {
+            "upload source exceeded its declared byte bound".to_owned()
+        } else {
+            "upload source ended before its declared length".to_owned()
+        }));
+    }
+    Ok(())
+}
+
+fn finish_plaintext_spool(file: &std::fs::File) -> Result<(), Error> {
+    file.sync_all()
+        .map_err(source_io_error("sync plaintext source spool"))
+}
+
+fn source_io_error(context: &'static str) -> impl FnOnce(std::io::Error) -> Error {
+    move |error| Error::InvalidResponse(format!("{context}: {error}"))
+}
+
 fn duration_ms(duration: std::time::Duration) -> u64 {
     u64::try_from(duration.as_millis())
         .unwrap_or(u64::MAX)
@@ -619,4 +905,102 @@ fn validate_receipt(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::{
+        BoundedRangeUploadSource, spool_bounded_reader, spool_exact_reader, spool_range_source,
+    };
+
+    struct MemoryRanges {
+        bytes: Vec<u8>,
+        append_extra: bool,
+    }
+
+    impl BoundedRangeUploadSource for MemoryRanges {
+        fn size_bytes(&self) -> u64 {
+            self.bytes.len() as u64
+        }
+
+        fn open_range(
+            &self,
+            offset: u64,
+            length: u64,
+        ) -> std::io::Result<Box<dyn std::io::Read + Send>> {
+            let start = usize::try_from(offset).expect("range offset");
+            let end = start + usize::try_from(length).expect("range length");
+            let mut range = self.bytes[start..end].to_vec();
+            if self.append_extra {
+                range.push(0xff);
+            }
+            Ok(Box::new(Cursor::new(range)))
+        }
+    }
+
+    #[test]
+    fn one_shot_spool_is_bounded_private_and_raii_cleaned() {
+        let temporary = tempfile::tempdir().expect("source spool temporary directory");
+        let spool = spool_bounded_reader(temporary.path(), Cursor::new(b"payload"), 7)
+            .expect("spool bounded reader");
+        let path = spool.path().expect("source spool path").to_owned();
+        assert_eq!(std::fs::read(&path).expect("read source spool"), b"payload");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(&path)
+                    .expect("source spool metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        drop(spool);
+        assert!(!path.exists());
+
+        assert!(spool_bounded_reader(temporary.path(), Cursor::new(b"too long"), 3).is_err());
+        assert_no_spool_files(temporary.path());
+    }
+
+    #[test]
+    fn exact_and_range_sources_reject_short_or_additional_bytes() {
+        let temporary = tempfile::tempdir().expect("source spool temporary directory");
+        assert!(spool_exact_reader(temporary.path(), Cursor::new(b"short"), 6).is_err());
+        assert!(spool_exact_reader(temporary.path(), Cursor::new(b"extra"), 4).is_err());
+
+        let source = MemoryRanges {
+            bytes: b"range-source".to_vec(),
+            append_extra: false,
+        };
+        let spool = spool_range_source(temporary.path(), &source, 3).expect("spool range source");
+        assert_eq!(
+            std::fs::read(spool.path().expect("range spool path")).expect("read range spool"),
+            b"range-source"
+        );
+        drop(spool);
+
+        let overlong = MemoryRanges {
+            bytes: b"range-source".to_vec(),
+            append_extra: true,
+        };
+        assert!(spool_range_source(temporary.path(), &overlong, 3).is_err());
+        assert_no_spool_files(temporary.path());
+    }
+
+    fn assert_no_spool_files(root: &std::path::Path) {
+        let directory = root.join("plaintext-sources");
+        if !directory.exists() {
+            return;
+        }
+        assert!(
+            std::fs::read_dir(directory)
+                .expect("read plaintext source directory")
+                .next()
+                .is_none()
+        );
+    }
 }

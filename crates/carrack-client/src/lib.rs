@@ -50,7 +50,9 @@ pub use admin::{
 
 pub use download::{GetOptions, GetResult};
 pub use sync::{SyncOptions, SyncResult};
-pub use transfer::{PutOptions, PutReceipt, PutResult};
+pub use transfer::{
+    BoundedRangeUploadSource, PutOptions, PutReceipt, PutResult, ReplayableUploadSource,
+};
 pub use vfs::{
     AclGrant, AclPolicy, Directory, DirectoryCreation, DirectoryEntry, DirectoryPage, EntryKind,
     IssuedToken, Placement, PlacementPolicy, PlacementView, PolicyMutationReceipt, RemoveReceipt,

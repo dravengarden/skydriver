@@ -11,9 +11,10 @@ remaining Go packages are narrow conformance oracles and do not build a public
   and incremental sync.
 - `carrackctl` is the non-interactive JSON-first management facade used by the
   UI, operators, and AI agents.
-- `carrack-client` owns protocol compatibility, local filesystem I/O, streaming
-  encryption, hashing, bounded transfer execution, automatic resume state, and
-  verification.
+- `carrack-client` owns protocol compatibility, local filesystem I/O, byte,
+  replayable-reader, bounded-range, and one-shot source normalization,
+  streaming encryption, hashing, bounded transfer execution, automatic resume
+  state, and verification.
 - The control plane owns hosted-driver configuration, credentials, capability
   probing, transfer planning, publication, retention, and physical garbage
   collection.
