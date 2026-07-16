@@ -163,10 +163,10 @@ assert_uses_index location-tombstone-queue idx_vfs_locations_tombstone_deadline 
 
 assert_uses_index location-delete-claim idx_vfs_location_delete_tasks_claim \
   "SELECT id FROM vfs_location_delete_tasks
-   WHERE delete_after <= 1
-     AND (state IN ('pending', 'retry')
-       OR (state = 'claimed' AND lease_expires_at <= 1))
-   ORDER BY delete_after, id LIMIT 1"
+   WHERE (state = 'pending' AND delete_after <= 1)
+      OR (state = 'retry' AND retry_at <= 1)
+      OR (state = 'claimed' AND lease_expires_at <= 1)
+   ORDER BY COALESCE(retry_at, delete_after), id LIMIT 1"
 
 assert_uses_index unreachable-version-mark idx_vfs_versions_published_at \
   "SELECT id FROM safe_unreachable_vfs_locations

@@ -337,7 +337,8 @@ leases. A concurrent publication or read therefore blocks deletion.
 
 Locations must be unreachable for 30 days before tombstoning and then remain
 under a seven-day delete grace. Aliyun deletion is server-owned and idempotent;
-provider failure remains retryable. A local filesystem is deliberately
+provider failure remains retryable under bounded exponential backoff with
+deterministic jitter and a six-hour ceiling. A local filesystem is deliberately
 server-blocked because a Cloudflare Worker cannot safely reach an agent-local
 path. Operators inspect lifecycle state and alerts but never claim or execute
 GC tasks.

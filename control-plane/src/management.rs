@@ -645,7 +645,8 @@ pub(crate) async fn activity(request: &Request, env: &Env) -> Result<Response> {
                   SELECT 'location_delete' AS kind, task.id,
                          'location_delete_task' AS subject_kind, task.id AS subject_id,
                          task.state, task.driver_id, task.created_at, task.updated_at,
-                         task.delete_after AS deadline_at, task.attempt_count,
+                         COALESCE(task.retry_at, task.delete_after) AS deadline_at,
+                         task.attempt_count,
                          task.last_error_code,
                          CASE WHEN task.state IN ('retry', 'blocked') THEN 1 ELSE 0 END
                              AS attention_required

@@ -471,6 +471,76 @@ curl --silent --show-error --fail-with-body \
    WHERE location.id = 'c4444444444444444444444444444444';" --json |
   jq -e '.[0].results == [{"accepted":1}]' >/dev/null
 
+# A provider-side rejection schedules exponential retry instead of hot-looping
+# on every 15-minute Cron pass. This malformed opaque key crosses the durable
+# identity fence, then fails only at the final hosted R2 adapter boundary.
+retry_bytes=31
+retry_sha=5555555555555555555555555555555555555555555555555555555555555555
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" --command \
+  "INSERT INTO vfs_files (id, filesystem_id, created_at, updated_at)
+   VALUES ('a5555555555555555555555555555555', '$filesystem_id', unixepoch(), unixepoch());
+   INSERT INTO vfs_file_versions (
+     id, file_id, plaintext_bytes, verification_block_bytes,
+     verification_block_count, file_root, block_manifest_sha256,
+     block_manifest_bytes, block_manifest_r2_key, block_manifest_r2_version,
+     crypto_suite, key_epoch, encryption_frame_bytes, encoded_bytes,
+     encoded_sha256, created_at
+   ) VALUES (
+     'b5555555555555555555555555555555', 'a5555555555555555555555555555555',
+     $retry_bytes, 4096, 1,
+     '1555555555555555555555555555555555555555555555555555555555555555',
+     '2555555555555555555555555555555555555555555555555555555555555555',
+     1, 'fault/manifests/retry', 'fault-manifest-retry', 'plaintext/v1',
+     1, 4096, $retry_bytes, '$retry_sha', unixepoch()
+   );
+   INSERT INTO vfs_locations (
+     id, version_id, driver_id, storage_key, size_bytes, object_sha256,
+     created_at, updated_at
+   ) VALUES (
+     'c5555555555555555555555555555555', 'b5555555555555555555555555555555',
+     'r2-default', 'lifecycle-fault-injection/../provider-rejection', $retry_bytes,
+     '$retry_sha', unixepoch(), unixepoch()
+   );
+   UPDATE vfs_locations
+   SET state = 'verified', verified_at = unixepoch(), revision = revision + 1,
+       updated_at = unixepoch()
+   WHERE id = 'c5555555555555555555555555555555';
+   UPDATE vfs_locations
+   SET state = 'tombstoned', delete_after = unixepoch() - 1,
+       revision = revision + 1, updated_at = unixepoch()
+   WHERE id = 'c5555555555555555555555555555555';" >/dev/null
+curl --silent --show-error --fail-with-body \
+  "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
+retry_state=$("${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" --command \
+  "SELECT state, attempt_count, last_error_code, retry_at, updated_at
+   FROM vfs_location_delete_tasks
+   WHERE id = 'c5555555555555555555555555555555';" --json)
+jq -e '
+  .[0].results[0] |
+  .state == "retry" and .attempt_count == 1 and
+  .last_error_code == "provider_delete_failed" and .retry_at > .updated_at
+' <<<"$retry_state" >/dev/null
+first_retry_at=$(jq -r '.[0].results[0].retry_at' <<<"$retry_state")
+activity=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" "$base_url/api/admin/activity")
+jq -e --argjson retry_at "$first_retry_at" '
+  .active_items[] | select(.id == "c5555555555555555555555555555555") |
+  .state == "retry" and .deadline_at == $retry_at and
+  .attention_required == true
+' <<<"$activity" >/dev/null
+curl --silent --show-error --fail-with-body \
+  "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local --persist-to "$state_directory" --command \
+  "SELECT CASE WHEN state = 'retry' AND attempt_count = 1
+                       AND retry_at = $first_retry_at
+     THEN 1 ELSE 0 END AS accepted
+   FROM vfs_location_delete_tasks
+   WHERE id = 'c5555555555555555555555555555555';" --json |
+  jq -e '.[0].results == [{"accepted":1}]' >/dev/null
+
 "${wrangler[@]}" d1 execute CARRACK_INDEX \
   --local --persist-to "$state_directory" --command \
   "CREATE TABLE environment_default_assertions (

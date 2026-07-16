@@ -420,10 +420,10 @@ async fn delete_one(env: &Env, database: &D1Database, now: u64) -> Result<()> {
     let candidate = database
         .prepare(
             "SELECT id FROM vfs_location_delete_tasks
-             WHERE delete_after <= ?1 AND (
-                 state IN ('pending', 'retry')
-                 OR (state = 'claimed' AND lease_expires_at <= ?1)
-             ) ORDER BY delete_after, id LIMIT 1",
+             WHERE (state = 'pending' AND delete_after <= ?1)
+                OR (state = 'retry' AND retry_at <= ?1)
+                OR (state = 'claimed' AND lease_expires_at <= ?1)
+             ORDER BY COALESCE(retry_at, delete_after), id LIMIT 1",
         )
         .bind(&[integer(now)])?
         .first::<serde_json::Value>(Some("id"))
@@ -435,10 +435,12 @@ async fn delete_one(env: &Env, database: &D1Database, now: u64) -> Result<()> {
         .prepare(
             "UPDATE vfs_location_delete_tasks
              SET state = 'claimed', fencing_token = fencing_token + 1,
-                 lease_expires_at = ?1, attempt_count = attempt_count + 1,
-                 last_error_code = NULL, updated_at = ?2
-             WHERE id = ?3 AND delete_after <= ?2 AND (
-                 state IN ('pending', 'retry')
+                 lease_expires_at = ?1, retry_at = NULL,
+                 attempt_count = attempt_count + 1, last_error_code = NULL,
+                 updated_at = ?2
+             WHERE id = ?3 AND (
+                 (state = 'pending' AND delete_after <= ?2)
+                 OR (state = 'retry' AND retry_at <= ?2)
                  OR (state = 'claimed' AND lease_expires_at <= ?2)
              )",
         )
@@ -793,14 +795,21 @@ async fn fail(
     code: &str,
     state: &str,
 ) -> Result<()> {
+    let retry_at = if state == "retry" {
+        integer(now + retry_delay(fencing_token, fencing_token))
+    } else {
+        JsValue::NULL
+    };
     database
         .prepare(
             "UPDATE vfs_location_delete_tasks
-         SET state = ?1, lease_expires_at = NULL, last_error_code = ?2, updated_at = ?3
-         WHERE id = ?4 AND state = 'claimed' AND fencing_token = ?5",
+         SET state = ?1, lease_expires_at = NULL, retry_at = ?2,
+             last_error_code = ?3, updated_at = ?4
+         WHERE id = ?5 AND state = 'claimed' AND fencing_token = ?6",
         )
         .bind(&[
             JsValue::from_str(state),
+            retry_at,
             JsValue::from_str(code),
             integer(now),
             JsValue::from_str(id),
@@ -809,6 +818,11 @@ async fn fail(
         .run()
         .await?;
     Ok(())
+}
+
+fn retry_delay(attempt: u64, fence: u64) -> u64 {
+    let exponent = attempt.saturating_sub(1).min(8) as u32;
+    (60_u64.saturating_mul(1_u64 << exponent)).min(6 * 60 * 60) + fence % 61
 }
 
 async fn load_claim_fencing(
@@ -857,5 +871,12 @@ mod tests {
         assert!(missing_multipart_upload("R2Error: NoSuchUpload"));
         assert!(missing_multipart_upload("multipart upload does not exist"));
         assert!(!missing_multipart_upload("R2Error: AccessDenied"));
+    }
+
+    #[test]
+    fn provider_delete_retry_is_bounded_and_jittered() {
+        assert!((60..=120).contains(&retry_delay(1, 60)));
+        assert!(retry_delay(2, 2) > retry_delay(1, 1));
+        assert!(retry_delay(100, 60) <= 6 * 60 * 60 + 60);
     }
 }

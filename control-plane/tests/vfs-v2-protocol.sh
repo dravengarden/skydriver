@@ -849,6 +849,37 @@ expect_failure \
    WHERE id = '$location_b';" \
   "lifecycle completion before the exact location is deleted"
 
+expect_failure \
+  "UPDATE vfs_location_delete_tasks
+   SET state = 'retry', lease_expires_at = NULL,
+       last_error_code = 'provider_delete_failed', updated_at = unixepoch()
+   WHERE id = '$location_b';" \
+  "lifecycle retry without an explicit retry schedule"
+
+execute "
+UPDATE vfs_location_delete_tasks
+SET state = 'retry', lease_expires_at = NULL,
+    retry_at = unixepoch() + 120, last_error_code = 'provider_delete_failed',
+    updated_at = unixepoch()
+WHERE id = '$location_b';
+"
+
+expect_failure \
+  "UPDATE vfs_location_delete_tasks
+   SET state = 'claimed', fencing_token = fencing_token + 1,
+       lease_expires_at = unixepoch() + 120, attempt_count = attempt_count + 1,
+       updated_at = unixepoch()
+   WHERE id = '$location_b';" \
+  "lifecycle reclaim that retains its retry schedule"
+
+execute "
+UPDATE vfs_location_delete_tasks
+SET state = 'claimed', fencing_token = fencing_token + 1,
+    lease_expires_at = unixepoch() + 120, retry_at = NULL,
+    attempt_count = attempt_count + 1, updated_at = unixepoch()
+WHERE id = '$location_b';
+"
+
 execute "
 UPDATE vfs_location_delete_tasks
 SET state = 'blocked', lease_expires_at = NULL,
