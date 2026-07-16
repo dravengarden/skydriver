@@ -891,7 +891,9 @@ impl VfsClient {
         state_directory: &Path,
         bulk_catalog_authorized: bool,
     ) -> Result<LoadedDirectory, Error> {
-        if bulk_catalog_authorized && let Some(node) = catalog.load(directory_id, data_root)? {
+        if bulk_catalog_authorized
+            && let Some(node) = load_cached_catalog_node(catalog, directory_id, data_root).await?
+        {
             return Ok(node.into());
         }
         let first = self
@@ -910,7 +912,7 @@ impl VfsClient {
     ) -> Result<LoadedDirectory, Error> {
         let directory_id = page.directory.id.clone();
         let data_root = page.directory.data_root.clone();
-        if let Some(node) = catalog.load(&directory_id, &data_root)? {
+        if let Some(node) = load_cached_catalog_node(catalog, &directory_id, &data_root).await? {
             return Ok(node.into());
         }
         let filesystem_id = page.directory.filesystem_id.clone();
@@ -961,6 +963,21 @@ impl VfsClient {
             entries: LoadedEntries::Spool(spool.finish()?),
         })
     }
+}
+
+async fn load_cached_catalog_node(
+    catalog: &CatalogStore,
+    directory_id: &str,
+    data_root: &str,
+) -> Result<Option<CatalogNode>, Error> {
+    let catalog = catalog.clone();
+    let directory_id = directory_id.to_owned();
+    let data_root = data_root.to_owned();
+    tokio::task::spawn_blocking(move || catalog.load(&directory_id, &data_root))
+        .await
+        .map_err(|error| {
+            Error::InvalidResponse(format!("local catalog verification worker failed: {error}"))
+        })?
 }
 
 fn validate_page_identity(

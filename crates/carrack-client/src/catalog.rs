@@ -86,6 +86,7 @@ pub(crate) struct CatalogCheckpointCondition {
     pub(crate) etag: String,
 }
 
+#[derive(Clone)]
 pub(crate) struct CatalogStore {
     root: PathBuf,
     nodes: PathBuf,

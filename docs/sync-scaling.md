@@ -39,6 +39,12 @@ staging files; the active coordinator performs final rename. Cancellation drops
 and removes returned staging, and no worker can publish after the sync future
 has gone away.
 
+Content-addressed local catalog envelope, canonical JSON, entry-union, and
+Merkle verification also runs in the bounded directory worker pool rather than
+serially blocking the async runtime. These workers are read-only; a cache miss
+or unavailable acceleration still follows the authenticated revision-pinned
+network path.
+
 An optional future fs-verity backend may skip that read only when it can bind a
 previously recorded measurement to a kernel-enforced immutable inode. Missing
 support, a measurement mismatch, unsupported filesystems, or any adapter error
