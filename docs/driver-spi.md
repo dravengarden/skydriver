@@ -19,6 +19,12 @@ D1 or provider I/O. Registration, credential replacement, and enablement all
 reuse it; none may depend on another management transaction module for config
 meaning.
 
+Provider credential wire shapes, local validation, OAuth exchange, and bucket
+verification live behind `driver_authorization`. The management transaction
+validates authority before taking its D1 claim, then releases the exact fenced
+claim on every provider rejection, retryable outage, or adapter error. It alone
+seals the returned credential material and commits receipts and audit state.
+
 `carrack-client` exposes one compiled `DriverRegistry` to native transfer
 orchestration. The registry accepts a versioned driver kind, JSON grant
 envelopes, and one uniform immutable upload or download request. It rejects an

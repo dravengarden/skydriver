@@ -172,8 +172,8 @@ if ! rg -q 'driver_inventory::list_page' control-plane/src/vfs_provider_inventor
 fi
 if rg --line-number \
   'D1Database|\.prepare\(|SELECT |INSERT |UPDATE |DELETE FROM ' \
-  control-plane/src/driver_configuration.rs control-plane/src/driver_inventory.rs \
-  control-plane/src/driver_lifecycle.rs; then
+  control-plane/src/driver_authorization.rs control-plane/src/driver_configuration.rs \
+  control-plane/src/driver_inventory.rs control-plane/src/driver_lifecycle.rs; then
   echo "driver policy and provider adapters must not own D1 state, claims, fences, or publication" >&2
   exit 1
 fi
@@ -187,6 +187,16 @@ if ! rg -q 'driver_configuration::normalize' control-plane/src/management_driver
   || ! rg -q 'driver_configuration::valid_stored' control-plane/src/management_driver_configuration.rs \
   || ! rg -q 'driver_configuration::valid_stored' control-plane/src/management_driver_credentials.rs; then
   echo "registration, credential, and enablement paths must share driver configuration policy" >&2
+  exit 1
+fi
+if rg --line-number 'driver_credentials::|r2_signing::|CredentialAuthorization::' \
+  control-plane/src/management_driver_credentials.rs; then
+  echo "credential transactions must enter provider validation through driver_authorization" >&2
+  exit 1
+fi
+if ! rg -q 'driver_authorization::validate' control-plane/src/management_driver_credentials.rs \
+  || ! rg -q 'driver_authorization::authorize' control-plane/src/management_driver_credentials.rs; then
+  echo "credential validation and apply must share the provider authorization adapter" >&2
   exit 1
 fi
 

@@ -54,6 +54,9 @@ agent processes are SDK consumers, not a third architectural component.
   config normalization and credential-posture checks through
   `control-plane/src/driver_configuration.rs`; management transaction modules
   must not depend on each other for driver config meaning.
+- Worker credential transactions MUST enter provider credential parsing,
+  exchange, and verification through `driver_authorization.rs`. They retain
+  claim/release fencing, envelope sealing, CAS, receipts, and audit state.
 - Worker VFS planners and grant handlers MUST project provider authority only
   through `control-plane/src/driver_registry.rs`; provider signing and stored
   access-token minimization, including multipart grant signing, must not be
