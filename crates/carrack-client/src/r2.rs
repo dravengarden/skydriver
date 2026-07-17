@@ -11,7 +11,7 @@ use std::{
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _, AsyncWriteExt as _};
 use tokio_util::io::ReaderStream;
 
-use crate::Error;
+use crate::{Error, private_fs::ensure_private_directory};
 
 const MAXIMUM_SINGLE_PUT_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 const MULTIPART_THRESHOLD_BYTES: u64 = 100 * 1024 * 1024;
@@ -372,9 +372,7 @@ pub(crate) async fn download(
     maximum_concurrency: usize,
 ) -> Result<PathBuf, Error> {
     let grant = decode_grant(credential, "GET")?;
-    tokio::fs::create_dir_all(staging_directory)
-        .await
-        .map_err(|error| Error::InvalidResponse(format!("create R2 staging: {error}")))?;
+    ensure_private_directory(staging_directory, "R2 download staging root")?;
     let path = staging_directory.join(format!("{version_id}.download"));
     if expected_bytes >= MULTIPART_THRESHOLD_BYTES && maximum_concurrency > 1 {
         return download_ranges(
@@ -395,8 +393,17 @@ pub(crate) async fn download(
         .send()
         .await
         .map_err(|error| provider_transport("download R2 object", &error))?;
-    if !response.status().is_success() {
+    if response.status() != reqwest::StatusCode::OK {
         return Err(provider_status("R2 download", response.status(), true));
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length != expected_bytes)
+    {
+        return Err(Error::failure(
+            crate::FailureKind::CorruptCiphertext,
+            "R2 complete-object response length differs",
+        ));
     }
     let mut output = tokio::fs::File::create(&temporary)
         .await
@@ -453,12 +460,11 @@ async fn download_ranges(
         return Ok(output_path);
     }
     let part_root = staging_directory.join("parts").join(version_id);
-    tokio::fs::create_dir_all(&part_root)
-        .await
-        .map_err(|error| Error::InvalidResponse(format!("create R2 range journal: {error}")))?;
+    ensure_private_directory(&part_root, "R2 download range journal")?;
     let part_count = expected_bytes.div_ceil(part_bytes);
-    let pending = (0..part_count)
-        .filter_map(|index| {
+    let pending = stream::iter(0..part_count).filter_map(|index| {
+        let part_root = part_root.clone();
+        async move {
             let start = index.saturating_mul(part_bytes);
             let length = expected_bytes.saturating_sub(start).min(part_bytes);
             let path = part_root.join(format!("{index:08}.part"));
@@ -466,15 +472,15 @@ async fn download_ranges(
                 .metadata()
                 .is_ok_and(|metadata| metadata.len() == length))
             .then_some((index, start, length, path))
+        }
+    });
+    let results = pending
+        .map(|(_, start, length, path)| {
+            download_range(http, url, start, length, expected_bytes, path)
         })
-        .collect::<Vec<_>>();
-    let results = stream::iter(pending.into_iter().map(|(_, start, length, path)| {
-        download_range(http, url, start, length, expected_bytes, path)
-    }))
-    .buffer_unordered(maximum_concurrency.min(64))
-    .collect::<Vec<_>>()
-    .await;
-    for result in results {
+        .buffer_unordered(maximum_concurrency.min(64));
+    futures_util::pin_mut!(results);
+    while let Some(result) = results.next().await {
         result?;
     }
     let temporary = staging_directory.join(format!("{version_id}.download.partial"));
@@ -803,7 +809,7 @@ mod tests {
     use sha2::{Digest as _, Sha256};
 
     use super::{
-        SignedGrant, download_ranges, multipart_upload, provider_status,
+        SignedGrant, download, download_ranges, multipart_upload, provider_status,
         require_no_replace_signature, upload,
     };
 
@@ -819,6 +825,41 @@ mod tests {
             require_no_replace_signature("https://bucket.example/object?X-Amz-SignedHeaders=host")
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn zero_byte_download_still_reads_and_verifies_provider_body() {
+        let server = MockServer::start_async().await;
+        let object = server
+            .mock_async(|when, then| {
+                when.method(GET).path("/empty");
+                then.status(200).body(Vec::<u8>::new());
+            })
+            .await;
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = download(
+            &reqwest::Client::new(),
+            serde_json::json!({
+                "method": "GET",
+                "url": server.url("/empty"),
+                "expires_at": 1
+            }),
+            directory.path(),
+            "empty-version",
+            0,
+            &hex::encode(Sha256::digest([])),
+            1024,
+            1,
+        )
+        .await
+        .expect("verified empty provider object");
+        assert_eq!(
+            std::fs::metadata(path)
+                .expect("empty output metadata")
+                .len(),
+            0
+        );
+        object.assert_hits_async(1).await;
     }
 
     #[tokio::test]
@@ -1131,6 +1172,55 @@ mod tests {
         );
         first.assert_async().await;
         second.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn same_length_corrupt_resumed_part_fails_complete_encoded_sha256() {
+        let server = MockServer::start_async().await;
+        let first = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/resume")
+                    .header("Range", "bytes=0-4");
+                then.status(206)
+                    .header("Content-Range", "bytes 0-4/10")
+                    .body("abcde");
+            })
+            .await;
+        let second = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/resume")
+                    .header("Range", "bytes=5-9");
+                then.status(206)
+                    .header("Content-Range", "bytes 5-9/10")
+                    .body("fghij");
+            })
+            .await;
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let part_root = directory.path().join("parts/resumed-version");
+        std::fs::create_dir_all(&part_root).expect("create resumed part root");
+        std::fs::write(part_root.join("00000000.part"), b"xxxxx")
+            .expect("write same-length corrupt resumed part");
+
+        let error = download_ranges(
+            &reqwest::Client::new(),
+            &server.url("/resume"),
+            directory.path(),
+            "resumed-version",
+            10,
+            &hex::encode(Sha256::digest(b"abcdefghij")),
+            5,
+            2,
+        )
+        .await
+        .expect_err("complete encoded identity must reject a corrupt resumed part");
+        assert_eq!(
+            error.failure_kind(),
+            Some(crate::FailureKind::CorruptCiphertext)
+        );
+        first.assert_hits_async(0).await;
+        second.assert_hits_async(1).await;
     }
 
     #[test]

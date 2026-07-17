@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use zeroize::{Zeroize, Zeroizing};
 
+use crate::private_fs::ensure_private_directory;
+
 const SUITE: &str = "carrack-vfs-aes256gcm-hkdfsha256-v1";
 static DOWNLOAD_TEMPORARY_ORDINAL: AtomicU64 = AtomicU64::new(0);
 
@@ -32,7 +34,7 @@ pub(crate) fn stage(
     descriptor: &Descriptor,
     directory_key: Option<&[u8; 32]>,
 ) -> Result<StagedObject, crate::Error> {
-    ensure_private_directory(staging_root)?;
+    ensure_private_directory(staging_root, "staging directory")?;
     let final_path = staging_root.join(format!("{intent_id}.encoded"));
     let temporary_path = staging_root.join(format!(".{intent_id}-{}.partial", std::process::id()));
     let mut input = std::io::BufReader::new(std::fs::File::open(source).map_err(|error| {
@@ -363,42 +365,6 @@ fn require_eof<R: Read>(input: &mut R) -> Result<(), crate::Error> {
         return Err(crate::Error::InvalidResponse(
             "source contains trailing bytes".to_owned(),
         ));
-    }
-    Ok(())
-}
-
-fn ensure_private_directory(path: &Path) -> Result<(), crate::Error> {
-    if !path.is_absolute() {
-        return Err(crate::Error::InvalidResponse(
-            "staging directory must be absolute".to_owned(),
-        ));
-    }
-    std::fs::create_dir_all(path).map_err(|error| {
-        crate::Error::InvalidResponse(format!("create staging directory: {error}"))
-    })?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).map_err(
-            |error| crate::Error::InvalidResponse(format!("protect staging directory: {error}")),
-        )?;
-    }
-    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
-        crate::Error::InvalidResponse(format!("inspect staging directory: {error}"))
-    })?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err(crate::Error::InvalidResponse(
-            "staging directory is unsafe".to_owned(),
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        if metadata.permissions().mode() & 0o077 != 0 {
-            return Err(crate::Error::InvalidResponse(
-                "staging directory must use mode 0700".to_owned(),
-            ));
-        }
     }
     Ok(())
 }

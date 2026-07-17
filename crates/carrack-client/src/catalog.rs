@@ -16,7 +16,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use crate::{DirectoryEntry, EntryKind, Error};
+use crate::{DirectoryEntry, EntryKind, Error, private_fs::ensure_private_directory};
 
 const NODE_SCHEMA: &str = "carrack.vfs.catalog-node.v1";
 const ENVELOPE_SCHEMA: &str = "carrack.vfs.catalog-node-envelope.v1";
@@ -97,19 +97,28 @@ impl CatalogStore {
         validate_hex::<16>(token_id, "catalog token identity")?;
         let root = state_directory.join("catalog/tokens").join(token_id);
         let nodes = root.join("nodes");
-        ensure_private_directory(&root)?;
-        ensure_private_directory(&nodes)?;
+        ensure_private_directory(&root, "catalog root")?;
+        ensure_private_directory(&nodes, "catalog node directory")?;
         Ok(Self { root, nodes })
     }
 
     pub(crate) fn checkpoint_condition(&self) -> Result<Option<CatalogCheckpointCondition>, Error> {
-        let Some(head) = self.load_head()? else {
+        let head = if let Ok(head) = self.load_head() {
+            head
+        } else {
+            self.discard_head()?;
+            None
+        };
+        let Some(head) = head else {
             return Ok(None);
         };
-        if self
-            .load(&head.root_directory_id, &head.root_data_root)?
-            .is_none()
-        {
+        let root = if let Ok(root) = self.load(&head.root_directory_id, &head.root_data_root) {
+            root
+        } else {
+            self.discard_node(&head.root_directory_id, &head.root_data_root)?;
+            None
+        };
+        if root.is_none() {
             return Ok(None);
         }
         Ok(Some(CatalogCheckpointCondition {
@@ -335,7 +344,13 @@ impl CatalogStore {
 
     fn publish_head(&self, head: CatalogHead) -> Result<(), Error> {
         validate_head(&head)?;
-        if let Some(existing) = self.load_head()? {
+        let existing = if let Ok(existing) = self.load_head() {
+            existing
+        } else {
+            self.discard_head()?;
+            None
+        };
+        if let Some(existing) = existing {
             if existing.revision_id > head.revision_id {
                 return Ok(());
             }
@@ -376,7 +391,13 @@ impl CatalogStore {
         let directory_id = node.directory_id.clone();
         let data_root = node.data_root.clone();
         validate_node(&node, &directory_id, &data_root)?;
-        if let Some(existing) = self.load(&directory_id, &data_root)? {
+        let existing = if let Ok(existing) = self.load(&directory_id, &data_root) {
+            existing
+        } else {
+            self.discard_node(&directory_id, &data_root)?;
+            None
+        };
+        if let Some(existing) = existing {
             if canonical_node_bytes(&existing)? != canonical_node_bytes(&node)? {
                 return Err(Error::InvalidResponse(
                     "existing catalog node differs at one content address".to_owned(),
@@ -401,7 +422,7 @@ impl CatalogStore {
         let parent = final_path
             .parent()
             .ok_or_else(|| Error::InvalidResponse("catalog node path has no parent".to_owned()))?;
-        ensure_private_directory(parent)?;
+        ensure_private_directory(parent, "catalog node directory")?;
         let temporary = parent.join(format!(
             ".{}.{}.tmp",
             std::process::id(),
@@ -444,6 +465,23 @@ impl CatalogStore {
             .nodes
             .join(shard)
             .join(format!("{directory_id}-{data_root}.json")))
+    }
+
+    pub(crate) fn discard_node(&self, directory_id: &str, data_root: &str) -> Result<(), Error> {
+        let path = self.node_path(directory_id, data_root)?;
+        remove_cache_file(&path, "discard invalid catalog node")
+    }
+
+    pub(crate) fn discard_head(&self) -> Result<(), Error> {
+        remove_cache_file(&self.root.join("head.json"), "discard invalid catalog head")
+    }
+}
+
+fn remove_cache_file(path: &Path, context: &'static str) -> Result<(), Error> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(local_error(context, error)),
     }
 }
 
@@ -634,25 +672,6 @@ fn decode_hex<const N: usize>(value: &str, context: &str) -> Result<[u8; N], Err
         .map_err(|_| Error::InvalidResponse(format!("{context} length differs")))
 }
 
-fn ensure_private_directory(path: &Path) -> Result<(), Error> {
-    std::fs::create_dir_all(path)
-        .map_err(|error| local_error("create catalog directory", error))?;
-    let metadata = std::fs::symlink_metadata(path)
-        .map_err(|error| local_error("inspect catalog directory", error))?;
-    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
-        return Err(Error::InvalidResponse(
-            "catalog path is not a real directory".to_owned(),
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-            .map_err(|error| local_error("protect catalog directory", error))?;
-    }
-    Ok(())
-}
-
 fn write_private_file(path: &Path, encoded: &[u8]) -> Result<(), Error> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -732,6 +751,15 @@ mod tests {
         bytes[middle] ^= 1;
         std::fs::write(path, bytes).expect("corrupt stored node");
         assert!(store.load(directory_id, data_root).is_err());
+        store
+            .publish(directory_id, data_root, &[])
+            .expect("verified publication replaces invalid cache node");
+        assert!(
+            store
+                .load(directory_id, data_root)
+                .expect("load repaired catalog node")
+                .is_some()
+        );
     }
 
     #[test]
@@ -783,7 +811,12 @@ mod tests {
         let middle = bytes.len() / 2;
         bytes[middle] ^= 1;
         std::fs::write(head_path, bytes).expect("corrupt checkpoint head");
-        assert!(store.checkpoint_condition().is_err());
+        assert!(
+            store
+                .checkpoint_condition()
+                .expect("invalid cache head is discarded")
+                .is_none()
+        );
     }
 
     #[test]

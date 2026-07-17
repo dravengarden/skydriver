@@ -16,6 +16,7 @@ use crate::{
     crypto::{Descriptor, stage},
     driver::{DriverRegistry, UploadRequest},
     integrity,
+    private_fs::ensure_private_directory,
     vfs::{canonical_components, canonical_path},
 };
 
@@ -665,14 +666,7 @@ fn spool_range_source<S: BoundedRangeUploadSource>(
 
 fn create_plaintext_spool(staging_root: &Path) -> Result<(PlaintextSpool, std::fs::File), Error> {
     let directory = staging_root.join("plaintext-sources");
-    std::fs::create_dir_all(&directory)
-        .map_err(|error| Error::InvalidResponse(format!("create plaintext spool: {error}")))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
-            .map_err(|error| Error::InvalidResponse(format!("protect plaintext spool: {error}")))?;
-    }
+    ensure_private_directory(&directory, "plaintext spool directory")?;
     loop {
         let ordinal = PLAINTEXT_SPOOL_ORDINAL.fetch_add(1, Ordering::Relaxed);
         let path = directory.join(format!(
@@ -758,7 +752,8 @@ fn duration_ms(duration: std::time::Duration) -> u64 {
 }
 
 fn validate_options(options: &PutOptions) -> Result<(), Error> {
-    if options.idempotency_key.is_empty()
+    if !options.staging_directory.is_absolute()
+        || options.idempotency_key.is_empty()
         || options.idempotency_key.len() > 256
         || options.verification_block_bytes == 0
         || options.verification_block_bytes > 256 * 1024 * 1024

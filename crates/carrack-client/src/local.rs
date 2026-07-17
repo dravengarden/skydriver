@@ -11,7 +11,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use crate::{Error, FailureKind, driver::safe_storage_key};
+use crate::{Error, FailureKind, driver::safe_storage_key, private_fs::ensure_private_directory};
 
 pub(crate) struct UploadedObject {
     pub(crate) native_id: String,
@@ -131,15 +131,7 @@ pub(crate) fn download(
     part_bytes: u64,
     maximum_concurrency: usize,
 ) -> Result<PathBuf, Error> {
-    std::fs::create_dir_all(staging_root)
-        .map_err(|error| Error::InvalidResponse(format!("create download staging: {error}")))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(staging_root, std::fs::Permissions::from_mode(0o700)).map_err(
-            |error| Error::InvalidResponse(format!("protect download staging: {error}")),
-        )?;
-    }
+    ensure_private_directory(staging_root, "local download staging root")?;
     let relative = safe_storage_key(storage_key)?;
     let directory = Dir::open_ambient_dir(root, ambient_authority())
         .map_err(|error| Error::InvalidResponse(format!("open local driver root: {error}")))?;
@@ -160,8 +152,7 @@ pub(crate) fn download(
         verify_empty_provider_object(&directory, &relative)?;
     }
     let part_root = staging_root.join("parts").join(version_id);
-    std::fs::create_dir_all(&part_root)
-        .map_err(|error| Error::InvalidResponse(format!("create download journal: {error}")))?;
+    ensure_private_directory(&part_root, "local download part journal")?;
     download_parts(
         &directory,
         &relative,

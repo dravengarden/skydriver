@@ -14,7 +14,9 @@ namespace rename reuse. A directory up to 20,000 entries may use a whole-node
 memory/cache representation; wider revision-pinned directories are verified
 and planned through a streaming spool. The portable directory Merkle
 accumulator retains only the prior bounded name and logarithmically many
-subtree hashes.
+subtree hashes. The breadth-first pending-directory frontier is also advanced
+through private generation spools, so a wide level does not become an
+unbounded in-memory queue.
 
 Checkpoint limits of 5,000 directories, 20,000 entries, and 32 MiB are
 acceleration limits. Exceeding them falls back to revision-pinned pages and is
@@ -41,9 +43,10 @@ has gone away.
 
 Content-addressed local catalog envelope, canonical JSON, entry-union, and
 Merkle verification also runs in the bounded directory worker pool rather than
-serially blocking the async runtime. These workers are read-only; a cache miss
-or unavailable acceleration still follows the authenticated revision-pinned
-network path.
+serially blocking the async runtime. A worker may discard only an invalid
+token-scoped cache artifact; it never publishes a destination file. A cache
+miss, corrupt artifact, or unavailable acceleration still follows the
+authenticated revision-pinned network path.
 
 An optional future fs-verity backend may skip that read only when it can bind a
 previously recorded measurement to a kernel-enforced immutable inode. Missing

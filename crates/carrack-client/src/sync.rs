@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest as _, Sha256};
 use std::{
     cell::Cell,
-    collections::VecDeque,
     io::{BufReader, BufWriter, Read as _, Write as _},
     marker::PhantomData,
     path::{Path, PathBuf},
@@ -18,12 +17,15 @@ use crate::{
     catalog::{CatalogEntry, CatalogNode, CatalogStore, merkle_entry},
     download::DownloadExpectation,
     integrity,
+    private_fs::ensure_private_directory,
     vfs::{CatalogCheckpointOutcome, canonical_components},
 };
 
 const LEGACY_STATE_SCHEMA: &str = "carrack.local-sync-state.v1";
 const STATE_SCHEMA: &str = "carrack.local-sync-state.v2";
 const CATALOG_PAGE_SIZE: u32 = 1_000;
+const MAXIMUM_TRANSFER_PART_BYTES: u64 = 256 * 1024 * 1024;
+const MAXIMUM_PIPELINE_CONCURRENCY: usize = 64;
 const MAXIMUM_MEMORY_DIRECTORY_ENTRIES: usize = 20_000;
 const MAXIMUM_SPOOL_RECORD_BYTES: usize = 1024 * 1024;
 static PLAN_SPOOL_ORDINAL: AtomicU64 = AtomicU64::new(0);
@@ -264,6 +266,11 @@ impl StagedLocalReuse {
         })?;
         std::fs::rename(temporary, &self.target)
             .map_err(local_error("publish immutable local reuse"))?;
+        let parent = self
+            .target
+            .parent()
+            .ok_or_else(|| Error::InvalidResponse("local reuse target has no parent".to_owned()))?;
+        sync_publication_directory(parent)?;
         self.temporary = None;
         Ok(self.record.clone())
     }
@@ -340,7 +347,7 @@ struct DestinationLock {
 impl<T> RecordSpool<T> {
     fn create(state_directory: &Path) -> Result<Self, Error> {
         let directory = state_directory.join("sync/plans");
-        protect_directory(&directory)?;
+        ensure_private_directory(&directory, "sync plan spool directory")?;
         loop {
             let ordinal = PLAN_SPOOL_ORDINAL.fetch_add(1, Ordering::Relaxed);
             let path = directory.join(format!(".plan-{}-{ordinal:016x}.spool", std::process::id()));
@@ -488,11 +495,13 @@ struct CatalogFence {
     data_root: String,
 }
 
+#[derive(Deserialize, Serialize)]
 struct PendingDirectory {
     vfs_path: String,
     relative_path: PathBuf,
     directory_id: String,
     data_root: String,
+    #[serde(skip)]
     node: Option<LoadedDirectory>,
 }
 
@@ -522,22 +531,40 @@ impl VfsClient {
     ) -> Result<SyncResult, Error> {
         validate_options(options)?;
         ensure_directory(destination)?;
-        protect_directory(&options.state_directory)?;
+        ensure_private_directory(&options.state_directory, "sync state directory")?;
         let _destination_lock = acquire_sync_lock(destination)?;
         let session = self.session().await?;
         let catalog = CatalogStore::new(&options.state_directory, &session.token_id)?;
         let checkpoint_condition = catalog.checkpoint_condition()?;
-        let bulk_catalog_authorized = match self
+        let checkpoint = match self
             .catalog_checkpoint(&session, checkpoint_condition.as_ref())
-            .await?
+            .await
         {
+            Ok(outcome) => outcome,
+            Err(Error::InvalidResponse(_) | Error::Transport(_)) => {
+                CatalogCheckpointOutcome::Unavailable
+            }
+            Err(error) => return Err(error),
+        };
+        let bulk_catalog_authorized = match checkpoint {
             CatalogCheckpointOutcome::Delivered(delivery) => {
-                catalog.publish_checkpoint(&delivery.checkpoint, &delivery.etag)?;
-                true
+                if catalog
+                    .publish_checkpoint(&delivery.checkpoint, &delivery.etag)
+                    .is_ok()
+                {
+                    true
+                } else {
+                    catalog.discard_head()?;
+                    false
+                }
             }
             CatalogCheckpointOutcome::Delta(delivery) => {
-                catalog.apply_delta(&delivery.delta, &delivery.etag)?;
-                true
+                if catalog.apply_delta(&delivery.delta, &delivery.etag).is_ok() {
+                    true
+                } else {
+                    catalog.discard_head()?;
+                    false
+                }
             }
             CatalogCheckpointOutcome::Unchanged => true,
             CatalogCheckpointOutcome::Unavailable => false,
@@ -687,7 +714,8 @@ impl VfsClient {
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "the authenticated traversal carries explicit catalog, fence, concurrency, and private spool boundaries"
+        clippy::too_many_lines,
+        reason = "the authenticated traversal keeps its catalog fence, bounded disk queue, and planning publication in one reviewable boundary"
     )]
     async fn plan_tree(
         &self,
@@ -714,75 +742,92 @@ impl VfsClient {
         } else {
             source.trim_end_matches('/').to_owned()
         };
-        let mut pending = VecDeque::from([PendingDirectory {
+        let root = PendingDirectory {
             vfs_path: canonical_source,
             relative_path: PathBuf::new(),
             directory_id: root.directory_id.clone(),
             data_root: root.data_root.clone(),
             node: Some(root),
-        }]);
+        };
+        let mut pending: Box<dyn Iterator<Item = Result<PendingDirectory, Error>>> =
+            Box::new(std::iter::once(Ok(root)));
         let mut directories = 0_u64;
-        while !pending.is_empty() {
-            let batch = (0..maximum_concurrency)
-                .filter_map(|_| pending.pop_front())
-                .collect::<Vec<_>>();
-            let mut loaded = stream::iter(batch.into_iter().map(|mut task| async move {
-                let node = match task.node.take() {
-                    Some(node) => node,
-                    None => {
-                        self.load_catalog_node(
-                            catalog,
-                            &task.directory_id,
-                            &task.data_root,
-                            state_directory,
-                            bulk_catalog_authorized,
-                        )
-                        .await?
-                    }
-                };
-                Ok::<_, Error>((task, node))
-            }))
-            .buffer_unordered(maximum_concurrency);
-            while let Some(result) = loaded.next().await {
-                let (task, node) = result?;
-                ensure_directory(&destination.join(&task.relative_path))?;
-                directories += 1;
-                for entry in node.entries {
-                    let entry = entry?;
-                    let child_relative = task.relative_path.join(&entry.name);
-                    let child_vfs = if task.vfs_path.is_empty() {
-                        format!("/{}", entry.name)
-                    } else {
-                        format!("{}/{}", task.vfs_path, entry.name)
+        loop {
+            let mut next = RecordSpool::<PendingDirectory>::create(state_directory)?;
+            let mut next_directories = 0_u64;
+            loop {
+                let batch = pending
+                    .by_ref()
+                    .take(maximum_concurrency)
+                    .collect::<Result<Vec<_>, _>>()?;
+                if batch.is_empty() {
+                    break;
+                }
+                let mut loaded = stream::iter(batch.into_iter().map(|mut task| async move {
+                    let node = match task.node.take() {
+                        Some(node) => node,
+                        None => {
+                            self.load_catalog_node(
+                                catalog,
+                                &task.directory_id,
+                                &task.data_root,
+                                state_directory,
+                                bulk_catalog_authorized,
+                            )
+                            .await?
+                        }
                     };
-                    match entry.kind {
-                        EntryKind::Directory => pending.push_back(PendingDirectory {
-                            vfs_path: child_vfs,
-                            relative_path: child_relative,
-                            directory_id: required(
-                                entry.child_directory_id,
-                                "catalog directory entry omitted child identity",
-                            )?,
-                            data_root: entry.data_root,
-                            node: None,
-                        }),
-                        EntryKind::File => files.append(&PlannedFile {
-                            vfs_path: child_vfs,
-                            relative_path: child_relative,
-                            file_id: required(
-                                entry.file_id,
-                                "catalog file entry omitted file identity",
-                            )?,
-                            version_id: required(
-                                entry.version_id,
-                                "catalog file entry omitted version identity",
-                            )?,
-                            size_bytes: entry.size_bytes,
-                            file_root: entry.data_root,
-                        })?,
+                    Ok::<_, Error>((task, node))
+                }))
+                .buffer_unordered(maximum_concurrency);
+                while let Some(result) = loaded.next().await {
+                    let (task, node) = result?;
+                    ensure_directory(&destination.join(&task.relative_path))?;
+                    directories += 1;
+                    for entry in node.entries {
+                        let entry = entry?;
+                        let child_relative = task.relative_path.join(&entry.name);
+                        let child_vfs = if task.vfs_path.is_empty() {
+                            format!("/{}", entry.name)
+                        } else {
+                            format!("{}/{}", task.vfs_path, entry.name)
+                        };
+                        match entry.kind {
+                            EntryKind::Directory => {
+                                next.append(&PendingDirectory {
+                                    vfs_path: child_vfs,
+                                    relative_path: child_relative,
+                                    directory_id: required(
+                                        entry.child_directory_id,
+                                        "catalog directory entry omitted child identity",
+                                    )?,
+                                    data_root: entry.data_root,
+                                    node: None,
+                                })?;
+                                next_directories += 1;
+                            }
+                            EntryKind::File => files.append(&PlannedFile {
+                                vfs_path: child_vfs,
+                                relative_path: child_relative,
+                                file_id: required(
+                                    entry.file_id,
+                                    "catalog file entry omitted file identity",
+                                )?,
+                                version_id: required(
+                                    entry.version_id,
+                                    "catalog file entry omitted version identity",
+                                )?,
+                                size_bytes: entry.size_bytes,
+                                file_root: entry.data_root,
+                            })?,
+                        }
                     }
                 }
             }
+            if next_directories == 0 {
+                break;
+            }
+            pending = Box::new(next.finish()?);
         }
         let final_page = self.list_directory(&fence.directory_id, None, 1).await?;
         validate_page_identity(
@@ -973,11 +1018,18 @@ async fn load_cached_catalog_node(
     let catalog = catalog.clone();
     let directory_id = directory_id.to_owned();
     let data_root = data_root.to_owned();
-    tokio::task::spawn_blocking(move || catalog.load(&directory_id, &data_root))
-        .await
-        .map_err(|error| {
-            Error::InvalidResponse(format!("local catalog verification worker failed: {error}"))
-        })?
+    tokio::task::spawn_blocking(move || {
+        if let Ok(node) = catalog.load(&directory_id, &data_root) {
+            Ok(node)
+        } else {
+            catalog.discard_node(&directory_id, &data_root)?;
+            Ok(None)
+        }
+    })
+    .await
+    .map_err(|error| {
+        Error::InvalidResponse(format!("local catalog verification worker failed: {error}"))
+    })?
 }
 
 fn validate_page_identity(
@@ -1050,6 +1102,7 @@ async fn download_one(
         ));
     }
     std::fs::rename(&temporary, &target).map_err(local_error("publish synchronized file"))?;
+    sync_publication_directory(parent)?;
     Ok(Downloaded {
         record: StateRecord {
             relative_path: file.relative_path.clone(),
@@ -1217,12 +1270,16 @@ fn stage_local_version(
 }
 
 fn validate_options(options: &SyncOptions) -> Result<(), Error> {
-    if options.transfer_part_bytes == 0
+    if !options.state_directory.is_absolute()
+        || options.transfer_part_bytes == 0
+        || options.transfer_part_bytes > MAXIMUM_TRANSFER_PART_BYTES
         || options.maximum_concurrency == 0
+        || options.maximum_concurrency > MAXIMUM_PIPELINE_CONCURRENCY
         || options.maximum_file_concurrency == 0
+        || options.maximum_file_concurrency > MAXIMUM_PIPELINE_CONCURRENCY
     {
         return Err(Error::InvalidResponse(
-            "sync pipeline bounds must be nonzero".to_owned(),
+            "invalid sync pipeline options".to_owned(),
         ));
     }
     Ok(())
@@ -1376,7 +1433,7 @@ fn write_state(
     let parent = path
         .parent()
         .ok_or_else(|| Error::InvalidResponse("local sync state has no parent".to_owned()))?;
-    protect_directory(parent)?;
+    ensure_private_directory(parent, "sync state database directory")?;
     let (temporary, file) = create_state_temporary(parent)?;
     drop(file);
     let built = build_state_database(&temporary, source, records);
@@ -1556,6 +1613,20 @@ fn sync_state_directory(path: &Path) -> Result<(), Error> {
     }
 }
 
+fn sync_publication_directory(path: &Path) -> Result<(), Error> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(path)
+            .and_then(|directory| directory.sync_all())
+            .map_err(local_error("sync local file publication directory"))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
 fn ensure_directory(path: &Path) -> Result<(), Error> {
     std::fs::create_dir_all(path).map_err(local_error("create local sync directory"))?;
     let metadata =
@@ -1564,17 +1635,6 @@ fn ensure_directory(path: &Path) -> Result<(), Error> {
         return Err(Error::InvalidResponse(
             "local sync directory is not a real directory".to_owned(),
         ));
-    }
-    Ok(())
-}
-
-fn protect_directory(path: &Path) -> Result<(), Error> {
-    ensure_directory(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-            .map_err(local_error("protect local sync state"))?;
     }
     Ok(())
 }
@@ -1596,9 +1656,9 @@ mod tests {
     use sha2::{Digest as _, Sha256};
 
     use super::{
-        LEGACY_STATE_SCHEMA, PlannedFile, RecordSpool, StateIndex, StateRecord, SyncOptions,
-        VfsClient, acquire_sync_lock, open_state_index, retain_bounded, stage_local_version,
-        write_state,
+        LEGACY_STATE_SCHEMA, LocalDisposition, LocalReusePlan, PlannedFile, RecordSpool,
+        StateIndex, StateRecord, SyncOptions, VfsClient, acquire_sync_lock, evaluate_local_file,
+        open_state_index, retain_bounded, stage_local_version, validate_options, write_state,
     };
     use crate::VfsToken;
 
@@ -1613,6 +1673,34 @@ mod tests {
         assert!(retained.is_none());
         retain_bounded(&mut retained, 4_u8, 2);
         assert!(retained.is_none());
+    }
+
+    #[test]
+    fn rejects_unbounded_sync_pipeline_options() {
+        let temporary = tempfile::tempdir().expect("sync options temporary directory");
+        let options =
+            |transfer_part_bytes, maximum_concurrency, maximum_file_concurrency| SyncOptions {
+                state_directory: temporary.path().join("state"),
+                transfer_part_bytes,
+                maximum_concurrency,
+                maximum_file_concurrency,
+            };
+        let valid = options(256 * 1024 * 1024, 64, 64);
+        validate_options(&valid).expect("maximum bounded options");
+
+        for invalid in [
+            SyncOptions {
+                state_directory: "relative/state".into(),
+                transfer_part_bytes: 1024,
+                maximum_concurrency: 1,
+                maximum_file_concurrency: 1,
+            },
+            options(valid.transfer_part_bytes + 1, 64, 64),
+            options(256 * 1024 * 1024, valid.maximum_concurrency + 1, 64),
+            options(256 * 1024 * 1024, 64, valid.maximum_file_concurrency + 1),
+        ] {
+            validate_options(&invalid).expect_err("unbounded sync option must fail closed");
+        }
     }
 
     #[test]
@@ -1876,6 +1964,55 @@ mod tests {
                 .is_none()
         );
         assert!(!destination.join(rejected.relative_path).exists());
+    }
+
+    #[test]
+    fn unchanged_file_uses_no_download_and_local_corruption_forces_download() {
+        let temporary = tempfile::tempdir().expect("local reuse temporary directory");
+        let destination = temporary.path().join("destination");
+        std::fs::create_dir(&destination).expect("create destination");
+        let path = destination.join("unchanged.parquet");
+        std::fs::write(&path, b"authenticated payload").expect("write authenticated payload");
+        let tree = super::integrity::build_file(&path, 4).expect("hash authenticated payload");
+        let record = StateRecord {
+            relative_path: "unchanged.parquet".into(),
+            version_id: "immutable-version".to_owned(),
+            size_bytes: tree.size_bytes,
+            file_root: hex::encode(tree.root),
+            verification_block_bytes: tree.block_bytes,
+        };
+        let file = PlannedFile {
+            vfs_path: "/unchanged.parquet".to_owned(),
+            relative_path: record.relative_path.clone(),
+            file_id: "file-id".to_owned(),
+            version_id: record.version_id.clone(),
+            size_bytes: record.size_bytes,
+            file_root: record.file_root.clone(),
+        };
+        let unchanged = evaluate_local_file(
+            &destination,
+            LocalReusePlan {
+                file: file.clone(),
+                exact: Some(record.clone()),
+                relocated: Vec::new(),
+            },
+        )
+        .expect("evaluate unchanged file");
+        assert!(matches!(unchanged.disposition, LocalDisposition::Reused(_)));
+
+        let corrupt_bytes = usize::try_from(record.size_bytes).expect("test payload length");
+        std::fs::write(&path, vec![b'x'; corrupt_bytes])
+            .expect("corrupt local payload without changing its length");
+        let corrupt = evaluate_local_file(
+            &destination,
+            LocalReusePlan {
+                file,
+                exact: Some(record),
+                relocated: Vec::new(),
+            },
+        )
+        .expect("evaluate corrupt local file");
+        assert!(matches!(corrupt.disposition, LocalDisposition::Download(_)));
     }
 
     #[test]

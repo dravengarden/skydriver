@@ -29,6 +29,7 @@ mod download;
 mod driver;
 mod integrity;
 mod local;
+mod private_fs;
 mod r2;
 mod sync;
 mod transfer;

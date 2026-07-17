@@ -18,6 +18,7 @@ use crate::{
     crypto::{Descriptor, restore_to_staging},
     driver::{DownloadRequest, DriverRegistry},
     integrity,
+    private_fs::ensure_private_directory,
     transfer::TransferTelemetry,
 };
 
@@ -381,24 +382,7 @@ fn acquire_download_staging_lock_blocking(
     version_id: &str,
 ) -> Result<DownloadStagingLock, Error> {
     let _ = parse_identifier(version_id)?;
-    std::fs::create_dir_all(staging_root).map_err(|error| {
-        Error::InvalidResponse(format!("create download staging root: {error}"))
-    })?;
-    let metadata = std::fs::symlink_metadata(staging_root).map_err(|error| {
-        Error::InvalidResponse(format!("inspect download staging root: {error}"))
-    })?;
-    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
-        return Err(Error::InvalidResponse(
-            "download staging root is not a real directory".to_owned(),
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(staging_root, std::fs::Permissions::from_mode(0o700)).map_err(
-            |error| Error::InvalidResponse(format!("protect download staging root: {error}")),
-        )?;
-    }
+    ensure_private_directory(staging_root, "download staging root")?;
     let file = File::open(staging_root)
         .map_err(|error| Error::InvalidResponse(format!("open download staging lock: {error}")))?;
     fs2::FileExt::lock_exclusive(&file)
@@ -457,16 +441,7 @@ struct VerifiedOutputSpool {
 impl VerifiedOutputSpool {
     fn new(staging_root: &Path) -> Result<Self, Error> {
         let root = staging_root.join("verified-outputs");
-        std::fs::create_dir_all(&root).map_err(|error| {
-            Error::InvalidResponse(format!("create verified output root: {error}"))
-        })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).map_err(
-                |error| Error::InvalidResponse(format!("protect verified output root: {error}")),
-            )?;
-        }
+        ensure_private_directory(&root, "verified output root")?;
         loop {
             let ordinal = VERIFIED_OUTPUT_ORDINAL.fetch_add(1, Ordering::Relaxed);
             let directory = root.join(format!(".output-{}-{ordinal:016x}", std::process::id()));
@@ -591,21 +566,24 @@ fn verify_and_publish_plaintext(
     plaintext_bytes: u64,
     file_root: &str,
 ) -> Result<Vec<String>, Error> {
-    let tree = match integrity::build_file(staging, verification_block_bytes) {
-        Ok(tree) => tree,
+    let matches = match integrity::matches_file(
+        staging,
+        verification_block_bytes,
+        plaintext_bytes,
+        file_root,
+    ) {
+        Ok(matches) => matches,
         Err(error) => {
             let _ = std::fs::remove_file(staging);
             return Err(error);
         }
     };
-    if let Err(error) = verify_plaintext_identity(
-        tree.size_bytes,
-        &hex::encode(tree.root),
-        plaintext_bytes,
-        file_root,
-    ) {
+    if !matches {
         let _ = std::fs::remove_file(staging);
-        return Err(error);
+        return Err(Error::failure(
+            crate::FailureKind::CorruptPlaintext,
+            "downloaded plaintext Merkle root differs",
+        ));
     }
     match publish_no_replace(staging, destination) {
         Ok(warnings) => Ok(warnings),
@@ -741,6 +719,7 @@ fn validate_plan(plan: &DownloadPlan, expected: DownloadExpectation<'_>) -> Resu
     Ok(())
 }
 
+#[cfg(test)]
 fn verify_plaintext_identity(
     observed_bytes: u64,
     observed_root: &str,
@@ -757,7 +736,8 @@ fn verify_plaintext_identity(
 }
 
 fn validate_options(options: &GetOptions) -> Result<(), Error> {
-    if options.transfer_part_bytes == 0
+    if !options.staging_directory.is_absolute()
+        || options.transfer_part_bytes == 0
         || options.transfer_part_bytes > 256 * 1024 * 1024
         || options.maximum_concurrency == 0
         || options.maximum_concurrency > 64
@@ -994,6 +974,39 @@ mod tests {
             std::fs::read(&destination).expect("read destination"),
             b"old"
         );
+    }
+
+    #[test]
+    fn no_replace_publication_has_one_atomic_winner_under_race() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let first = directory.path().join("first-staging");
+        let second = directory.path().join("second-staging");
+        let destination = directory.path().join("destination");
+        std::fs::write(&first, b"first").expect("write first staging");
+        std::fs::write(&second, b"second").expect("write second staging");
+        let barrier = std::sync::Barrier::new(2);
+        let results = std::thread::scope(|scope| {
+            let first_publish = scope.spawn(|| {
+                barrier.wait();
+                publish_no_replace(&first, &destination)
+            });
+            let second_publish = scope.spawn(|| {
+                barrier.wait();
+                publish_no_replace(&second, &destination)
+            });
+            [
+                first_publish.join().expect("first publisher"),
+                second_publish.join().expect("second publisher"),
+            ]
+        });
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+        assert!(matches!(
+            std::fs::read(destination)
+                .expect("read atomic winner")
+                .as_slice(),
+            b"first" | b"second"
+        ));
     }
 
     #[test]

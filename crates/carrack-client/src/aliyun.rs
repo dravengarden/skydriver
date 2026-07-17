@@ -12,7 +12,7 @@ use std::{
 };
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::Error;
+use crate::{Error, private_fs::ensure_private_directory};
 
 const MAXIMUM_API_BODY: usize = 8 * 1024 * 1024;
 const MAXIMUM_PARTS: u64 = 10_000;
@@ -535,9 +535,7 @@ impl Client {
         staging_root: &Path,
         expected_bytes: u64,
     ) -> Result<PathBuf, Error> {
-        std::fs::create_dir_all(staging_root).map_err(|error| {
-            Error::InvalidResponse(format!("create Aliyun download staging: {error}"))
-        })?;
+        ensure_private_directory(staging_root, "Aliyun download staging root")?;
         let grant: DownloadUrlResponse = self
             .api(
                 "/adrive/v1.0/openFile/getDownloadUrl",
@@ -576,20 +574,25 @@ impl Client {
                 .send()
                 .await
                 .map_err(|error| provider_transport("download Aliyun range", &error))?;
-            if response.status() != StatusCode::PARTIAL_CONTENT
-                || response
-                    .content_length()
-                    .is_some_and(|bytes| bytes != length)
+            if response.status() != StatusCode::PARTIAL_CONTENT {
+                return Err(provider_status(
+                    "Aliyun range download",
+                    response.status(),
+                    true,
+                ));
+            }
+            if response
+                .content_length()
+                .is_some_and(|bytes| bytes != length)
                 || response
                     .headers()
                     .get("Content-Range")
                     .and_then(|value| value.to_str().ok())
                     != Some(format!("bytes {offset}-{end}/{expected_bytes}").as_str())
             {
-                return Err(provider_status(
-                    "Aliyun range download",
-                    response.status(),
-                    true,
+                return Err(Error::failure(
+                    crate::FailureKind::CorruptCiphertext,
+                    "Aliyun range response identity differs",
                 ));
             }
             let bytes = response
@@ -805,6 +808,61 @@ mod tests {
         )
         .await
         .expect_err("non-empty provider body must not satisfy zero-byte identity");
+        assert_eq!(
+            error.failure_kind(),
+            Some(crate::FailureKind::CorruptCiphertext)
+        );
+        drive_info.assert();
+        grant.assert();
+        provider.assert();
+    }
+
+    #[tokio::test]
+    async fn malformed_partial_content_is_classified_as_corrupt_ciphertext() {
+        let server = MockServer::start();
+        let drive_info = server.mock(|when, then| {
+            when.method(POST).path("/adrive/v1.0/user/getDriveInfo");
+            then.status(200).json_body(json!({
+                "default_drive_id": "drive",
+                "resource_drive_id": "drive",
+                "backup_drive_id": "drive"
+            }));
+        });
+        let download_url = server.url("/download");
+        let grant = server.mock(|when, then| {
+            when.method(POST)
+                .path("/adrive/v1.0/openFile/getDownloadUrl");
+            then.status(200).json_body(json!({"url": download_url}));
+        });
+        let provider = server.mock(|when, then| {
+            when.method(GET)
+                .path("/download")
+                .header("range", "bytes=0-2")
+                .header("Accept-Encoding", "identity");
+            then.status(206)
+                .header("Content-Length", "3")
+                .header("Content-Range", "bytes 0-2/4")
+                .body("abc");
+        });
+        let staging = tempfile::tempdir().expect("temporary staging");
+        let error = download(
+            &reqwest::Client::new(),
+            &json!({
+                "api_base_url": server.base_url(),
+                "drive_type": "resource",
+                "root_folder_id": "root",
+                "upload_part_bytes": 3
+            }),
+            json!({"access_token": "secret"}),
+            "object",
+            Some("file-1"),
+            staging.path(),
+            "version-1",
+            3,
+            &hex::encode(Sha256::digest(b"abc")),
+        )
+        .await
+        .expect_err("wrong complete object length must fail closed");
         assert_eq!(
             error.failure_kind(),
             Some(crate::FailureKind::CorruptCiphertext)
