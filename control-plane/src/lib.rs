@@ -212,6 +212,21 @@ pub async fn main(request: Request, env: Env, context: Context) -> Result<Respon
             },
         )
         .post_async(
+            "/api/v2/read-leases/complete-batch",
+            |mut request, context| async move {
+                let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {
+                    return Response::error("VFS token authentication required", 401);
+                };
+                vfs_download::complete_batch(
+                    &mut request,
+                    &context.env,
+                    &context.data,
+                    &token,
+                )
+                .await
+            },
+        )
+        .post_async(
             "/api/v2/read-leases/:id/complete",
             |mut request, context| async move {
                 let Some(token) = vfs_tokens::authenticate(&request, &context.env).await? else {

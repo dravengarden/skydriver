@@ -241,9 +241,9 @@ struct CommitRequest<'a> {
     telemetry: TransferTelemetry,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct TransferTelemetry {
-    schema: &'static str,
+    schema: String,
     provider_ms: u64,
     total_ms: u64,
     retries: u64,
@@ -252,7 +252,7 @@ pub(crate) struct TransferTelemetry {
 impl TransferTelemetry {
     pub(crate) fn measured(provider: std::time::Duration, total: std::time::Duration) -> Self {
         Self {
-            schema: "carrack.transfer-telemetry.v1",
+            schema: "carrack.transfer-telemetry.v1".to_owned(),
             provider_ms: duration_ms(provider),
             total_ms: duration_ms(total).max(duration_ms(provider)),
             retries: 0,

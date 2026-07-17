@@ -1,5 +1,6 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
 
@@ -20,8 +21,39 @@ struct CompletionRequest {
     telemetry: Option<TransferTelemetry>,
 }
 
+const MAXIMUM_COMPLETION_BATCH_ITEMS: usize = 64;
+const MAXIMUM_COMPLETION_BATCH_BODY_BYTES: usize = 64 * 1024;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompletionBatchRequest {
+    schema: String,
+    completions: Vec<CompletionBatchItem>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompletionBatchItem {
+    read_lease_id: String,
+    telemetry: Option<TransferTelemetry>,
+}
+
+#[derive(Serialize)]
+struct CompletionBatchResponse {
+    schema: &'static str,
+    completed_at: u64,
+    results: Vec<CompletionBatchResult>,
+}
+
+#[derive(Serialize)]
+struct CompletionBatchResult {
+    read_lease_id: String,
+    status: &'static str,
+}
+
 #[derive(Deserialize)]
 struct CompletionIdentityRow {
+    id: String,
     directory_id: String,
     driver_id: String,
     encoded_bytes: u64,
@@ -284,7 +316,7 @@ pub(crate) async fn complete(
     };
     let identity = database
         .prepare(
-            "SELECT origin.directory_id, location.driver_id, version.encoded_bytes
+            "SELECT lease.id, origin.directory_id, location.driver_id, version.encoded_bytes
              FROM vfs_read_leases AS lease
              JOIN vfs_file_versions AS version ON version.id = lease.version_id
              JOIN vfs_version_origins AS origin ON origin.version_id = version.id
@@ -335,6 +367,140 @@ pub(crate) async fn complete(
         "read_lease_id": lease_id,
         "completed_at": now,
     }))
+}
+
+/// Releases a bounded set of independently verified direct-read leases in one
+/// control-plane round trip. The D1 updates commit as one batch; any failure
+/// leaves every lease to its normal expiry fallback.
+#[allow(
+    clippy::too_many_lines,
+    reason = "bounded parsing, identity selection, atomic completion, and telemetry form one batch boundary"
+)]
+pub(crate) async fn complete_batch(
+    request: &mut Request,
+    env: &Env,
+    context: &worker::Context,
+    token: &AuthenticatedVfsToken,
+) -> Result<Response> {
+    if request
+        .headers()
+        .get("Content-Length")?
+        .and_then(|value| value.parse::<usize>().ok())
+        .is_some_and(|length| length > MAXIMUM_COMPLETION_BATCH_BODY_BYTES)
+    {
+        return Response::error("read-lease completion batch body is too large", 413);
+    }
+    let encoded = request.bytes().await?;
+    if encoded.is_empty() || encoded.len() > MAXIMUM_COMPLETION_BATCH_BODY_BYTES {
+        return Response::error("invalid read-lease completion batch body", 400);
+    }
+    let Ok(requested) = serde_json::from_slice::<CompletionBatchRequest>(&encoded) else {
+        return Response::error("invalid read-lease completion batch", 400);
+    };
+    if requested.schema != "carrack.vfs.read-lease-completion-batch.v1"
+        || requested.completions.is_empty()
+        || requested.completions.len() > MAXIMUM_COMPLETION_BATCH_ITEMS
+        || requested
+            .completions
+            .iter()
+            .any(|item| !valid_identifier(&item.read_lease_id))
+    {
+        return Response::error("invalid read-lease completion batch", 400);
+    }
+    let mut unique = HashSet::with_capacity(requested.completions.len());
+    if requested
+        .completions
+        .iter()
+        .any(|item| !unique.insert(item.read_lease_id.as_str()))
+    {
+        return Response::error("duplicate VFS read lease ID", 400);
+    }
+
+    let database = env.d1("CARRACK_INDEX")?;
+    let placeholders = (1..=requested.completions.len())
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let token_parameter = requested.completions.len() + 1;
+    let sql = format!(
+        "SELECT lease.id, origin.directory_id, location.driver_id, version.encoded_bytes
+         FROM vfs_read_leases AS lease
+         JOIN vfs_file_versions AS version ON version.id = lease.version_id
+         JOIN vfs_version_origins AS origin ON origin.version_id = version.id
+         JOIN vfs_locations AS location ON location.id = lease.location_id
+         WHERE lease.id IN ({placeholders}) AND lease.token_id = ?{token_parameter}"
+    );
+    let mut bindings = requested
+        .completions
+        .iter()
+        .map(|item| JsValue::from_str(&item.read_lease_id))
+        .collect::<Vec<_>>();
+    bindings.push(JsValue::from_str(&token.id));
+    let identities = database
+        .prepare(&sql)
+        .bind(&bindings)?
+        .all()
+        .await?
+        .results::<CompletionIdentityRow>()?
+        .into_iter()
+        .map(|identity| (identity.id.clone(), identity))
+        .collect::<HashMap<_, _>>();
+    if identities.len() != requested.completions.len() {
+        return Response::error("one or more VFS read leases were not found", 404);
+    }
+
+    let now = Date::now().as_millis() / 1_000;
+    let statements = requested
+        .completions
+        .iter()
+        .map(|item| {
+            database
+                .prepare(
+                    "UPDATE vfs_read_leases SET completed_at = COALESCE(completed_at, ?1)
+                     WHERE id = ?2 AND token_id = ?3",
+                )
+                .bind(&[
+                    JsValue::from_str(&now.to_string()),
+                    JsValue::from_str(&item.read_lease_id),
+                    JsValue::from_str(&token.id),
+                ])
+        })
+        .collect::<Result<Vec<_>>>()?;
+    database.batch(statements).await?;
+
+    for item in &requested.completions {
+        let Some(identity) = identities.get(&item.read_lease_id) else {
+            return Err(worker::Error::RustError(
+                "read-lease completion identity changed during batching".to_owned(),
+            ));
+        };
+        transfer_metrics::schedule(
+            context,
+            env,
+            OwnedTransferIdentity {
+                operation_id: item.read_lease_id.clone(),
+                direction: "download",
+                driver_id: identity.driver_id.clone(),
+                token_id: token.id.clone(),
+                directory_id: identity.directory_id.clone(),
+                encoded_bytes: identity.encoded_bytes,
+            },
+            item.telemetry.clone(),
+            now,
+        );
+    }
+    Response::from_json(&CompletionBatchResponse {
+        schema: "carrack.vfs.read-lease-completion-batch.v1",
+        completed_at: now,
+        results: requested
+            .completions
+            .into_iter()
+            .map(|item| CompletionBatchResult {
+                read_lease_id: item.read_lease_id,
+                status: "completed",
+            })
+            .collect(),
+    })
 }
 
 async fn load(database: &worker::D1Database, version_id: &str) -> Result<Option<DownloadRow>> {

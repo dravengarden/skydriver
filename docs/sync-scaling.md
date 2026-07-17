@@ -59,11 +59,19 @@ over this optimization.
 ## Control-plane request model
 
 Changed files independently request one immutable download plan and create one
-read lease. Plans run concurrently under the configured file bound, payload
-bytes bypass the Worker, and completion is idempotent. A single HTTP batch
-would not remove the per-version location, inherited ACL, credential freshness,
-lease, and audit decisions. It would enlarge the secret response and failure
-domain while saving only multiplexed request framing.
+read lease. Plans run concurrently under the configured file bound and payload
+bytes bypass the Worker. Successful lease completions are written to an
+owner-private bounded record spool so they do not occupy a payload concurrency
+slot, then released in batches of at most 64. A batch is one authenticated HTTP
+request, one D1 identity query, and one atomic D1 update batch; malformed or
+partial responses fall back to the original idempotent per-lease endpoint, and
+any remaining failure safely relies on lease expiry. Completion metadata is
+never an input to file verification or publication.
+
+A single download-plan HTTP batch would not remove the per-version location,
+inherited ACL, credential freshness, lease, and audit decisions. It would
+enlarge the secret response and failure domain while saving only multiplexed
+request framing.
 
 Carrack therefore keeps the simple single-version authority protocol until
 measurements show control-plane framing, rather than provider payload or the

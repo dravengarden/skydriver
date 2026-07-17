@@ -15,7 +15,7 @@ use std::{
 use crate::{
     CatalogWatchEvent, DirectoryPage, EntryKind, Error, GetOptions, VfsClient,
     catalog::{CatalogEntry, CatalogNode, CatalogStore, merkle_entry},
-    download::DownloadExpectation,
+    download::{DownloadExpectation, ReadLeaseCompletion},
     integrity,
     private_fs::ensure_private_directory,
     vfs::{CatalogCheckpointOutcome, canonical_components},
@@ -28,6 +28,7 @@ const MAXIMUM_TRANSFER_PART_BYTES: u64 = 256 * 1024 * 1024;
 const MAXIMUM_PIPELINE_CONCURRENCY: usize = 64;
 const MAXIMUM_MEMORY_DIRECTORY_ENTRIES: usize = 20_000;
 const MAXIMUM_SPOOL_RECORD_BYTES: usize = 1024 * 1024;
+const READ_LEASE_COMPLETION_BATCH_ITEMS: usize = 64;
 static PLAN_SPOOL_ORDINAL: AtomicU64 = AtomicU64::new(0);
 static STATE_TEMPORARY_ORDINAL: AtomicU64 = AtomicU64::new(0);
 static LOCAL_REUSE_ORDINAL: AtomicU64 = AtomicU64::new(0);
@@ -236,6 +237,7 @@ fn decode_state_row(
 struct Downloaded {
     record: StateRecord,
     warnings: Vec<String>,
+    completion: ReadLeaseCompletion,
 }
 
 struct LocalReusePlan {
@@ -724,6 +726,7 @@ impl VfsClient {
         .buffer_unordered(maximum_concurrency);
         let mut downloaded_bytes = 0_u64;
         let mut downloaded_files = 0_u64;
+        let mut completions = RecordSpool::<ReadLeaseCompletion>::create(&options.state_directory)?;
         loop {
             let downloaded = if let Some(watch) = catalog_watch.as_mut() {
                 tokio::select! {
@@ -747,7 +750,9 @@ impl VfsClient {
             downloaded_files += 1;
             warnings.extend(downloaded.warnings);
             records.append(&downloaded.record)?;
+            completions.append(&downloaded.completion)?;
         }
+        warnings.extend(complete_read_lease_spool(self, completions.finish()?).await);
         let final_page = self.list_directory(&fence.directory_id, None, 1).await?;
         validate_page_identity(
             &final_page,
@@ -1145,8 +1150,8 @@ async fn download_one(
     if temporary.exists() {
         std::fs::remove_file(&temporary).map_err(local_error("remove stale sync temporary"))?;
     }
-    let result = client
-        .get_file_version(
+    let (result, completion) = client
+        .get_file_version_deferred_completion(
             &file.vfs_path,
             DownloadExpectation::new(
                 &file.file_id,
@@ -1179,7 +1184,39 @@ async fn download_one(
             verification_block_bytes: result.verification_block_bytes,
         },
         warnings: result.warnings,
+        completion,
     })
+}
+
+async fn complete_read_lease_spool(
+    client: &VfsClient,
+    mut completions: RecordSpoolReader<ReadLeaseCompletion>,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    loop {
+        let mut batch = Vec::with_capacity(READ_LEASE_COMPLETION_BATCH_ITEMS);
+        while batch.len() < READ_LEASE_COMPLETION_BATCH_ITEMS {
+            match completions.next() {
+                Some(Ok(completion)) => batch.push(completion),
+                Some(Err(error)) => {
+                    warnings.push(format!(
+                        "The verified files were published, but their read-lease completion spool could not be read and remaining leases will rely on expiry: {error}"
+                    ));
+                    return warnings;
+                }
+                None => break,
+            }
+        }
+        if batch.is_empty() {
+            break;
+        }
+        if let Err(error) = client.complete_read_leases(&batch).await {
+            warnings.push(format!(
+                "The verified files were published, but a read-lease completion batch will rely on expiry: {error}"
+            ));
+        }
+    }
+    warnings
 }
 
 fn local_matches(path: &Path, record: &StateRecord) -> Result<bool, Error> {

@@ -25,10 +25,39 @@ use crate::{
 const VERIFIED_OUTPUT_COPY_BUFFER_BYTES: usize = 1024 * 1024;
 static VERIFIED_OUTPUT_ORDINAL: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Serialize)]
-struct CompletionRequest {
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ReadLeaseCompletion {
+    read_lease_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     telemetry: Option<TransferTelemetry>,
+}
+
+#[derive(Serialize)]
+struct CompletionRequest<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    telemetry: Option<&'a TransferTelemetry>,
+}
+
+#[derive(Serialize)]
+struct CompletionBatchRequest<'a> {
+    schema: &'static str,
+    completions: &'a [ReadLeaseCompletion],
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompletionBatchResponse {
+    schema: String,
+    completed_at: u64,
+    results: Vec<CompletionBatchResult>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompletionBatchResult {
+    read_lease_id: String,
+    status: String,
 }
 
 #[derive(Deserialize)]
@@ -223,6 +252,22 @@ impl VfsClient {
             .await
     }
 
+    pub(crate) async fn get_file_version_deferred_completion(
+        &self,
+        vfs_path: &str,
+        expected: DownloadExpectation<'_>,
+        destination: &Path,
+        options: &GetOptions,
+    ) -> Result<(GetResult, ReadLeaseCompletion), Error> {
+        let (result, completion) = self
+            .download_expected_file(vfs_path, expected, destination, options, true)
+            .await?;
+        let completion = completion.ok_or_else(|| {
+            Error::InvalidResponse("deferred download omitted read-lease completion".to_owned())
+        })?;
+        Ok((result, completion))
+    }
+
     async fn get_expected_file(
         &self,
         vfs_path: &str,
@@ -230,6 +275,19 @@ impl VfsClient {
         destination: &Path,
         options: &GetOptions,
     ) -> Result<GetResult, Error> {
+        self.download_expected_file(vfs_path, expected, destination, options, false)
+            .await
+            .map(|(result, _)| result)
+    }
+
+    async fn download_expected_file(
+        &self,
+        vfs_path: &str,
+        expected: DownloadExpectation<'_>,
+        destination: &Path,
+        options: &GetOptions,
+        defer_successful_completion: bool,
+    ) -> Result<(GetResult, Option<ReadLeaseCompletion>), Error> {
         validate_options(options)?;
         let _staging_lock =
             acquire_download_staging_lock(&options.staging_directory, expected.version_id).await?;
@@ -249,34 +307,96 @@ impl VfsClient {
         let outcome = self
             .finish_download(vfs_path, destination, options, &mut plan)
             .await;
-        let completion = CompletionRequest {
+        let completion = ReadLeaseCompletion {
+            read_lease_id: plan.read_lease_id.clone(),
             telemetry: outcome.as_ref().ok().map(|(_, provider_elapsed)| {
                 TransferTelemetry::measured(*provider_elapsed, transfer_started.elapsed())
             }),
         };
-        let release = self
-            .control
-            .send_json::<Value, CompletionRequest>(
-                Method::POST,
-                &format!("api/v2/read-leases/{}/complete", plan.read_lease_id),
-                Some(&token),
-                &[],
-                Some(&completion),
-            )
-            .await;
         match outcome {
+            Ok((result, _)) if defer_successful_completion => Ok((result, Some(completion))),
             Ok((mut result, _)) => {
-                if let Err(error) = release {
+                if let Err(error) = self.complete_read_lease(&token, &completion).await {
                     result.warnings.push(format!(
                         "The verified file was published, but read-lease completion will rely on expiry: {error}"
                     ));
                 }
-                Ok(result)
+                Ok((result, None))
             }
             Err(error) => {
-                let _ = release;
+                let _ = self.complete_read_lease(&token, &completion).await;
                 Err(error)
             }
+        }
+    }
+
+    async fn complete_read_lease(
+        &self,
+        token: &str,
+        completion: &ReadLeaseCompletion,
+    ) -> Result<(), Error> {
+        self.control
+            .send_json::<Value, CompletionRequest<'_>>(
+                Method::POST,
+                &format!("api/v2/read-leases/{}/complete", completion.read_lease_id),
+                Some(token),
+                &[],
+                Some(&CompletionRequest {
+                    telemetry: completion.telemetry.as_ref(),
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn complete_read_leases(
+        &self,
+        completions: &[ReadLeaseCompletion],
+    ) -> Result<(), Error> {
+        let token = self.token.encode();
+        let batched = self
+            .control
+            .send_json::<CompletionBatchResponse, CompletionBatchRequest<'_>>(
+                Method::POST,
+                "api/v2/read-leases/complete-batch",
+                Some(&token),
+                &[],
+                Some(&CompletionBatchRequest {
+                    schema: "carrack.vfs.read-lease-completion-batch.v1",
+                    completions,
+                }),
+            )
+            .await;
+        if let Ok(response) = batched {
+            let valid = response.schema == "carrack.vfs.read-lease-completion-batch.v1"
+                && response.completed_at != 0
+                && response.results.len() == completions.len()
+                && response
+                    .results
+                    .iter()
+                    .zip(completions)
+                    .all(|(result, expected)| {
+                        result.read_lease_id == expected.read_lease_id
+                            && result.status == "completed"
+                    });
+            if valid {
+                return Ok(());
+            }
+        }
+        // Rolling upgrades and transient batch failures retain the original
+        // idempotent endpoint as a correctness-neutral fallback.
+        let mut failed = 0_usize;
+        for completion in completions {
+            if self.complete_read_lease(&token, completion).await.is_err() {
+                failed += 1;
+            }
+        }
+        if failed == 0 {
+            Ok(())
+        } else {
+            Err(Error::InvalidResponse(format!(
+                "{failed} read leases could not be completed and will rely on expiry"
+            )))
         }
     }
 
@@ -796,13 +916,30 @@ mod tests {
 
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use carrack_driver_contract::DriverKind;
+    use httpmock::{Method::POST, MockServer};
     use serde_json::json;
 
     use super::{
-        DownloadExpectation, DownloadPlan, VerifiedOutputSpool,
+        DownloadExpectation, DownloadPlan, ReadLeaseCompletion, VerifiedOutputSpool,
         acquire_download_staging_lock_blocking, copy_verified_output, publish_no_replace,
         validate_plan, verify_and_publish_plaintext, verify_plaintext_identity,
     };
+    use crate::{VfsClient, VfsToken};
+
+    fn client(server: &MockServer) -> VfsClient {
+        VfsClient::new(
+            &format!("{}/", server.base_url()),
+            VfsToken::parse(&URL_SAFE_NO_PAD.encode([7_u8; 32])).expect("VFS token"),
+        )
+        .expect("VFS client")
+    }
+
+    fn completion(id: &str) -> ReadLeaseCompletion {
+        ReadLeaseCompletion {
+            read_lease_id: id.to_owned(),
+            telemetry: None,
+        }
+    }
 
     fn valid_plan() -> DownloadPlan {
         DownloadPlan {
@@ -859,6 +996,75 @@ mod tests {
             Some(crate::FailureKind::CorruptPlaintext)
         );
         assert!(verify_plaintext_identity(3, "expected", 3, "expected").is_ok());
+    }
+
+    #[tokio::test]
+    async fn read_lease_completion_uses_one_bounded_batch() {
+        let server = MockServer::start_async().await;
+        let first = "11111111111111111111111111111111";
+        let second = "22222222222222222222222222222222";
+        let batch = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/api/v2/read-leases/complete-batch")
+                    .json_body(json!({
+                        "schema": "carrack.vfs.read-lease-completion-batch.v1",
+                        "completions": [
+                            {"read_lease_id": first},
+                            {"read_lease_id": second}
+                        ]
+                    }));
+                then.status(200).json_body(json!({
+                    "schema": "carrack.vfs.read-lease-completion-batch.v1",
+                    "completed_at": 1,
+                    "results": [
+                        {"read_lease_id": first, "status": "completed"},
+                        {"read_lease_id": second, "status": "completed"}
+                    ]
+                }));
+            })
+            .await;
+        client(&server)
+            .complete_read_leases(&[completion(first), completion(second)])
+            .await
+            .expect("complete batch");
+        batch.assert_hits_async(1).await;
+    }
+
+    #[tokio::test]
+    async fn read_lease_completion_falls_back_to_individual_endpoint() {
+        let server = MockServer::start_async().await;
+        let first = "11111111111111111111111111111111";
+        let second = "22222222222222222222222222222222";
+        let batch = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/api/v2/read-leases/complete-batch");
+                then.status(404).body("not deployed");
+            })
+            .await;
+        let first_release = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path(format!("/api/v2/read-leases/{first}/complete"))
+                    .json_body(json!({}));
+                then.status(200).json_body(json!({"completed": true}));
+            })
+            .await;
+        let second_release = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path(format!("/api/v2/read-leases/{second}/complete"))
+                    .json_body(json!({}));
+                then.status(200).json_body(json!({"completed": true}));
+            })
+            .await;
+        client(&server)
+            .complete_read_leases(&[completion(first), completion(second)])
+            .await
+            .expect("single-endpoint fallback");
+        batch.assert_hits_async(1).await;
+        first_release.assert_hits_async(1).await;
+        second_release.assert_hits_async(1).await;
     }
 
     #[test]
