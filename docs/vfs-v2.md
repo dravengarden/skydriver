@@ -426,19 +426,21 @@ hard errors rather than restart hints.
 
 The local planner has bounded queues for source reads, hashing, encryption,
 provider I/O, verification, local publication, and batched metadata commits.
-Memory is limited by total in-flight bytes rather than file count. Each driver
-has independent concurrency, rate, and retry budgets.
+Memory is limited by total in-flight bytes rather than file count. The caller
+configures separate bounded file and per-file part concurrency, and the driver
+registry applies each compiled adapter's stricter capability limit.
 
 Small files use file-level concurrency. Large files use parallel multipart
 uploads or parallel range downloads when the driver advertises them. A driver
 that permits only sequential resumable chunks still participates in the same
 pipeline with per-file concurrency one while other files continue in parallel.
 
-Adaptive concurrency reacts to measured throughput, latency, throttling,
-quota, and provider errors. It never exceeds the driver's advertised safe
-limits. Control-plane progress and completion reports are buffered and batched;
-temporary metadata latency does not stall payload work while a prepared plan
-window remains.
+The current native client does not automatically tune these bounds from one
+transfer's timing. Such a controller would need multiple samples, explicit
+throttle evidence, and a stable driver-specific policy; a future optional
+controller must never exceed the compiled driver's advertised safe limits.
+Control-plane completion reports are buffered and batched, while a bounded
+prepared-plan window overlaps metadata latency with payload work.
 
 ## Driver contract and degradation
 

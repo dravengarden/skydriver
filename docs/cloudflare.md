@@ -197,6 +197,13 @@ export CARRACK_ALIYUN_DRIVER_ID='<enabled dev Aliyun driver>'
 CARRACK_ALIYUN_LIVE_TEST=1 tests/aliyun-live.sh
 ```
 
+The attenuated token must grant `directory.list`, `content.read`,
+`content.write`, `driver.use`, and `entry.delete` on only the test directory,
+and its driver scope must include the selected Aliyun driver. `content.write`
+alone is deliberately insufficient: choosing or entering a storage driver also
+requires `driver.use`. Keep the one-time bearer in an owner-private secret file
+or secret injection and revoke it after the acceptance run.
+
 The script never prints credentials, provider locators, or signed URLs. Its
 remove verifies namespace deletion; physical deletion remains subject to the
 normal server grace and scheduled GC rather than weakening production safety
@@ -215,6 +222,11 @@ export CARRACK_CONTROL_URL=https://dev.carrack.stormbird.xyz
 export CARRACK_VFS_TOKEN='<short-lived dev acceptance token>'
 CARRACK_R2_LIVE_TEST=1 tests/r2-live.sh
 ```
+
+The R2 token needs the same five actions and must be scoped to `r2-default`.
+It may share a test-directory token with the Aliyun acceptance only when both
+driver IDs are explicitly present; neither test needs `driver.manage`,
+`acl.manage`, operator authority, or root filesystem scope.
 
 This live test is opt-in and is not part of `just verify`; the hermetic gate
 checks its shell contract and metric arithmetic only. Set
