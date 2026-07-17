@@ -30,6 +30,7 @@ mod driver;
 mod integrity;
 mod local;
 mod private_fs;
+mod publication;
 mod r2;
 mod sync;
 mod transfer;

@@ -34,6 +34,14 @@ without creating a shared inode, then verifies the complete staging file again
 before atomic publication. Any lookup, copy, or proof failure retains the
 provider download path, so this acceleration cannot publish unverified bytes.
 
+Verified plaintext publication is bound to the already-open staging file, not
+to a pathname looked up again after verification. Native Unix builds link that
+descriptor through the operating system's fd namespace into a random sibling
+and then use a directory-fd-relative atomic rename; ordinary `get` links the
+same descriptor directly with no replacement. A missing fd-link primitive
+fails closed. A concurrent staging-path substitution therefore cannot change
+the inode selected for publication.
+
 Warm-file hashing and rename staging run through the same configured bounded
 file concurrency as provider downloads, but in a separate phase so the two
 budgets do not multiply. Blocking workers may return only RAII-owned private
@@ -75,6 +83,12 @@ request, one D1 identity query, and one atomic D1 update batch; malformed or
 partial responses fall back to the original idempotent per-lease endpoint, and
 any remaining failure safely relies on lease expiry. Completion metadata is
 never an input to file verification or publication.
+
+Every private sync spool record carries an ordinal-bound HMAC under an
+in-memory per-spool random key and is authenticated before deserialization or
+use. Exhaustion additionally verifies the expected record count, order, and
+complete spool SHA-256. Mutation, reordering, and record-boundary truncation
+therefore fail closed; no spool is durable or irreplaceable state.
 
 A single download-plan HTTP batch would not remove the per-version location,
 inherited ACL, credential freshness, lease, and audit decisions. It would

@@ -550,17 +550,7 @@ impl Client {
         if expected_bytes == 0 {
             self.verify_empty_download(url.clone()).await?;
         }
-        let temporary = staging_root.join(format!(".{file_id}.aliyun-readback"));
-        if temporary.exists() {
-            std::fs::remove_file(&temporary).map_err(|error| {
-                Error::InvalidResponse(format!("reset Aliyun download: {error}"))
-            })?;
-        }
-        let mut output = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-            .map_err(|error| Error::InvalidResponse(format!("create Aliyun download: {error}")))?;
+        let (temporary, mut output) = create_download_staging_file(staging_root)?;
         let mut offset = 0_u64;
         let range_bytes = self.upload_part_bytes;
         while offset < expected_bytes {
@@ -675,6 +665,33 @@ impl Client {
     }
 }
 
+fn create_download_staging_file(staging_root: &Path) -> Result<(PathBuf, std::fs::File), Error> {
+    loop {
+        let mut nonce = [0_u8; 16];
+        getrandom::fill(&mut nonce).map_err(|error| {
+            Error::InvalidResponse(format!("generate Aliyun staging identity: {error}"))
+        })?;
+        let temporary =
+            staging_root.join(format!(".carrack-aliyun-readback-{}", hex::encode(nonce)));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        match options.open(&temporary) {
+            Ok(output) => return Ok((temporary, output)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(Error::InvalidResponse(format!(
+                    "create Aliyun download: {error}"
+                )));
+            }
+        }
+    }
+}
+
 fn provider_transport(operation: &str, error: &reqwest::Error) -> Error {
     Error::failure(
         crate::FailureKind::ProviderUnavailable,
@@ -731,7 +748,23 @@ mod tests {
     use serde_json::json;
     use sha2::{Digest as _, Sha256};
 
-    use super::{FileRecord, download, provider_status, upload};
+    use super::{FileRecord, create_download_staging_file, download, provider_status, upload};
+
+    #[test]
+    fn download_staging_identity_is_carrack_owned() {
+        let staging = tempfile::tempdir().expect("temporary staging");
+        let (path, file) =
+            create_download_staging_file(staging.path()).expect("create staging file");
+        drop(file);
+
+        assert_eq!(path.parent(), Some(staging.path()));
+        assert!(
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(".carrack-aliyun-readback-"))
+        );
+        assert!(path.is_file());
+    }
 
     #[test]
     fn normalizes_nullable_folder_metadata() {

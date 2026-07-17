@@ -17,8 +17,8 @@ use crate::{
     Error, VfsClient,
     crypto::{Descriptor, restore_to_staging},
     driver::{DownloadRequest, DriverRegistry},
-    integrity,
     private_fs::ensure_private_directory,
+    publication::VerifiedPublication,
     transfer::TransferTelemetry,
 };
 
@@ -277,7 +277,7 @@ impl VfsClient {
         let prepared = self.prepare_file_version(expected).await?;
         self.finish_prepared_file(vfs_path, prepared, destination, options, false)
             .await
-            .map(|(result, _)| result)
+            .map(|(result, _, _)| result)
     }
 
     pub(crate) async fn prepare_file_version(
@@ -311,30 +311,46 @@ impl VfsClient {
         destination: &Path,
         options: &GetOptions,
         defer_successful_completion: bool,
-    ) -> Result<(GetResult, Option<ReadLeaseCompletion>), Error> {
+    ) -> Result<
+        (
+            GetResult,
+            Option<ReadLeaseCompletion>,
+            Option<VerifiedPublication>,
+        ),
+        Error,
+    > {
         validate_options(options)?;
         let _staging_lock =
             acquire_download_staging_lock(&options.staging_directory, &prepared.plan.version_id)
                 .await?;
         let token = self.token.encode();
         let outcome = self
-            .finish_download(vfs_path, destination, options, &mut prepared.plan)
+            .finish_download(
+                vfs_path,
+                destination,
+                options,
+                &mut prepared.plan,
+                defer_successful_completion,
+            )
             .await;
         let completion = ReadLeaseCompletion {
             read_lease_id: prepared.plan.read_lease_id.clone(),
-            telemetry: outcome.as_ref().ok().map(|(_, provider_elapsed)| {
+            telemetry: outcome.as_ref().ok().map(|(_, provider_elapsed, _)| {
                 TransferTelemetry::measured(*provider_elapsed, prepared.transfer_started.elapsed())
             }),
         };
         match outcome {
-            Ok((result, _)) if defer_successful_completion => Ok((result, Some(completion))),
-            Ok((mut result, _)) => {
+            Ok((result, _, publication)) if defer_successful_completion => {
+                Ok((result, Some(completion), publication))
+            }
+            Ok((mut result, _, publication)) => {
+                debug_assert!(publication.is_none());
                 if let Err(error) = self.complete_read_lease(&token, &completion).await {
                     result.warnings.push(format!(
                         "The verified file was published, but read-lease completion will rely on expiry: {error}"
                     ));
                 }
-                Ok((result, None))
+                Ok((result, None, None))
             }
             Err(error) => {
                 let _ = self.complete_read_lease(&token, &completion).await;
@@ -419,7 +435,8 @@ impl VfsClient {
         destination: &Path,
         options: &GetOptions,
         plan: &mut DownloadPlan,
-    ) -> Result<(GetResult, Duration), Error> {
+        defer_publication: bool,
+    ) -> Result<(GetResult, Duration, Option<VerifiedPublication>), Error> {
         let provider_started = Instant::now();
         let mut opened_driver = DriverRegistry::open(
             &plan.driver_kind,
@@ -462,13 +479,17 @@ impl VfsClient {
             key.zeroize();
         }
         let plaintext_staging = plaintext_staging?;
-        let mut warnings = verify_and_publish_plaintext(
+        let publication = VerifiedPublication::open(
             &plaintext_staging,
-            destination,
             plan.verification_block_bytes,
             plan.plaintext_bytes,
             &plan.file_root,
         )?;
+        let (mut warnings, publication) = if defer_publication {
+            (Vec::new(), Some(publication))
+        } else {
+            (publication.publish_no_replace(destination)?, None)
+        };
         warnings.extend(opened_driver.download_warnings(options.maximum_concurrency));
         if let Err(error) = std::fs::remove_file(&encoded) {
             warnings.push(format!(
@@ -487,6 +508,7 @@ impl VfsClient {
                 warnings,
             },
             provider_elapsed,
+            publication,
         ))
     }
 }
@@ -692,6 +714,7 @@ fn copy_verified_output<W: Write>(
         .map_err(|error| Error::InvalidResponse(format!("flush verified output: {error}")))
 }
 
+#[cfg(test)]
 fn verify_and_publish_plaintext(
     staging: &Path,
     destination: &Path,
@@ -699,77 +722,13 @@ fn verify_and_publish_plaintext(
     plaintext_bytes: u64,
     file_root: &str,
 ) -> Result<Vec<String>, Error> {
-    let matches = match integrity::matches_file(
+    VerifiedPublication::open(
         staging,
         verification_block_bytes,
         plaintext_bytes,
         file_root,
-    ) {
-        Ok(matches) => matches,
-        Err(error) => {
-            let _ = std::fs::remove_file(staging);
-            return Err(error);
-        }
-    };
-    if !matches {
-        let _ = std::fs::remove_file(staging);
-        return Err(Error::failure(
-            crate::FailureKind::CorruptPlaintext,
-            "downloaded plaintext Merkle root differs",
-        ));
-    }
-    match publish_no_replace(staging, destination) {
-        Ok(warnings) => Ok(warnings),
-        Err(error) => {
-            let _ = std::fs::remove_file(staging);
-            Err(error)
-        }
-    }
-}
-
-fn publish_no_replace(staging: &Path, destination: &Path) -> Result<Vec<String>, Error> {
-    let parent = destination
-        .parent()
-        .ok_or_else(|| Error::InvalidResponse("download destination has no parent".to_owned()))?;
-    std::fs::hard_link(staging, destination).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::AlreadyExists {
-            Error::InvalidResponse("download destination already exists".to_owned())
-        } else {
-            Error::InvalidResponse(format!(
-                "publish downloaded file without replacement: {error}"
-            ))
-        }
-    })?;
-    let mut warnings = Vec::new();
-    if let Err(error) = sync_directory(parent) {
-        warnings.push(format!(
-            "The verified file was published, but its directory sync failed: {error}"
-        ));
-    }
-    if let Err(error) = std::fs::remove_file(staging) {
-        warnings.push(format!(
-            "The verified file was published, but plaintext staging cleanup was deferred: {error}"
-        ));
-    } else if let Err(error) = sync_directory(parent) {
-        warnings.push(format!(
-            "The verified file was published, but staging cleanup directory sync failed: {error}"
-        ));
-    }
-    Ok(warnings)
-}
-
-fn sync_directory(path: &Path) -> Result<(), Error> {
-    #[cfg(unix)]
-    {
-        std::fs::File::open(path)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| Error::InvalidResponse(format!("sync download directory: {error}")))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        Ok(())
-    }
+    )?
+    .publish_no_replace(destination)
 }
 
 fn validate_plan(plan: &DownloadPlan, expected: DownloadExpectation<'_>) -> Result<(), Error> {
@@ -934,10 +893,17 @@ mod tests {
 
     use super::{
         DownloadExpectation, DownloadPlan, ReadLeaseCompletion, VerifiedOutputSpool,
-        acquire_download_staging_lock_blocking, copy_verified_output, publish_no_replace,
-        validate_plan, verify_and_publish_plaintext, verify_plaintext_identity,
+        acquire_download_staging_lock_blocking, copy_verified_output, validate_plan,
+        verify_and_publish_plaintext, verify_plaintext_identity,
     };
-    use crate::{VfsClient, VfsToken};
+    use crate::{VfsClient, VfsToken, publication::VerifiedPublication};
+
+    fn verified(path: &std::path::Path, payload: &[u8]) -> VerifiedPublication {
+        let root =
+            hex::encode(carrack_sdk_core::file_merkle_root(payload, 4).expect("plaintext root"));
+        VerifiedPublication::open(path, 4, payload.len() as u64, &root)
+            .expect("verified publication")
+    }
 
     fn client(server: &MockServer) -> VfsClient {
         VfsClient::new(
@@ -1187,7 +1153,9 @@ mod tests {
         std::fs::write(&staging, b"new").expect("write plaintext staging");
         std::fs::write(&destination, b"old").expect("write existing destination");
 
-        publish_no_replace(&staging, &destination).expect_err("reject replacement");
+        verified(&staging, b"new")
+            .publish_no_replace(&destination)
+            .expect_err("reject replacement");
 
         assert_eq!(
             std::fs::read(&destination).expect("read destination"),
@@ -1207,11 +1175,11 @@ mod tests {
         let results = std::thread::scope(|scope| {
             let first_publish = scope.spawn(|| {
                 barrier.wait();
-                publish_no_replace(&first, &destination)
+                verified(&first, b"first").publish_no_replace(&destination)
             });
             let second_publish = scope.spawn(|| {
                 barrier.wait();
-                publish_no_replace(&second, &destination)
+                verified(&second, b"second").publish_no_replace(&destination)
             });
             [
                 first_publish.join().expect("first publisher"),

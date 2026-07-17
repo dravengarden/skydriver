@@ -232,7 +232,7 @@ authority_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
 [[ "$(jq -r '.token_id' <<<"$authority_receipt")" == "$token_id" ]]
 [[ "$(jq -r '.token' "$authority_file")" == "$token" ]]
 [[ "$(stat -c '%a' "$authority_file")" == 600 ]]
-[[ "$(grep -c "$token" <<<"$authority_receipt")" == 0 ]]
+[[ "$(grep --fixed-strings --count -- "$token" <<<"$authority_receipt")" == 0 ]]
 
 access_snapshot=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
   "$rust_carrackctl" access show --control-url "$base_url" --format json)

@@ -1,6 +1,6 @@
 //! Canonical Carrack file Merkle and block-manifest implementation.
 
-use std::io::Read as _;
+use std::io::{Read as _, Seek as _};
 use std::path::Path;
 
 const MAXIMUM_BLOCKS: usize = 1_000_000;
@@ -117,9 +117,41 @@ pub(crate) fn matches_file(
     let before = file
         .metadata()
         .map_err(|error| crate::Error::InvalidResponse(format!("inspect local file: {error}")))?;
+    if !matches_open_file(&mut file, block_bytes, expected_size_bytes, expected_root)? {
+        return Ok(false);
+    }
+    let after = file
+        .metadata()
+        .map_err(|error| crate::Error::InvalidResponse(format!("reinspect local file: {error}")))?;
+    let current_path = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(crate::Error::InvalidResponse(format!(
+                "reinspect local file path: {error}"
+            )));
+        }
+    };
+    Ok(before.len() == after.len()
+        && before.modified().ok() == after.modified().ok()
+        && same_file_identity(&before, &current_path))
+}
+
+pub(crate) fn matches_open_file(
+    file: &mut std::fs::File,
+    block_bytes: u64,
+    expected_size_bytes: u64,
+    expected_root: &str,
+) -> Result<bool, crate::Error> {
+    let before = file.metadata().map_err(|error| {
+        crate::Error::InvalidResponse(format!("inspect open local file: {error}"))
+    })?;
     if !before.is_file() || before.len() != expected_size_bytes {
         return Ok(false);
     }
+    file.seek(std::io::SeekFrom::Start(0)).map_err(|error| {
+        crate::Error::InvalidResponse(format!("rewind open local file: {error}"))
+    })?;
     let capacity = usize::try_from(block_bytes.min(expected_size_bytes)).map_err(|_| {
         crate::Error::InvalidResponse("verification block size exceeds this platform".to_owned())
     })?;
@@ -150,22 +182,10 @@ pub(crate) fn matches_file(
     {
         return Ok(false);
     }
-    let after = file
-        .metadata()
-        .map_err(|error| crate::Error::InvalidResponse(format!("reinspect local file: {error}")))?;
-    let current_path = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => {
-            return Err(crate::Error::InvalidResponse(format!(
-                "reinspect local file path: {error}"
-            )));
-        }
-    };
-    if before.len() != after.len()
-        || before.modified().ok() != after.modified().ok()
-        || !same_file_identity(&before, &current_path)
-    {
+    let after = file.metadata().map_err(|error| {
+        crate::Error::InvalidResponse(format!("reinspect open local file: {error}"))
+    })?;
+    if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
         return Ok(false);
     }
     let root = accumulator

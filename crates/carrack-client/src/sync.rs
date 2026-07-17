@@ -1,6 +1,7 @@
 //! Incremental, verified VFS-directory synchronization to a local tree.
 
 use futures_util::{StreamExt as _, stream};
+use hmac::{Hmac, Mac as _};
 use rusqlite::OptionalExtension as _;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest as _, Sha256};
@@ -11,6 +12,7 @@ use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
+use zeroize::Zeroize as _;
 
 use crate::{
     CatalogWatchEvent, DirectoryPage, EntryKind, Error, GetOptions, VfsClient,
@@ -18,6 +20,7 @@ use crate::{
     download::{DownloadExpectation, PreparedDownload, ReadLeaseCompletion},
     integrity,
     private_fs::ensure_private_directory,
+    publication::{VerifiedPublication, open_verified_file},
     vfs::{CatalogCheckpointOutcome, canonical_components},
 };
 
@@ -29,6 +32,8 @@ const MAXIMUM_PIPELINE_CONCURRENCY: usize = 64;
 const MAXIMUM_MEMORY_DIRECTORY_ENTRIES: usize = 20_000;
 const MAXIMUM_SPOOL_RECORD_BYTES: usize = 1024 * 1024;
 const READ_LEASE_COMPLETION_BATCH_ITEMS: usize = 64;
+const SPOOL_RECORD_TAG_BYTES: usize = 32;
+const SPOOL_RECORD_TAG_DOMAIN: &[u8] = b"carrack.sync-record-spool.v1\0";
 static PLAN_SPOOL_ORDINAL: AtomicU64 = AtomicU64::new(0);
 static STATE_TEMPORARY_ORDINAL: AtomicU64 = AtomicU64::new(0);
 static LOCAL_REUSE_ORDINAL: AtomicU64 = AtomicU64::new(0);
@@ -291,45 +296,39 @@ struct LocalEvaluation {
 }
 
 struct StagedLocalReuse {
-    temporary: Option<PathBuf>,
+    publication: Option<VerifiedPublication>,
     target: PathBuf,
     record: StateRecord,
 }
 
 impl StagedLocalReuse {
-    fn publish(mut self) -> Result<StateRecord, Error> {
-        let temporary = self.temporary.as_ref().ok_or_else(|| {
+    fn publish(mut self) -> Result<(StateRecord, Vec<String>), Error> {
+        let publication = self.publication.take().ok_or_else(|| {
             Error::InvalidResponse("local reuse staging identity is missing".to_owned())
         })?;
-        std::fs::rename(temporary, &self.target)
-            .map_err(local_error("publish immutable local reuse"))?;
-        let parent = self
-            .target
-            .parent()
-            .ok_or_else(|| Error::InvalidResponse("local reuse target has no parent".to_owned()))?;
-        sync_publication_directory(parent)?;
-        self.temporary = None;
-        Ok(self.record.clone())
-    }
-}
-
-impl Drop for StagedLocalReuse {
-    fn drop(&mut self) {
-        if let Some(temporary) = self.temporary.take() {
-            let _ = std::fs::remove_file(temporary);
-        }
+        let warnings = publication.publish_replace(&self.target)?;
+        Ok((self.record.clone(), warnings))
     }
 }
 
 struct RecordSpool<T> {
     path: Option<PathBuf>,
     writer: Option<BufWriter<std::fs::File>>,
+    digest: Sha256,
+    records: u64,
+    authentication_key: [u8; 32],
     record: PhantomData<T>,
 }
 
 struct RecordSpoolReader<T> {
     path: Option<PathBuf>,
     file: std::fs::File,
+    expected_digest: [u8; 32],
+    expected_records: u64,
+    observed_digest: Sha256,
+    observed_records: u64,
+    finished: bool,
+    authentication_key: [u8; 32],
     record: PhantomData<T>,
 }
 
@@ -385,6 +384,10 @@ impl<T> RecordSpool<T> {
     fn create(state_directory: &Path) -> Result<Self, Error> {
         let directory = state_directory.join("sync/plans");
         ensure_private_directory(&directory, "sync plan spool directory")?;
+        let mut authentication_key = [0_u8; 32];
+        getrandom::fill(&mut authentication_key).map_err(|error| {
+            Error::InvalidResponse(format!("generate sync spool authentication key: {error}"))
+        })?;
         loop {
             let ordinal = PLAN_SPOOL_ORDINAL.fetch_add(1, Ordering::Relaxed);
             let path = directory.join(format!(".plan-{}-{ordinal:016x}.spool", std::process::id()));
@@ -408,6 +411,9 @@ impl<T> RecordSpool<T> {
                     return Ok(Self {
                         path: Some(path),
                         writer: Some(BufWriter::new(file)),
+                        digest: Sha256::new(),
+                        records: 0,
+                        authentication_key,
                         record: PhantomData,
                     });
                 }
@@ -436,10 +442,24 @@ impl<T> RecordSpool<T> {
             .writer
             .as_mut()
             .ok_or_else(|| Error::InvalidResponse("sync record spool is sealed".to_owned()))?;
+        let tag = spool_record_tag(
+            &self.authentication_key,
+            self.records,
+            length.to_be_bytes(),
+            &encoded,
+        )?;
         writer
             .write_all(&length.to_be_bytes())
             .and_then(|()| writer.write_all(&encoded))
+            .and_then(|()| writer.write_all(&tag))
             .map_err(local_error("write sync record spool"))?;
+        self.digest.update(length.to_be_bytes());
+        self.digest.update(&encoded);
+        self.digest.update(tag);
+        self.records = self
+            .records
+            .checked_add(1)
+            .ok_or_else(|| Error::InvalidResponse("sync spool record count overflow".to_owned()))?;
         Ok(())
     }
 
@@ -469,6 +489,12 @@ impl<T> RecordSpool<T> {
         Ok(RecordSpoolReader {
             path: Some(path),
             file,
+            expected_digest: self.digest.clone().finalize().into(),
+            expected_records: self.records,
+            observed_digest: Sha256::new(),
+            observed_records: 0,
+            finished: false,
+            authentication_key: self.authentication_key,
             record: PhantomData,
         })
     }
@@ -476,6 +502,7 @@ impl<T> RecordSpool<T> {
 
 impl<T> Drop for RecordSpool<T> {
     fn drop(&mut self) {
+        self.authentication_key.zeroize();
         if let Some(path) = self.path.take() {
             let _ = std::fs::remove_file(path);
         }
@@ -489,26 +516,80 @@ where
     type Item = Result<T, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
         let mut encoded_length = [0_u8; 4];
         match self.file.read(&mut encoded_length[..1]) {
-            Ok(0) => return None,
+            Ok(0) => {
+                self.finished = true;
+                let observed_digest: [u8; 32] = self.observed_digest.clone().finalize().into();
+                if self.observed_records != self.expected_records
+                    || observed_digest != self.expected_digest
+                {
+                    return Some(Err(Error::InvalidResponse(
+                        "sync record spool seal differs".to_owned(),
+                    )));
+                }
+                return None;
+            }
             Ok(1) => {}
             Ok(_) => unreachable!("one-byte read returned more than one byte"),
-            Err(error) => return Some(Err(local_error("read sync record spool")(error))),
+            Err(error) => {
+                self.finished = true;
+                return Some(Err(local_error("read sync record spool")(error)));
+            }
         }
         if let Err(error) = self.file.read_exact(&mut encoded_length[1..]) {
+            self.finished = true;
             return Some(Err(local_error("read sync spool record length")(error)));
         }
         let length = u32::from_be_bytes(encoded_length) as usize;
         if length == 0 || length > MAXIMUM_SPOOL_RECORD_BYTES {
+            self.finished = true;
             return Some(Err(Error::InvalidResponse(
                 "sync spool record length is invalid".to_owned(),
             )));
         }
         let mut encoded = vec![0_u8; length];
         if let Err(error) = self.file.read_exact(&mut encoded) {
+            self.finished = true;
             return Some(Err(local_error("read sync spool record")(error)));
         }
+        let mut tag = [0_u8; SPOOL_RECORD_TAG_BYTES];
+        if let Err(error) = self.file.read_exact(&mut tag) {
+            self.finished = true;
+            return Some(Err(local_error("read sync spool record tag")(error)));
+        }
+        let expected_tag = match spool_record_tag(
+            &self.authentication_key,
+            self.observed_records,
+            encoded_length,
+            &encoded,
+        ) {
+            Ok(tag) => tag,
+            Err(error) => {
+                self.finished = true;
+                return Some(Err(error));
+            }
+        };
+        if tag != expected_tag {
+            self.finished = true;
+            return Some(Err(Error::InvalidResponse(
+                "sync spool record authentication differs".to_owned(),
+            )));
+        }
+        self.observed_digest.update(encoded_length);
+        self.observed_digest.update(&encoded);
+        self.observed_digest.update(tag);
+        self.observed_records = if let Some(records) = self.observed_records.checked_add(1) {
+            records
+        } else {
+            self.finished = true;
+            return Some(Err(Error::InvalidResponse(
+                "sync spool record count overflow".to_owned(),
+            )));
+        };
         Some(
             serde_json::from_slice(&encoded).map_err(|error| {
                 Error::InvalidResponse(format!("decode sync spool record: {error}"))
@@ -519,10 +600,27 @@ where
 
 impl<T> Drop for RecordSpoolReader<T> {
     fn drop(&mut self) {
+        self.authentication_key.zeroize();
         if let Some(path) = self.path.take() {
             let _ = std::fs::remove_file(path);
         }
     }
+}
+
+fn spool_record_tag(
+    authentication_key: &[u8; 32],
+    ordinal: u64,
+    encoded_length: [u8; 4],
+    encoded: &[u8],
+) -> Result<[u8; SPOOL_RECORD_TAG_BYTES], Error> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(authentication_key).map_err(|error| {
+        Error::InvalidResponse(format!("initialize sync spool authentication: {error}"))
+    })?;
+    mac.update(SPOOL_RECORD_TAG_DOMAIN);
+    mac.update(&ordinal.to_be_bytes());
+    mac.update(&encoded_length);
+    mac.update(encoded);
+    Ok(mac.finalize().into_bytes().into())
 }
 
 struct CatalogFence {
@@ -693,7 +791,8 @@ impl VfsClient {
                             reused_files += 1;
                         }
                         LocalDisposition::Staged(staged) => match staged.publish() {
-                            Ok(record) => {
+                            Ok((record, publication_warnings)) => {
+                                warnings.extend(publication_warnings);
                                 records.append(&record)?;
                                 reused_files += 1;
                             }
@@ -1195,19 +1294,11 @@ async fn download_one(
         .parent()
         .ok_or_else(|| Error::InvalidResponse("sync target has no parent".to_owned()))?;
     ensure_directory(parent)?;
-    let file_name = target
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| Error::InvalidResponse("sync target filename is not UTF-8".to_owned()))?;
-    let temporary = parent.join(format!(".{file_name}.carrack-{}.tmp", file.version_id));
-    if temporary.exists() {
-        std::fs::remove_file(&temporary).map_err(local_error("remove stale sync temporary"))?;
-    }
-    let (result, completion) = client
+    let (mut result, completion, publication) = client
         .finish_prepared_file(
             &file.vfs_path,
             download,
-            &temporary,
+            &target,
             &GetOptions {
                 staging_directory: state_directory.join("downloads").join(&file.version_id),
                 transfer_part_bytes,
@@ -1220,13 +1311,16 @@ async fn download_one(
         Error::InvalidResponse("sync download omitted deferred completion".to_owned())
     })?;
     if result.version_id != file.version_id || result.file_root != file.file_root {
-        let _ = std::fs::remove_file(&temporary);
         return Err(Error::InvalidResponse(
             "sync download identity changed".to_owned(),
         ));
     }
-    std::fs::rename(&temporary, &target).map_err(local_error("publish synchronized file"))?;
-    sync_publication_directory(parent)?;
+    let publication = publication.ok_or_else(|| {
+        Error::InvalidResponse("sync download omitted verified publication".to_owned())
+    })?;
+    result
+        .warnings
+        .extend(publication.publish_replace(&target)?);
     Ok(Downloaded {
         record: StateRecord {
             relative_path: file.relative_path.clone(),
@@ -1390,9 +1484,18 @@ fn stage_local_version(
     candidate: &StateRecord,
 ) -> Result<Option<StagedLocalReuse>, Error> {
     let source = destination.join(&candidate.relative_path);
-    if !local_matches(&source, candidate)? {
-        return Ok(None);
-    }
+    let mut input = match open_verified_file(
+        &source,
+        candidate.verification_block_bytes,
+        candidate.size_bytes,
+        &candidate.file_root,
+    ) {
+        Ok(file) => file,
+        Err(error) if error.failure_kind() == Some(crate::FailureKind::CorruptPlaintext) => {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
     let target = destination.join(&file.relative_path);
     let parent = target
         .parent()
@@ -1422,8 +1525,6 @@ fn stage_local_version(
         }
     };
     let copied = (|| -> Result<(), Error> {
-        let input = std::fs::File::open(&source)
-            .map_err(local_error("open immutable local reuse source"))?;
         let metadata = input
             .metadata()
             .map_err(local_error("inspect immutable local reuse source"))?;
@@ -1436,7 +1537,7 @@ fn stage_local_version(
             .size_bytes
             .checked_add(1)
             .ok_or_else(|| Error::InvalidResponse("local reuse size overflow".to_owned()))?;
-        let copied_bytes = std::io::copy(&mut input.take(maximum_copy_bytes), &mut output)
+        let copied_bytes = std::io::copy(&mut (&mut input).take(maximum_copy_bytes), &mut output)
             .map_err(local_error("copy immutable local reuse source"))?;
         if copied_bytes != candidate.size_bytes {
             return Err(Error::InvalidResponse(
@@ -1447,19 +1548,20 @@ fn stage_local_version(
             .sync_all()
             .map_err(local_error("sync immutable local reuse temporary"))?;
         drop(output);
-        if !local_matches(&temporary, candidate)? {
-            return Err(Error::InvalidResponse(
-                "local immutable-version copy changed during verification".to_owned(),
-            ));
-        }
         Ok(())
     })();
     if let Err(error) = copied {
         let _ = std::fs::remove_file(&temporary);
         return Err(error);
     }
+    let publication = VerifiedPublication::open(
+        &temporary,
+        candidate.verification_block_bytes,
+        candidate.size_bytes,
+        &candidate.file_root,
+    )?;
     Ok(Some(StagedLocalReuse {
-        temporary: Some(temporary),
+        publication: Some(publication),
         target,
         record: StateRecord {
             relative_path: file.relative_path.clone(),
@@ -1815,20 +1917,6 @@ fn sync_state_directory(path: &Path) -> Result<(), Error> {
     }
 }
 
-fn sync_publication_directory(path: &Path) -> Result<(), Error> {
-    #[cfg(unix)]
-    {
-        std::fs::File::open(path)
-            .and_then(|directory| directory.sync_all())
-            .map_err(local_error("sync local file publication directory"))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        Ok(())
-    }
-}
-
 fn ensure_directory(path: &Path) -> Result<(), Error> {
     std::fs::create_dir_all(path).map_err(local_error("create local sync directory"))?;
     let metadata =
@@ -1861,10 +1949,11 @@ mod tests {
 
     use super::{
         CatalogFence, LEGACY_STATE_SCHEMA, LocalDisposition, LocalReusePlan,
-        MAXIMUM_MEMORY_DIRECTORY_ENTRIES, PlanMessage, PlannedFile, RecordSpool, StateIndex,
-        StateRecord, SyncOptions, VfsClient, acquire_sync_lock, evaluate_local_file,
-        open_state_index, retain_bounded, stage_local_version, start_plan_producer,
-        validate_options, validate_page_identity, validate_watch_fence, write_state,
+        MAXIMUM_MEMORY_DIRECTORY_ENTRIES, PlanMessage, PlannedFile, RecordSpool,
+        SPOOL_RECORD_TAG_BYTES, StateIndex, StateRecord, SyncOptions, VfsClient, acquire_sync_lock,
+        evaluate_local_file, open_state_index, retain_bounded, stage_local_version,
+        start_plan_producer, validate_options, validate_page_identity, validate_watch_fence,
+        write_state,
     };
     use crate::{
         CatalogWatchEvent, Directory, DirectoryEntry, DirectoryPage, EntryKind, Error, VfsToken,
@@ -2140,6 +2229,77 @@ mod tests {
     }
 
     #[test]
+    fn plan_spool_rejects_equal_length_record_mutation_before_yielding() {
+        let temporary = tempfile::tempdir().expect("sync plan temporary directory");
+        let mut spool =
+            RecordSpool::<PlannedFile>::create(temporary.path()).expect("create sync plan spool");
+        spool
+            .append(&PlannedFile {
+                vfs_path: "/first.parquet".to_owned(),
+                relative_path: "first.parquet".into(),
+                file_id: "first-file".to_owned(),
+                version_id: "first-version".to_owned(),
+                size_bytes: 11,
+                file_root: "11".repeat(32),
+            })
+            .expect("append plan record");
+        let mut reader = spool.finish().expect("seal sync plan spool");
+        let path = reader.path.clone().expect("reader spool path");
+        let mut bytes = std::fs::read(&path).expect("read sealed spool");
+        let needle = b"first-version";
+        let offset = bytes
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .expect("version in spool");
+        bytes[offset] = b'x';
+        std::fs::write(&path, bytes).expect("mutate sealed spool");
+
+        assert!(
+            reader.next().expect("authentication error").is_err(),
+            "mutated record must not be yielded"
+        );
+    }
+
+    #[test]
+    fn plan_spool_rejects_record_boundary_truncation_at_final_seal() {
+        let temporary = tempfile::tempdir().expect("sync plan temporary directory");
+        let mut spool =
+            RecordSpool::<PlannedFile>::create(temporary.path()).expect("create sync plan spool");
+        for ordinal in 0..2 {
+            spool
+                .append(&PlannedFile {
+                    vfs_path: format!("/file-{ordinal}"),
+                    relative_path: format!("file-{ordinal}").into(),
+                    file_id: format!("file-{ordinal}"),
+                    version_id: format!("version-{ordinal}"),
+                    size_bytes: ordinal,
+                    file_root: "11".repeat(32),
+                })
+                .expect("append plan record");
+        }
+        let mut reader = spool.finish().expect("seal sync plan spool");
+        let path = reader.path.clone().expect("reader spool path");
+        let bytes = std::fs::read(&path).expect("read sealed spool");
+        let first_length = u32::from_be_bytes(bytes[..4].try_into().expect("record length"));
+        let first_frame_bytes = 4_u64 + u64::from(first_length) + SPOOL_RECORD_TAG_BYTES as u64;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open sealed spool")
+            .set_len(first_frame_bytes)
+            .expect("truncate at record boundary");
+
+        reader
+            .next()
+            .expect("first record")
+            .expect("authenticated first record");
+        assert!(
+            reader.next().expect("final seal error").is_err(),
+            "truncated sequence must fail its final seal"
+        );
+    }
+
+    #[test]
     fn sync_state_publication_is_atomic_and_ignores_legacy_temporary_name() {
         let temporary = tempfile::tempdir().expect("sync state temporary directory");
         let path = temporary.path().join("tokens/token/source.sqlite3");
@@ -2299,7 +2459,8 @@ mod tests {
             .expect("stage immutable local version")
             .expect("matching immutable version");
         assert!(!destination.join(&planned.relative_path).exists());
-        let record = staged.publish().expect("publish immutable local version");
+        let (record, warnings) = staged.publish().expect("publish immutable local version");
+        assert!(warnings.is_empty());
 
         assert_eq!(record.relative_path, planned.relative_path);
         assert_eq!(
@@ -2328,9 +2489,13 @@ mod tests {
         let staged = stage_local_version(&destination, &cancelled, &candidate)
             .expect("stage cancelled local version")
             .expect("matching cancelled version");
-        let staged_path = staged
-            .temporary
-            .clone()
+        let staged_path = std::fs::read_dir(destination.join("cancelled"))
+            .expect("read cancelled staging parent")
+            .map(|entry| entry.expect("cancelled staging entry").path())
+            .find(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().contains("carrack-reuse"))
+            })
             .expect("cancelled staging identity");
         assert!(staged_path.is_file());
         drop(staged);
