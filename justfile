@@ -22,6 +22,10 @@ lint:
     pnpm --filter @carrack/web check
     pnpm --filter @carrack/web lint
 
+dependencies:
+    cargo deny check
+    cargo machete --with-metadata
+
 test:
     bash tests/architecture-boundaries.sh
     control-plane/tests/schema-retirement.sh
@@ -113,4 +117,4 @@ check-r2-prod:
     env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_TOKEN_FACTORY_API_TOKEN -u CARRACK_OPERATOR_CREDENTIAL -u CARRACK_VFS_TOKEN cargo build -p carrack-cli --bin carrackctl --locked
     node control-plane/scripts/provision-default-r2.mjs prod --check
 
-verify: check-format lint test build
+verify: check-format lint dependencies test build

@@ -89,6 +89,8 @@
             rustToolchain
             sccache
             cargo-nextest
+            cargo-deny
+            cargo-machete
             rust-analyzer
             worker-build
             nodejs_24

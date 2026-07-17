@@ -2072,14 +2072,14 @@ mod tests {
             Some(PlanMessage::File(file)) if file.is_ok()
         ));
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while mocks[2].hits_async().await != 1 {
+            while mocks[2].calls_async().await != 1 {
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
         })
         .await
         .expect("the next plan was not prefetched before the bounded deadline");
         assert_eq!(
-            mocks[2].hits_async().await,
+            mocks[2].calls_async().await,
             1,
             "the next plan was not prefetched while an earlier payload could be active"
         );
@@ -2151,7 +2151,7 @@ mod tests {
         let elapsed = started.elapsed();
 
         assert_eq!(received, FILES);
-        assert_eq!(plan.hits_async().await, FILES);
+        assert_eq!(plan.calls_async().await, FILES);
         eprintln!(
             "changed-path planning: paths={FILES}, immutable_versions=1, \
              concurrency={PLAN_CONCURRENCY}, bearer HTTP requests={FILES}, \
@@ -2834,10 +2834,10 @@ mod tests {
             assert!(destination.join("docs").is_dir());
         }
 
-        session.assert_hits_async(2).await;
-        checkpoint_delivery.assert_hits_async(2).await;
-        root_fence.assert_hits_async(6).await;
-        child_catalog.assert_hits_async(0).await;
+        session.assert_calls_async(2).await;
+        checkpoint_delivery.assert_calls_async(2).await;
+        root_fence.assert_calls_async(6).await;
+        child_catalog.assert_calls_async(0).await;
     }
 
     #[test]

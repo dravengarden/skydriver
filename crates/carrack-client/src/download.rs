@@ -1041,7 +1041,7 @@ mod tests {
             .complete_read_leases(&[completion(first), completion(second)])
             .await
             .expect("complete batch");
-        batch.assert_hits_async(1).await;
+        batch.assert_calls_async(1).await;
     }
 
     #[tokio::test]
@@ -1075,9 +1075,9 @@ mod tests {
             .complete_read_leases(&[completion(first), completion(second)])
             .await
             .expect("single-endpoint fallback");
-        batch.assert_hits_async(1).await;
-        first_release.assert_hits_async(1).await;
-        second_release.assert_hits_async(1).await;
+        batch.assert_calls_async(1).await;
+        first_release.assert_calls_async(1).await;
+        second_release.assert_calls_async(1).await;
     }
 
     #[test]

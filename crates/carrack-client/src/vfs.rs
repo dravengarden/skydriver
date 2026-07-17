@@ -1881,7 +1881,7 @@ mod tests {
             Err(Error::InvalidResponse(message))
                 if message.contains("VFS session token identity")
         ));
-        delivery.assert_hits_async(1).await;
+        delivery.assert_calls_async(1).await;
     }
 
     #[tokio::test]
@@ -1917,7 +1917,7 @@ mod tests {
             Err(Error::InvalidResponse(message))
                 if message == "catalog directory entry union is invalid"
         ));
-        delivery.assert_hits_async(1).await;
+        delivery.assert_calls_async(1).await;
     }
 
     #[tokio::test]
@@ -1941,7 +1941,7 @@ mod tests {
             Err(Error::InvalidResponse(message))
                 if message == "paged VFS directory Merkle root differs"
         ));
-        delivery.assert_hits_async(1).await;
+        delivery.assert_calls_async(1).await;
     }
 
     #[test]
@@ -2066,7 +2066,7 @@ mod tests {
                 .expect("optional checkpoint request"),
             CatalogCheckpointOutcome::Unavailable
         ));
-        delivery.assert_hits_async(1).await;
+        delivery.assert_calls_async(1).await;
     }
 
     #[tokio::test]
@@ -2098,7 +2098,7 @@ mod tests {
                 .expect("unchanged checkpoint"),
             CatalogCheckpointOutcome::Unchanged
         ));
-        delivery.assert_hits_async(1).await;
+        delivery.assert_calls_async(1).await;
     }
 
     #[tokio::test]
@@ -2147,6 +2147,6 @@ mod tests {
             Err(Error::InvalidResponse(message))
                 if message == "catalog checkpoint transport receipt differs"
         ));
-        delivery.assert_hits_async(1).await;
+        delivery.assert_calls_async(1).await;
     }
 }

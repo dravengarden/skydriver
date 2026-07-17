@@ -1018,14 +1018,14 @@ mod tests {
         .await
         .expect("download complete object");
         assert_eq!(std::fs::read(restored).expect("read restored"), b"abc");
-        drive_info.assert_hits(2);
+        drive_info.assert_calls(2);
         create.assert();
         part_one.assert();
         part_two.assert();
         complete.assert();
         list.assert();
-        grant.assert_hits(2);
-        range_one.assert_hits(2);
-        range_two.assert_hits(2);
+        grant.assert_calls(2);
+        range_one.assert_calls(2);
+        range_two.assert_calls(2);
     }
 }

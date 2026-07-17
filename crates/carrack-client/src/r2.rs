@@ -859,7 +859,7 @@ mod tests {
                 .len(),
             0
         );
-        object.assert_hits_async(1).await;
+        object.assert_calls_async(1).await;
     }
 
     #[tokio::test]
@@ -1219,8 +1219,8 @@ mod tests {
             error.failure_kind(),
             Some(crate::FailureKind::CorruptCiphertext)
         );
-        first.assert_hits_async(0).await;
-        second.assert_hits_async(1).await;
+        first.assert_calls_async(0).await;
+        second.assert_calls_async(1).await;
     }
 
     #[test]
