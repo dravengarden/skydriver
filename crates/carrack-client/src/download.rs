@@ -23,6 +23,7 @@ use crate::{
 };
 
 const VERIFIED_OUTPUT_COPY_BUFFER_BYTES: usize = 1024 * 1024;
+const MAXIMUM_DOWNLOAD_PLAN_BODY_BYTES: usize = 256 * 1024;
 static VERIFIED_OUTPUT_ORDINAL: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -95,6 +96,31 @@ struct DownloadPlan {
     directory_key: Option<String>,
     read_lease_id: String,
     expires_at: u64,
+}
+
+impl Drop for DownloadPlan {
+    fn drop(&mut self) {
+        if let Some(directory_key) = self.directory_key.as_mut() {
+            directory_key.zeroize();
+        }
+        if let Some(credential) = self.credential.as_mut() {
+            zeroize_json_value(credential);
+        }
+    }
+}
+
+fn zeroize_json_value(value: &mut Value) {
+    match value {
+        Value::String(value) => value.zeroize(),
+        Value::Array(values) => values.iter_mut().for_each(zeroize_json_value),
+        Value::Object(values) => values.values_mut().for_each(zeroize_json_value),
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+pub(crate) struct PreparedDownload {
+    plan: DownloadPlan,
+    transfer_started: Instant,
 }
 
 /// Verified native file download result.
@@ -248,69 +274,56 @@ impl VfsClient {
         destination: &Path,
         options: &GetOptions,
     ) -> Result<GetResult, Error> {
-        self.get_expected_file(vfs_path, expected, destination, options)
-            .await
-    }
-
-    pub(crate) async fn get_file_version_deferred_completion(
-        &self,
-        vfs_path: &str,
-        expected: DownloadExpectation<'_>,
-        destination: &Path,
-        options: &GetOptions,
-    ) -> Result<(GetResult, ReadLeaseCompletion), Error> {
-        let (result, completion) = self
-            .download_expected_file(vfs_path, expected, destination, options, true)
-            .await?;
-        let completion = completion.ok_or_else(|| {
-            Error::InvalidResponse("deferred download omitted read-lease completion".to_owned())
-        })?;
-        Ok((result, completion))
-    }
-
-    async fn get_expected_file(
-        &self,
-        vfs_path: &str,
-        expected: DownloadExpectation<'_>,
-        destination: &Path,
-        options: &GetOptions,
-    ) -> Result<GetResult, Error> {
-        self.download_expected_file(vfs_path, expected, destination, options, false)
+        let prepared = self.prepare_file_version(expected).await?;
+        self.finish_prepared_file(vfs_path, prepared, destination, options, false)
             .await
             .map(|(result, _)| result)
     }
 
-    async fn download_expected_file(
+    pub(crate) async fn prepare_file_version(
+        &self,
+        expected: DownloadExpectation<'_>,
+    ) -> Result<PreparedDownload, Error> {
+        let transfer_started = Instant::now();
+        let token = self.token.encode();
+        let plan: DownloadPlan = self
+            .control
+            .send_json_bounded::<DownloadPlan, ()>(
+                Method::GET,
+                &format!("api/v2/versions/{}/download", expected.version_id),
+                Some(&token),
+                &[],
+                None,
+                MAXIMUM_DOWNLOAD_PLAN_BODY_BYTES,
+            )
+            .await?;
+        validate_plan(&plan, expected)?;
+        Ok(PreparedDownload {
+            plan,
+            transfer_started,
+        })
+    }
+
+    pub(crate) async fn finish_prepared_file(
         &self,
         vfs_path: &str,
-        expected: DownloadExpectation<'_>,
+        mut prepared: PreparedDownload,
         destination: &Path,
         options: &GetOptions,
         defer_successful_completion: bool,
     ) -> Result<(GetResult, Option<ReadLeaseCompletion>), Error> {
         validate_options(options)?;
         let _staging_lock =
-            acquire_download_staging_lock(&options.staging_directory, expected.version_id).await?;
-        let transfer_started = Instant::now();
+            acquire_download_staging_lock(&options.staging_directory, &prepared.plan.version_id)
+                .await?;
         let token = self.token.encode();
-        let mut plan: DownloadPlan = self
-            .control
-            .send_json::<DownloadPlan, ()>(
-                Method::GET,
-                &format!("api/v2/versions/{}/download", expected.version_id),
-                Some(&token),
-                &[],
-                None,
-            )
-            .await?;
-        validate_plan(&plan, expected)?;
         let outcome = self
-            .finish_download(vfs_path, destination, options, &mut plan)
+            .finish_download(vfs_path, destination, options, &mut prepared.plan)
             .await;
         let completion = ReadLeaseCompletion {
-            read_lease_id: plan.read_lease_id.clone(),
+            read_lease_id: prepared.plan.read_lease_id.clone(),
             telemetry: outcome.as_ref().ok().map(|(_, provider_elapsed)| {
-                TransferTelemetry::measured(*provider_elapsed, transfer_started.elapsed())
+                TransferTelemetry::measured(*provider_elapsed, prepared.transfer_started.elapsed())
             }),
         };
         match outcome {

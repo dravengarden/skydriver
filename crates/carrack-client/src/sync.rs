@@ -15,7 +15,7 @@ use std::{
 use crate::{
     CatalogWatchEvent, DirectoryPage, EntryKind, Error, GetOptions, VfsClient,
     catalog::{CatalogEntry, CatalogNode, CatalogStore, merkle_entry},
-    download::{DownloadExpectation, ReadLeaseCompletion},
+    download::{DownloadExpectation, PreparedDownload, ReadLeaseCompletion},
     integrity,
     private_fs::ensure_private_directory,
     vfs::{CatalogCheckpointOutcome, canonical_components},
@@ -238,6 +238,39 @@ struct Downloaded {
     record: StateRecord,
     warnings: Vec<String>,
     completion: ReadLeaseCompletion,
+}
+
+struct PreparedPlannedFile {
+    file: PlannedFile,
+    download: PreparedDownload,
+}
+
+enum PlanMessage {
+    File(Box<Result<PreparedPlannedFile, Error>>),
+    Finished,
+}
+
+struct PlanProducerGuard {
+    handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl PlanProducerGuard {
+    async fn finish(mut self) -> Result<(), Error> {
+        let handle = self.handle.take().ok_or_else(|| {
+            Error::InvalidResponse("download plan producer handle is missing".to_owned())
+        })?;
+        handle.await.map_err(|error| {
+            Error::InvalidResponse(format!("download plan producer failed: {error}"))
+        })
+    }
+}
+
+impl Drop for PlanProducerGuard {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+    }
 }
 
 struct LocalReusePlan {
@@ -700,30 +733,48 @@ impl VfsClient {
             validate_watch_fence(self, &fence, watch.current()).await?;
         }
 
+        let (plans, plan_producer) =
+            start_plan_producer(self.clone(), downloads.finish()?, maximum_concurrency);
+        let plans = stream::unfold((plans, false), |(mut plans, terminated)| async move {
+            if terminated {
+                return None;
+            }
+            match plans.recv().await {
+                Some(PlanMessage::File(file)) => Some((*file, (plans, false))),
+                Some(PlanMessage::Finished) => None,
+                None => Some((
+                    Err(Error::InvalidResponse(
+                        "download plan producer stopped before completion".to_owned(),
+                    )),
+                    (plans, true),
+                )),
+            }
+        });
         let client = self.clone();
         let destination = destination.to_owned();
         let result_destination = destination.clone();
         let state_directory = options.state_directory.clone();
         let transfer_part_bytes = options.transfer_part_bytes;
         let file_concurrency = options.maximum_file_concurrency;
-        let mut pending = stream::iter(downloads.finish()?.map(move |file| {
-            let client = client.clone();
-            let destination = destination.clone();
-            let state_directory = state_directory.clone();
-            async move {
-                let file = file?;
-                download_one(
-                    &client,
-                    &file,
-                    &destination,
-                    &state_directory,
-                    transfer_part_bytes,
-                    file_concurrency,
-                )
-                .await
-            }
-        }))
-        .buffer_unordered(maximum_concurrency);
+        let pending = plans
+            .map(move |prepared| {
+                let client = client.clone();
+                let destination = destination.clone();
+                let state_directory = state_directory.clone();
+                async move {
+                    download_one(
+                        &client,
+                        prepared?,
+                        &destination,
+                        &state_directory,
+                        transfer_part_bytes,
+                        file_concurrency,
+                    )
+                    .await
+                }
+            })
+            .buffer_unordered(maximum_concurrency);
+        futures_util::pin_mut!(pending);
         let mut downloaded_bytes = 0_u64;
         let mut downloaded_files = 0_u64;
         let mut completions = RecordSpool::<ReadLeaseCompletion>::create(&options.state_directory)?;
@@ -752,6 +803,7 @@ impl VfsClient {
             records.append(&downloaded.record)?;
             completions.append(&downloaded.completion)?;
         }
+        plan_producer.finish().await?;
         warnings.extend(complete_read_lease_spool(self, completions.finish()?).await);
         let final_page = self.list_directory(&fence.directory_id, None, 1).await?;
         validate_page_identity(
@@ -1131,12 +1183,13 @@ fn required(value: Option<String>, message: &'static str) -> Result<String, Erro
 
 async fn download_one(
     client: &VfsClient,
-    file: &PlannedFile,
+    prepared: PreparedPlannedFile,
     destination: &Path,
     state_directory: &Path,
     transfer_part_bytes: u64,
     maximum_file_concurrency: usize,
 ) -> Result<Downloaded, Error> {
+    let PreparedPlannedFile { file, download } = prepared;
     let target = destination.join(&file.relative_path);
     let parent = target
         .parent()
@@ -1151,22 +1204,21 @@ async fn download_one(
         std::fs::remove_file(&temporary).map_err(local_error("remove stale sync temporary"))?;
     }
     let (result, completion) = client
-        .get_file_version_deferred_completion(
+        .finish_prepared_file(
             &file.vfs_path,
-            DownloadExpectation::new(
-                &file.file_id,
-                &file.version_id,
-                file.size_bytes,
-                &file.file_root,
-            ),
+            download,
             &temporary,
             &GetOptions {
                 staging_directory: state_directory.join("downloads").join(&file.version_id),
                 transfer_part_bytes,
                 maximum_concurrency: maximum_file_concurrency,
             },
+            true,
         )
         .await?;
+    let completion = completion.ok_or_else(|| {
+        Error::InvalidResponse("sync download omitted deferred completion".to_owned())
+    })?;
     if result.version_id != file.version_id || result.file_root != file.file_root {
         let _ = std::fs::remove_file(&temporary);
         return Err(Error::InvalidResponse(
@@ -1186,6 +1238,52 @@ async fn download_one(
         warnings: result.warnings,
         completion,
     })
+}
+
+fn start_plan_producer(
+    client: VfsClient,
+    files: RecordSpoolReader<PlannedFile>,
+    maximum_concurrency: usize,
+) -> (tokio::sync::mpsc::Receiver<PlanMessage>, PlanProducerGuard) {
+    let (sender, receiver) = tokio::sync::mpsc::channel(maximum_concurrency);
+    let handle = tokio::spawn(async move {
+        let mut pending = stream::iter(files.map(move |file| {
+            let client = client.clone();
+            async move {
+                let file = file?;
+                let download = client
+                    .prepare_file_version(DownloadExpectation::new(
+                        &file.file_id,
+                        &file.version_id,
+                        file.size_bytes,
+                        &file.file_root,
+                    ))
+                    .await?;
+                Ok(PreparedPlannedFile { file, download })
+            }
+        }))
+        .buffer_unordered(maximum_concurrency);
+        while let Some(file) = pending.next().await {
+            let failed = file.is_err();
+            if sender
+                .send(PlanMessage::File(Box::new(file)))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            if failed {
+                return;
+            }
+        }
+        let _ = sender.send(PlanMessage::Finished).await;
+    });
+    (
+        receiver,
+        PlanProducerGuard {
+            handle: Some(handle),
+        },
+    )
 }
 
 async fn complete_read_lease_spool(
@@ -1762,10 +1860,11 @@ mod tests {
     use std::time::Instant;
 
     use super::{
-        CatalogFence, LEGACY_STATE_SCHEMA, LocalDisposition, LocalReusePlan, PlannedFile,
-        RecordSpool, StateIndex, StateRecord, SyncOptions, VfsClient, acquire_sync_lock,
-        evaluate_local_file, open_state_index, retain_bounded, stage_local_version,
-        validate_options, validate_watch_fence, write_state,
+        CatalogFence, LEGACY_STATE_SCHEMA, LocalDisposition, LocalReusePlan, PlanMessage,
+        PlannedFile, RecordSpool, StateIndex, StateRecord, SyncOptions, VfsClient,
+        acquire_sync_lock, evaluate_local_file, open_state_index, retain_bounded,
+        stage_local_version, start_plan_producer, validate_options, validate_watch_fence,
+        write_state,
     };
     use crate::{CatalogWatchEvent, VfsToken};
 
@@ -1784,6 +1883,118 @@ mod tests {
             etag: carrack_sdk_core::catalog_checkpoint_etag(&"22".repeat(32))
                 .expect("valid catalog watch ETag"),
         }
+    }
+
+    fn download_plan(file_id: &str, version_id: &str, lease_id: &str) -> serde_json::Value {
+        json!({
+            "schema": "carrack.vfs.download-plan.v1",
+            "filesystem_id": "11111111111111111111111111111111",
+            "directory_id": "22222222222222222222222222222222",
+            "file_id": file_id,
+            "version_id": version_id,
+            "plaintext_bytes": 0,
+            "verification_block_bytes": 4,
+            "verification_block_count": 0,
+            "file_root": "11".repeat(32),
+            "metadata_root": "22".repeat(32),
+            "block_manifest_sha256": "33".repeat(32),
+            "block_manifest_bytes": 1,
+            "block_manifest_r2_key": "manifest-key",
+            "block_manifest_r2_version": "manifest-version",
+            "crypto_suite": "plaintext/v1",
+            "key_epoch": 1,
+            "encryption_frame_bytes": 4,
+            "encoded_bytes": 0,
+            "encoded_sha256": "44".repeat(32),
+            "location_id": "55555555555555555555555555555555",
+            "driver_id": "local-test",
+            "storage_key": "opaque-key",
+            "native_id": null,
+            "provider_version": null,
+            "etag": null,
+            "driver_kind": carrack_driver_contract::DriverKind::LocalFilesystemV2.as_str(),
+            "driver_revision": 1,
+            "config": {},
+            "credential": null,
+            "directory_key": null,
+            "read_lease_id": lease_id,
+            "expires_at": 2_000_000_000_u64
+        })
+    }
+
+    #[tokio::test]
+    async fn plan_producer_prefetches_beyond_the_payload_window_and_terminates() {
+        let server = MockServer::start_async().await;
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let ids = [
+            (
+                "33333333333333333333333333333331",
+                "44444444444444444444444444444441",
+                "66666666666666666666666666666661",
+            ),
+            (
+                "33333333333333333333333333333332",
+                "44444444444444444444444444444442",
+                "66666666666666666666666666666662",
+            ),
+            (
+                "33333333333333333333333333333333",
+                "44444444444444444444444444444443",
+                "66666666666666666666666666666663",
+            ),
+        ];
+        let mut mocks = Vec::new();
+        let mut spool = RecordSpool::<PlannedFile>::create(temporary.path()).expect("plan spool");
+        for (ordinal, (file_id, version_id, lease_id)) in ids.iter().enumerate() {
+            mocks.push(
+                server
+                    .mock_async(|when, then| {
+                        when.method(GET)
+                            .path(format!("/api/v2/versions/{version_id}/download"));
+                        then.status(200)
+                            .json_body(download_plan(file_id, version_id, lease_id));
+                    })
+                    .await,
+            );
+            spool
+                .append(&PlannedFile {
+                    vfs_path: format!("/file-{ordinal}"),
+                    relative_path: PathBuf::from(format!("file-{ordinal}")),
+                    file_id: (*file_id).to_owned(),
+                    version_id: (*version_id).to_owned(),
+                    size_bytes: 0,
+                    file_root: "11".repeat(32),
+                })
+                .expect("append plan");
+        }
+        let token = VfsToken::parse(&URL_SAFE_NO_PAD.encode([7_u8; 32])).expect("VFS token");
+        let client = VfsClient::new(&format!("{}/", server.base_url()), token).expect("client");
+        let (mut plans, producer) =
+            start_plan_producer(client, spool.finish().expect("finish spool"), 2);
+
+        assert!(matches!(
+            plans.recv().await,
+            Some(PlanMessage::File(file)) if file.is_ok()
+        ));
+        for _ in 0..100 {
+            if mocks[2].hits_async().await == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            mocks[2].hits_async().await,
+            1,
+            "the next plan was not prefetched while an earlier payload could be active"
+        );
+        for _ in 0..2 {
+            assert!(matches!(
+                plans.recv().await,
+                Some(PlanMessage::File(file)) if file.is_ok()
+            ));
+        }
+        assert!(matches!(plans.recv().await, Some(PlanMessage::Finished)));
+        producer.finish().await.expect("plan producer completed");
     }
 
     #[tokio::test]

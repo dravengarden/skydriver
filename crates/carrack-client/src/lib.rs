@@ -272,6 +272,19 @@ impl Client {
         query: &[(&str, String)],
         body: Option<&B>,
     ) -> Result<T, Error> {
+        self.send_json_bounded(method, path, token, query, body, MAXIMUM_CONTROL_BODY_BYTES)
+            .await
+    }
+
+    pub(crate) async fn send_json_bounded<T: DeserializeOwned, B: Serialize + ?Sized>(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        token: Option<&str>,
+        query: &[(&str, String)],
+        body: Option<&B>,
+        maximum_response_bytes: usize,
+    ) -> Result<T, Error> {
         if path.contains("..") || !path.starts_with("api/") {
             return Err(Error::InvalidEndpoint("invalid API path".to_owned()));
         }
@@ -305,7 +318,7 @@ impl Client {
             let message = String::from_utf8_lossy(&body).trim().to_owned();
             return Err(Error::Rejected { status, message });
         }
-        decode_json(response, MAXIMUM_CONTROL_BODY_BYTES, false).await
+        decode_json(response, maximum_response_bytes, false).await
     }
 
     pub(crate) async fn send_optional_bytes(

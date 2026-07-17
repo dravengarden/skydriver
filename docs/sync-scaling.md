@@ -60,7 +60,15 @@ over this optimization.
 
 Changed files independently request one immutable download plan and create one
 read lease. Plans run concurrently under the configured file bound and payload
-bytes bypass the Worker. Successful lease completions are written to an
+bytes bypass the Worker. Planning and provider transfer are separate bounded
+pipeline stages: while at most `maximum_concurrency` complete files perform
+provider I/O, the next bounded window of plans can be authenticated and queued.
+The queue and planner each retain at most `maximum_concurrency` items, every
+plan response is capped at 256 KiB, and abandoned directory keys and credential
+grants are zeroized. Producer cancellation cannot publish a local file; an
+already-created unused lease simply follows its server-owned expiry path.
+
+Successful lease completions are written to an
 owner-private bounded record spool so they do not occupy a payload concurrency
 slot, then released in batches of at most 64. A batch is one authenticated HTTP
 request, one D1 identity query, and one atomic D1 update batch; malformed or
