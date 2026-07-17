@@ -158,8 +158,8 @@ database-size costs for 100,000 records. The second reports the mandatory
 complete local-Merkle pass over 10,000 unchanged files and asserts that every
 decision is local reuse. The third streams 100,000 entries through the actual
 page JSON, fence, Merkle, and private-spool primitives. The fourth measures
-1,000 independently authenticated download-plan requests for changed small
-files against a loopback mock. The fifth proves that a one-million-entry
+1,000 bearer-carrying download-plan requests for distinct paths referencing
+one immutable version against a loopback mock. The fifth proves that a one-million-entry
 directory uses logarithmic Merkle accumulator state. These are machine-local
 acceptance measurements, not production throughput claims; provider and
 control-plane latency require a separately identified environment and must
@@ -232,24 +232,26 @@ subtrees and should not pay this additional protocol or D1 complexity.
 
 The five-test acceptance was run on `hawk` from a working tree based on Git
 revision `04639ec` with only the new measurement and this documentation added.
-The benchmark exercises the real client authentication, response limits,
-identity checks, bounded plan producer, and HTTP client against a loopback mock.
-It deliberately excludes Cloudflare, D1, provider payload, lease completion,
-and filesystem publication.
+The benchmark exercises the real client response limits, identity checks,
+bounded plan producer, bearer header, and HTTP client against a loopback mock.
+The mock does not perform server-side bearer authorization. It deliberately
+excludes Cloudflare, D1, provider payload, lease completion, and filesystem
+publication.
 
 | Acceptance | Shape | Measured result |
 |---|---|---|
 | Indexed sync state | 100,000 records | record spool 50 ms; SQLite publication 226 ms; 100,000 primary-key lookups 360 ms; database 18,763,776 B |
 | Mandatory warm verification | 10,000 files of 4,096 B; 1,024 B Merkle blocks | 40,960,000 local bytes rehashed in 53 ms; provider bytes 0 |
 | Wide-directory hydration | 100,000 file entries in 100 pages | wire JSON 38,244,379 B; private spool 38,000,000 B; JSON encode/decode 41 ms; fence, Merkle, and spool append 151 ms; complete spool decode 116 ms; total 349 ms; whole-node cache not retained |
-| Changed-small-file planning | 1,000 zero-payload plans; concurrency 16 | 1,000 authenticated HTTP requests; 1,186 B response JSON per file; 1,186,000 B total; 21.0 ms elapsed |
+| Changed-path planning | 1,000 distinct paths referencing one immutable zero-byte version; concurrency 16 | 1,000 bearer HTTP requests; 1,186 B response JSON per request; 1,186,000 B total; 21.0 ms elapsed |
 | Streaming directory Merkle | 1,000,000 ordered directory entries | 286 ms; peak retained subtree digests 19 |
 
-The changed-file result is a fixed-cost lower bound, not an estimate of remote
-sync latency. It shows that plan decoding and identity validation do not
-dominate on this host, but it cannot measure network RTT, Worker authorization,
-D1 lease creation, or provider throttling. Therefore it does not justify a
-download-plan batch endpoint. A production-like dev measurement must still
-separate those costs before adding protocol complexity; until then the current
-per-version authority and bounded prefetch remain the simpler correctness
-boundary.
+The changed-path result is a client fixed-cost lower bound, not an estimate of
+remote sync latency or a realistic unique-version workload. It shows that plan
+decoding and identity validation do not dominate on this host, but it cannot
+measure network RTT, Worker authorization, D1 lease creation, provider
+throttling, or per-version database locality. Therefore it does not justify a
+download-plan batch endpoint. A production-like dev measurement with distinct
+versions must still separate those costs before adding protocol complexity;
+until then the current per-version authority and bounded prefetch remain the
+simpler correctness boundary.

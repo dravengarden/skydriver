@@ -2091,7 +2091,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "release-only changed-small-file planning measurement"]
-    async fn changed_small_files_measure_authenticated_download_plan_framing() {
+    async fn changed_paths_measure_download_plan_client_framing() {
         const FILES: usize = 1_000;
         const PLAN_CONCURRENCY: usize = 16;
 
@@ -2149,8 +2149,9 @@ mod tests {
         assert_eq!(received, FILES);
         assert_eq!(plan.hits_async().await, FILES);
         eprintln!(
-            "changed-small-file planning: files={FILES}, concurrency={PLAN_CONCURRENCY}, \
-             authenticated HTTP requests={FILES}, response JSON={} B/file ({} B total), \
+            "changed-path planning: paths={FILES}, immutable_versions=1, \
+             concurrency={PLAN_CONCURRENCY}, bearer HTTP requests={FILES}, \
+             response JSON={} B/request ({} B total), \
              elapsed={elapsed:?}",
             response_bytes,
             response_bytes * FILES,
