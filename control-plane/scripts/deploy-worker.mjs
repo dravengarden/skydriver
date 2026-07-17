@@ -7,6 +7,7 @@ import {
     deploymentAcceptanceProfile,
     waitForDeploymentAcceptance,
 } from "./deployment-acceptance.mjs";
+import { durableObjectMigrationConfig } from "./deployment-config.mjs";
 
 const environmentName = process.argv[2];
 if (environmentName !== "dev" && environmentName !== "prod") {
@@ -14,6 +15,16 @@ if (environmentName !== "dev" && environmentName !== "prod") {
 }
 if (environmentName === "prod" && process.env.CARRACK_DEPLOY_PROD !== "1") {
     throw new Error("set CARRACK_DEPLOY_PROD=1 to deploy production");
+}
+const applyDurableObjectMigrations = process.env.CARRACK_APPLY_DO_MIGRATIONS === "1";
+if (
+    environmentName === "prod" &&
+    applyDurableObjectMigrations &&
+    process.env.CARRACK_APPLY_DO_MIGRATIONS_PROD !== "1"
+) {
+    throw new Error(
+        "set CARRACK_APPLY_DO_MIGRATIONS_PROD=1 to apply production Durable Object migrations",
+    );
 }
 const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
 const apiToken = process.env.CLOUDFLARE_API_TOKEN;
@@ -53,20 +64,58 @@ function wrangler(args) {
     }
 }
 
-wrangler(["versions", "upload", "--env", environmentName, "--config", configPath, "--tag", tag]);
-wrangler([
-    "versions",
-    "deploy",
-    "--env",
-    environmentName,
-    "--config",
-    configPath,
-    "--version-tag",
-    tag,
-    "--message",
-    `Deploy verified Carrack ${environmentName} version`,
-    "--yes",
-]);
+if (applyDurableObjectMigrations) {
+    const migrationConfigPath = path.join(
+        path.dirname(configPath),
+        `.wrangler-do-migration-${process.pid}-${randomUUID()}.json`,
+    );
+    fs.writeFileSync(
+        migrationConfigPath,
+        `${JSON.stringify(durableObjectMigrationConfig(config, environmentName), null, 2)}\n`,
+        { mode: 0o600, flag: "wx" },
+    );
+    try {
+        wrangler([
+            "deploy",
+            "--env",
+            environmentName,
+            "--config",
+            migrationConfigPath,
+            "--tag",
+            tag,
+            "--message",
+            `Apply Carrack ${environmentName} Durable Object migrations`,
+            "--keep-vars",
+            "--strict",
+        ]);
+    } finally {
+        fs.rmSync(migrationConfigPath, { force: true });
+    }
+} else {
+    wrangler([
+        "versions",
+        "upload",
+        "--env",
+        environmentName,
+        "--config",
+        configPath,
+        "--tag",
+        tag,
+    ]);
+    wrangler([
+        "versions",
+        "deploy",
+        "--env",
+        environmentName,
+        "--config",
+        configPath,
+        "--version-tag",
+        tag,
+        "--message",
+        `Deploy verified Carrack ${environmentName} version`,
+        "--yes",
+    ]);
+}
 
 // Sync schedules through the account-scoped API. `wrangler triggers deploy`
 // also reads custom-domain routes and therefore requires the zone-scoped

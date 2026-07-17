@@ -177,6 +177,28 @@ just deploy-dev
 CARRACK_DEPLOY_PROD=1 just deploy-prod
 ```
 
+Durable Object class creation, rename, transfer, and deletion are atomic state
+migrations and cannot be uploaded as an inactive Worker version. Carrack keeps
+that immediate, 100%-traffic operation out of routine deployment. After a
+reviewed change to `migrations`, apply it exactly once per environment with the
+explicit migration recipe:
+
+```bash
+just deploy-do-migrations-dev
+CARRACK_DEPLOY_PROD=1 CARRACK_APPLY_DO_MIGRATIONS_PROD=1 \
+  just deploy-do-migrations-prod
+```
+
+The recipe runs the same full verification and post-deploy acceptance as a
+routine deployment, but uses the non-versioned Cloudflare deployment operation
+required to apply the migration atomically. Its private generated Wrangler
+configuration omits routes and Cron triggers so this one-time operation cannot
+rewrite those independently managed resources; the script synchronizes and
+verifies Cron only after the Worker passes deployment. New Carrack Durable
+Object namespaces use SQLite storage. After the migration is applied, return to
+`deploy-dev` or `deploy-prod`; never set `CARRACK_APPLY_DO_MIGRATIONS` in a
+routine deployment environment.
+
 The verification gate also compiles `carrack-sdk-core` for
 `wasm32-unknown-unknown`. The deployed Worker exposes the credential-free
 `GET /api/acceptance/wasm-sdk` proof: it computes the canonical file Merkle
@@ -278,8 +300,11 @@ analytics. The script is never part of `just verify`: it performs real provider
 writes and intentionally leaves physical deletion to server-owned GC after
 logical cleanup.
 
-Each recipe uploads a tagged Worker version and then moves 100% of that
-environment's traffic to it. It does not rewrite the already-audited custom
+Routine deployment uploads a tagged Worker version and then moves 100% of that
+environment's traffic to it. An explicit Durable Object migration deployment
+creates a tagged version and immediately moves 100% of traffic because
+Cloudflare applies the migration atomically with that deployment. Neither path
+intentionally rewrites the already-audited custom
 domain, so the routine account token does not need zone-wide route mutation
 permission. After the traffic move, the recipe polls the custom domain with a
 deployment-tagged cache buster and succeeds only when health reports the exact

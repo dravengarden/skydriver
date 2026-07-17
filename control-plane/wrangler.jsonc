@@ -29,7 +29,7 @@
   "migrations": [
     {
       "tag": "v1_catalog_watch",
-      "new_classes": ["CatalogWatchHub"]
+      "new_sqlite_classes": ["CatalogWatchHub"]
     }
   ],
   "d1_databases": [

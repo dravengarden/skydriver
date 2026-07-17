@@ -70,10 +70,10 @@ if (
     !config.migrations.some(
         (migration) =>
             migration.tag === "v1_catalog_watch" &&
-            migration.new_classes?.includes("CatalogWatchHub"),
+            migration.new_sqlite_classes?.includes("CatalogWatchHub"),
     )
 ) {
-    fail("the Rust catalog-watch Durable Object migration is missing");
+    fail("the Rust catalog-watch SQLite Durable Object migration is missing");
 }
 
 const expected = {

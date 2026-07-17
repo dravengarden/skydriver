@@ -36,10 +36,12 @@ test:
     bash -n tests/lib/live-metrics.sh
     bash tests/live-metrics-test.sh
     node --check control-plane/scripts/audit-environments.mjs
+    node --check control-plane/scripts/deployment-config.mjs
     node --check control-plane/scripts/deploy-worker.mjs
     node --check control-plane/scripts/provision-default-r2.mjs
     node --check control-plane/scripts/rotate-operator-credential.mjs
     node --test control-plane/scripts/deployment-acceptance.test.mjs
+    node --test control-plane/scripts/deployment-config.test.mjs
     node --test control-plane/scripts/default-r2-provisioning.test.mjs
     node --test control-plane/scripts/provision-default-r2.test.mjs
     go test -race ./...
@@ -99,6 +101,16 @@ deploy-dev: verify
 
 deploy-prod: verify
     node control-plane/scripts/deploy-worker.mjs prod
+
+# Durable Object migrations cannot be uploaded as an inactive Worker version.
+# These explicit recipes atomically apply the configured migration while
+# deploying the verified build to 100% of the selected environment.
+deploy-do-migrations-dev: verify
+    CARRACK_APPLY_DO_MIGRATIONS=1 node control-plane/scripts/deploy-worker.mjs dev
+
+deploy-do-migrations-prod: verify
+    test "${CARRACK_APPLY_DO_MIGRATIONS_PROD:-}" = "1"
+    CARRACK_APPLY_DO_MIGRATIONS=1 node control-plane/scripts/deploy-worker.mjs prod
 
 audit-cloudflare:
     node control-plane/scripts/audit-environments.mjs
