@@ -91,6 +91,7 @@
             cargo-nextest
             cargo-deny
             cargo-machete
+            cargo-sweep
             rust-analyzer
             worker-build
             nodejs_24

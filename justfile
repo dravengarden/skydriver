@@ -74,6 +74,15 @@ build-cached:
 cache-stats:
     sccache --show-stats
 
+# Preview or remove stale Cargo artifacts while retaining the most recently
+# used builds up to the requested aggregate size. Pruning is intentionally
+# operator-triggered because it trades disk space for the next rebuild time.
+cache-prune-dry max_size="60GB":
+    cargo sweep --dry-run --maxsize "{{ max_size }}" .
+
+cache-prune max_size="60GB":
+    cargo sweep --maxsize "{{ max_size }}" .
+
 build:
     go build ./...
     cargo build --workspace --all-features --locked
