@@ -2090,6 +2090,74 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "release-only changed-small-file planning measurement"]
+    async fn changed_small_files_measure_authenticated_download_plan_framing() {
+        const FILES: usize = 1_000;
+        const PLAN_CONCURRENCY: usize = 16;
+
+        let server = MockServer::start_async().await;
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let file_id = "33333333333333333333333333333333";
+        let version_id = "44444444444444444444444444444444";
+        let lease_id = "66666666666666666666666666666666";
+        let response = download_plan(file_id, version_id, lease_id);
+        let response_bytes = serde_json::to_vec(&response)
+            .expect("serialize plan response")
+            .len();
+        let plan = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path(format!("/api/v2/versions/{version_id}/download"));
+                then.status(200).json_body(response);
+            })
+            .await;
+        let mut spool = RecordSpool::<PlannedFile>::create(temporary.path()).expect("plan spool");
+        for ordinal in 0..FILES {
+            spool
+                .append(&PlannedFile {
+                    vfs_path: format!("/changed-{ordinal}"),
+                    relative_path: PathBuf::from(format!("changed-{ordinal}")),
+                    file_id: file_id.to_owned(),
+                    version_id: version_id.to_owned(),
+                    size_bytes: 0,
+                    file_root: "11".repeat(32),
+                })
+                .expect("append plan");
+        }
+        let token = VfsToken::parse(&URL_SAFE_NO_PAD.encode([7_u8; 32])).expect("VFS token");
+        let client = VfsClient::new(&format!("{}/", server.base_url()), token).expect("client");
+
+        let started = Instant::now();
+        let (mut plans, producer) = start_plan_producer(
+            client,
+            spool.finish().expect("finish spool"),
+            PLAN_CONCURRENCY,
+        );
+        let mut received = 0_usize;
+        while let Some(message) = plans.recv().await {
+            match message {
+                PlanMessage::File(file) => {
+                    file.expect("authenticated download plan");
+                    received += 1;
+                }
+                PlanMessage::Finished => break,
+            }
+        }
+        producer.finish().await.expect("plan producer completed");
+        let elapsed = started.elapsed();
+
+        assert_eq!(received, FILES);
+        assert_eq!(plan.hits_async().await, FILES);
+        eprintln!(
+            "changed-small-file planning: files={FILES}, concurrency={PLAN_CONCURRENCY}, \
+             authenticated HTTP requests={FILES}, response JSON={} B/file ({} B total), \
+             elapsed={elapsed:?}",
+            response_bytes,
+            response_bytes * FILES,
+        );
+    }
+
+    #[tokio::test]
     async fn direct_catalog_watch_fence_accepts_only_the_pinned_view() {
         let filesystem_id = "019f0000000000000000000000000001";
         let directory_id = "019f0000000000000000000000000002";
