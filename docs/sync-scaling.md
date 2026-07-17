@@ -148,3 +148,35 @@ measurements, not production throughput claims; provider and control-plane
 latency require a separately identified environment and must report the full
 measurement fields above. Wall-clock values are observations, not pass/fail
 thresholds, so host load cannot turn a correct build into a flaky failure.
+
+## Recorded local acceptance observations
+
+These observations are append-only reference data, not product limits or
+performance guarantees. They were produced on `hawk` on 2026-07-17 from exact
+Git revision `a4344ac` with `nix develop -c just performance-acceptance` in the
+release profile. Each test's internal timer excludes Rust compilation. The
+temporary files and SQLite database were on hawk's ordinary local temporary
+filesystem; there was no control-plane or provider traffic.
+
+| Acceptance | Shape | Measured result |
+|---|---|---|
+| Indexed sync state | 100,000 records | record spool 26 ms; SQLite publication 183 ms; 100,000 primary-key lookups 353 ms; database 18,763,776 B |
+| Mandatory warm verification | 10,000 files of 4,096 B; 1,024 B Merkle blocks | 40,960,000 local bytes rehashed in 44 ms; provider bytes 0 |
+| Streaming directory Merkle | 1,000,000 ordered directory entries | 287 ms; peak retained subtree digests 19 |
+
+The indexed-state result is linear construction plus indexed lookup, not an
+all-pairs search. The warm result deliberately excludes file creation and
+proves that unchanged authenticated files still incur the required complete
+local read while transferring no provider payload. Its tiny synthetic files
+are useful for fixed per-file overhead, not for predicting large-file disk
+throughput. The million-entry result measures the portable Merkle accumulator,
+not JSON decoding, D1 reads, paginated HTTP, or catalog hydration; it proves
+the logarithmic hash-state bound but does not make a one-million-entry flat
+directory cheap to transfer.
+
+On this run, none of these local primitives supports weakening correctness for
+speed. The next evidence needed before implementing a content-addressed page
+tree is a real or hermetic wide-directory hydration measurement that separates
+canonical JSON bytes, page count, control-plane latency, local cache hits, and
+Merkle time. Likewise, download-plan batching needs a changed-small-file run
+showing that authenticated plan latency, rather than provider I/O, dominates.
