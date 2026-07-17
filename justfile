@@ -54,6 +54,7 @@ test:
 performance-acceptance:
     cargo test -p carrack-client sync::tests::indexed_state_accepts_one_hundred_thousand_records_without_linear_lookup --release --locked -- --ignored --exact --nocapture
     cargo test -p carrack-client sync::tests::warm_sync_rehashes_ten_thousand_files_without_provider_payload --release --locked -- --ignored --exact --nocapture
+    cargo test -p carrack-client sync::tests::wide_directory_hydration_streams_one_hundred_thousand_entries --release --locked -- --ignored --exact --nocapture
     cargo test -p carrack-sdk-core integrity::tests::streaming_directory_accepts_one_million_entries_with_logarithmic_state --release --locked -- --ignored --exact --nocapture
 
 test-fast:

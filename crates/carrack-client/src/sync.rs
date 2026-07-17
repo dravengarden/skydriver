@@ -1860,13 +1860,16 @@ mod tests {
     use std::time::Instant;
 
     use super::{
-        CatalogFence, LEGACY_STATE_SCHEMA, LocalDisposition, LocalReusePlan, PlanMessage,
-        PlannedFile, RecordSpool, StateIndex, StateRecord, SyncOptions, VfsClient,
-        acquire_sync_lock, evaluate_local_file, open_state_index, retain_bounded,
-        stage_local_version, start_plan_producer, validate_options, validate_watch_fence,
-        write_state,
+        CatalogFence, LEGACY_STATE_SCHEMA, LocalDisposition, LocalReusePlan,
+        MAXIMUM_MEMORY_DIRECTORY_ENTRIES, PlanMessage, PlannedFile, RecordSpool, StateIndex,
+        StateRecord, SyncOptions, VfsClient, acquire_sync_lock, evaluate_local_file,
+        open_state_index, retain_bounded, stage_local_version, start_plan_producer,
+        validate_options, validate_page_identity, validate_watch_fence, write_state,
     };
-    use crate::{CatalogWatchEvent, VfsToken};
+    use crate::{
+        CatalogWatchEvent, Directory, DirectoryEntry, DirectoryPage, EntryKind, Error, VfsToken,
+        catalog::{CatalogEntry, merkle_entry},
+    };
 
     fn watch_event(
         filesystem_id: &str,
@@ -2714,6 +2717,143 @@ mod tests {
             "carrack_warm_sync_benchmark files={FILES} local_bytes={} provider_bytes=0 elapsed_ms={}",
             FILES * FILE_BYTES,
             elapsed.as_millis()
+        );
+    }
+
+    #[test]
+    #[ignore = "release-only scaling acceptance"]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one wide-directory acceptance keeps every measured hydration stage visible"
+    )]
+    fn wide_directory_hydration_streams_one_hundred_thousand_entries() {
+        const ENTRIES: usize = 100_000;
+        const PAGE_ENTRIES: usize = 1_000;
+        const PAGES: usize = ENTRIES / PAGE_ENTRIES;
+        const DIRECTORY_ID: &str = "101112131415161718191a1b1c1d1e1f";
+        const FILESYSTEM_ID: &str = "202122232425262728292a2b2c2d2e2f";
+
+        fn entry(index: usize) -> DirectoryEntry {
+            DirectoryEntry {
+                name: format!("entry-{index:06}.parquet"),
+                kind: EntryKind::File,
+                file_id: Some(format!("{:032x}", index + 1)),
+                version_id: Some(format!("{:032x}", ENTRIES + index + 1)),
+                child_directory_id: None,
+                size_bytes: 4096,
+                data_root: "11".repeat(32),
+                metadata_root: Some("22".repeat(32)),
+                revision: 1,
+                updated_at: 1_700_000_000,
+            }
+        }
+
+        let mut expected = carrack_sdk_core::DirectoryMerkleAccumulator::new();
+        for index in 0..ENTRIES {
+            let entry = CatalogEntry::from(&entry(index));
+            expected
+                .push(&merkle_entry(&entry).expect("construct expected Merkle entry"))
+                .expect("append expected wide-directory entry");
+        }
+        let expected_root = expected.finish().expect("finish expected wide directory");
+        let expected_root_hex = hex::encode(expected_root);
+        let directory = Directory {
+            id: DIRECTORY_ID.to_owned(),
+            filesystem_id: FILESYSTEM_ID.to_owned(),
+            parent_id: None,
+            name: String::new(),
+            data_root: expected_root_hex.clone(),
+            crypto_suite: "carrack-vfs-aes256gcm-hkdfsha256-v1".to_owned(),
+            active_key_epoch: 1,
+            acl_inherits: false,
+            revision: 7,
+            acl_revision: 1,
+            placement_revision: 1,
+        };
+
+        let temporary = tempfile::tempdir().expect("wide hydration temporary directory");
+        let mut spool = RecordSpool::<CatalogEntry>::create(temporary.path())
+            .expect("create wide hydration spool");
+        let mut accumulator = carrack_sdk_core::DirectoryMerkleAccumulator::new();
+        let mut cache_entries = Some(Vec::new());
+        let mut wire_json_bytes = 0_u64;
+        let mut json_elapsed = std::time::Duration::ZERO;
+        let mut hydration_elapsed = std::time::Duration::ZERO;
+        let started = Instant::now();
+
+        for page_index in 0..PAGES {
+            let first = page_index * PAGE_ENTRIES;
+            let page = DirectoryPage {
+                schema: "carrack.vfs.directory-list.v1".to_owned(),
+                directory: directory.clone(),
+                entries: (first..first + PAGE_ENTRIES).map(entry).collect(),
+                next_cursor: (page_index + 1 < PAGES)
+                    .then(|| format!("opaque-page-{}", page_index + 1)),
+            };
+            let json_started = Instant::now();
+            let encoded = serde_json::to_vec(&page).expect("encode wide directory page");
+            wire_json_bytes = wire_json_bytes
+                .checked_add(u64::try_from(encoded.len()).expect("page bytes fit u64"))
+                .expect("wire byte count does not overflow");
+            let decoded: DirectoryPage =
+                serde_json::from_slice(&encoded).expect("decode wide directory page");
+            json_elapsed += json_started.elapsed();
+
+            validate_page_identity(
+                &decoded,
+                DIRECTORY_ID,
+                &expected_root_hex,
+                (page_index != 0).then_some((FILESYSTEM_ID, 7)),
+            )
+            .expect("page remains on the exact directory fence");
+            let hydration_started = Instant::now();
+            for entry in decoded.entries {
+                let catalog_entry = CatalogEntry::from(&entry);
+                accumulator
+                    .push(&merkle_entry(&catalog_entry).expect("construct Merkle entry"))
+                    .expect("append hydrated wide-directory entry");
+                spool
+                    .append(&catalog_entry)
+                    .expect("append hydrated catalog entry");
+                retain_bounded(&mut cache_entries, entry, MAXIMUM_MEMORY_DIRECTORY_ENTRIES);
+            }
+            hydration_elapsed += hydration_started.elapsed();
+        }
+
+        assert_eq!(
+            accumulator
+                .finish()
+                .expect("finish hydrated wide directory"),
+            expected_root
+        );
+        assert!(cache_entries.is_none());
+        let mut reader = spool.finish().expect("seal wide hydration spool");
+        let spool_bytes = std::fs::metadata(
+            reader
+                .path
+                .as_ref()
+                .expect("wide hydration spool retains its private path"),
+        )
+        .expect("wide hydration spool metadata")
+        .len();
+        let read_started = Instant::now();
+        let records = reader
+            .try_fold(0_usize, |count, record| {
+                record?;
+                count
+                    .checked_add(1)
+                    .ok_or_else(|| Error::InvalidResponse("record count overflows".to_owned()))
+            })
+            .expect("decode every hydrated catalog record");
+        let read_elapsed = read_started.elapsed();
+        assert_eq!(records, ENTRIES);
+
+        eprintln!(
+            "carrack_wide_directory_benchmark entries={ENTRIES} pages={PAGES} wire_json_bytes={wire_json_bytes} spool_bytes={spool_bytes} json_ms={} hydrate_ms={} spool_read_ms={} total_ms={} whole_node_cached=false",
+            json_elapsed.as_millis(),
+            hydration_elapsed.as_millis(),
+            read_elapsed.as_millis(),
+            started.elapsed().as_millis()
         );
     }
 }
