@@ -34,6 +34,7 @@ mod r2;
 mod sync;
 mod transfer;
 mod vfs;
+mod watch;
 
 pub use admin::{
     AccessMutationDesired, AccessMutationReceipt, AccessMutationValidation, AdminClient,
@@ -59,6 +60,7 @@ pub use vfs::{
     IssuedToken, Placement, PlacementPolicy, PlacementView, PolicyMutationReceipt, RemoveReceipt,
     RenameReceipt, ResolvedEntry, RevokedToken, VfsClient, VfsSession, VfsToken,
 };
+pub use watch::{CatalogWatch, CatalogWatchEvent};
 
 /// Public fail-fast compatibility contract returned by the control plane.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -164,6 +166,9 @@ pub enum Error {
     /// The request could not be completed.
     #[error("Carrack control-plane request failed: {0}")]
     Transport(#[from] reqwest::Error),
+    /// The optional catalog-watch acceleration channel failed.
+    #[error("Carrack catalog watch failed: {0}")]
+    CatalogWatch(String),
 }
 
 impl Error {
@@ -190,7 +195,7 @@ impl Error {
 /// HTTPS control-plane client. Payload bytes never pass through this client.
 #[derive(Clone, Debug)]
 pub struct Client {
-    endpoint: Url,
+    pub(crate) endpoint: Url,
     pub(crate) http: reqwest::Client,
 }
 

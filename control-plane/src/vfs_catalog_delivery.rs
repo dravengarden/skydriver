@@ -42,6 +42,45 @@ struct DeltaReceipt<'a> {
     r2_version: &'a str,
 }
 
+/// Current catalog identity that one authenticated token may observe.
+///
+/// This is deliberately smaller than a checkpoint receipt. Catalog watch is
+/// an advisory wake-up channel: clients must still fetch and authenticate the
+/// checkpoint, delta, or revision-pinned pages before planning payload I/O.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CatalogWatchAuthorization {
+    pub(crate) filesystem_id: String,
+    pub(crate) revision_id: u64,
+    pub(crate) root_directory_id: String,
+    pub(crate) root_data_root: String,
+    pub(crate) etag: String,
+}
+
+/// Re-evaluates the complete current token chain, ACL closure, and published
+/// catalog head for a catalog-watch subscriber.
+///
+/// Durable Object connections call this again for every delivered event. A
+/// WebSocket established under authority that is later revoked therefore
+/// cannot receive a newly published catalog identity.
+pub(crate) async fn watch_authorization(
+    env: &Env,
+    token: &AuthenticatedVfsToken,
+) -> Result<Option<CatalogWatchAuthorization>> {
+    let database = env.d1("CARRACK_INDEX")?;
+    let Some(delivery) = eligible_checkpoint(&database, token).await? else {
+        return Ok(None);
+    };
+    validate_receipt(&delivery)?;
+    let etag = delivery_etag(&delivery)?;
+    Ok(Some(CatalogWatchAuthorization {
+        filesystem_id: delivery.filesystem_id,
+        revision_id: delivery.revision_id,
+        root_directory_id: delivery.root_directory_id,
+        root_data_root: delivery.root_data_root,
+        etag,
+    }))
+}
+
 /// Delivers the current complete checkpoint view when the token has safe list
 /// and content-read authority over its complete root closure. A full-root view
 /// streams directly from R2; a narrow root is deterministically projected only

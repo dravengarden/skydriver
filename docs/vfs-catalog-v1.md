@@ -266,3 +266,32 @@ one aged checkpoint by their exact recorded R2 keys per Cron pass after a
 Multi-hop delivery and narrow-view content-addressed pages remain optional
 future accelerations and may not broaden a token closure or weaken the final
 live-root fence.
+
+## Optional catalog watch
+
+Rust SDK clients may open `GET /api/v2/catalog/watch` as a WebSocket. The edge
+authenticates the bearer and routes the connection to one filesystem-scoped
+Rust Durable Object using the hibernation API. The bearer is never placed in a
+URL, Durable Object tag, event, or durable storage. Tags retain only the
+server-authenticated token, principal, and visible-root identities needed to
+repeat authorization after hibernation.
+
+The Durable Object stores no catalog state. Before accepting a connection,
+answering an explicit refresh, or sending a notification after publication, it
+re-runs the same current token-chain, inherited ACL, subtree-boundary, artifact,
+and D1-head proof used by checkpoint delivery. Revoked, expired, narrowed, or
+otherwise ineligible subscriptions are closed before another catalog identity
+is sent.
+
+Each bounded event contains only the freshly authorized filesystem identity,
+published revision, token-visible root identity and root, and conditional HTTP
+entity tag. It is a wake-up receipt, not a checkpoint and not payload
+authority. Clients reject schema changes, identity forks, and revision
+regressions, then fetch the ordinary authenticated checkpoint, delta, or pages.
+A disconnected or unavailable watch silently restores polling behavior.
+
+Checkpoint publication commits D1 and R2 before notifying the Durable Object.
+Notification is best-effort: a failed or delayed notification never rolls back
+publication and never changes the final live-root fence. During a changed-file
+sync, a notification may trigger an early source-root recheck so a stale plan
+stops provider work sooner; the mandatory final fence remains unchanged.

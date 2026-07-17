@@ -72,6 +72,15 @@ if it preserves an independent result per version, caps request count and
 encoded response bytes, reuses the same authorization function, creates leases
 atomically per successful item, and retains the current endpoint as fallback.
 
+Catalog-head notifications use a separate optional hibernating WebSocket. A
+sync opens it only when changed files require provider payload. Every event is
+freshly reauthorized by the server and can only trigger an early root-fence
+check; it cannot authorize or publish a file. A missing endpoint, disconnect,
+malformed event, or Durable Object failure returns immediately to the ordinary
+HTTP catalog path and mandatory final fence. This can avoid finishing a large
+download for a namespace that already changed without adding a correctness
+dependency or routing payload bytes through Cloudflare.
+
 ## Acceptance matrix
 
 - Normal CI authenticates 100,000 ordered directory entries while asserting

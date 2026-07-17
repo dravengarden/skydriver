@@ -136,7 +136,7 @@ pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
     cleanup_one_delta(&database, &bucket, now).await?;
     cleanup_one(&database, &bucket, now).await?;
     if let Some(candidate) = claim_latest(&database, now).await?
-        && let Err(error) = materialize(&database, &bucket, &candidate, now).await
+        && let Err(error) = materialize(env, &database, &bucket, &candidate, now).await
     {
         let release_now = now_seconds();
         release_claim(
@@ -307,6 +307,7 @@ async fn load_candidate(
     reason = "checkpoint publication and its optional delta share one root fence while keeping the checkpoint independently sufficient"
 )]
 async fn materialize(
+    env: &Env,
     database: &D1Database,
     bucket: &Bucket,
     candidate: &Candidate,
@@ -410,7 +411,7 @@ async fn materialize(
         return Ok(());
     }
 
-    if !publish(
+    let published = publish(
         database,
         candidate,
         &r2_key,
@@ -420,8 +421,8 @@ async fn materialize(
         delta.as_ref(),
         fence_now,
     )
-    .await?
-    {
+    .await?;
+    if !published {
         mark_orphaned(database, candidate.revision_id, fence_now).await?;
         release_claim(
             database,
@@ -433,6 +434,13 @@ async fn materialize(
             false,
         )
         .await?;
+    } else if let Err(error) =
+        crate::vfs_catalog_watch::notify_published(env, &candidate.filesystem_id).await
+    {
+        worker::console_warn!(
+            "optional catalog watch notification {} failed: {error:?}",
+            candidate.revision_id
+        );
     }
     Ok(())
 }

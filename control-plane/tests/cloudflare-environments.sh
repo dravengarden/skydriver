@@ -35,6 +35,19 @@ function requireSingleBinding(environment, key, binding) {
     return values[0];
 }
 
+function requireCatalogWatchBinding(environment) {
+    const values = environment.durable_objects?.bindings?.filter(
+        (value) => value.name === "CARRACK_CATALOG_WATCH",
+    );
+    if (
+        !Array.isArray(values) ||
+        values.length !== 1 ||
+        values[0].class_name !== "CatalogWatchHub"
+    ) {
+        fail(`${environment.name} must define one Rust CatalogWatchHub binding`);
+    }
+}
+
 if (config.name !== "carrack-control-plane-local") {
     fail("the default Worker must remain local-only");
 }
@@ -51,6 +64,17 @@ if (localDatabase.database_id !== "00000000-0000-0000-0000-000000000000") {
 }
 requireSingleBinding(config, "r2_buckets", "CARRACK_MANIFESTS");
 requireSingleBinding(config, "r2_buckets", "CARRACK_PAYLOAD");
+requireCatalogWatchBinding(config);
+if (
+    !Array.isArray(config.migrations) ||
+    !config.migrations.some(
+        (migration) =>
+            migration.tag === "v1_catalog_watch" &&
+            migration.new_classes?.includes("CatalogWatchHub"),
+    )
+) {
+    fail("the Rust catalog-watch Durable Object migration is missing");
+}
 
 const expected = {
     dev: {
@@ -114,6 +138,7 @@ for (const [name, wanted] of Object.entries(expected)) {
     const database = requireSingleBinding(environment, "d1_databases", "CARRACK_INDEX");
     const bucket = requireSingleBinding(environment, "r2_buckets", "CARRACK_MANIFESTS");
     const payload = requireSingleBinding(environment, "r2_buckets", "CARRACK_PAYLOAD");
+    requireCatalogWatchBinding(environment);
     if (database.database_name !== wanted.database) {
         fail(`${name} D1 must be named ${wanted.database}`);
     }

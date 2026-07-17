@@ -1991,7 +1991,9 @@ fn error_disposition(error: &Error) -> ErrorDisposition {
             ("revision_conflict", 9)
         }
         Error::Client(carrack_client::Error::Rejected { .. }) => ("request_rejected", 10),
-        Error::Client(carrack_client::Error::Transport(_)) => ("control_plane_transport_error", 11),
+        Error::Client(
+            carrack_client::Error::Transport(_) | carrack_client::Error::CatalogWatch(_),
+        ) => ("control_plane_transport_error", 11),
         Error::Verification(_) => ("management_verification_failed", 12),
         Error::Serialize(_) => ("internal_output_error", 13),
         Error::MissingEnvironment(_) => ("missing_environment", 14),

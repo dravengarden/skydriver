@@ -13,7 +13,7 @@ use std::{
 };
 
 use crate::{
-    DirectoryPage, EntryKind, Error, GetOptions, VfsClient,
+    CatalogWatchEvent, DirectoryPage, EntryKind, Error, GetOptions, VfsClient,
     catalog::{CatalogEntry, CatalogNode, CatalogStore, merkle_entry},
     download::DownloadExpectation,
     integrity,
@@ -495,6 +495,33 @@ struct CatalogFence {
     data_root: String,
 }
 
+async fn validate_watch_fence(
+    client: &VfsClient,
+    fence: &CatalogFence,
+    event: &CatalogWatchEvent,
+) -> Result<(), Error> {
+    if event.filesystem_id != fence.filesystem_id {
+        return Err(Error::InvalidResponse(
+            "catalog watch filesystem differs from the sync fence".to_owned(),
+        ));
+    }
+    if event.root_directory_id == fence.directory_id {
+        if event.root_data_root != fence.data_root {
+            return Err(Error::InvalidResponse(
+                "namespace changed during synchronization".to_owned(),
+            ));
+        }
+        return Ok(());
+    }
+    let page = client.list_directory(&fence.directory_id, None, 1).await?;
+    validate_page_identity(
+        &page,
+        &fence.directory_id,
+        &fence.data_root,
+        Some((&fence.filesystem_id, fence.revision)),
+    )
+}
+
 #[derive(Deserialize, Serialize)]
 struct PendingDirectory {
     vfs_path: String,
@@ -593,6 +620,7 @@ impl VfsClient {
             .await?;
         let mut records = RecordSpool::<StateRecord>::create(&options.state_directory)?;
         let mut downloads = RecordSpool::<PlannedFile>::create(&options.state_directory)?;
+        let mut download_candidates = 0_u64;
         let mut reused_files = 0_u64;
         let maximum_concurrency = options.maximum_concurrency;
         let local_destination = destination.to_owned();
@@ -630,7 +658,10 @@ impl VfsClient {
                                 }
                             }
                         },
-                        LocalDisposition::Download(file) => downloads.append(&file)?,
+                        LocalDisposition::Download(file) => {
+                            downloads.append(&file)?;
+                            download_candidates += 1;
+                        }
                     }
                 }
                 Err(error) => {
@@ -646,6 +677,15 @@ impl VfsClient {
         drop(local_pending);
         if let Some(error) = local_error {
             return Err(error);
+        }
+
+        let mut catalog_watch = if download_candidates == 0 {
+            None
+        } else {
+            self.watch_catalog_for_session(&session).await.ok()
+        };
+        if let Some(watch) = catalog_watch.as_ref() {
+            validate_watch_fence(self, &fence, watch.current()).await?;
         }
 
         let client = self.clone();
@@ -674,7 +714,24 @@ impl VfsClient {
         .buffer_unordered(maximum_concurrency);
         let mut downloaded_bytes = 0_u64;
         let mut downloaded_files = 0_u64;
-        while let Some(downloaded) = pending.next().await {
+        loop {
+            let downloaded = if let Some(watch) = catalog_watch.as_mut() {
+                tokio::select! {
+                    downloaded = pending.next() => downloaded,
+                    event = watch.next_event() => {
+                        match event {
+                            Ok(event) => validate_watch_fence(self, &fence, &event).await?,
+                            Err(_) => catalog_watch = None,
+                        }
+                        continue;
+                    }
+                }
+            } else {
+                pending.next().await
+            };
+            let Some(downloaded) = downloaded else {
+                break;
+            };
             let downloaded = downloaded?;
             downloaded_bytes = downloaded_bytes.saturating_add(downloaded.record.size_bytes);
             downloaded_files += 1;
@@ -1658,11 +1715,74 @@ mod tests {
     use std::time::Instant;
 
     use super::{
-        LEGACY_STATE_SCHEMA, LocalDisposition, LocalReusePlan, PlannedFile, RecordSpool,
-        StateIndex, StateRecord, SyncOptions, VfsClient, acquire_sync_lock, evaluate_local_file,
-        open_state_index, retain_bounded, stage_local_version, validate_options, write_state,
+        CatalogFence, LEGACY_STATE_SCHEMA, LocalDisposition, LocalReusePlan, PlannedFile,
+        RecordSpool, StateIndex, StateRecord, SyncOptions, VfsClient, acquire_sync_lock,
+        evaluate_local_file, open_state_index, retain_bounded, stage_local_version,
+        validate_options, validate_watch_fence, write_state,
     };
-    use crate::VfsToken;
+    use crate::{CatalogWatchEvent, VfsToken};
+
+    fn watch_event(
+        filesystem_id: &str,
+        root_directory_id: &str,
+        root_data_root: &str,
+    ) -> CatalogWatchEvent {
+        CatalogWatchEvent {
+            schema: "carrack.vfs.catalog-watch.v1".to_owned(),
+            kind: "catalog_head".to_owned(),
+            filesystem_id: filesystem_id.to_owned(),
+            revision_id: 7,
+            root_directory_id: root_directory_id.to_owned(),
+            root_data_root: root_data_root.to_owned(),
+            etag: carrack_sdk_core::catalog_checkpoint_etag(&"22".repeat(32))
+                .expect("valid catalog watch ETag"),
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_catalog_watch_fence_accepts_only_the_pinned_view() {
+        let filesystem_id = "019f0000000000000000000000000001";
+        let directory_id = "019f0000000000000000000000000002";
+        let data_root = "11".repeat(32);
+        let fence = CatalogFence {
+            filesystem_id: filesystem_id.to_owned(),
+            directory_id: directory_id.to_owned(),
+            revision: 5,
+            data_root: data_root.clone(),
+        };
+        let client = VfsClient::new(
+            "http://127.0.0.1:9",
+            VfsToken::parse(&URL_SAFE_NO_PAD.encode([7_u8; 32])).expect("valid VFS token"),
+        )
+        .expect("VFS client");
+
+        validate_watch_fence(
+            &client,
+            &fence,
+            &watch_event(filesystem_id, directory_id, &data_root),
+        )
+        .await
+        .expect("identical pinned view");
+
+        assert!(
+            validate_watch_fence(
+                &client,
+                &fence,
+                &watch_event(filesystem_id, directory_id, &"33".repeat(32)),
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            validate_watch_fence(
+                &client,
+                &fence,
+                &watch_event("019f0000000000000000000000000003", directory_id, &data_root,),
+            )
+            .await
+            .is_err()
+        );
+    }
 
     #[test]
     fn bounded_directory_cache_drops_all_entries_at_its_limit() {

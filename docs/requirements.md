@@ -111,6 +111,12 @@ This document is the normative product and correctness baseline. The key words
 - Background acceleration workers MUST publish only private staging artifacts.
   The active synchronization coordinator MUST own final destination publication
   so cancellation cannot mutate an official path after the call returns.
+- A long-lived catalog notification channel MUST remain advisory. The server
+  MUST re-evaluate the current token chain, ACL closure, and published head
+  before emitting each catalog identity. Disconnects, missed or reordered
+  notifications, unsupported transports, and notification-service failure
+  MUST fall back to the authenticated checkpoint, delta, or revision-pinned
+  traversal and MUST NOT affect catalog publication success.
 - A final live-root recheck MUST reject a plan whose namespace changed during
   synchronization unless the caller explicitly requested a pinned snapshot.
 

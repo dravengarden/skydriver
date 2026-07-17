@@ -18,6 +18,20 @@
     "CARRACK_ENVIRONMENT": "local",
     "CARRACK_OPERATOR_ACCOUNT": "draven"
   },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CARRACK_CATALOG_WATCH",
+        "class_name": "CatalogWatchHub"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1_catalog_watch",
+      "new_classes": ["CatalogWatchHub"]
+    }
+  ],
   "d1_databases": [
     {
       "binding": "CARRACK_INDEX",
@@ -56,6 +70,14 @@
         "CARRACK_DEFAULT_R2_MAX_PHYSICAL_BYTES": "107374182400",
         "CARRACK_R2_ENDPOINT": "https://cf92459eee422bed7c7a8337316e8b15.r2.cloudflarestorage.com"
       },
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "CARRACK_CATALOG_WATCH",
+            "class_name": "CatalogWatchHub"
+          }
+        ]
+      },
       "d1_databases": [
         {
           "binding": "CARRACK_INDEX",
@@ -93,6 +115,14 @@
         "CARRACK_OPERATOR_ACCOUNT": "draven@carrack-prod",
         "CARRACK_DEFAULT_R2_MAX_PHYSICAL_BYTES": "107374182400",
         "CARRACK_R2_ENDPOINT": "https://cf92459eee422bed7c7a8337316e8b15.r2.cloudflarestorage.com"
+      },
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "CARRACK_CATALOG_WATCH",
+            "class_name": "CatalogWatchHub"
+          }
+        ]
       },
       "d1_databases": [
         {
