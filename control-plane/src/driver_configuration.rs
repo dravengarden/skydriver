@@ -8,7 +8,7 @@ use carrack_driver_contract::{AliyunDriveConfig, DriverKind, LocalFilesystemConf
 use serde_json::Value;
 use worker::Result;
 
-use crate::r2_signing;
+use crate::{aws_s3_signing, r2_signing};
 
 const MAXIMUM_ALIYUN_UPLOAD_PART_BYTES: u64 = 512 << 20;
 
@@ -40,6 +40,16 @@ pub(crate) fn normalize(kind: DriverKind, config: Value) -> Result<Value> {
             if !r2_signing::valid_config(&config) {
                 return Err(worker::Error::RustError(
                     "R2 configuration is invalid".to_owned(),
+                ));
+            }
+            serde_json::to_value(config).map_err(|error| json_error(&error))
+        }
+        DriverKind::AwsS3V1 => {
+            let config: aws_s3_signing::Config =
+                serde_json::from_value(config).map_err(|error| json_error(&error))?;
+            if !aws_s3_signing::valid_config(&config) {
+                return Err(worker::Error::RustError(
+                    "AWS S3 configuration is invalid".to_owned(),
                 ));
             }
             serde_json::to_value(config).map_err(|error| json_error(&error))

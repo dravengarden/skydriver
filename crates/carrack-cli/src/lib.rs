@@ -12,9 +12,10 @@ use thiserror::Error;
 use zeroize::Zeroize;
 
 const R2_DRIVER_KIND: &str = "r2/v1";
+const AWS_S3_DRIVER_KIND: &str = "aws-s3/v1";
 
 fn refresh_expiry_matches(kind: &str, observed: Option<u64>, committed: u64) -> bool {
-    if kind == R2_DRIVER_KIND {
+    if matches!(kind, R2_DRIVER_KIND | AWS_S3_DRIVER_KIND) {
         observed.is_none()
     } else {
         observed == Some(committed)

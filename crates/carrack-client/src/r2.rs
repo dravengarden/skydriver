@@ -28,6 +28,10 @@ struct SignedGrant {
     verify_url: Option<String>,
     #[serde(default)]
     multipart_create_url: Option<String>,
+    #[serde(default = "default_true")]
+    multipart_create_requires_no_replace: bool,
+    #[serde(default)]
+    required_headers: BTreeMap<String, String>,
     expires_at: u64,
 }
 
@@ -47,6 +51,8 @@ struct MultipartGrant {
     complete_url: String,
     abort_url: String,
     verify_url: String,
+    #[serde(default)]
+    required_headers: BTreeMap<String, String>,
     expires_at: u64,
 }
 
@@ -101,11 +107,13 @@ pub(crate) async fn upload(
         .await;
     }
     let http = &control.http;
+    let required_headers = validated_grant_headers(&grant.required_headers)?;
     let file = tokio::fs::File::open(path)
         .await
         .map_err(|error| Error::InvalidResponse(format!("open R2 upload: {error}")))?;
     let response = http
         .put(&grant.url)
+        .headers(required_headers.clone())
         .header(reqwest::header::IF_NONE_MATCH, NO_REPLACE_HEADER)
         .header(reqwest::header::CONTENT_LENGTH, bytes)
         .body(reqwest::Body::wrap_stream(ReaderStream::new(file)))
@@ -120,7 +128,7 @@ pub(crate) async fn upload(
     let verify_url = grant.verify_url.as_deref().ok_or_else(|| {
         Error::InvalidResponse("R2 upload grant omitted its readback URL".to_owned())
     })?;
-    let etag = verify_readback(http, verify_url, bytes, expected_sha256).await?;
+    let etag = verify_readback(http, verify_url, &required_headers, bytes, expected_sha256).await?;
     Ok((expected_sha256.to_owned(), expected_sha256.to_owned(), etag))
 }
 
@@ -140,6 +148,7 @@ async fn multipart_upload(
     requested_part_bytes: u64,
     maximum_concurrency: usize,
 ) -> Result<(String, String, String), Error> {
+    let initial_headers = validated_grant_headers(&initial.required_headers)?;
     let part_bytes = requested_part_bytes.clamp(MINIMUM_PART_BYTES, MAXIMUM_SINGLE_PUT_BYTES);
     let part_count = bytes.div_ceil(part_bytes);
     if part_count == 0 || part_count > MAXIMUM_PARTS || maximum_concurrency == 0 {
@@ -166,11 +175,17 @@ async fn multipart_upload(
             let create_url = initial.multipart_create_url.as_deref().ok_or_else(|| {
                 Error::InvalidResponse("R2 grant omitted multipart initiation".to_owned())
             })?;
-            require_no_replace_signature(create_url)?;
-            let response = control
+            if initial.multipart_create_requires_no_replace {
+                require_no_replace_signature(create_url)?;
+            }
+            let mut create = control
                 .http
                 .post(create_url)
-                .header(reqwest::header::IF_NONE_MATCH, NO_REPLACE_HEADER)
+                .headers(initial_headers.clone());
+            if initial.multipart_create_requires_no_replace {
+                create = create.header(reqwest::header::IF_NONE_MATCH, NO_REPLACE_HEADER);
+            }
+            let response = create
                 .header(reqwest::header::CONTENT_LENGTH, 0)
                 .send()
                 .await
@@ -179,8 +194,14 @@ async fn multipart_upload(
                 let verify_url = initial.verify_url.as_deref().ok_or_else(|| {
                     Error::InvalidResponse("R2 grant omitted its readback URL".to_owned())
                 })?;
-                let etag =
-                    verify_readback(&control.http, verify_url, bytes, expected_sha256).await?;
+                let etag = verify_readback(
+                    &control.http,
+                    verify_url,
+                    &initial_headers,
+                    bytes,
+                    expected_sha256,
+                )
+                .await?;
                 return Ok((expected_sha256.to_owned(), expected_sha256.to_owned(), etag));
             }
             if !response.status().is_success() {
@@ -214,7 +235,14 @@ async fn multipart_upload(
     let mut latest_grant = None;
     if journal.etags.len() as u64 == part_count
         && let Some(verify_url) = initial.verify_url.as_deref()
-        && let Ok(etag) = verify_readback(&control.http, verify_url, bytes, expected_sha256).await
+        && let Ok(etag) = verify_readback(
+            &control.http,
+            verify_url,
+            &initial_headers,
+            bytes,
+            expected_sha256,
+        )
+        .await
     {
         std::fs::remove_file(&journal_path).map_err(|error| {
             Error::InvalidResponse(format!("remove recovered R2 multipart journal: {error}"))
@@ -240,6 +268,7 @@ async fn multipart_upload(
             )
             .await?;
         validate_multipart_grant(&grant, &journal.upload_id, first, count)?;
+        let grant_headers = validated_grant_headers(&grant.required_headers)?;
         let pending = grant
             .parts
             .iter()
@@ -253,6 +282,7 @@ async fn multipart_upload(
                 part_bytes,
                 part.part_number,
                 &part.url,
+                &grant_headers,
             )
         }))
         .buffer_unordered(maximum_concurrency.min(64))
@@ -287,6 +317,7 @@ async fn multipart_upload(
     let response = control
         .http
         .post(&grant.complete_url)
+        .headers(validated_grant_headers(&grant.required_headers)?)
         .header(reqwest::header::IF_NONE_MATCH, NO_REPLACE_HEADER)
         .header(reqwest::header::CONTENT_TYPE, "application/xml")
         .body(body)
@@ -302,7 +333,14 @@ async fn multipart_upload(
             false,
         ));
     }
-    let etag = verify_readback(&control.http, &grant.verify_url, bytes, expected_sha256).await?;
+    let etag = verify_readback(
+        &control.http,
+        &grant.verify_url,
+        &validated_grant_headers(&grant.required_headers)?,
+        bytes,
+        expected_sha256,
+    )
+    .await?;
     std::fs::remove_file(&journal_path).map_err(|error| {
         Error::InvalidResponse(format!("remove completed R2 multipart journal: {error}"))
     })?;
@@ -316,6 +354,7 @@ async fn upload_part(
     part_bytes: u64,
     part_number: u32,
     url: &str,
+    required_headers: &reqwest::header::HeaderMap,
 ) -> Result<(u32, String), Error> {
     let offset = u64::from(part_number.saturating_sub(1)).saturating_mul(part_bytes);
     let length = total_bytes.saturating_sub(offset).min(part_bytes);
@@ -332,6 +371,7 @@ async fn upload_part(
         .map_err(|error| Error::InvalidResponse(format!("seek R2 part source: {error}")))?;
     let response = http
         .put(url)
+        .headers(required_headers.clone())
         .header(reqwest::header::CONTENT_LENGTH, length)
         .body(reqwest::Body::wrap_stream(ReaderStream::new(
             file.take(length),
@@ -372,6 +412,7 @@ pub(crate) async fn download(
     maximum_concurrency: usize,
 ) -> Result<PathBuf, Error> {
     let grant = decode_grant(credential, "GET")?;
+    let required_headers = validated_grant_headers(&grant.required_headers)?;
     ensure_private_directory(staging_directory, "R2 download staging root")?;
     let path = staging_directory.join(format!("{version_id}.download"));
     if expected_bytes >= MULTIPART_THRESHOLD_BYTES && maximum_concurrency > 1 {
@@ -384,12 +425,14 @@ pub(crate) async fn download(
             expected_sha256,
             part_bytes.max(MINIMUM_PART_BYTES),
             maximum_concurrency,
+            &required_headers,
         )
         .await;
     }
     let temporary = staging_directory.join(format!("{version_id}.download.partial"));
     let response = http
         .get(&grant.url)
+        .headers(required_headers)
         .send()
         .await
         .map_err(|error| provider_transport("download R2 object", &error))?;
@@ -450,6 +493,7 @@ async fn download_ranges(
     expected_sha256: &str,
     part_bytes: u64,
     maximum_concurrency: usize,
+    required_headers: &reqwest::header::HeaderMap,
 ) -> Result<PathBuf, Error> {
     let output_path = staging_directory.join(format!("{version_id}.download"));
     if output_path
@@ -476,7 +520,15 @@ async fn download_ranges(
     });
     let results = pending
         .map(|(_, start, length, path)| {
-            download_range(http, url, start, length, expected_bytes, path)
+            download_range(
+                http,
+                url,
+                start,
+                length,
+                expected_bytes,
+                path,
+                required_headers,
+            )
         })
         .buffer_unordered(maximum_concurrency.min(64));
     futures_util::pin_mut!(results);
@@ -527,6 +579,7 @@ async fn download_range(
     length: u64,
     total_bytes: u64,
     path: PathBuf,
+    required_headers: &reqwest::header::HeaderMap,
 ) -> Result<(), Error> {
     let end = start
         .checked_add(length)
@@ -534,6 +587,7 @@ async fn download_range(
         .ok_or_else(|| Error::InvalidResponse("R2 range overflow".to_owned()))?;
     let response = http
         .get(url)
+        .headers(required_headers.clone())
         .header(reqwest::header::RANGE, format!("bytes={start}-{end}"))
         .send()
         .await
@@ -587,7 +641,37 @@ fn decode_grant(value: Value, expected_method: &str) -> Result<SignedGrant, Erro
     if grant.method != expected_method || !safe_signed_url(&grant.url) || grant.expires_at == 0 {
         return Err(Error::InvalidResponse("invalid R2 signed grant".to_owned()));
     }
+    validate_headers_are_signed(&grant.url, &grant.required_headers)?;
+    if let Some(url) = grant.verify_url.as_deref() {
+        validate_headers_are_signed(url, &grant.required_headers)?;
+    }
+    if let Some(url) = grant.multipart_create_url.as_deref() {
+        validate_headers_are_signed(url, &grant.required_headers)?;
+    }
     Ok(grant)
+}
+
+fn validated_grant_headers(
+    headers: &BTreeMap<String, String>,
+) -> Result<reqwest::header::HeaderMap, Error> {
+    let mut validated = reqwest::header::HeaderMap::new();
+    for (name, value) in headers {
+        if !name.eq_ignore_ascii_case("x-amz-expected-bucket-owner")
+            || value.len() != 12
+            || !value.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(Error::InvalidResponse(
+                "signed-object grant contains an unsupported required header".to_owned(),
+            ));
+        }
+        validated.insert(
+            reqwest::header::HeaderName::from_static("x-amz-expected-bucket-owner"),
+            reqwest::header::HeaderValue::from_str(value).map_err(|_| {
+                Error::InvalidResponse("signed-object grant header is invalid".to_owned())
+            })?,
+        );
+    }
+    Ok(validated)
 }
 
 fn validate_multipart_grant(
@@ -596,8 +680,10 @@ fn validate_multipart_grant(
     first_part: u64,
     part_count: u64,
 ) -> Result<(), Error> {
-    if grant.schema != "carrack.vfs.r2-multipart-grant.v1"
-        || grant.upload_id != upload_id
+    if !matches!(
+        grant.schema.as_str(),
+        "carrack.vfs.r2-multipart-grant.v1" | "carrack.vfs.s3-multipart-grant.v1"
+    ) || grant.upload_id != upload_id
         || grant.parts.len() as u64 != part_count
         || grant.expires_at == 0
         || !safe_signed_url(&grant.complete_url)
@@ -609,6 +695,43 @@ fn validate_multipart_grant(
     {
         return Err(Error::InvalidResponse(
             "invalid R2 multipart grant".to_owned(),
+        ));
+    }
+    for url in grant.parts.iter().map(|part| part.url.as_str()).chain([
+        grant.complete_url.as_str(),
+        grant.abort_url.as_str(),
+        grant.verify_url.as_str(),
+    ]) {
+        validate_headers_are_signed(url, &grant.required_headers)?;
+    }
+    Ok(())
+}
+
+fn validate_headers_are_signed(
+    value: &str,
+    required: &BTreeMap<String, String>,
+) -> Result<(), Error> {
+    if required.is_empty() {
+        return Ok(());
+    }
+    let url = url::Url::parse(value)
+        .map_err(|error| Error::InvalidResponse(format!("parse signed-object URL: {error}")))?;
+    let signed_headers = url
+        .query_pairs()
+        .find_map(|(name, value)| {
+            name.eq_ignore_ascii_case("X-Amz-SignedHeaders")
+                .then_some(value.into_owned())
+        })
+        .ok_or_else(|| {
+            Error::InvalidResponse("signed-object grant omitted signed headers".to_owned())
+        })?;
+    if required.keys().any(|required_name| {
+        !signed_headers
+            .split(';')
+            .any(|signed| signed.eq_ignore_ascii_case(required_name))
+    }) {
+        return Err(Error::InvalidResponse(
+            "signed-object grant did not cryptographically bind every required header".to_owned(),
         ));
     }
     Ok(())
@@ -709,6 +832,10 @@ fn safe_signed_url(value: &str) -> bool {
     })
 }
 
+const fn default_true() -> bool {
+    true
+}
+
 fn require_no_replace_signature(value: &str) -> Result<(), Error> {
     let url = url::Url::parse(value)
         .map_err(|error| Error::InvalidResponse(format!("parse R2 signed URL: {error}")))?;
@@ -759,11 +886,13 @@ fn provider_status(
 async fn verify_readback(
     http: &reqwest::Client,
     url: &str,
+    required_headers: &reqwest::header::HeaderMap,
     expected_bytes: u64,
     expected_sha256: &str,
 ) -> Result<String, Error> {
     let response = http
         .get(url)
+        .headers(required_headers.clone())
         .send()
         .await
         .map_err(|error| provider_transport("read back R2 upload", &error))?;
@@ -809,7 +938,7 @@ mod tests {
     use sha2::{Digest as _, Sha256};
 
     use super::{
-        SignedGrant, download, download_ranges, multipart_upload, provider_status,
+        SignedGrant, decode_grant, download, download_ranges, multipart_upload, provider_status,
         require_no_replace_signature, upload,
     };
 
@@ -825,6 +954,34 @@ mod tests {
             require_no_replace_signature("https://bucket.example/object?X-Amz-SignedHeaders=host")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn required_provider_headers_must_be_supported_and_signed() {
+        let valid = serde_json::json!({
+            "method": "GET",
+            "url": "https://bucket.s3.us-east-1.amazonaws.com/object?X-Amz-SignedHeaders=host%3Bx-amz-expected-bucket-owner",
+            "required_headers": {"x-amz-expected-bucket-owner": "123456789012"},
+            "expires_at": 1
+        });
+        assert!(decode_grant(valid, "GET").is_ok());
+
+        let unsigned = serde_json::json!({
+            "method": "GET",
+            "url": "https://bucket.s3.us-east-1.amazonaws.com/object?X-Amz-SignedHeaders=host",
+            "required_headers": {"x-amz-expected-bucket-owner": "123456789012"},
+            "expires_at": 1
+        });
+        assert!(decode_grant(unsigned, "GET").is_err());
+
+        let unsupported = serde_json::json!({
+            "method": "GET",
+            "url": "https://bucket.s3.us-east-1.amazonaws.com/object?X-Amz-SignedHeaders=host%3Bx-secret",
+            "required_headers": {"x-secret": "value"},
+            "expires_at": 1
+        });
+        let grant = decode_grant(unsupported, "GET").expect("signed shape");
+        assert!(super::validated_grant_headers(&grant.required_headers).is_err());
     }
 
     #[tokio::test]
@@ -928,6 +1085,8 @@ mod tests {
                 "{}?X-Amz-SignedHeaders=host%3Bif-none-match",
                 server.url("/create")
             )),
+            multipart_create_requires_no_replace: true,
+            required_headers: std::collections::BTreeMap::new(),
             expires_at: 2_000_000_000,
         };
         let result = multipart_upload(
@@ -1088,6 +1247,7 @@ mod tests {
             &sha256,
             5,
             2,
+            &reqwest::header::HeaderMap::new(),
         )
         .await
         .expect("range download");
@@ -1119,6 +1279,7 @@ mod tests {
             &hex::encode(Sha256::digest(b"abcde")),
             5,
             1,
+            &reqwest::header::HeaderMap::new(),
         )
         .await
         .expect_err("a correct prefix must not hide extra provider bytes");
@@ -1163,6 +1324,7 @@ mod tests {
             &expected,
             5,
             2,
+            &reqwest::header::HeaderMap::new(),
         )
         .await
         .expect_err("reject corrupt provider object");
@@ -1212,6 +1374,7 @@ mod tests {
             &hex::encode(Sha256::digest(b"abcdefghij")),
             5,
             2,
+            &reqwest::header::HeaderMap::new(),
         )
         .await
         .expect_err("complete encoded identity must reject a corrupt resumed part");

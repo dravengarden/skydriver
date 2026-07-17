@@ -19,6 +19,8 @@ const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.driver-registra
 const ALIYUN_DRIVE_KIND: &str = DriverKind::AliyunDriveOpenV2.as_str();
 #[cfg(test)]
 const R2_KIND: &str = DriverKind::R2V1.as_str();
+#[cfg(test)]
+const AWS_S3_KIND: &str = DriverKind::AwsS3V1.as_str();
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -285,6 +287,14 @@ fn registration_warnings(kind: &str) -> Vec<String> {
             "Complete-object upload uses streaming single PUT below 100 MiB and a resumable concurrent multipart journal above it; download uses concurrent signed ranges when requested."
                 .to_owned(),
         ],
+        Some(DriverKind::AwsS3V1) => vec![
+            "The driver is registered disabled and requires a write-only AWS IAM access-key credential before enablement."
+                .to_owned(),
+            "Carrack accepts only an official regional AWS S3 endpoint, signs the expected bucket owner into every request, and rejects versioned or versioning-suspended buckets."
+                .to_owned(),
+            "Payload bytes transfer directly between clients and S3 through short-lived object-scoped SigV4 URLs; publication and deletion are conditional and complete readback verifies encoded SHA-256."
+                .to_owned(),
+        ],
         Some(DriverKind::AliyunDriveOpenV2) => vec![
             "The driver is registered disabled and requires a write-only access-token credential before enablement."
                 .to_owned(),
@@ -429,7 +439,7 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        ALIYUN_DRIVE_KIND, R2_KIND, RegistrationRequest, driver_configuration,
+        ALIYUN_DRIVE_KIND, AWS_S3_KIND, R2_KIND, RegistrationRequest, driver_configuration,
         normalize_registration,
     };
 
@@ -495,5 +505,33 @@ mod tests {
         .expect("normalize R2 registration");
         assert_eq!(normalized.config["prefix"], "");
         assert_eq!(normalized.config["managed"], true);
+    }
+
+    #[test]
+    fn normalizes_strict_aws_s3_configuration() {
+        let normalized = normalize_registration(RegistrationRequest {
+            driver_id: "s3-main".to_owned(),
+            kind: AWS_S3_KIND.to_owned(),
+            config: json!({
+                "region": "us-east-1",
+                "bucket": "carrack-payload-example",
+                "expected_bucket_owner": "123456789012"
+            }),
+        })
+        .expect("normalize AWS S3 registration");
+        assert_eq!(normalized.config["prefix"], "");
+        assert!(
+            normalize_registration(RegistrationRequest {
+                driver_id: "s3-unsafe".to_owned(),
+                kind: AWS_S3_KIND.to_owned(),
+                config: json!({
+                    "region": "us-east-1",
+                    "bucket": "carrack-payload-example",
+                    "expected_bucket_owner": "123456789012",
+                    "endpoint": "https://attacker.example"
+                }),
+            })
+            .is_err()
+        );
     }
 }

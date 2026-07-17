@@ -219,8 +219,9 @@ pub(crate) async fn grant_put_driver(
         &context,
         "PUT",
         context.expires_at.min(token.expires_at),
-    )?;
-    if driver_kind == DriverKind::R2V1 {
+    )
+    .await?;
+    if matches!(driver_kind, DriverKind::R2V1 | DriverKind::AwsS3V1) {
         database
             .prepare(
                 "INSERT INTO vfs_r2_upload_cleanup_tasks (
@@ -283,7 +284,10 @@ pub(crate) async fn grant_put_r2_multipart(
     if context.state != "prepared" {
         return Response::error("VFS Put is no longer uploadable", 409);
     }
-    if driver_registry::compiled_kind(&context.driver_kind)? != DriverKind::R2V1 {
+    if !matches!(
+        driver_registry::compiled_kind(&context.driver_kind)?,
+        DriverKind::R2V1 | DriverKind::AwsS3V1
+    ) {
         return Response::error("VFS driver does not support R2 multipart grants", 400);
     }
     let Some(credential_id) = context.credential_id.as_deref() else {
@@ -309,8 +313,13 @@ pub(crate) async fn grant_put_r2_multipart(
         nonce,
         ciphertext,
     )?;
+    let kind = driver_registry::compiled_kind(&context.driver_kind)?;
+    if !driver_registry::live_authority_valid(kind, &context.driver_config_json, &plaintext).await {
+        plaintext.zeroize();
+        return Response::error("driver authority is not safe for grant issuance", 503);
+    }
     let grant = driver_registry::project_multipart_grant(
-        driver_registry::compiled_kind(&context.driver_kind)?,
+        kind,
         &driver_registry::MultipartGrantRequest {
             config_json: &context.driver_config_json,
             storage_key: &context.storage_key,
@@ -399,7 +408,8 @@ pub(crate) async fn grant_put_delete_driver(
         &context,
         "DELETE",
         context.lease_expires_at.min(token.expires_at),
-    )?;
+    )
+    .await?;
     record_put_delete_audit(
         &database,
         token,
@@ -451,7 +461,7 @@ fn directory_envelope(context: &PutGrantRow) -> Result<(&str, &str, &[u8], &[u8]
     }
 }
 
-fn decrypt_credential(
+async fn decrypt_credential(
     env: &Env,
     context: &PutGrantRow,
     method: &str,
@@ -482,6 +492,12 @@ fn decrypt_credential(
         ciphertext,
     )?;
     let kind = driver_registry::compiled_kind(&context.driver_kind)?;
+    if !driver_registry::live_authority_valid(kind, &context.driver_config_json, &plaintext).await {
+        plaintext.zeroize();
+        return Err(worker::Error::RustError(
+            "driver authority is not safe for grant issuance".to_owned(),
+        ));
+    }
     let decoded = driver_registry::project_access_grant(
         kind,
         method,
@@ -494,7 +510,7 @@ fn decrypt_credential(
     Ok(Some(decoded?))
 }
 
-fn decrypt_put_delete_credential(
+async fn decrypt_put_delete_credential(
     env: &Env,
     context: &PutDeleteGrantRow,
     method: &str,
@@ -524,6 +540,12 @@ fn decrypt_put_delete_credential(
         ciphertext,
     )?;
     let kind = driver_registry::compiled_kind(&context.driver_kind)?;
+    if !driver_registry::live_authority_valid(kind, &context.driver_config_json, &plaintext).await {
+        plaintext.zeroize();
+        return Err(worker::Error::RustError(
+            "driver authority is not safe for grant issuance".to_owned(),
+        ));
+    }
     let decoded = driver_registry::project_access_grant(
         kind,
         method,

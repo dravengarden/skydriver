@@ -8,7 +8,7 @@
 use carrack_driver_contract::{DriverKind, GrantMode};
 use worker::Result;
 
-use crate::{driver_renewal, r2_signing};
+use crate::{aws_s3_signing, driver_renewal, r2_signing};
 
 pub(crate) fn compiled_kind(value: &str) -> Result<DriverKind> {
     DriverKind::parse(value)
@@ -24,13 +24,23 @@ pub(crate) fn project_access_grant(
     expires_at: u64,
 ) -> Result<serde_json::Value> {
     match kind.grant_mode() {
-        GrantMode::SignedObject => r2_signing::access_grant_from_plaintext(
-            method,
-            config_json,
-            storage_key,
-            plaintext,
-            expires_at,
-        )
+        GrantMode::SignedObject => match kind {
+            DriverKind::R2V1 => r2_signing::access_grant_from_plaintext(
+                method,
+                config_json,
+                storage_key,
+                plaintext,
+                expires_at,
+            ),
+            DriverKind::AwsS3V1 => aws_s3_signing::access_grant_from_plaintext(
+                method,
+                config_json,
+                storage_key,
+                plaintext,
+                expires_at,
+            ),
+            DriverKind::AliyunDriveOpenV2 | DriverKind::LocalFilesystemV2 => None,
+        }
         .ok_or_else(|| worker::Error::RustError("sign object-scoped driver grant".to_owned())),
         GrantMode::StoredAccess => driver_renewal::access_grant_from_plaintext(kind, plaintext)
             .map_err(|error| {
@@ -39,6 +49,17 @@ pub(crate) fn project_access_grant(
         GrantMode::None => Err(worker::Error::RustError(
             "credential-free driver unexpectedly stored authority".to_owned(),
         )),
+    }
+}
+
+pub(crate) async fn live_authority_valid(
+    kind: DriverKind,
+    config_json: &str,
+    plaintext: &[u8],
+) -> bool {
+    match kind {
+        DriverKind::AwsS3V1 => aws_s3_signing::authority_healthy(config_json, plaintext).await,
+        DriverKind::AliyunDriveOpenV2 | DriverKind::R2V1 | DriverKind::LocalFilesystemV2 => true,
     }
 }
 
@@ -66,6 +87,16 @@ pub(crate) fn project_multipart_grant(
     }
     match kind {
         DriverKind::R2V1 => r2_signing::multipart_grant_from_plaintext(
+            request.config_json,
+            request.storage_key,
+            request.plaintext,
+            request.upload_id,
+            request.first_part,
+            request.part_count,
+            request.maximum_expires_at,
+        )
+        .ok_or_else(|| worker::Error::RustError("invalid multipart grant request".to_owned())),
+        DriverKind::AwsS3V1 => aws_s3_signing::multipart_grant_from_plaintext(
             request.config_json,
             request.storage_key,
             request.plaintext,

@@ -179,6 +179,10 @@ export function DriversPage({
     const [r2Endpoint, setR2Endpoint] = useState("");
     const [r2Bucket, setR2Bucket] = useState("");
     const [r2Prefix, setR2Prefix] = useState("");
+    const [s3Region, setS3Region] = useState("");
+    const [s3Bucket, setS3Bucket] = useState("");
+    const [s3Owner, setS3Owner] = useState("");
+    const [s3Prefix, setS3Prefix] = useState("");
     const [registrationValidation, setRegistrationValidation] =
         useState<DriverRegistrationValidation | null>(null);
     const validationMutation = useMutation({
@@ -243,12 +247,19 @@ export function DriversPage({
                           prefix: r2Prefix,
                           managed: false,
                       }
-                    : {
-                          api_base_url: "https://openapi.alipan.com",
-                          drive_type: "resource",
-                          root_folder_id: "root",
-                          upload_part_bytes: 20 * 1024 * 1024,
-                      },
+                    : registrationKind === "aws-s3/v1"
+                      ? {
+                            region: s3Region,
+                            bucket: s3Bucket,
+                            expected_bucket_owner: s3Owner,
+                            prefix: s3Prefix,
+                        }
+                      : {
+                            api_base_url: "https://openapi.alipan.com",
+                            drive_type: "resource",
+                            root_folder_id: "root",
+                            upload_part_bytes: 20 * 1024 * 1024,
+                        },
             ),
         onSuccess: setRegistrationValidation,
     });
@@ -302,7 +313,7 @@ export function DriversPage({
     }
 
     function credentialInput(driver: DriverView) {
-        return driver.kind === "r2/v1"
+        return driver.kind === "r2/v1" || driver.kind === "aws-s3/v1"
             ? {
                   access_key_id: r2AccessKeyId,
                   secret_access_key: r2SecretAccessKey,
@@ -357,6 +368,10 @@ export function DriversPage({
         setR2Endpoint("");
         setR2Bucket("");
         setR2Prefix("");
+        setS3Region("");
+        setS3Bucket("");
+        setS3Owner("");
+        setS3Prefix("");
         setRegistrationValidation(null);
         registrationValidationMutation.reset();
         registrationApplyMutation.reset();
@@ -592,6 +607,7 @@ export function DriversPage({
                                         </Typography>
                                         {driver.enabled &&
                                             (driver.kind === "r2/v1" ||
+                                                driver.kind === "aws-s3/v1" ||
                                                 driver.kind === "aliyundrive-open/v2") && (
                                                 <Button
                                                     disabled={
@@ -754,6 +770,7 @@ export function DriversPage({
                     >
                         <MenuItem value="aliyundrive-open/v2">Aliyun Drive</MenuItem>
                         <MenuItem value="r2/v1">Cloudflare R2</MenuItem>
+                        <MenuItem value="aws-s3/v1">AWS S3</MenuItem>
                     </TextField>
                     {registrationKind === "r2/v1" && (
                         <Stack spacing={2} sx={{ mt: 2 }}>
@@ -781,6 +798,41 @@ export function DriversPage({
                                 value={r2Prefix}
                                 disabled={registrationValidation !== null}
                                 onChange={(event) => setR2Prefix(event.target.value)}
+                            />
+                        </Stack>
+                    )}
+                    {registrationKind === "aws-s3/v1" && (
+                        <Stack spacing={2} sx={{ mt: 2 }}>
+                            <Alert severity="info">
+                                AWS S3 v1 uses the official regional endpoint, pins the expected
+                                bucket owner, and accepts only unversioned general-purpose buckets.
+                            </Alert>
+                            <TextField
+                                label="AWS region"
+                                value={s3Region}
+                                disabled={registrationValidation !== null}
+                                onChange={(event) => setS3Region(event.target.value)}
+                                placeholder="us-east-1"
+                            />
+                            <TextField
+                                label="Bucket"
+                                value={s3Bucket}
+                                disabled={registrationValidation !== null}
+                                onChange={(event) => setS3Bucket(event.target.value)}
+                            />
+                            <TextField
+                                label="Expected bucket owner"
+                                value={s3Owner}
+                                disabled={registrationValidation !== null}
+                                onChange={(event) => setS3Owner(event.target.value)}
+                                placeholder="123456789012"
+                                helperText="The 12-digit AWS account ID signed into every request."
+                            />
+                            <TextField
+                                label="Object prefix (optional, end with /)"
+                                value={s3Prefix}
+                                disabled={registrationValidation !== null}
+                                onChange={(event) => setS3Prefix(event.target.value)}
                             />
                         </Stack>
                     )}
@@ -834,6 +886,10 @@ export function DriversPage({
                                 registrationId.trim() === "" ||
                                 (registrationKind === "r2/v1" &&
                                     (r2Endpoint.trim() === "" || r2Bucket.trim() === "")) ||
+                                (registrationKind === "aws-s3/v1" &&
+                                    (s3Region.trim() === "" ||
+                                        s3Bucket.trim() === "" ||
+                                        s3Owner.trim() === "")) ||
                                 registrationValidationMutation.isPending
                             }
                             onClick={() => registrationValidationMutation.mutate()}
@@ -969,12 +1025,17 @@ export function DriversPage({
                         {credentialTarget?.kind} · revision{" "}
                         {String(credentialTarget?.revision ?? 0)}
                     </Typography>
-                    {credentialTarget?.kind === "r2/v1" ? (
+                    {credentialTarget !== null &&
+                    ["r2/v1", "aws-s3/v1"].includes(credentialTarget.kind) ? (
                         <Stack spacing={2}>
                             <TextField
                                 autoFocus
                                 fullWidth
-                                label="R2 access key ID"
+                                label={
+                                    credentialTarget.kind === "r2/v1"
+                                        ? "R2 access key ID"
+                                        : "AWS access key ID"
+                                }
                                 autoComplete="off"
                                 value={r2AccessKeyId}
                                 disabled={credentialValidation !== null}
@@ -982,7 +1043,11 @@ export function DriversPage({
                             />
                             <TextField
                                 fullWidth
-                                label="R2 secret access key"
+                                label={
+                                    credentialTarget.kind === "r2/v1"
+                                        ? "R2 secret access key"
+                                        : "AWS secret access key"
+                                }
                                 type="text"
                                 autoComplete="off"
                                 value={redactSecret(r2SecretAccessKey)}
@@ -1066,7 +1131,8 @@ export function DriversPage({
                                 Driver revision {String(credentialValidation.expected_revision)} →{" "}
                                 {String(credentialValidation.expected_revision + 1)} · credential
                                 revision {String(credentialValidation.credential_revision)} ·
-                                {credentialTarget?.kind === "r2/v1" ? (
+                                {credentialTarget !== null &&
+                                ["r2/v1", "aws-s3/v1"].includes(credentialTarget.kind) ? (
                                     "long-lived provider key"
                                 ) : (
                                     <>
@@ -1095,7 +1161,8 @@ export function DriversPage({
                             variant="contained"
                             disabled={
                                 credentialTarget === null ||
-                                (credentialTarget?.kind === "r2/v1"
+                                (credentialTarget !== null &&
+                                ["r2/v1", "aws-s3/v1"].includes(credentialTarget.kind)
                                     ? r2AccessKeyId.length === 0 || r2SecretAccessKey.length === 0
                                     : refreshToken.length === 0) ||
                                 credentialValidationMutation.isPending

@@ -10,7 +10,7 @@ use serde_json::json;
 use worker::{Env, Fetch, Headers, Method, Request, RequestInit, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
 
-use crate::{driver_renewal::AliyunCredential, environment_defaults, r2_signing};
+use crate::{aws_s3_signing, driver_renewal::AliyunCredential, environment_defaults, r2_signing};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DeleteOutcome {
@@ -82,19 +82,84 @@ pub(crate) async fn delete_object(
             )
             .await
         }
+        DriverKind::AwsS3V1 => {
+            delete_aws_s3(
+                config_json,
+                storage_key,
+                expected,
+                credential_plaintext.ok_or(DeleteFailure::Blocked("credential_incomplete"))?,
+            )
+            .await
+        }
         DriverKind::LocalFilesystemV2 => {
             Err(DeleteFailure::Blocked("agent_host_driver_unreachable"))
         }
     }
 }
 
-pub(crate) async fn cleanup_r2_upload(
+async fn delete_aws_s3(
+    config_json: &str,
+    storage_key: &str,
+    expected: ExpectedIdentity<'_>,
+    credential_plaintext: &[u8],
+) -> std::result::Result<DeleteOutcome, DeleteFailure> {
+    if !aws_s3_signing::authority_healthy(config_json, credential_plaintext).await {
+        return Err(DeleteFailure::Blocked("bucket_versioning_unsupported"));
+    }
+    let stat = aws_s3_signing::stat_from_plaintext(config_json, storage_key, credential_plaintext)
+        .await
+        .map_err(map_r2_failure)?;
+    let Some(stat) = stat else {
+        return Ok(DeleteOutcome::AlreadyAbsent);
+    };
+    if !r2_identity_matches(stat.size_bytes, &stat.etag, expected) {
+        return Err(DeleteFailure::IdentityMismatch);
+    }
+    let expected_etag = expected
+        .etag
+        .filter(|value| !value.is_empty())
+        .ok_or(DeleteFailure::Blocked("stable_identity_missing"))?;
+    aws_s3_signing::delete_from_plaintext(
+        config_json,
+        storage_key,
+        expected_etag,
+        credential_plaintext,
+    )
+    .await
+    .map_err(|failure| match failure {
+        r2_signing::OperationFailure::Blocked("provider_identity_mismatch") => {
+            DeleteFailure::IdentityMismatch
+        }
+        other => map_r2_failure(other),
+    })?;
+    Ok(DeleteOutcome::Deleted)
+}
+
+pub(crate) async fn cleanup_multipart_upload(
     env: &Env,
+    kind: DriverKind,
     config_json: &str,
     storage_key: &str,
     upload_id: Option<&str>,
     credential_plaintext: Option<&[u8]>,
 ) -> Result<()> {
+    if kind == DriverKind::AwsS3V1 {
+        let plaintext = credential_plaintext.ok_or_else(|| {
+            worker::Error::RustError("AWS S3 cleanup credential is incomplete".to_owned())
+        })?;
+        return aws_s3_signing::cleanup_upload_from_plaintext(
+            config_json,
+            storage_key,
+            upload_id,
+            plaintext,
+        )
+        .await;
+    }
+    if kind != DriverKind::R2V1 {
+        return Err(worker::Error::RustError(
+            "driver has no hosted multipart cleanup adapter".to_owned(),
+        ));
+    }
     let config = serde_json::from_str::<R2Config>(config_json).map_err(|error| {
         worker::Error::RustError(format!("decode R2 cleanup configuration: {error}"))
     })?;

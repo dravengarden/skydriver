@@ -149,6 +149,10 @@ in VFS authorization, inventory-state, or lifecycle-state modules. A new
 hosted provider must enter these exhaustive dispatchers; an agent-host-only
 provider must fail closed before hosted provider I/O.
 
+The correctness envelope and all-or-nothing integration gate for the planned
+official AWS adapter are specified in [aws-s3-v1.md](aws-s3-v1.md). Generic
+S3-compatible services are intentionally outside that adapter's claim.
+
 `tests/architecture-boundaries.sh` mechanically enforces the most important
 dependency directions. Adapter conformance tests prove behavior; the registry
 alone is not a correctness proof.

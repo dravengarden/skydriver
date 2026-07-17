@@ -12,6 +12,33 @@ const SERVICE: &str = "s3";
 const REGION: &str = "auto";
 const ALGORITHM: &str = "AWS4-HMAC-SHA256";
 
+pub(crate) struct SigningTarget<'a> {
+    pub(crate) endpoint: &'a str,
+    pub(crate) region: &'a str,
+    pub(crate) bucket_path: Option<&'a str>,
+}
+
+pub(crate) fn presign_target(
+    method: &str,
+    target: &SigningTarget<'_>,
+    credential: &Credential,
+    key: &str,
+    expires_seconds: u64,
+    extra_query: &[(&str, &str)],
+    required_headers: &[(&str, &str)],
+) -> Option<String> {
+    presign_target_at(
+        method,
+        target,
+        credential,
+        key,
+        expires_seconds,
+        extra_query,
+        required_headers,
+        &amz_timestamp()?,
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OperationFailure {
     Retry(&'static str),
@@ -162,17 +189,57 @@ fn presign_query_at(
     required_headers: &[(&str, &str)],
     timestamp: &str,
 ) -> Option<String> {
+    if !valid_config(config) || !valid_credential(credential) {
+        return None;
+    }
+    presign_target_at(
+        method,
+        &SigningTarget {
+            endpoint: &config.endpoint,
+            region: REGION,
+            bucket_path: Some(&config.bucket),
+        },
+        credential,
+        key,
+        expires_seconds,
+        extra_query,
+        required_headers,
+        timestamp,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "SigV4 binds method, exact provider target, object, lifetime, query, headers, and deterministic signing time"
+)]
+pub(crate) fn presign_target_at(
+    method: &str,
+    target: &SigningTarget<'_>,
+    credential: &Credential,
+    key: &str,
+    expires_seconds: u64,
+    extra_query: &[(&str, &str)],
+    required_headers: &[(&str, &str)],
+    timestamp: &str,
+) -> Option<String> {
     if !matches!(method, "GET" | "HEAD" | "PUT" | "POST" | "DELETE")
-        || !valid_config(config)
         || !valid_credential(credential)
         || expires_seconds == 0
         || expires_seconds > 900
+        || target.region.is_empty()
+        || target
+            .region
+            .bytes()
+            .any(|byte| !byte.is_ascii_lowercase() && !byte.is_ascii_digit() && byte != b'-')
     {
         return None;
     }
-    let host = config.endpoint.strip_prefix("https://")?;
+    let host = target.endpoint.strip_prefix("https://")?;
+    if host.is_empty() || host.contains(['/', '?', '#', '@']) {
+        return None;
+    }
     let date = timestamp.get(..8)?;
-    let scope = format!("{date}/{REGION}/{SERVICE}/aws4_request");
+    let scope = format!("{date}/{}/{SERVICE}/aws4_request", target.region);
     if required_headers.iter().any(|(name, value)| {
         name.is_empty()
             || *name == "host"
@@ -202,10 +269,10 @@ fn presign_query_at(
     for (name, value) in &canonical_headers {
         writeln!(rendered_headers, "{name}:{}", value.trim()).ok()?;
     }
-    let canonical_uri = format!(
-        "/{}/{}",
-        percent_encode(&config.bucket, true),
-        percent_encode(key, false)
+    let encoded_key = percent_encode(key, false);
+    let canonical_uri = target.bucket_path.map_or_else(
+        || format!("/{encoded_key}"),
+        |bucket| format!("/{}/{encoded_key}", percent_encode(bucket, true)),
     );
     let mut query = vec![
         ("X-Amz-Algorithm".to_owned(), ALGORITHM.to_owned()),
@@ -245,11 +312,11 @@ fn presign_query_at(
         "{ALGORITHM}\n{timestamp}\n{scope}\n{}",
         hex(&Sha256::digest(canonical_request.as_bytes()))
     );
-    let signing_key = signing_key(&credential.secret_access_key, date)?;
+    let signing_key = signing_key(&credential.secret_access_key, date, target.region)?;
     let signature = hex(&hmac(&signing_key, string_to_sign.as_bytes())?);
     Some(format!(
         "{}{canonical_uri}?{canonical_query}&X-Amz-Signature={signature}",
-        config.endpoint
+        target.endpoint
     ))
 }
 
@@ -507,9 +574,9 @@ fn classify_status(status: u16) -> OperationFailure {
     }
 }
 
-fn signing_key(secret: &str, date: &str) -> Option<Vec<u8>> {
+fn signing_key(secret: &str, date: &str, region: &str) -> Option<Vec<u8>> {
     let date_key = hmac(format!("AWS4{secret}").as_bytes(), date.as_bytes())?;
-    let region_key = hmac(&date_key, REGION.as_bytes())?;
+    let region_key = hmac(&date_key, region.as_bytes())?;
     let service_key = hmac(&region_key, SERVICE.as_bytes())?;
     hmac(&service_key, b"aws4_request")
 }

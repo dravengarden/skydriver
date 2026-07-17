@@ -136,7 +136,7 @@ impl OpenedDriver {
                     etag: object.etag,
                 })
             }
-            DriverKind::R2V1 => {
+            DriverKind::R2V1 | DriverKind::AwsS3V1 => {
                 let credential = self.take_credential()?;
                 let (native_id, provider_version, etag) = crate::r2::upload(
                     request.control,
@@ -197,7 +197,7 @@ impl OpenedDriver {
                 )
                 .await
             }
-            DriverKind::R2V1 => {
+            DriverKind::R2V1 | DriverKind::AwsS3V1 => {
                 let credential = self.take_credential()?;
                 crate::r2::download(
                     request.http,

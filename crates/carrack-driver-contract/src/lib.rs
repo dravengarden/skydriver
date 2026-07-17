@@ -49,6 +49,21 @@ pub struct R2Config {
     pub managed: bool,
 }
 
+/// Official AWS S3 complete-object adapter configuration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AwsS3Config {
+    /// Exact AWS region used for the regional endpoint and `SigV4` scope.
+    pub region: String,
+    /// Exact DNS-label bucket name.
+    pub bucket: String,
+    /// Twelve-digit AWS account ID that must own the bucket.
+    pub expected_bucket_owner: String,
+    /// Optional object-key prefix ending in `/`.
+    #[serde(default)]
+    pub prefix: String,
+}
+
 fn default_aliyun_api_base_url() -> String {
     "https://openapi.alipan.com".to_owned()
 }
@@ -91,13 +106,20 @@ pub enum DriverKind {
     AliyunDriveOpenV2,
     /// Cloudflare R2 S3-compatible adapter version 1.
     R2V1,
+    /// Official AWS S3 complete-object adapter version 1.
+    AwsS3V1,
     /// Root-confined local filesystem adapter version 2.
     LocalFilesystemV2,
 }
 
 impl DriverKind {
     /// Every kind compiled into this release.
-    pub const ALL: [Self; 3] = [Self::AliyunDriveOpenV2, Self::R2V1, Self::LocalFilesystemV2];
+    pub const ALL: [Self; 4] = [
+        Self::AliyunDriveOpenV2,
+        Self::R2V1,
+        Self::AwsS3V1,
+        Self::LocalFilesystemV2,
+    ];
 
     /// Parses one exact wire kind; unknown server values remain closed.
     #[must_use]
@@ -105,6 +127,7 @@ impl DriverKind {
         match value.as_bytes() {
             b"aliyundrive-open/v2" => Some(Self::AliyunDriveOpenV2),
             b"r2/v1" => Some(Self::R2V1),
+            b"aws-s3/v1" => Some(Self::AwsS3V1),
             b"local-filesystem/v2" => Some(Self::LocalFilesystemV2),
             _ => None,
         }
@@ -116,6 +139,7 @@ impl DriverKind {
         match self {
             Self::AliyunDriveOpenV2 => "aliyundrive-open/v2",
             Self::R2V1 => "r2/v1",
+            Self::AwsS3V1 => "aws-s3/v1",
             Self::LocalFilesystemV2 => "local-filesystem/v2",
         }
     }
@@ -139,7 +163,7 @@ impl DriverKind {
                 external_http_proxy: true,
                 external_socks_proxy: false,
             },
-            Self::R2V1 => DriverCapabilities {
+            Self::R2V1 | Self::AwsS3V1 => DriverCapabilities {
                 complete_upload: SupportMode::Native,
                 exact_range_read: SupportMode::Native,
                 resumable_upload: SupportMode::Native,
@@ -176,7 +200,7 @@ impl DriverKind {
     #[must_use]
     pub const fn credential_posture(self) -> CredentialPosture {
         match self {
-            Self::AliyunDriveOpenV2 | Self::R2V1 => CredentialPosture::Required,
+            Self::AliyunDriveOpenV2 | Self::R2V1 | Self::AwsS3V1 => CredentialPosture::Required,
             Self::LocalFilesystemV2 => CredentialPosture::Forbidden,
         }
     }
@@ -186,7 +210,7 @@ impl DriverKind {
     pub const fn grant_mode(self) -> GrantMode {
         match self {
             Self::AliyunDriveOpenV2 => GrantMode::StoredAccess,
-            Self::R2V1 => GrantMode::SignedObject,
+            Self::R2V1 | Self::AwsS3V1 => GrantMode::SignedObject,
             Self::LocalFilesystemV2 => GrantMode::None,
         }
     }
@@ -195,7 +219,7 @@ impl DriverKind {
     #[must_use]
     pub const fn inventory_mode(self) -> InventoryMode {
         match self {
-            Self::AliyunDriveOpenV2 => InventoryMode::Hosted,
+            Self::AliyunDriveOpenV2 | Self::AwsS3V1 => InventoryMode::Hosted,
             Self::R2V1 => InventoryMode::EnvironmentBinding,
             Self::LocalFilesystemV2 => InventoryMode::AgentHost,
         }
@@ -205,7 +229,7 @@ impl DriverKind {
     #[must_use]
     pub const fn lifecycle_mode(self) -> LifecycleMode {
         match self {
-            Self::AliyunDriveOpenV2 | Self::R2V1 => LifecycleMode::ControlPlane,
+            Self::AliyunDriveOpenV2 | Self::R2V1 | Self::AwsS3V1 => LifecycleMode::ControlPlane,
             Self::LocalFilesystemV2 => LifecycleMode::AgentHost,
         }
     }
@@ -306,8 +330,8 @@ impl DriverCapabilities {
 #[cfg(test)]
 mod tests {
     use super::{
-        AliyunDriveConfig, CredentialPosture, DriverKind, GrantMode, InventoryMode, LifecycleMode,
-        R2Config,
+        AliyunDriveConfig, AwsS3Config, CredentialPosture, DriverKind, GrantMode, InventoryMode,
+        LifecycleMode, R2Config,
     };
 
     #[test]
@@ -356,6 +380,24 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<R2Config>(&encoded).expect("decode R2 configuration"),
             r2
+        );
+
+        let s3 = AwsS3Config {
+            region: "us-east-1".to_owned(),
+            bucket: "carrack-payload-example".to_owned(),
+            expected_bucket_owner: "123456789012".to_owned(),
+            prefix: "objects/".to_owned(),
+        };
+        let encoded = serde_json::to_string(&s3).expect("encode AWS S3 configuration");
+        assert_eq!(
+            serde_json::from_str::<AwsS3Config>(&encoded).expect("decode AWS S3 configuration"),
+            s3
+        );
+        assert!(
+            serde_json::from_str::<AwsS3Config>(
+                r#"{"region":"us-east-1","bucket":"payload","expected_bucket_owner":"123456789012","endpoint":"https://example.com"}"#,
+            )
+            .is_err()
         );
     }
 }

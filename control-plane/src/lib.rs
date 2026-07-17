@@ -3,6 +3,7 @@
 //! The Worker serves metadata and the web console. Payload bytes always move
 //! directly between Carrack agents and storage providers.
 
+mod aws_s3_signing;
 mod driver_authorization;
 mod driver_configuration;
 mod driver_credentials;

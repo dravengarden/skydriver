@@ -32,11 +32,14 @@ The currently implemented management surface is:
 
 These operator-authorized driver mutations are deliberately outside the VFS
 token routes documented below. The V2 payload implementation currently has
-compiled `local-filesystem/v2`, `aliyundrive-open/v2`, and `r2/v1` drivers.
+compiled `local-filesystem/v2`, `aliyundrive-open/v2`, `r2/v1`, and
+`aws-s3/v1` drivers.
 R2 supports streaming single PUT, resumable multipart upload, concurrent exact
 ranges, and server-owned deletion; Aliyun preserves complete objects and exact
 range reads while intentionally limiting upload concurrency to one. Google
-Drive, generic S3, and WebDAV payload implementations remain later slices.
+Drive, generic S3-compatible, and WebDAV payload implementations remain later
+slices. The official AWS adapter is intentionally narrower than generic S3;
+see [aws-s3-v1.md](aws-s3-v1.md).
 
 ## Common authentication and errors
 

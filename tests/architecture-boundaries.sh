@@ -13,7 +13,7 @@ if rg --line-number --ignore-case \
 fi
 
 if rg --line-number \
-  '"(aliyundrive-open/v2|r2/v1|local-filesystem/v2)"' \
+  '"(aliyundrive-open/v2|r2/v1|aws-s3/v1|local-filesystem/v2)"' \
   crates/carrack-client/src control-plane/src; then
   echo "driver wire kinds must have one source in carrack-driver-contract" >&2
   exit 1
@@ -127,7 +127,7 @@ driver_orchestrators=(
   crates/carrack-client/src/download.rs
 )
 if rg --line-number \
-  'aliyundrive-open/v2|r2/v1|local-filesystem/v2|crate::(aliyun|r2|local)::' \
+  'aliyundrive-open/v2|r2/v1|aws-s3/v1|local-filesystem/v2|crate::(aliyun|r2|local)::' \
   "${driver_orchestrators[@]}"; then
   echo "transfer orchestration must use the stable driver registry, not provider knowledge" >&2
   exit 1
@@ -172,7 +172,7 @@ if rg --line-number \
 fi
 if ! rg -q 'driver_inventory::list_page' control-plane/src/vfs_provider_inventory.rs \
   || ! rg -q 'driver_lifecycle::delete_object' control-plane/src/vfs_server_lifecycle.rs \
-  || ! rg -q 'driver_lifecycle::cleanup_r2_upload' control-plane/src/vfs_server_lifecycle.rs; then
+  || ! rg -q 'driver_lifecycle::cleanup_multipart_upload' control-plane/src/vfs_server_lifecycle.rs; then
   echo "Worker inventory and lifecycle must use stable driver adapter boundaries" >&2
   exit 1
 fi

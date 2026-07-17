@@ -7,7 +7,7 @@
 use carrack_driver_contract::DriverKind;
 use serde::{Deserialize, Serialize};
 
-use crate::{driver_renewal, r2_signing};
+use crate::{aws_s3_signing, driver_renewal, r2_signing};
 
 pub(crate) const LONG_LIVED_CREDENTIAL_EXPIRES_AT: u64 = 253_402_300_799;
 
@@ -22,7 +22,7 @@ pub(crate) struct RefreshAuthorization {
 #[serde(untagged)]
 pub(crate) enum CredentialAuthorization {
     Aliyun(RefreshAuthorization),
-    R2(r2_signing::Credential),
+    S3AccessKey(r2_signing::Credential),
 }
 
 pub(crate) struct CredentialMaterial {
@@ -48,7 +48,7 @@ pub(crate) fn same_authority(kind: DriverKind, existing: &[u8], replacement: &[u
         DriverKind::AliyunDriveOpenV2 => driver_renewal::same_authority(existing, replacement),
         // R2 configuration pins the endpoint, bucket, and object prefix, and
         // authorize() has already proved the replacement against that bucket.
-        DriverKind::R2V1 => true,
+        DriverKind::R2V1 | DriverKind::AwsS3V1 => true,
         DriverKind::LocalFilesystemV2 => false,
     }
 }
@@ -66,8 +66,13 @@ pub(crate) fn validate(
                 .filter(|claims| claims.exp > now)
                 .map(|claims| claims.exp)
         }
-        (DriverKind::R2V1, CredentialAuthorization::R2(credential))
+        (DriverKind::R2V1, CredentialAuthorization::S3AccessKey(credential))
             if r2_signing::valid_credential(credential) =>
+        {
+            Some(LONG_LIVED_CREDENTIAL_EXPIRES_AT)
+        }
+        (DriverKind::AwsS3V1, CredentialAuthorization::S3AccessKey(credential))
+            if aws_s3_signing::valid_credential(credential) =>
         {
             Some(LONG_LIVED_CREDENTIAL_EXPIRES_AT)
         }
@@ -105,12 +110,33 @@ pub(crate) async fn authorize(
                 managed_issuer: material.managed_issuer,
             })
         }
-        (DriverKind::R2V1, CredentialAuthorization::R2(credential)) => {
-            let config =
-                serde_json::from_str::<r2_signing::Config>(config_json).map_err(|error| {
-                    AuthorizationFailure::Internal(worker::Error::RustError(error.to_string()))
-                })?;
-            if !r2_signing::verify(&config, &credential).await {
+        (
+            kind @ (DriverKind::R2V1 | DriverKind::AwsS3V1),
+            CredentialAuthorization::S3AccessKey(credential),
+        ) => {
+            let verified = match kind {
+                DriverKind::R2V1 => {
+                    let config = serde_json::from_str::<r2_signing::Config>(config_json).map_err(
+                        |error| {
+                            AuthorizationFailure::Internal(worker::Error::RustError(
+                                error.to_string(),
+                            ))
+                        },
+                    )?;
+                    r2_signing::verify(&config, &credential).await
+                }
+                DriverKind::AwsS3V1 => {
+                    let config = serde_json::from_str::<aws_s3_signing::Config>(config_json)
+                        .map_err(|error| {
+                            AuthorizationFailure::Internal(worker::Error::RustError(
+                                error.to_string(),
+                            ))
+                        })?;
+                    aws_s3_signing::verify(&config, &credential).await
+                }
+                DriverKind::AliyunDriveOpenV2 | DriverKind::LocalFilesystemV2 => false,
+            };
+            if !verified {
                 return Err(AuthorizationFailure::Rejected);
             }
             let plaintext = serde_json::to_vec(&credential).map_err(|error| {

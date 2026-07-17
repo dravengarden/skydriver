@@ -226,7 +226,7 @@ pub(crate) async fn plan(
     let config = serde_json::from_str(&row.driver_config_json).map_err(|error| {
         worker::Error::RustError(format!("decode stored VFS driver configuration: {error}"))
     })?;
-    let credential = decrypt_credential(env, &row, lease_expires_at)?;
+    let credential = decrypt_credential(env, &row, lease_expires_at).await?;
     let mut directory_key = decrypt_directory_key(env, &row)?;
     let encoded_key = directory_key
         .as_ref()
@@ -585,7 +585,7 @@ fn decrypt_directory_key(env: &Env, row: &DownloadRow) -> Result<Option<[u8; 32]
     .map(Some)
 }
 
-fn decrypt_credential(
+async fn decrypt_credential(
     env: &Env,
     row: &DownloadRow,
     expires_at: u64,
@@ -607,6 +607,12 @@ fn decrypt_credential(
     let mut plaintext =
         open_driver_credential(env, id, revision, algorithm, version, nonce, ciphertext)?;
     let kind = driver_registry::compiled_kind(&row.driver_kind)?;
+    if !driver_registry::live_authority_valid(kind, &row.driver_config_json, &plaintext).await {
+        plaintext.zeroize();
+        return Err(worker::Error::RustError(
+            "driver authority is not safe for grant issuance".to_owned(),
+        ));
+    }
     let decoded = driver_registry::project_access_grant(
         kind,
         "GET",

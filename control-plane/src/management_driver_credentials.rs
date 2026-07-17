@@ -133,7 +133,7 @@ pub(crate) async fn validate(
 
     let validation_expires_at = now_seconds() + VALIDATION_LIFETIME_SECONDS;
     let validation_digest = validation_digest(env, driver_id, &requested, validation_expires_at)?;
-    let is_r2 = driver_kind == DriverKind::R2V1;
+    let is_access_key = matches!(driver_kind, DriverKind::R2V1 | DriverKind::AwsS3V1);
     no_store_json(&ValidationResponse {
         schema: "carrack.management.driver-credential-validation.v1",
         driver_id: driver_id.to_owned(),
@@ -144,10 +144,10 @@ pub(crate) async fn validate(
         expected_revision: requested.expected_revision,
         validation_expires_at,
         validation_digest,
-        warnings: if is_r2 {
+        warnings: if is_access_key {
             vec![
-                "The R2 access key is write-only and remains encrypted in the control plane.",
-                "Applying this validation verifies the key against the configured R2 bucket.",
+                "The provider access key is write-only and remains encrypted in the control plane.",
+                "Applying this validation verifies the key against the configured bucket and provider invariants.",
             ]
         } else {
             vec![

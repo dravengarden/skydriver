@@ -40,6 +40,7 @@ struct R2CleanupTask {
     upload_id: Option<String>,
     fencing_token: u64,
     config_json: String,
+    kind: String,
     credential_id: Option<String>,
     credential_algorithm: Option<String>,
     credential_key_version: Option<String>,
@@ -107,7 +108,7 @@ async fn cleanup_one_r2_upload(env: &Env, database: &D1Database, now: u64) -> Re
     let task = database
         .prepare(
             "SELECT task.intent_id, intent.storage_key, task.upload_id,
-                    task.fencing_token, driver.config_json,
+                    task.fencing_token, driver.kind, driver.config_json,
                     credential.id AS credential_id,
                     credential.envelope_algorithm AS credential_algorithm,
                     credential.key_version AS credential_key_version,
@@ -593,6 +594,9 @@ fn failure_disposition(failure: driver_lifecycle::DeleteFailure) -> (&'static st
 }
 
 async fn cleanup_r2_upload_through_driver(env: &Env, task: &R2CleanupTask) -> Result<()> {
+    let kind = DriverKind::parse(&task.kind).ok_or_else(|| {
+        worker::Error::RustError("multipart cleanup driver is not compiled".to_owned())
+    })?;
     let mut plaintext = open_optional_credential(
         env,
         task.credential_id.as_deref(),
@@ -602,8 +606,9 @@ async fn cleanup_r2_upload_through_driver(env: &Env, task: &R2CleanupTask) -> Re
         task.credential_ciphertext.as_deref(),
         task.credential_revision,
     )?;
-    let result = driver_lifecycle::cleanup_r2_upload(
+    let result = driver_lifecycle::cleanup_multipart_upload(
         env,
+        kind,
         &task.config_json,
         &task.storage_key,
         task.upload_id.as_deref(),

@@ -170,8 +170,8 @@ Server data can select a compiled version but can never supply executable code.
 The detailed extension and conformance contract is in
 [driver-spi.md](driver-spi.md).
 
-The implemented adapters are local filesystem, Aliyun Drive Open, and
-Cloudflare R2. The environment-owned `r2-default` is provisioned with the
+The implemented adapters are local filesystem, Aliyun Drive Open, Cloudflare
+R2, and official AWS S3. The environment-owned `r2-default` is provisioned with the
 environment and uses bucket-scoped credentials; operator-owned R2 identities
 use the same contract and write-only credential workflow.
 Credential material may rotate without changing this logical storage identity:

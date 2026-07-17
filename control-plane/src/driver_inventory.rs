@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use worker::{Env, Fetch, Headers, Method, Request, RequestInit, Result, wasm_bindgen::JsValue};
 
-use crate::{driver_renewal::AliyunCredential, environment_defaults, r2_signing};
+use crate::{aws_s3_signing, driver_renewal::AliyunCredential, environment_defaults, r2_signing};
 
 const PAGE_SIZE: u32 = 100;
 const MAXIMUM_ALIYUN_PAGES_PER_RUN: usize = 8;
@@ -94,6 +94,37 @@ pub(crate) async fn list_page(
                 })?;
             list_aliyun_page(config_json, cursor, &credential).await
         }
+        DriverKind::AwsS3V1 => {
+            let plaintext = credential_plaintext.ok_or_else(|| {
+                worker::Error::RustError("AWS S3 inventory authority is missing".to_owned())
+            })?;
+            if !aws_s3_signing::authority_healthy(config_json, plaintext).await {
+                return Err(worker::Error::RustError(
+                    "AWS S3 inventory requires an unversioned bucket".to_owned(),
+                ));
+            }
+            let config = serde_json::from_str::<aws_s3_signing::Config>(config_json)
+                .map_err(|error| worker::Error::RustError(error.to_string()))?;
+            let credential = serde_json::from_slice::<aws_s3_signing::Credential>(plaintext)
+                .map_err(|error| worker::Error::RustError(error.to_string()))?;
+            let page = aws_s3_signing::list_page(&config, &credential, cursor, PAGE_SIZE)
+                .await
+                .map_err(|failure| {
+                    worker::Error::RustError(format!("AWS S3 inventory failed: {failure:?}"))
+                })?;
+            Ok(ProviderPage {
+                objects: page
+                    .objects
+                    .into_iter()
+                    .map(|object| ObservedObject {
+                        storage_key: object.storage_key,
+                        provider_version: object.etag,
+                        size_bytes: object.size_bytes,
+                    })
+                    .collect(),
+                next_cursor: page.next_cursor,
+            })
+        }
         DriverKind::LocalFilesystemV2 => Err(worker::Error::RustError(
             "agent-host inventory reached hosted adapter".to_owned(),
         )),
@@ -102,7 +133,7 @@ pub(crate) async fn list_page(
 
 pub(crate) fn execution_available(env: &Env, kind: DriverKind, config_json: &str) -> Result<bool> {
     match kind {
-        DriverKind::AliyunDriveOpenV2 => Ok(true),
+        DriverKind::AliyunDriveOpenV2 | DriverKind::AwsS3V1 => Ok(true),
         DriverKind::R2V1 => {
             let config = serde_json::from_str::<R2Config>(config_json)
                 .map_err(|error| worker::Error::RustError(error.to_string()))?;

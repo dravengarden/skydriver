@@ -125,9 +125,10 @@ The current native V2 adapters are:
 | `local-filesystem/v2` | yes | yes | yes | retained/blocked | Cloudflare cannot safely reach an agent-local path; use a hosted driver for automatic physical cleanup |
 | `aliyundrive-open/v2` | yes | yes | journaled, upload concurrency 1 | yes | native Open API; server-owned OAuth renewal; optional OpenList token issuer only |
 | `r2/v1` | yes | yes | resumable multipart and concurrent ranges | yes | `r2-default` is environment-owned; direct short-lived SigV4 URLs; binding-owned cleanup; third-party buckets remain supported |
+| `aws-s3/v1` | yes | yes | resumable multipart and concurrent ranges | yes | official regional AWS endpoints only; expected owner pinned; unversioned general-purpose buckets; conditional write and delete |
 
 Unsupported capabilities fail closed or return an explicit warning with the
-safe replacement. Additional S3/R2, Google Drive, and WebDAV adapters must use
+safe replacement. Additional S3-compatible, Google Drive, and WebDAV adapters must use
 the same complete-object contract; WebDAV implementations without reliable
 range/multipart semantics may degrade with a warning but may not weaken hash
 verification.
