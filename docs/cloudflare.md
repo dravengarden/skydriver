@@ -261,7 +261,9 @@ For an explicit many-small-file sync measurement, use the separate dev-only
 acceptance. It creates a uniquely named directory, uploads 64 independent
 1 MiB encrypted versions by default, performs one cold and one warm sync,
 verifies every plaintext SHA-256, and logically removes every test entry on
-exit:
+exit. One synchronous Put must pass before the remaining uploads are started,
+so a missing `driver.use` grant or inactive placement fails without a burst of
+unauthorized requests:
 
 ```bash
 export CARRACK_CONTROL_URL=https://dev.carrack.stormbird.xyz

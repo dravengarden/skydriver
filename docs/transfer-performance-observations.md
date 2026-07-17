@@ -134,6 +134,49 @@ network path and provider. Future live runs should persist stage start and end
 timestamps plus an opaque run identifier so process-scoped telemetry can be
 correlated without relying on widened windows or whole-host traffic.
 
+### R2 many-small-file sync sample
+
+A separate run used the client binary from revision `2c1f5eb` plus the
+fail-fast preflight in `tests/r2-small-sync-live.sh`. The dev token was rooted
+at `/speed-test`, limited to `r2-default`, and granted only `content.read`,
+`content.write`, `directory.list`, `driver.use`, and `entry.delete`. The first
+attempt correctly failed before provider I/O because an older speed-test token
+did not contain the independently required `driver.use` action. No file was
+published, its temporary directory was removed, and the harness was changed to
+require one successful synchronous Put before starting concurrent uploads.
+
+The successful run had opaque run ID `e504ef80abd38f85` and used 64 independent
+encrypted VFS versions of the same 1 MiB incompressible source. Upload file
+concurrency was 8. Cold and warm sync file concurrency was 16, with one provider
+range per file. Every cold-sync output was compared with the source SHA-256.
+The warm sync revalidated every local file through its complete Merkle pass.
+
+| Stage (UTC) | Shape | Elapsed | Aggregate plaintext rate |
+|---|---|---:|---:|
+| Setup upload, 15:17:09-15:19:44 | 64 files; 67,108,864 B; includes encrypted provider upload and complete readback | 155,454 ms | 431,696 B/s |
+| Cold sync, 15:19:44-15:21:00 | 64 downloaded and verified files; 67,108,864 B | 76,181 ms | 880,913 B/s |
+| Warm sync, 15:21:00-15:21:03 | 64 locally rehashed files; provider bytes 0 | 2,588 ms | 24.73 files/s |
+
+The script logically removed all 64 entries and the temporary directory. A
+separate authenticated listing confirmed that the directory was absent after
+cleanup. Physical R2 deletion remains subject to server-owned grace and GC.
+
+Low-cost analytics for the exact token, `r2-default`, download direction, and
+the containing hour retained approximately one in ten small transfers. Seven
+actual sampled completions were weighted to 70 transfers and 73,401,440 bytes.
+Their weighted averages were 8,837.9 provider milliseconds and 17,434.4 total
+telemetry milliseconds per transfer, with zero retries; provider time was
+50.7% of total telemetry time.
+
+This sampled ratio is directional evidence, not an exact decomposition of the
+64-file run. `total_ms` starts before the download-plan request and also includes
+bounded plan/payload queueing, decryption, plaintext verification, and local
+publication. The difference between `total_ms` and `provider_ms` therefore
+cannot be assigned to Worker or D1 latency, and this run does not justify a
+download-plan batch endpoint. A future telemetry schema must measure plan,
+queue, provider, and verification/publication intervals separately before such
+a protocol optimization is accepted.
+
 ### Interpretation boundary
 
 - These are practical end-to-end observations, not isolated provider limits.

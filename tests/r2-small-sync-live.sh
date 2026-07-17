@@ -125,9 +125,13 @@ put_one() {
 
 upload_started_ns=$(carrack_now_ns)
 upload_started_at=$(carrack_now_utc)
+if ! put_one 0; then
+  echo "the first small-file upload preflight failed; concurrent uploads were not started" >&2
+  exit 1
+fi
 active=0
 upload_failed=0
-for ((ordinal = 0; ordinal < file_count; ordinal++)); do
+for ((ordinal = 1; ordinal < file_count; ordinal++)); do
   put_one "$ordinal" &
   active=$((active + 1))
   if ((active >= upload_concurrency)); then
