@@ -46,6 +46,14 @@ test:
     control-plane/tests/environment-defaults-worker-protocol.sh
     control-plane/tests/cloudflare-environments.sh
 
+# Runs deterministic, machine-local scaling acceptances without treating wall
+# clock time as a correctness threshold. Use --nocapture to retain the measured
+# SQLite, spool, and mandatory local hashing costs in CI or operator logs.
+performance-acceptance:
+    cargo test -p carrack-client sync::tests::indexed_state_accepts_one_hundred_thousand_records_without_linear_lookup --release -- --ignored --exact --nocapture
+    cargo test -p carrack-client sync::tests::warm_sync_rehashes_ten_thousand_files_without_provider_payload --release -- --ignored --exact --nocapture
+    cargo test -p carrack-sdk-core integrity::tests::streaming_directory_accepts_one_million_entries_with_logarithmic_state --release -- --ignored --exact --nocapture
+
 build:
     go build ./...
     cargo check -p carrack-sdk-core --target wasm32-unknown-unknown

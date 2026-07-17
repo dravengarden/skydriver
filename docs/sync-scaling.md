@@ -132,23 +132,19 @@ payload size, cache posture, control-plane calls, provider concurrency, local
 bytes hashed, peak resident memory, spool bytes, and elapsed time. A faster
 result is acceptable only when all roots and final fences are identical.
 
-Two explicit release-only client acceptances make the local scaling costs
-repeatable without adding a benchmark framework to the product dependency
-graph:
+Three explicit release-only acceptances make the local scaling costs repeatable
+without adding a benchmark framework to the product dependency graph:
 
 ```console
-nix develop -c cargo test -p carrack-client \
-  sync::tests::indexed_state_accepts_one_hundred_thousand_records_without_linear_lookup \
-  --release -- --ignored --exact --nocapture
-nix develop -c cargo test -p carrack-client \
-  sync::tests::warm_sync_rehashes_ten_thousand_files_without_provider_payload \
-  --release -- --ignored --exact --nocapture
+nix develop -c just performance-acceptance
 ```
 
 The first acceptance reports disk-spool, SQLite build, indexed lookup, and
 database-size costs for 100,000 records. The second reports the mandatory
 complete local-Merkle pass over 10,000 unchanged files and asserts that every
-decision is local reuse. These are machine-local acceptance measurements, not
-production throughput claims; provider and control-plane latency require a
-separately identified environment and must report the full measurement fields
-above.
+decision is local reuse. The third proves that a one-million-entry directory
+uses logarithmic Merkle accumulator state. These are machine-local acceptance
+measurements, not production throughput claims; provider and control-plane
+latency require a separately identified environment and must report the full
+measurement fields above. Wall-clock values are observations, not pass/fail
+thresholds, so host load cannot turn a correct build into a flaky failure.
