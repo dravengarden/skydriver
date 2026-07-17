@@ -10,7 +10,7 @@ use worker::{
 use crate::{
     vfs_access,
     vfs_identifiers::new_uuid_v7_hex,
-    vfs_put_commit::{RootPlan, plan_entry_removal_roots, plan_entry_rename_roots},
+    vfs_put_commit::{RootPlan, RootPlanResult, plan_entry_removal_roots, plan_entry_rename_roots},
     vfs_tokens::AuthenticatedVfsToken,
 };
 
@@ -168,7 +168,7 @@ pub(crate) async fn remove(
     let now = current_unix_seconds();
     let delete_after = (entry.kind == "file").then_some(now + DELETE_GRACE_SECONDS);
     for _ in 0..MAXIMUM_REBASE_ATTEMPTS {
-        let Some(plan) = plan_entry_removal_roots(
+        let plan = match plan_entry_removal_roots(
             &database,
             &entry.filesystem_id,
             directory_id,
@@ -176,8 +176,12 @@ pub(crate) async fn remove(
             requested.expected_entry_revision,
         )
         .await?
-        else {
-            return Response::error("VFS remove precondition changed", 409);
+        {
+            RootPlanResult::Planned(plan) => plan,
+            RootPlanResult::Contended => continue,
+            RootPlanResult::PreconditionChanged => {
+                return Response::error("VFS remove precondition changed", 409);
+            }
         };
         let statements = remove_statements(
             &database,
@@ -275,7 +279,7 @@ pub(crate) async fn rename(
     let operation_id = new_uuid_v7_hex()?;
     let now = current_unix_seconds();
     for _ in 0..MAXIMUM_REBASE_ATTEMPTS {
-        let Some(plan) = plan_entry_rename_roots(
+        let plan = match plan_entry_rename_roots(
             &database,
             &entry.filesystem_id,
             source_directory_id,
@@ -285,8 +289,12 @@ pub(crate) async fn rename(
             &requested.destination_name,
         )
         .await?
-        else {
-            return Response::error("VFS rename precondition changed", 409);
+        {
+            RootPlanResult::Planned(plan) => plan,
+            RootPlanResult::Contended => continue,
+            RootPlanResult::PreconditionChanged => {
+                return Response::error("VFS rename precondition changed", 409);
+            }
         };
         let statements = rename_statements(
             &database,

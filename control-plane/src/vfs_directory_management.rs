@@ -16,7 +16,7 @@ use crate::{
     },
     vfs_identifiers::new_uuid_v7_hex,
     vfs_merkle::directory_root,
-    vfs_put_commit::{RootPlan, plan_new_child_directory_roots},
+    vfs_put_commit::{RootPlan, RootPlanResult, plan_new_child_directory_roots},
     vfs_tokens::AuthenticatedVfsToken,
 };
 
@@ -157,7 +157,7 @@ pub(crate) async fn create(
     directory_key.zeroize();
 
     for _ in 0..MAXIMUM_REBASE_ATTEMPTS {
-        let Some(plan) = plan_new_child_directory_roots(
+        let plan = match plan_new_child_directory_roots(
             &database,
             &parent.filesystem_id,
             parent_directory_id,
@@ -166,8 +166,12 @@ pub(crate) async fn create(
             &empty_root,
         )
         .await?
-        else {
-            return Response::error("VFS directory name is no longer absent", 409);
+        {
+            RootPlanResult::Planned(plan) => plan,
+            RootPlanResult::Contended => continue,
+            RootPlanResult::PreconditionChanged => {
+                return Response::error("VFS directory name is no longer absent", 409);
+            }
         };
         let statements = create_statements(
             &database,

@@ -196,6 +196,12 @@ pub(crate) struct RootPlan {
     pub(crate) root: String,
 }
 
+pub(crate) enum RootPlanResult {
+    Planned(RootPlan),
+    Contended,
+    PreconditionChanged,
+}
+
 enum Replacement {
     File,
     Child {
@@ -362,8 +368,12 @@ pub(crate) async fn commit(
     }
 
     for _ in 0..MAXIMUM_COMMIT_REBASE_ATTEMPTS {
-        let Some(plan) = plan_directory_roots(&database, &intent).await? else {
-            return Response::error("VFS entry precondition changed", 409);
+        let plan = match plan_directory_roots(&database, &intent).await? {
+            RootPlanResult::Planned(plan) => plan,
+            RootPlanResult::Contended => continue,
+            RootPlanResult::PreconditionChanged => {
+                return Response::error("VFS entry precondition changed", 409);
+            }
         };
         let now = current_unix_seconds();
         let statements = commit_statements(
@@ -646,7 +656,7 @@ async fn record_upload_evidence(
 async fn plan_directory_roots(
     database: &D1Database,
     intent: &PutIntentRow,
-) -> Result<Option<RootPlan>> {
+) -> Result<RootPlanResult> {
     let file_state = database
         .prepare("SELECT current_version_id, revision, state FROM vfs_files WHERE id = ?1")
         .bind(&[JsValue::from_str(&intent.file_id)])?
@@ -654,14 +664,14 @@ async fn plan_directory_roots(
         .await?;
     if intent.expected_entry_revision == 0 {
         if file_state.is_some() {
-            return Ok(None);
+            return Ok(RootPlanResult::PreconditionChanged);
         }
     } else if !file_state.is_some_and(|file| {
         file.state == "active"
             && file.revision == intent.expected_file_revision
             && file.current_version_id == intent.expected_current_version_id
     }) {
-        return Ok(None);
+        return Ok(RootPlanResult::PreconditionChanged);
     }
 
     let mut visited = BTreeSet::new();
@@ -677,10 +687,10 @@ async fn plan_directory_roots(
             ));
         }
         let Some(directory) = load_directory(database, &current_id).await? else {
-            return Ok(None);
+            return Ok(RootPlanResult::PreconditionChanged);
         };
         if directory.filesystem_id != intent.filesystem_id || directory.state != "active" {
-            return Ok(None);
+            return Ok(RootPlanResult::PreconditionChanged);
         }
         let stored = load_directory_entries(database, &current_id).await?;
         let current_entries = stored
@@ -692,7 +702,7 @@ async fn plan_directory_roots(
         })?)?;
         if current_root != directory.data_root {
             if directory_snapshot_changed(database, &directory).await? {
-                return Ok(None);
+                return Ok(RootPlanResult::Contended);
             }
             return Err(worker::Error::RustError(format!(
                 "VFS directory {} root does not match its entries",
@@ -728,7 +738,7 @@ async fn plan_directory_roots(
         match &replacement {
             Replacement::File => {
                 if !target_entry_matches(intent, matched.as_ref()) {
-                    return Ok(None);
+                    return Ok(RootPlanResult::PreconditionChanged);
                 }
                 entries.push(DirectoryEntry::File {
                     name: intent.entry_name.clone(),
@@ -745,7 +755,7 @@ async fn plan_directory_roots(
                 data_root,
             } => {
                 let Some(existing) = matched else {
-                    return Ok(None);
+                    return Ok(RootPlanResult::PreconditionChanged);
                 };
                 links.push(LinkUpdate {
                     parent_directory_id: directory.id.clone(),
@@ -778,7 +788,7 @@ async fn plan_directory_roots(
         });
 
         let Some(parent_id) = directory.parent_id else {
-            return Ok(Some(RootPlan {
+            return Ok(RootPlanResult::Planned(RootPlan {
                 directories,
                 links,
                 root: new_root,
@@ -810,7 +820,7 @@ pub(crate) async fn plan_new_child_directory_roots(
     child_directory_id: &str,
     child_name: &str,
     child_root: &str,
-) -> Result<Option<RootPlan>> {
+) -> Result<RootPlanResult> {
     let mut visited = BTreeSet::new();
     let mut directories = Vec::new();
     let mut links = Vec::new();
@@ -829,10 +839,10 @@ pub(crate) async fn plan_new_child_directory_roots(
             ));
         }
         let Some(directory) = load_directory(database, &current_id).await? else {
-            return Ok(None);
+            return Ok(RootPlanResult::PreconditionChanged);
         };
         if directory.filesystem_id != filesystem_id || directory.state != "active" {
-            return Ok(None);
+            return Ok(RootPlanResult::PreconditionChanged);
         }
         let stored = load_directory_entries(database, &current_id).await?;
         let current_entries = stored
@@ -844,7 +854,7 @@ pub(crate) async fn plan_new_child_directory_roots(
         })?)?;
         if current_root != directory.data_root {
             if directory_snapshot_changed(database, &directory).await? {
-                return Ok(None);
+                return Ok(RootPlanResult::Contended);
             }
             return Err(worker::Error::RustError(format!(
                 "VFS directory {} root does not match its entries",
@@ -878,18 +888,18 @@ pub(crate) async fn plan_new_child_directory_roots(
 
         if adding_child {
             if matched.is_some() {
-                return Ok(None);
+                return Ok(RootPlanResult::PreconditionChanged);
             }
         } else {
             let Some(existing) = matched else {
-                return Ok(None);
+                return Ok(RootPlanResult::PreconditionChanged);
             };
             if !matches!(
                 &existing.entry,
                 DirectoryEntry::Directory { stable_id, .. }
                     if *stable_id == decode_identifier(id)?
             ) {
-                return Ok(None);
+                return Ok(RootPlanResult::PreconditionChanged);
             }
             links.push(LinkUpdate {
                 parent_directory_id: directory.id.clone(),
@@ -921,7 +931,7 @@ pub(crate) async fn plan_new_child_directory_roots(
         });
 
         let Some(parent_id) = directory.parent_id else {
-            return Ok(Some(RootPlan {
+            return Ok(RootPlanResult::Planned(RootPlan {
                 directories,
                 links,
                 root: new_root,
@@ -949,7 +959,7 @@ pub(crate) async fn plan_entry_removal_roots(
     directory_id: &str,
     entry_name_to_remove: &str,
     expected_entry_revision: u64,
-) -> Result<Option<RootPlan>> {
+) -> Result<RootPlanResult> {
     let mut visited = BTreeSet::new();
     let mut directories = Vec::new();
     let mut links = Vec::new();
@@ -965,10 +975,10 @@ pub(crate) async fn plan_entry_removal_roots(
             ));
         }
         let Some(directory) = load_directory(database, &current_id).await? else {
-            return Ok(None);
+            return Ok(RootPlanResult::PreconditionChanged);
         };
         if directory.filesystem_id != filesystem_id || directory.state != "active" {
-            return Ok(None);
+            return Ok(RootPlanResult::PreconditionChanged);
         }
         let stored = load_directory_entries(database, &current_id).await?;
         let current_entries = stored
@@ -980,7 +990,7 @@ pub(crate) async fn plan_entry_removal_roots(
         })?)?;
         if current_root != directory.data_root {
             if directory_snapshot_changed(database, &directory).await? {
-                return Ok(None);
+                return Ok(RootPlanResult::Contended);
             }
             return Err(worker::Error::RustError(format!(
                 "VFS directory {} root does not match its entries",
@@ -1002,7 +1012,7 @@ pub(crate) async fn plan_entry_removal_roots(
             }
         }
         let Some(existing) = matched else {
-            return Ok(None);
+            return Ok(RootPlanResult::PreconditionChanged);
         };
         if let Some(new_child_root) = replacement_root.as_ref() {
             let Some(child_id) = target_child_id.as_ref() else {
@@ -1015,7 +1025,7 @@ pub(crate) async fn plan_entry_removal_roots(
                 DirectoryEntry::Directory { stable_id, .. }
                     if *stable_id == decode_identifier(child_id)?
             ) {
-                return Ok(None);
+                return Ok(RootPlanResult::PreconditionChanged);
             }
             links.push(LinkUpdate {
                 parent_directory_id: directory.id.clone(),
@@ -1030,7 +1040,7 @@ pub(crate) async fn plan_entry_removal_roots(
                 data_root: decode_digest(new_child_root)?,
             });
         } else if existing.revision != expected_entry_revision {
-            return Ok(None);
+            return Ok(RootPlanResult::PreconditionChanged);
         }
 
         let new_root = lowercase_hex(&directory_root(&entries).map_err(|error| {
@@ -1048,7 +1058,7 @@ pub(crate) async fn plan_entry_removal_roots(
             new_root: new_root.clone(),
         });
         let Some(parent_id) = directory.parent_id else {
-            return Ok(Some(RootPlan {
+            return Ok(RootPlanResult::Planned(RootPlan {
                 directories,
                 links,
                 root: new_root,
@@ -1077,12 +1087,12 @@ pub(crate) async fn plan_entry_rename_roots(
     expected_source_revision: u64,
     destination_directory_id: &str,
     destination_name: &str,
-) -> Result<Option<RootPlan>> {
+) -> Result<RootPlanResult> {
     let source_chain = load_ancestor_chain(database, filesystem_id, source_directory_id).await?;
     let destination_chain =
         load_ancestor_chain(database, filesystem_id, destination_directory_id).await?;
     if source_chain.is_empty() || destination_chain.is_empty() {
-        return Ok(None);
+        return Ok(RootPlanResult::PreconditionChanged);
     }
     let mut rows = std::collections::BTreeMap::new();
     let mut depths = std::collections::BTreeMap::new();
@@ -1108,7 +1118,7 @@ pub(crate) async fn plan_entry_rename_roots(
         })?)?;
         if current_root != row.data_root {
             if directory_snapshot_changed(database, row).await? {
-                return Ok(None);
+                return Ok(RootPlanResult::Contended);
             }
             return Err(worker::Error::RustError(format!(
                 "VFS directory {} root does not match its entries",
@@ -1134,12 +1144,12 @@ pub(crate) async fn plan_entry_rename_roots(
                 .any(|entry| entry_name(&entry.entry) == destination_name)
         })
     {
-        return Ok(None);
+        return Ok(RootPlanResult::PreconditionChanged);
     }
     if let DirectoryEntry::Directory { stable_id, .. } = &source_stored.entry {
         let moved_id = lowercase_hex(stable_id)?;
         if destination_chain.iter().any(|row| row.id == moved_id) {
-            return Ok(None);
+            return Ok(RootPlanResult::PreconditionChanged);
         }
     }
     let moved_entry = renamed_entry(&source_stored.entry, destination_name);
@@ -1207,7 +1217,7 @@ pub(crate) async fn plan_entry_rename_roots(
         .and_then(|row| new_roots.get(&row.id))
         .cloned()
         .ok_or_else(|| worker::Error::RustError("VFS rename did not change its root".to_owned()))?;
-    Ok(Some(RootPlan {
+    Ok(RootPlanResult::Planned(RootPlan {
         directories,
         links,
         root,
