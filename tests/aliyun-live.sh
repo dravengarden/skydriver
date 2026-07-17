@@ -46,7 +46,10 @@ carrack_command() {
   timeout --signal=INT --kill-after=15s "${operation_timeout_seconds}s" \
     "$carrack_bin" "$@" || {
     status=$?
-    echo "Aliyun live $stage failed with exit status $status" >&2
+    carrack_live_failure_json \
+      carrack.aliyun-live-acceptance-failure.v1 "$CARRACK_ALIYUN_DRIVER_ID" \
+      "$stage" "$status" "$operation_timeout_seconds" "$payload_bytes" \
+      4194304 4 >&2
     return "$status"
   }
 }

@@ -37,3 +37,40 @@ carrack_require_integer_range() {
     return 1
   fi
 }
+
+carrack_live_failure_json() {
+  local schema=$1
+  local driver_id=$2
+  local stage=$3
+  local exit_status=$4
+  local timeout_seconds=$5
+  local plaintext_bytes=$6
+  local transfer_part_bytes=$7
+  local maximum_concurrency=$8
+  carrack_require_integer_range exit_status "$exit_status" 1 255 >/dev/null || return 1
+  carrack_require_integer_range timeout_seconds "$timeout_seconds" 1 3600 >/dev/null || return 1
+  carrack_require_integer_range plaintext_bytes "$plaintext_bytes" 1 1073741824 >/dev/null || return 1
+  carrack_require_integer_range transfer_part_bytes "$transfer_part_bytes" 1 268435456 >/dev/null || return 1
+  carrack_require_integer_range maximum_concurrency "$maximum_concurrency" 1 64 >/dev/null || return 1
+  jq -cn \
+    --arg schema "$schema" \
+    --arg driver_id "$driver_id" \
+    --arg stage "$stage" \
+    --argjson exit_status "$exit_status" \
+    --argjson timeout_seconds "$timeout_seconds" \
+    --argjson plaintext_bytes "$plaintext_bytes" \
+    --argjson transfer_part_bytes "$transfer_part_bytes" \
+    --argjson maximum_concurrency "$maximum_concurrency" \
+    '{
+      schema: $schema,
+      driver_id: $driver_id,
+      stage: $stage,
+      exit_status: $exit_status,
+      timeout_seconds: $timeout_seconds,
+      plaintext_bytes: $plaintext_bytes,
+      pipeline: {
+        transfer_part_bytes: $transfer_part_bytes,
+        maximum_concurrency: $maximum_concurrency
+      }
+    }'
+}

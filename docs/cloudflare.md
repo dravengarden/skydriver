@@ -241,6 +241,17 @@ authenticated token root. Run multiple samples before comparing drivers
 because the low-cost telemetry deliberately does not claim benchmark-grade
 precision.
 
+Append real results and failed tuning samples to
+[transfer-performance-observations.md](transfer-performance-observations.md),
+including the exact environment, payload, pipeline, timeout, cleanup outcome,
+and whether a number came from end-to-end timing or sampled telemetry. Never
+replace a failed acceptance with the successful stages that preceded it.
+Timeout and CLI failures also emit a compact
+`carrack.*.live-acceptance-failure.v1` JSON object on stderr with the stage,
+exit status, safety timeout, payload size, and requested pipeline. It contains
+no bearer, signed URL, provider locator, or local path and remains a failed
+nonzero process result.
+
 Each recipe uploads a tagged Worker version and then moves 100% of that
 environment's traffic to it. It does not rewrite the already-audited custom
 domain, so the routine account token does not need zone-wide route mutation

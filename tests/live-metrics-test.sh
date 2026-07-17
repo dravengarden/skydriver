@@ -27,6 +27,24 @@ if carrack_require_integer_range TEST_VALUE invalid 2 64 >/dev/null 2>&1; then
   exit 1
 fi
 
+failure=$(carrack_live_failure_json \
+  carrack.r2-live-acceptance-failure.v1 r2-default resume 124 300 \
+  134217728 8388608 8)
+jq -e '
+  .schema == "carrack.r2-live-acceptance-failure.v1" and
+  .driver_id == "r2-default" and
+  .stage == "resume" and
+  .exit_status == 124 and
+  .timeout_seconds == 300 and
+  .plaintext_bytes == 134217728 and
+  .pipeline.transfer_part_bytes == 8388608 and
+  .pipeline.maximum_concurrency == 8
+' <<<"$failure" >/dev/null
+if carrack_live_failure_json failure driver stage 0 300 1 1 1 >/dev/null 2>&1; then
+  echo "live failure accepted a successful exit status" >&2
+  exit 1
+fi
+
 r2_acceptance="$root/tests/r2-live.sh"
 if env CARRACK_R2_LIVE_TEST=1 CARRACK_VFS_TOKEN=redacted \
   CARRACK_R2_TEST_BYTES=33554432 CARRACK_BIN=/bin/true \

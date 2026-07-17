@@ -61,7 +61,10 @@ carrack_command() {
   timeout --signal=INT --kill-after=15s "${operation_timeout_seconds}s" \
     "$carrack_bin" "$@" || {
     status=$?
-    echo "R2 live $stage failed with exit status $status" >&2
+    carrack_live_failure_json \
+      carrack.r2-live-acceptance-failure.v1 "$driver_id" "$stage" "$status" \
+      "$operation_timeout_seconds" "$payload_bytes" "$transfer_part_bytes" \
+      "$maximum_concurrency" >&2
     return "$status"
   }
 }

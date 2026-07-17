@@ -1,0 +1,114 @@
+# Transfer performance observations
+
+This document is an append-only record of real Carrack transfer observations.
+It is not a throughput guarantee, provider benchmark, billing record, or basis
+for weakening integrity checks. Add a dated subsection for future runs instead
+of replacing earlier results.
+
+Every accepted sample must still complete the encoded identity, frame AEAD,
+plaintext length, plaintext Merkle, publication, resume, and logical-removal
+checks in the live acceptance script. A timeout or incomplete JSON result is a
+failed acceptance even when earlier transfer stages emitted sampled telemetry.
+
+## 2026-07-17 development environment
+
+### Measurement context
+
+- Client host: `hawk`, through its then-current network path.
+- Control plane: `https://dev.carrack.stormbird.xyz`.
+- Client version: `0.3.6`; baseline code revision `69ae9ad`.
+- Source: incompressible random bytes generated from `/dev/urandom`.
+- Encryption: `carrack-vfs-aes256gcm-hkdfsha256-v1`.
+- The measurements include control-plane calls, encryption or decryption,
+  provider I/O, complete hashing, and local publication unless explicitly
+  identified as sampled provider telemetry.
+- Each successful script compared the downloaded SHA-256 with the source,
+  exercised interrupted resume, logically removed the VFS entry, and confirmed
+  that the test directory was empty. Physical deletion remains owned by normal
+  server-side grace and GC.
+- Temporary acceptance tokens were scoped only to the test directory and
+  selected dev drivers, then revoked. No operator or VFS master key changed.
+
+### Successful baseline samples
+
+| Driver | Plaintext | Requested pipeline | Stage | Elapsed | Plaintext bytes/s |
+|---|---:|---|---|---:|---:|
+| `r2-default` | 134,217,728 B | 8 MiB parts, concurrency 8 | upload | 67,052 ms | 2,001,699 |
+| `r2-default` | 134,217,728 B | 8 MiB parts, concurrency 8 | download | 183,590 ms | 731,074 |
+| `r2-default` | 134,217,728 B | 8 MiB parts, concurrency 8 | interrupted resume | 35,610 ms | 3,769,118 |
+| `aliyun-dev` | 33,554,432 B | requested 4 MiB, concurrency 4 | upload | 143,018 ms | 234,617 |
+| `aliyun-dev` | 33,554,432 B | requested 4 MiB, concurrency 4 | download | 4,326 ms | 7,758,035 |
+| `aliyun-dev` | 33,554,432 B | requested 4 MiB, concurrency 4 | interrupted resume | 62,944 ms | 533,091 |
+
+The Aliyun driver was revision 6 with a configured provider upload part size of
+20 MiB. Its compiled capability intentionally serializes parts within one file;
+the requested concurrency can still apply across independent files. The
+official provider contract requires parts of one file to be uploaded in order.
+See Alibaba Cloud's [PDS file upload guidance](https://www.alibabacloud.com/help/doc-detail/175888.html).
+
+The R2 completion telemetry retained both large downloads. Their aggregate was
+268,436,480 encoded bytes, 213,642 provider milliseconds, 214,679 total
+telemetry milliseconds, and zero retries. The R2 upload telemetry recorded
+134,218,240 encoded bytes, 63,436 provider milliseconds, 65,598 total telemetry
+milliseconds, and zero retries. In this sample, provider/network time therefore
+dominated R2 transfer time; D1, cryptography, verification, and publication were
+not the primary bottleneck.
+
+The 32 MiB Aliyun operations were below the 64 MiB always-sample threshold and
+did not enter the deterministic one-in-ten small-transfer sample. Their absence
+from analytics is expected and must not be interpreted as zero activity.
+
+### Failed R2 tuning sample
+
+The same 128 MiB R2 acceptance was repeated with requested 16 MiB parts and
+concurrency 4. Upload and the first download completed, but interrupted resume
+exceeded the 300-second per-operation timeout. The script exited with status
+124 and emitted no success document, so this configuration is a failed
+acceptance rather than a partial success.
+
+Sampled completion telemetry before the timeout recorded:
+
+| Stage | Encoded bytes | Provider ms | Total telemetry ms | Retries |
+|---|---:|---:|---:|---:|
+| upload | 134,218,240 | 46,123 | 48,234 | 0 |
+| download | 134,218,240 | 240,727 | 241,272 | 0 |
+
+The upload was faster than the baseline observation while the download was
+slower and resume did not finish inside the safety budget. One mixed result is
+not evidence for changing SDK defaults. The test entry was nevertheless
+logically removed, the directory was confirmed empty, and the temporary token
+was revoked.
+
+### Failed repeated baseline
+
+After hardening the live harness at code revision `7522a84`, the original 128
+MiB, 8 MiB parts, concurrency 8 configuration was repeated without changing
+the 300-second per-operation safety budget. This time the upload stage timed
+out and the script reported `R2 live upload failed with exit status 124`.
+
+No success document or transfer completion telemetry was emitted, so no
+throughput is assigned to this run and the failure cannot be localized further
+than the end-to-end upload stage. The VFS test directory remained empty, the
+redacted management snapshot showed no active Put or upload operation, and the
+temporary token was revoked. Provider multipart residue, if any, remains
+subject to the normal fenced server cleanup path rather than client deletion.
+
+The same requested configuration therefore produced one complete success and
+one upload timeout on the same date. This observed variance is stronger
+evidence against changing defaults from isolated samples; future comparison
+should first collect several successful and failed baseline attempts under a
+named network path.
+
+### Interpretation boundary
+
+- These are practical end-to-end observations, not isolated provider limits.
+- A configuration decision needs multiple same-size samples under identified
+  network conditions. Compare medians and tails, not one fastest run.
+- Client defaults must not adapt from a single transfer. Any future adaptive
+  controller must use explicit throttle evidence, stable driver-specific
+  policy, bounded memory and concurrency, and the identical checksum chain.
+- Aliyun single-file upload concurrency must remain one. Throughput for many
+  files can instead use the bounded file-level pipeline.
+- R2 tuning should next compare repeated 8 MiB/concurrency 8 baselines before
+  trying another matrix point; the observed variance is larger than the local
+  processing overhead.
