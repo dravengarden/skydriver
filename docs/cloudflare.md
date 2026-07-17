@@ -257,6 +257,25 @@ signed URL, provider locator, or local path and remains a failed nonzero
 process result. Use the run ID and exact bounds to correlate host or egress
 telemetry; do not infer a provider cause merely from a timeout.
 
+For an explicit many-small-file sync measurement, use the separate dev-only
+acceptance. It creates a uniquely named directory, uploads 64 independent
+1 MiB encrypted versions by default, performs one cold and one warm sync,
+verifies every plaintext SHA-256, and logically removes every test entry on
+exit:
+
+```bash
+export CARRACK_CONTROL_URL=https://dev.carrack.stormbird.xyz
+export CARRACK_VFS_TOKEN='<dev test-directory token>'
+CARRACK_R2_SMALL_SYNC_LIVE_TEST=1 tests/r2-small-sync-live.sh
+```
+
+`CARRACK_R2_SMALL_SYNC_FILES`, `CARRACK_R2_SMALL_SYNC_BYTES`, upload
+concurrency, and sync concurrency are bounded inputs. The output includes exact
+UTC windows so the run can be correlated with the sampled driver/directory
+analytics. The script is never part of `just verify`: it performs real provider
+writes and intentionally leaves physical deletion to server-owned GC after
+logical cleanup.
+
 Each recipe uploads a tagged Worker version and then moves 100% of that
 environment's traffic to it. It does not rewrite the already-audited custom
 domain, so the routine account token does not need zone-wide route mutation
