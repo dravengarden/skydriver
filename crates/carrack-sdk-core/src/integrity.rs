@@ -759,7 +759,9 @@ mod tests {
     #[test]
     #[ignore = "explicit million-entry scale acceptance"]
     fn streaming_directory_accepts_one_million_entries_with_logarithmic_state() {
+        let started = std::time::Instant::now();
         let mut streaming = DirectoryMerkleAccumulator::new();
+        let mut peak_subtrees = 0;
         for index in 0..1_000_000_u64 {
             let name = format!("entry-{index:06}");
             streaming
@@ -774,8 +776,13 @@ mod tests {
                     data_root: Sha256::digest(index.to_be_bytes()).into(),
                 })
                 .expect("append million-entry directory");
-            assert!(streaming.subtrees.len() <= 20);
+            peak_subtrees = peak_subtrees.max(streaming.subtrees.len());
         }
+        assert!(peak_subtrees <= 20);
         assert_ne!(streaming.finish().expect("finish million entries"), [0; 32]);
+        println!(
+            "carrack_directory_merkle_benchmark entries=1000000 elapsed_ms={} peak_subtrees={peak_subtrees}",
+            started.elapsed().as_millis()
+        );
     }
 }
