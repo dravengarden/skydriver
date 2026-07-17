@@ -691,6 +691,9 @@ async fn plan_directory_roots(
             worker::Error::RustError(format!("verify current VFS directory root: {error:?}"))
         })?)?;
         if current_root != directory.data_root {
+            if directory_snapshot_changed(database, &directory).await? {
+                return Ok(None);
+            }
             return Err(worker::Error::RustError(format!(
                 "VFS directory {} root does not match its entries",
                 directory.id
@@ -840,6 +843,9 @@ pub(crate) async fn plan_new_child_directory_roots(
             worker::Error::RustError(format!("verify current VFS directory root: {error:?}"))
         })?)?;
         if current_root != directory.data_root {
+            if directory_snapshot_changed(database, &directory).await? {
+                return Ok(None);
+            }
             return Err(worker::Error::RustError(format!(
                 "VFS directory {} root does not match its entries",
                 directory.id
@@ -973,6 +979,9 @@ pub(crate) async fn plan_entry_removal_roots(
             worker::Error::RustError(format!("verify current VFS directory root: {error:?}"))
         })?)?;
         if current_root != directory.data_root {
+            if directory_snapshot_changed(database, &directory).await? {
+                return Ok(None);
+            }
             return Err(worker::Error::RustError(format!(
                 "VFS directory {} root does not match its entries",
                 directory.id
@@ -1098,6 +1107,9 @@ pub(crate) async fn plan_entry_rename_roots(
             worker::Error::RustError(format!("verify current VFS directory root: {error:?}"))
         })?)?;
         if current_root != row.data_root {
+            if directory_snapshot_changed(database, row).await? {
+                return Ok(None);
+            }
             return Err(worker::Error::RustError(format!(
                 "VFS directory {} root does not match its entries",
                 row.id
@@ -1288,6 +1300,26 @@ async fn load_directory(database: &D1Database, directory_id: &str) -> Result<Opt
         .bind(&[JsValue::from_str(directory_id)])?
         .first::<DirectoryRow>(None)
         .await
+}
+
+async fn directory_snapshot_changed(
+    database: &D1Database,
+    observed: &DirectoryRow,
+) -> Result<bool> {
+    let Some(current) = load_directory(database, &observed.id).await? else {
+        return Ok(true);
+    };
+    Ok(!same_directory_snapshot(observed, &current))
+}
+
+fn same_directory_snapshot(left: &DirectoryRow, right: &DirectoryRow) -> bool {
+    left.id == right.id
+        && left.filesystem_id == right.filesystem_id
+        && left.parent_id == right.parent_id
+        && left.name == right.name
+        && left.data_root == right.data_root
+        && left.revision == right.revision
+        && left.state == right.state
 }
 
 async fn load_directory_entries(
@@ -1921,5 +1953,27 @@ mod tests {
         assert_eq!(expected_encoded_bytes(ENCRYPTED_SUITE, 9, 4), Some(57));
         assert_eq!(expected_encoded_bytes(ENCRYPTED_SUITE, 9, 0), None);
         assert_eq!(expected_encoded_bytes("unknown/v1", 9, 4), None);
+    }
+
+    #[test]
+    fn directory_snapshot_identity_covers_every_planner_field() {
+        let observed = DirectoryRow {
+            id: "directory".to_owned(),
+            filesystem_id: "filesystem".to_owned(),
+            parent_id: Some("parent".to_owned()),
+            name: "name".to_owned(),
+            data_root: "root".to_owned(),
+            revision: 7,
+            state: "active".to_owned(),
+        };
+        assert!(same_directory_snapshot(&observed, &observed));
+        assert!(!same_directory_snapshot(
+            &observed,
+            &DirectoryRow {
+                data_root: "changed".to_owned(),
+                revision: 8,
+                ..observed.clone()
+            }
+        ));
     }
 }
