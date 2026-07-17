@@ -104,7 +104,8 @@ agent processes are SDK consumers, not a third architectural component.
 - Run `nix develop -c just verify` before committing.
 - Rust uses the exact toolchain in `rust-toolchain.toml`; use `just test-fast`
   for the inner loop and `just cache-stats` when evaluating compiler-cache
-  behavior. Do not infer cross-worktree sccache reuse without measuring it.
+  behavior. Use `just build-cached` only for explicit clean-build experiments;
+  do not infer cross-target or cross-worktree reuse without measuring it.
 - Use `.agents/skills/carrack-admin` for Carrack management inspection and
   supported VFS policy changes. Agents must not bypass its CLI validation with
   direct D1 writes or reconstructed management HTTP requests.

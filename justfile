@@ -66,6 +66,9 @@ performance-acceptance:
 test-fast:
     cargo nextest run --workspace --all-features --locked
 
+build-cached:
+    RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo build --workspace --all-features --locked
+
 cache-stats:
     sccache --show-stats
 

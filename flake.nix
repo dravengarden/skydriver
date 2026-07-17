@@ -102,8 +102,6 @@
             ripgrep
           ];
 
-          RUSTC_WRAPPER = "sccache";
-
           shellHook = ''
             export PATH="$PWD/bin:$PWD/node_modules/.bin:$PATH"
             if [ -f .env ]; then
