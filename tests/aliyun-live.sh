@@ -15,7 +15,8 @@ fi
 control_url=${CARRACK_CONTROL_URL:-https://dev.carrack.stormbird.xyz}
 directory=${CARRACK_ALIYUN_TEST_DIRECTORY:-/}
 payload_bytes=${CARRACK_ALIYUN_TEST_BYTES:-33554432}
-carrack_bin=${CARRACK_BIN:-target/debug/carrack}
+carrack_bin=${CARRACK_BIN:-target/release/carrack}
+operation_timeout_seconds=${CARRACK_LIVE_OPERATION_TIMEOUT_SECONDS:-300}
 
 if [[ $control_url != https://dev.carrack.stormbird.xyz ]]; then
   echo "live acceptance is restricted to the Carrack development environment" >&2
@@ -29,10 +30,19 @@ if [[ ! $payload_bytes =~ ^[1-9][0-9]*$ || $payload_bytes -gt 1073741824 ]]; the
   echo "CARRACK_ALIYUN_TEST_BYTES must be between 1 and 1073741824" >&2
   exit 2
 fi
+if [[ ! $operation_timeout_seconds =~ ^[1-9][0-9]*$ || $operation_timeout_seconds -gt 3600 ]]; then
+  echo "CARRACK_LIVE_OPERATION_TIMEOUT_SECONDS must be between 1 and 3600" >&2
+  exit 2
+fi
 if [[ ! -x $carrack_bin ]]; then
   echo "Carrack binary is not executable: $carrack_bin" >&2
   exit 2
 fi
+
+carrack_command() {
+  timeout --signal=INT --kill-after=15s "${operation_timeout_seconds}s" \
+    env CARRACK_VFS_TOKEN="$CARRACK_VFS_TOKEN" "$carrack_bin" "$@"
+}
 
 state=$(mktemp -d)
 chmod 0700 "$state"
@@ -51,7 +61,7 @@ remove_key="aliyun-live-remove-$identifier"
 
 cleanup() {
   if [[ $put_committed == true ]]; then
-    CARRACK_VFS_TOKEN="$CARRACK_VFS_TOKEN" "$carrack_bin" remove "$destination" \
+    carrack_command remove "$destination" \
       --control-url "$control_url" --idempotency-key "$remove_key" \
       --format json >/dev/null 2>&1 || \
       echo "warning: live object cleanup must be retried for $destination" >&2
@@ -63,11 +73,11 @@ trap cleanup EXIT
 head -c "$payload_bytes" /dev/urandom >"$source_file"
 source_sha=$(sha256sum "$source_file" | cut -d' ' -f1)
 
-"$carrack_bin" compatibility --control-url "$control_url" --format json |
+carrack_command compatibility --control-url "$control_url" --format json |
   jq -e '.protocol_epoch == 2 and .enforcement == "required"' >/dev/null
 
 upload_started_ns=$(carrack_now_ns)
-put_result=$(CARRACK_VFS_TOKEN="$CARRACK_VFS_TOKEN" "$carrack_bin" put \
+put_result=$(carrack_command put \
   "$source_file" "$destination" \
   --control-url "$control_url" \
   --preferred-driver-id "$CARRACK_ALIYUN_DRIVER_ID" \
@@ -86,7 +96,7 @@ jq -e --arg driver "$CARRACK_ALIYUN_DRIVER_ID" '
 put_committed=true
 
 download_started_ns=$(carrack_now_ns)
-get_result=$(CARRACK_VFS_TOKEN="$CARRACK_VFS_TOKEN" "$carrack_bin" get \
+get_result=$(carrack_command get \
   "$destination" "$download_file" \
   --control-url "$control_url" \
   --staging-directory "$state/download-staging" \
@@ -113,7 +123,7 @@ if [[ $interrupted_status != 0 && $interrupted_status != 124 ]]; then
   exit 1
 fi
 if [[ $interrupted_status != 0 ]]; then
-  CARRACK_VFS_TOKEN="$CARRACK_VFS_TOKEN" "$carrack_bin" get \
+  carrack_command get \
     "$destination" "$resumed_file" \
     --control-url "$control_url" \
     --staging-directory "$state/resume-staging" \
@@ -134,13 +144,13 @@ upload_bytes_per_second=$(carrack_bytes_per_second "$payload_bytes" "$upload_ela
 download_bytes_per_second=$(carrack_bytes_per_second "$payload_bytes" "$download_elapsed_ns")
 resume_bytes_per_second=$(carrack_bytes_per_second "$payload_bytes" "$resume_elapsed_ns")
 
-remove_result=$(CARRACK_VFS_TOKEN="$CARRACK_VFS_TOKEN" "$carrack_bin" remove \
+remove_result=$(carrack_command remove \
   "$destination" --control-url "$control_url" \
   --idempotency-key "$remove_key" --format json)
 jq -e '.schema == "carrack.vfs.remove-receipt.v1"' <<<"$remove_result" >/dev/null
 put_committed=false
 
-listing=$(CARRACK_VFS_TOKEN="$CARRACK_VFS_TOKEN" "$carrack_bin" list \
+listing=$(carrack_command list \
   "$directory" --control-url "$control_url" --format json)
 jq -e --arg name "$name" 'all(.entries[]; .name != $name)' <<<"$listing" >/dev/null
 
