@@ -75,12 +75,21 @@ returns the original allocation. Reusing the key with any changed field returns
 ## Key and driver grants
 
 After prepare, the client requests the directory epoch key and selected driver
-instance separately. The key response schema is
-`carrack.vfs.directory-key-grant.v1`. An encrypted directory returns one
-base64url 256-bit directory key plus the pinned crypto suite, epoch, directory,
-version, and intent identities. A `plaintext/v1` directory returns no key. The
+instance separately and concurrently; neither grant is trusted until its full
+intent identity is validated, and each response is bounded to 256 KiB. The key
+response schema is `carrack.vfs.directory-key-grant.v1`. An encrypted directory
+returns one base64url 256-bit directory key plus the pinned crypto suite, epoch,
+directory, version, and intent identities. A `plaintext/v1` directory returns no key. The
 client derives the per-version content key locally; the control plane never
 receives or relays payload bytes.
+
+The native async client performs source Merkle hashing and encoded staging on
+bounded blocking workers rather than occupying its network executor. Encoded
+staging and the authenticated block-manifest request overlap after both grants
+validate. A cancellation-safe owner removes any encoded file returned after
+the caller future was cancelled; normal resumable staging is disarmed from that
+owner and retains the existing retry semantics. Source bytes are hashed again
+after staging, and any divergence removes staging and fails before provider I/O.
 
 The driver response schema is `carrack.vfs.driver-grant.v1`. It returns the
 prepared driver ID, compiled versioned kind, configuration revision, strict
@@ -91,14 +100,14 @@ audited without recording key or credential material.
 
 The first compiled V2 kind is `local-filesystem/v2`. Its configuration is
 `{"root":"/absolute/client/path"}` and it has no credential grant. The path is
-opened by the Go client; the Cloudflare Worker never accesses it.
+opened by the native client driver; the Cloudflare Worker never accesses it.
 
 ## Transfer and block-manifest staging
 
-After prepare, the Go client obtains short-lived key and provider grants, then
-uses the selected compiled driver directly. It must publish the exact encoded
-length and SHA-256 to the fresh provider key and satisfy either a trusted strong
-provider checksum or complete independent readback. Provider multipart parts
+After prepare, the canonical Rust client obtains short-lived key and provider
+grants, then uses the selected compiled driver directly. It must publish the
+exact encoded length and SHA-256 to the fresh provider key and satisfy either a
+trusted strong provider checksum or complete independent readback. Provider multipart parts
 remain transport state and disappear behind one completed object. Publication
 uses provider-native atomic no-replace, including multipart completion. A
 precondition collision is an idempotent replay only after complete readback

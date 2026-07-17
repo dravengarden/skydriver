@@ -22,6 +22,7 @@ use crate::{
 
 const SOURCE_COPY_BUFFER_BYTES: usize = 1024 * 1024;
 const MAXIMUM_RANGE_BYTES: u64 = 256 * 1024 * 1024;
+const MAXIMUM_PUT_CONTROL_BODY_BYTES: usize = 256 * 1024;
 static PLAINTEXT_SPOOL_ORDINAL: AtomicU64 = AtomicU64::new(0);
 
 /// High-level immutable Put requirements.
@@ -77,6 +78,26 @@ pub trait BoundedRangeUploadSource: Send + Sync {
 
 struct PlaintextSpool {
     path: Option<PathBuf>,
+}
+
+struct CancelSafeStage {
+    staged: Option<crate::crypto::StagedObject>,
+}
+
+impl CancelSafeStage {
+    fn into_inner(mut self) -> Result<crate::crypto::StagedObject, Error> {
+        self.staged.take().ok_or_else(|| {
+            Error::InvalidResponse("encoded staging worker omitted its result".to_owned())
+        })
+    }
+}
+
+impl Drop for CancelSafeStage {
+    fn drop(&mut self) {
+        if let Some(staged) = self.staged.take() {
+            let _ = std::fs::remove_file(staged.path);
+        }
+    }
 }
 
 impl PlaintextSpool {
@@ -205,6 +226,14 @@ struct KeyGrant {
     expires_at: u64,
 }
 
+impl Drop for KeyGrant {
+    fn drop(&mut self) {
+        if let Some(directory_key) = self.directory_key.as_mut() {
+            directory_key.zeroize();
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DriverGrant {
@@ -216,6 +245,23 @@ struct DriverGrant {
     config: Value,
     credential: Option<Value>,
     expires_at: u64,
+}
+
+impl Drop for DriverGrant {
+    fn drop(&mut self) {
+        if let Some(credential) = self.credential.as_mut() {
+            zeroize_json_value(credential);
+        }
+    }
+}
+
+fn zeroize_json_value(value: &mut Value) {
+    match value {
+        Value::String(value) => value.zeroize(),
+        Value::Array(values) => values.iter_mut().for_each(zeroize_json_value),
+        Value::Object(values) => values.values_mut().for_each(zeroize_json_value),
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
 }
 
 #[derive(Deserialize)]
@@ -428,7 +474,15 @@ impl VfsClient {
                 "Put target is not a file path".to_owned(),
             ));
         }
-        let tree = integrity::build_file(source, options.verification_block_bytes)?;
+        let source_path = source.to_owned();
+        let verification_block_bytes = options.verification_block_bytes;
+        let tree = tokio::task::spawn_blocking(move || {
+            integrity::build_file(&source_path, verification_block_bytes)
+        })
+        .await
+        .map_err(|error| {
+            Error::InvalidResponse(format!("source integrity worker failed: {error}"))
+        })??;
         let manifest = integrity::manifest(&tree)?;
         let manifest_sha256 = hex::encode(Sha256::digest(&manifest));
         let file_root = hex::encode(tree.root);
@@ -436,7 +490,7 @@ impl VfsClient {
         let token = self.token.encode();
         let preparation: Preparation = self
             .control
-            .send_json(
+            .send_json_bounded(
                 Method::POST,
                 "api/v2/puts/prepare",
                 Some(&token),
@@ -456,32 +510,32 @@ impl VfsClient {
                     preferred_driver_id: options.preferred_driver_id.as_deref(),
                     idempotency_key: &options.idempotency_key,
                 }),
+                MAXIMUM_PUT_CONTROL_BODY_BYTES,
             )
             .await?;
         validate_preparation(&preparation, &parent_directory_id, entry_name, options)?;
-        let key: KeyGrant = self
-            .control
-            .send_json::<KeyGrant, ()>(
-                Method::POST,
-                &format!("api/v2/puts/{}/key-grant", preparation.intent_id),
-                Some(&token),
-                &[],
-                None,
-            )
-            .await?;
+        let key_grant_path = format!("api/v2/puts/{}/key-grant", preparation.intent_id);
+        let driver_grant_path = format!("api/v2/puts/{}/driver-grant", preparation.intent_id);
+        let key_request = self.control.send_json_bounded::<KeyGrant, ()>(
+            Method::POST,
+            &key_grant_path,
+            Some(&token),
+            &[],
+            None,
+            MAXIMUM_PUT_CONTROL_BODY_BYTES,
+        );
+        let driver_request = self.control.send_json_bounded::<DriverGrant, ()>(
+            Method::POST,
+            &driver_grant_path,
+            Some(&token),
+            &[],
+            None,
+            MAXIMUM_PUT_CONTROL_BODY_BYTES,
+        );
+        let (key, mut driver) = tokio::try_join!(key_request, driver_request)?;
         validate_key_grant(&key, &preparation)?;
-        let mut driver: DriverGrant = self
-            .control
-            .send_json::<DriverGrant, ()>(
-                Method::POST,
-                &format!("api/v2/puts/{}/driver-grant", preparation.intent_id),
-                Some(&token),
-                &[],
-                None,
-            )
-            .await?;
         validate_driver_grant(&driver, &preparation)?;
-        let mut directory_key = decode_directory_key(&key)?;
+        let directory_key = decode_directory_key(&key)?;
         let descriptor = Descriptor {
             directory_id: parse_identifier(&preparation.directory_id)?,
             version_id: parse_identifier(&preparation.version_id)?,
@@ -489,23 +543,45 @@ impl VfsClient {
             frame_bytes: preparation.encryption_frame_bytes,
             plaintext_bytes: tree.size_bytes,
         };
-        let staged = stage(
-            source,
-            &options.staging_directory,
-            &preparation.intent_id,
-            &preparation.crypto_suite,
-            &descriptor,
-            directory_key.as_ref(),
-        )?;
-        if let Some(key) = directory_key.as_mut() {
-            key.zeroize();
-        }
-        if integrity::build_file(source, options.verification_block_bytes)? != tree {
-            return Err(Error::InvalidResponse(
-                "source changed during encoding".to_owned(),
-            ));
-        }
-        let manifest_stage = self.stage_manifest(&token, &preparation, &manifest).await?;
+        let stage_source = source.to_owned();
+        let stage_root = options.staging_directory.clone();
+        let stage_intent_id = preparation.intent_id.clone();
+        let stage_suite = preparation.crypto_suite.clone();
+        let expected_tree = tree.clone();
+        let stage_work = run_stage_worker(move || {
+            let mut directory_key = directory_key;
+            let staged = stage(
+                &stage_source,
+                &stage_root,
+                &stage_intent_id,
+                &stage_suite,
+                &descriptor,
+                directory_key.as_ref(),
+            );
+            if let Some(key) = directory_key.as_mut() {
+                key.zeroize();
+            }
+            let staged = staged?;
+            let observed = integrity::build_file(&stage_source, verification_block_bytes);
+            match observed {
+                Ok(observed) if observed == expected_tree => Ok(CancelSafeStage {
+                    staged: Some(staged),
+                }),
+                Ok(_) => {
+                    let _ = std::fs::remove_file(&staged.path);
+                    Err(Error::InvalidResponse(
+                        "source changed during encoding".to_owned(),
+                    ))
+                }
+                Err(error) => {
+                    let _ = std::fs::remove_file(&staged.path);
+                    Err(error)
+                }
+            }
+        });
+        let manifest_work = self.stage_manifest(&token, &preparation, &manifest);
+        let (staged, manifest_stage) = tokio::try_join!(stage_work, manifest_work)?;
+        let staged = staged.into_inner()?;
         let provider_started = Instant::now();
         let mut opened_driver = DriverRegistry::open(
             &driver.driver_kind,
@@ -527,7 +603,7 @@ impl VfsClient {
         let warnings = opened_driver.upload_warnings(options.maximum_concurrency);
         let commit: PutReceipt = self
             .control
-            .send_json(
+            .send_json_bounded(
                 Method::POST,
                 &format!("api/v2/puts/{}/commit", preparation.intent_id),
                 Some(&token),
@@ -545,6 +621,7 @@ impl VfsClient {
                         transfer_started.elapsed(),
                     ),
                 }),
+                MAXIMUM_PUT_CONTROL_BODY_BYTES,
             )
             .await?;
         validate_receipt(&commit, &preparation, &manifest_stage, &staged)?;
@@ -617,6 +694,15 @@ where
 {
     tokio::task::spawn_blocking(work).await.map_err(|error| {
         Error::InvalidResponse(format!("plaintext source spool worker failed: {error}"))
+    })?
+}
+
+async fn run_stage_worker<F>(work: F) -> Result<CancelSafeStage, Error>
+where
+    F: FnOnce() -> Result<CancelSafeStage, Error> + Send + 'static,
+{
+    tokio::task::spawn_blocking(work).await.map_err(|error| {
+        Error::InvalidResponse(format!("encoded staging worker failed: {error}"))
     })?
 }
 
@@ -921,8 +1007,9 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        BoundedRangeUploadSource, Preparation, PutOptions, run_source_worker, spool_bounded_reader,
-        spool_exact_reader, spool_range_source, validate_preparation,
+        BoundedRangeUploadSource, CancelSafeStage, Preparation, PutOptions, run_source_worker,
+        run_stage_worker, spool_bounded_reader, spool_exact_reader, spool_range_source,
+        validate_preparation,
     };
 
     fn put_options(staging_directory: &std::path::Path) -> PutOptions {
@@ -1116,6 +1203,46 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_no_spool_files(temporary.path());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_stage_worker_removes_a_late_encoded_object() {
+        let temporary = tempfile::tempdir().expect("encoded stage temporary directory");
+        let path = temporary.path().join("late.encoded");
+        let worker_path = path.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (staged_tx, staged_rx) = std::sync::mpsc::channel();
+        let task = tokio::spawn(async move {
+            run_stage_worker(move || {
+                started_tx.send(()).expect("announce stage worker");
+                release_rx.recv().expect("release stage worker");
+                std::fs::write(&worker_path, b"encoded").expect("write encoded stage");
+                staged_tx.send(()).expect("announce completed stage");
+                Ok(CancelSafeStage {
+                    staged: Some(crate::crypto::StagedObject {
+                        path: worker_path,
+                        encoded_bytes: 7,
+                        encoded_sha256: "11".repeat(32),
+                    }),
+                })
+            })
+            .await
+        });
+        started_rx.recv().expect("stage worker started");
+        task.abort();
+        release_tx.send(()).expect("release cancelled stage worker");
+        staged_rx.recv().expect("cancelled worker completed stage");
+        let joined = task.await;
+        assert!(matches!(joined, Err(error) if error.is_cancelled()));
+
+        for _ in 0..100 {
+            if !path.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!path.exists(), "late encoded stage was not removed");
     }
 
     fn assert_no_spool_files(root: &std::path::Path) {
