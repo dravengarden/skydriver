@@ -15,6 +15,8 @@ control_url=${CARRACK_CONTROL_URL:-https://dev.carrack.stormbird.xyz}
 driver_id=${CARRACK_R2_DRIVER_ID:-r2-default}
 directory=${CARRACK_R2_TEST_DIRECTORY:-/}
 payload_bytes=${CARRACK_R2_TEST_BYTES:-134217728}
+transfer_part_bytes=${CARRACK_R2_TEST_PART_BYTES:-8388608}
+maximum_concurrency=${CARRACK_R2_TEST_CONCURRENCY:-8}
 carrack_bin=${CARRACK_BIN:-target/release/carrack}
 operation_timeout_seconds=${CARRACK_LIVE_OPERATION_TIMEOUT_SECONDS:-300}
 
@@ -30,8 +32,17 @@ if [[ $directory != /* || $directory == *..* || $directory == *//* ]]; then
   echo "CARRACK_R2_TEST_DIRECTORY must be a canonical absolute VFS path" >&2
   exit 2
 fi
-if [[ ! $payload_bytes =~ ^[1-9][0-9]*$ || $payload_bytes -gt 1073741824 ]]; then
-  echo "CARRACK_R2_TEST_BYTES must be between 1 and 1073741824" >&2
+if ! carrack_require_integer_range CARRACK_R2_TEST_BYTES "$payload_bytes" 104857600 1073741824; then
+  exit 2
+fi
+if ! carrack_require_integer_range CARRACK_R2_TEST_PART_BYTES "$transfer_part_bytes" 5242880 268435456; then
+  exit 2
+fi
+if [[ $transfer_part_bytes -ge $payload_bytes ]]; then
+  echo "CARRACK_R2_TEST_PART_BYTES must leave at least two payload parts" >&2
+  exit 2
+fi
+if ! carrack_require_integer_range CARRACK_R2_TEST_CONCURRENCY "$maximum_concurrency" 2 64; then
   exit 2
 fi
 if [[ ! $operation_timeout_seconds =~ ^[1-9][0-9]*$ || $operation_timeout_seconds -gt 3600 ]]; then
@@ -87,8 +98,8 @@ put_result=$(carrack_command put \
   --preferred-driver-id "$driver_id" \
   --idempotency-key "r2-live-put-$identifier" \
   --staging-directory "$state/upload-staging" \
-  --transfer-part-bytes 8388608 \
-  --maximum-concurrency 8 \
+  --transfer-part-bytes "$transfer_part_bytes" \
+  --maximum-concurrency "$maximum_concurrency" \
   --format json)
 upload_finished_ns=$(carrack_now_ns)
 jq -e --arg driver "$driver_id" '
@@ -104,8 +115,8 @@ get_result=$(carrack_command get \
   "$destination" "$download_file" \
   --control-url "$control_url" \
   --staging-directory "$state/download-staging" \
-  --transfer-part-bytes 8388608 \
-  --maximum-concurrency 8 \
+  --transfer-part-bytes "$transfer_part_bytes" \
+  --maximum-concurrency "$maximum_concurrency" \
   --format json)
 download_finished_ns=$(carrack_now_ns)
 jq -e '.schema == "carrack.fs-get.v1"' <<<"$get_result" >/dev/null
@@ -117,8 +128,8 @@ timeout 0.2s env CARRACK_VFS_TOKEN="$CARRACK_VFS_TOKEN" "$carrack_bin" get \
   "$destination" "$resumed_file" \
   --control-url "$control_url" \
   --staging-directory "$state/resume-staging" \
-  --transfer-part-bytes 8388608 \
-  --maximum-concurrency 8 \
+  --transfer-part-bytes "$transfer_part_bytes" \
+  --maximum-concurrency "$maximum_concurrency" \
   --format json >/dev/null
 interrupted_status=$?
 set -e
@@ -131,8 +142,8 @@ if [[ $interrupted_status != 0 ]]; then
     "$destination" "$resumed_file" \
     --control-url "$control_url" \
     --staging-directory "$state/resume-staging" \
-    --transfer-part-bytes 8388608 \
-    --maximum-concurrency 8 \
+    --transfer-part-bytes "$transfer_part_bytes" \
+    --maximum-concurrency "$maximum_concurrency" \
     --format json >/dev/null
 fi
 resume_finished_ns=$(carrack_now_ns)
@@ -163,8 +174,8 @@ jq -n \
   --arg driver_id "$driver_id" \
   --arg source_sha256 "$source_sha" \
   --argjson plaintext_bytes "$payload_bytes" \
-  --argjson transfer_part_bytes 8388608 \
-  --argjson maximum_concurrency 8 \
+  --argjson transfer_part_bytes "$transfer_part_bytes" \
+  --argjson maximum_concurrency "$maximum_concurrency" \
   --argjson upload_elapsed_ms "$upload_elapsed_ms" \
   --argjson upload_bytes_per_second "$upload_bytes_per_second" \
   --argjson download_elapsed_ms "$download_elapsed_ms" \

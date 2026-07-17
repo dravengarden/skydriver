@@ -230,10 +230,14 @@ driver IDs are explicitly present; neither test needs `driver.manage`,
 
 This live test is opt-in and is not part of `just verify`; the hermetic gate
 checks its shell contract and metric arithmetic only. Set
-`CARRACK_ALIYUN_TEST_BYTES` or `CARRACK_R2_TEST_BYTES` to compare the same
-payload size, up to the scripts' 1 GiB safety bound. When using a token already
-scoped to a test directory, leave the test directory as `/`: paths are relative
-to the authenticated token root. Run multiple samples before comparing drivers
+`CARRACK_R2_TEST_PART_BYTES` and `CARRACK_R2_TEST_CONCURRENCY` to compare
+bounded R2 pipeline configurations. The R2 acceptance requires at least 100
+MiB, two parts, and concurrency two so its multipart and concurrent-range
+claims remain true. Set `CARRACK_ALIYUN_TEST_BYTES` to the same payload size
+when a cross-driver comparison is worth the slower sequential upload, up to
+the scripts' 1 GiB safety bound. When using a token already scoped to a test
+directory, leave the test directory as `/`: paths are relative to the
+authenticated token root. Run multiple samples before comparing drivers
 because the low-cost telemetry deliberately does not claim benchmark-grade
 precision.
 

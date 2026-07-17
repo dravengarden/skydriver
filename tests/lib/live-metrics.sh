@@ -26,3 +26,14 @@ carrack_bytes_per_second() {
   fi
   printf '%s\n' "$((bytes * 1000000000 / elapsed_ns))"
 }
+
+carrack_require_integer_range() {
+  local name=$1
+  local value=$2
+  local minimum=$3
+  local maximum=$4
+  if [[ ! $value =~ ^[0-9]+$ || $value -lt $minimum || $value -gt $maximum ]]; then
+    echo "$name must be between $minimum and $maximum" >&2
+    return 1
+  fi
+}
