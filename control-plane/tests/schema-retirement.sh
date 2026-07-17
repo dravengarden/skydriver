@@ -167,6 +167,7 @@ required_schema=(
   vfs_catalog_delta_artifacts
   vfs_catalog_revisions
   vfs_directories
+  vfs_directory_mounts
   vfs_files
   vfs_filesystems
   vfs_file_versions

@@ -292,6 +292,10 @@ const ManagementDirectorySchema = v.object({
         max_file_count: v.nullable(v.number()),
     }),
     breadcrumbs: v.array(v.object({ id: v.string(), name: v.string(), depth: v.number() })),
+    mount: v.object({
+        effective_driver_id: v.string(),
+        relationship: v.picklist(["default", "mount", "inherited"]),
+    }),
     placements: v.array(v.string()),
     entries: v.array(ManagementDirectoryEntrySchema),
 });

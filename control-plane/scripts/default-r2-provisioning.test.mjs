@@ -142,7 +142,7 @@ test("validates environment-owned driver identity", () => {
     );
 });
 
-test("adds only to an empty root unless explicitly asked to append", () => {
+test("sets only an empty legacy root and preserves another default", () => {
     assert.deepEqual(desiredRootPlacements({ placement_revision: 1, placements: [] }), {
         action: "add-to-empty-root",
         placements: [{ driverId: "r2-default", priority: 0 }],
@@ -151,14 +151,18 @@ test("adds only to an empty root unless explicitly asked to append", () => {
         placement_revision: 4,
         placements: [{ driver_id: "aliyun-dev", write_priority: 0 }],
     };
-    assert.equal(desiredRootPlacements(existing).action, "preserve-nonempty-root");
-    assert.deepEqual(desiredRootPlacements(existing, true), {
-        action: "append-to-root",
-        placements: [
-            { driverId: "aliyun-dev", priority: 0 },
-            { driverId: "r2-default", priority: 10 },
-        ],
-    });
+    assert.equal(desiredRootPlacements(existing).action, "preserve-other-default");
+    assert.throws(
+        () =>
+            desiredRootPlacements({
+                placement_revision: 5,
+                placements: [
+                    { driver_id: "aliyun-dev", write_priority: 0 },
+                    { driver_id: "r2-default", write_priority: 10 },
+                ],
+            }),
+        /invalid root placement|at most one/,
+    );
 });
 
 test("requires VFS authority only after bootstrap", () => {

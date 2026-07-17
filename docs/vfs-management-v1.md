@@ -21,7 +21,7 @@ The currently implemented management surface is:
 | Attenuated child-token issue | Yes | `issue_token` | `carrackctl vfs token issue` |
 | Same-principal token revocation | Yes | `revoke_token` | `carrackctl vfs token revoke` |
 | Direct ACL inspection and principal replacement | Yes | `acl`, `replace_acl` | `carrackctl vfs acl show`, `carrackctl vfs acl replace` |
-| Placement inspection and replace-all | Yes | `placements`, `replace_placements` | `carrackctl vfs placement show`, `carrackctl vfs placement replace` |
+| Mount inspection and replacement | Yes | `mount`, `set_mount`, `inherit_mount` | `carrackctl vfs mount show`, `carrackctl vfs mount set`, `carrackctl vfs mount inherit` |
 | Recursive verified namespace prefetch | Existing directory pages | Filesystem catalog cache | `carrack sync` uses it internally |
 | Principal lifecycle | Yes | `AdminClient::access`, validated access mutation | `carrackctl access principal` |
 | Group lifecycle and membership | Yes | `AdminClient::access`, validated access mutation | `carrackctl access group` |
@@ -249,50 +249,59 @@ carrackctl acl replace "$directory_id" "$principal_id" \
 
 The CLI requires exactly one of `--role`, one or more `--action`, or `--clear`.
 
-## Placement inspection and replacement
+## Mount inspection and replacement
 
-Placement inspection returns non-secret driver identity, kind, driver
-revision, write priority, and active/disabled state. It never returns provider
+Mount inspection returns the non-secret effective driver identity, kind,
+revision, and whether it is the root `default`, an explicit `mount`, or
+`inherited`. It never returns provider
 credentials. Both read and replace require a token with `driver.manage` whose
 token scope has no driver allowlist. This prevents a driver-scoped token from
 using the management API to widen its own view or policy.
 
-Replacement is replace-all, not a patch:
+The compatibility wire shape retains one placement entry, but it is now a
+single-driver mount operation rather than a preference list:
 
 ```json
 {
   "placements": [
-    {"driver_id": "local-main", "write_priority": 0},
-    {"driver_id": "archive-backup", "write_priority": 10}
+    {"driver_id": "local-main", "write_priority": 0}
   ],
   "expected_placement_revision": 3,
   "idempotency_key": "placement-primary-backup-v1"
 }
 ```
 
-At least one enabled registered driver is required. Driver IDs and priorities
-must each be unique; smaller priorities are preferred. The exact current
-`placement_revision` is required, and a concurrent mutation returns `409`.
+Exactly one enabled registered driver and priority zero are required. On root,
+replacement changes the filesystem default. On a non-root empty directory, a
+driver different from the parent's effective driver creates an explicit mount;
+selecting the parent driver removes that mount. A mounted subtree cannot contain
+another mount. The exact current `placement_revision` is required, and a
+concurrent mutation returns `409`.
 
 CLI examples:
 
 ```bash
-carrackctl placement list "$directory_id" \
+carrackctl vfs mount show /collection \
   --control-url "$control_url" --format json
 
-carrackctl placement replace "$directory_id" \
+carrackctl vfs mount set /collection \
   --control-url "$control_url" \
-  --placement local-main=0 \
-  --placement archive-backup=10 \
-  --expected-placement-revision "$placement_revision" \
+  --driver local-main \
+  --expected-revision "$placement_revision" \
   --idempotency-key placement-primary-backup-v1
+
+carrackctl vfs mount inherit /collection \
+  --control-url "$control_url" \
+  --expected-revision "$placement_revision" \
+  --idempotency-key placement-inherit-v1
 ```
 
-Each `--placement` value splits on its final `=` so the priority remains
-unambiguous. The complete set must be supplied on every replacement.
+The legacy `vfs placement` spelling remains an alias during migration. Mount
+replacement never migrates existing files and therefore requires an empty
+target whenever the effective driver changes.
 
-Placement policy chooses allowed destinations; it does not promise that every
-driver supports every acceleration feature. Before payload I/O, the Go planner
+Mount policy chooses one destination; it does not promise that every
+driver supports every acceleration feature. Before payload I/O, the Rust planner
 evaluates the selected driver's declared and probed capabilities. Missing
 range, resumable, parallel, or strong-checksum acceleration produces a
 structured correctness-preserving warning and fallback. A missing correctness
@@ -301,7 +310,7 @@ property remains a hard error.
 ## Race and recovery rules
 
 Carrack does not hold pessimistic locks across management or provider I/O.
-Directory, ACL, and placement mutations use short D1 transactions, exact
+Directory, ACL, and mount mutations use short D1 transactions, exact
 expected revisions where caller reconciliation is required, immutable
 operation IDs, canonical request hashes, and durable receipts.
 
@@ -314,7 +323,7 @@ Callers handle races as follows:
 5. On `409`, re-read current state and make a new policy decision with a new
    idempotency key.
 
-GC is not part of these metadata races. Placement replacement does not delete
+GC is not part of these metadata races. Mount replacement does not delete
 existing complete file locations. Later reachability analysis and the fenced
 server-side lifecycle executor handles abandoned or unreachable provider
 objects after a grace period.

@@ -65,8 +65,9 @@ expiring intent ID, immutable version and location IDs, an existing or new
 stable file ID, an authorized driver, a content-addressed block-manifest key,
 and a separate random 192-bit provider storage name. Metadata identities are
 hyphenless UUIDv7 values; provider names never contain those IDs or virtual
-names. An omitted preferred driver selects the lowest active write priority
-allowed by both directory placement and token scope.
+names. An omitted preferred driver selects the directory's one effective mount
+driver. If supplied, the preferred driver must equal that effective driver and
+remain allowed by the token scope.
 
 The idempotency identity covers every request field. Repeating the same request
 returns the original allocation. Reusing the key with any changed field returns

@@ -37,6 +37,7 @@ mod vfs_envelopes;
 mod vfs_grants;
 mod vfs_identifiers;
 mod vfs_merkle;
+mod vfs_mounts;
 mod vfs_namespace_mutation;
 mod vfs_policy_management;
 mod vfs_provider_inventory;

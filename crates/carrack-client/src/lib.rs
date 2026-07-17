@@ -43,12 +43,12 @@ pub use admin::{
     DriverCredentialValidation, DriverRegistrationReceipt, DriverRegistrationValidation,
     DriverStateReceipt, DriverStateValidation, ManagementAccess, ManagementBreadcrumb,
     ManagementDirectory, ManagementDirectoryEntry, ManagementDirectoryEntryPage,
-    ManagementDirectoryIdentity, ManagementDriver, ManagementEvent, ManagementEventPage,
-    ManagementFilesystem, ManagementGroup, ManagementMembership, ManagementPrincipal,
-    ManagementSnapshot, ManagementToken, OperatorAccount, OperatorCredential, ProviderInventory,
-    ProviderInventoryStatus, QuotaLimits, QuotaReceipt, QuotaValidation, TokenAnnotationReceipt,
-    TokenAnnotationValidation, TransferAnalytics, TransferAnalyticsQuery, TransferAnalyticsRow,
-    TransferMetricRow, TransferMetrics,
+    ManagementDirectoryIdentity, ManagementDirectoryMount, ManagementDriver, ManagementEvent,
+    ManagementEventPage, ManagementFilesystem, ManagementGroup, ManagementMembership,
+    ManagementPrincipal, ManagementSnapshot, ManagementToken, OperatorAccount, OperatorCredential,
+    ProviderInventory, ProviderInventoryStatus, QuotaLimits, QuotaReceipt, QuotaValidation,
+    TokenAnnotationReceipt, TokenAnnotationValidation, TransferAnalytics, TransferAnalyticsQuery,
+    TransferAnalyticsRow, TransferMetricRow, TransferMetrics,
 };
 
 pub use download::{GetBytesResult, GetOptions, GetResult};

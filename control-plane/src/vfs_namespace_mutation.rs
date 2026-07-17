@@ -10,6 +10,7 @@ use worker::{
 use crate::{
     vfs_access,
     vfs_identifiers::new_uuid_v7_hex,
+    vfs_mounts,
     vfs_put_commit::{RootPlan, RootPlanResult, plan_entry_removal_roots, plan_entry_rename_roots},
     vfs_tokens::AuthenticatedVfsToken,
 };
@@ -164,6 +165,9 @@ pub(crate) async fn remove(
     if entry.kind == "directory" && !directory_is_empty(&database, subject_id).await? {
         return Response::error("VFS directory is not empty", 409);
     }
+    if entry.kind == "directory" && vfs_mounts::is_explicit(&database, subject_id).await? {
+        return Response::error("VFS mount point must be unmounted before removal", 409);
+    }
     let operation_id = new_uuid_v7_hex()?;
     let now = current_unix_seconds();
     let delete_after = (entry.kind == "file").then_some(now + DELETE_GRACE_SECONDS);
@@ -276,6 +280,18 @@ pub(crate) async fn rename(
     }
     .filter(|value| valid_identifier(value))
     .ok_or_else(|| worker::Error::RustError("VFS rename subject is invalid".to_owned()))?;
+    if !vfs_mounts::same_effective_driver(
+        &database,
+        source_directory_id,
+        &requested.destination_directory_id,
+    )
+    .await?
+    {
+        return Response::error("VFS rename cannot cross mounted drivers", 409);
+    }
+    if entry.kind == "directory" && vfs_mounts::is_explicit(&database, subject_id).await? {
+        return Response::error("VFS mount point cannot be renamed", 409);
+    }
     let operation_id = new_uuid_v7_hex()?;
     let now = current_unix_seconds();
     for _ in 0..MAXIMUM_REBASE_ATTEMPTS {

@@ -9,16 +9,17 @@ payload API. In one D1 batch it creates:
 - the filesystem and empty root directory;
 - the first user principal and root ACL grants;
 - a sealed root-directory key epoch, or an explicit plaintext epoch;
-- the environment-owned `r2-default` identity, without an active placement;
+- the environment-owned `r2-default` identity as the root's default mount;
 - an all-actions root administration token; and
 - an immutable bootstrap receipt and audit record.
 
 The default R2 identity is derived from the Worker environment and begins with
 the environment profile's 100 GiB physical-byte hard quota. The one-time
 environment provisioner creates its exact-bucket Cloudflare authority,
-validates and seals the derived S3 signing key, enables the driver, and creates
-a root placement only when the root policy is empty. A pre-existing nonempty
-policy is never silently merged. Operators may later replace the quota through
+validates and seals the derived S3 signing key and enables the driver. The
+disabled default mount exists before credentials so the virtual hierarchy has
+one stable backing identity, while namespace and payload mutations remain
+unavailable until the driver is enabled. Operators may later replace the quota through
 the same validated UI or `carrackctl` policy flow; environment reconciliation
 never resets an operator revision. The Cloudflare Worker stores only the token
 verifier and authenticated key envelope. It never stores a VFS bearer token or
@@ -63,9 +64,9 @@ The JSON request is strict and rejects unknown fields:
 `carrack-vfs-aes256gcm-hkdfsha256-v1`; the only alternative is the explicit
 `plaintext/v1` suite. `token_lifetime_seconds` defaults to 30 days and must be
 between one hour and 365 days. Dev and production select `r2-default`. The
-response does not imply that the initially disabled driver is a placement.
-Run the environment provisioner after bootstrap; credential, enablement, and
-placement remain separately validated operations even though the provisioner
+response identifies that initially disabled driver as the root default mount.
+Run the environment provisioner after bootstrap; credential and enablement
+remain separately validated operations even though the provisioner
 orchestrates them as one fail-fast setup workflow.
 
 Local conformance environments may explicitly provide both `local_driver_id`

@@ -49,7 +49,7 @@ or applying a partial response.
 1. `carrack` provides list, stat, mkdir, put, get, remove, and rename.
 2. `carrackctl` provides the redacted UI snapshot, directory inspection,
    typed driver/config/credential mutations, token annotation, ACL and
-   placement replacement, and attenuated token issue/revoke.
+   mount replacement, and attenuated token issue/revoke.
 3. Rust owns the native local and Aliyun complete-object adapters. Neither
    links to, launches, or calls OpenList.
 4. Direct downloads acquire a durable server read lease and explicitly release

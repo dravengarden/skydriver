@@ -144,7 +144,7 @@ export function hasBootstrappedVfs(filesystems) {
     return filesystems.length > 0;
 }
 
-export function desiredRootPlacements(policy, appendToNonempty = false) {
+export function desiredRootPlacements(policy) {
     if (!Number.isSafeInteger(policy?.placement_revision) || !Array.isArray(policy.placements)) {
         throw new Error("invalid root placement policy");
     }
@@ -153,12 +153,15 @@ export function desiredRootPlacements(policy, appendToNonempty = false) {
             typeof driverId !== "string" ||
             driverId.length === 0 ||
             !Number.isSafeInteger(priority) ||
-            priority < 0
+            priority !== 0
         ) {
             throw new Error("invalid root placement entry");
         }
         return { driverId, priority };
     });
+    if (existing.length > 1) {
+        throw new Error("root must have at most one effective driver");
+    }
     if (existing.some(({ driverId }) => driverId === DEFAULT_R2_DRIVER_ID)) {
         return { action: "present", placements: existing };
     }
@@ -168,20 +171,7 @@ export function desiredRootPlacements(policy, appendToNonempty = false) {
             placements: [{ driverId: DEFAULT_R2_DRIVER_ID, priority: 0 }],
         };
     }
-    if (!appendToNonempty) {
-        return { action: "preserve-nonempty-root", placements: existing };
-    }
-    const maximumPriority = Math.max(...existing.map(({ priority }) => priority));
-    if (maximumPriority > Number.MAX_SAFE_INTEGER - 10) {
-        throw new Error("root placement priority cannot be extended safely");
-    }
-    return {
-        action: "append-to-root",
-        placements: [
-            ...existing,
-            { driverId: DEFAULT_R2_DRIVER_ID, priority: maximumPriority + 10 },
-        ],
-    };
+    return { action: "preserve-other-default", placements: existing };
 }
 
 export function stableKey(prefix, value) {

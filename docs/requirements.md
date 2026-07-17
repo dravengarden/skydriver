@@ -62,8 +62,19 @@ This document is the normative product and correctness baseline. The key words
 - Multipart parts, encryption frames, verification blocks, HTTP ranges, and
   staging files MUST remain private transport units and MUST NOT become
   independently addressable VFS objects.
-- Different files in one directory MAY use different drivers. The authenticated
-  directory tree MUST remain independent of provider directory trees.
+- Every filesystem MUST have exactly one virtual root and one default backing
+  driver. Files directly beneath an unmounted path use that default.
+- A non-root directory MAY be an explicit driver mount point. Its complete
+  subtree MUST use that one driver, and a mounted subtree MUST NOT contain a
+  second mount point. Mount configuration MUST remain independent of provider
+  directory trees and provider object names.
+- Mount creation, replacement, or removal MUST require an empty target
+  directory and an exact mount revision. Carrack MUST NOT silently migrate,
+  copy, re-encrypt, or strand existing file locations when storage policy
+  changes.
+- A metadata-only rename or move whose source and destination resolve to
+  different effective drivers MUST fail like a cross-filesystem rename. It
+  MUST NOT weaken the complete-object contract by hiding a provider copy.
 
 ## Integrity and cryptography
 
@@ -214,16 +225,17 @@ This document is the normative product and correctness baseline. The key words
   explicitly reviewed rewrapping protocol; changing the operator password is
   never such a migration.
 
-## Quota and placement
+## Quota and mounts
 
 - A directory policy MAY set maximum single-file bytes, logical subtree bytes,
-  active file count, and allowed or preferred drivers.
-- A Put MUST satisfy every inherited ancestor quota and placement policy in the
-  same publication decision.
+  and active file count. Driver selection is the single effective mount driver,
+  not a per-file preference list.
+- A Put MUST satisfy every inherited ancestor quota and the exact effective
+  mount revision in the same publication decision.
 - A driver hard quota MUST include committed encoded bytes plus conservatively
   reserved in-flight bytes. A failed or expired intent MUST eventually release
   its reservation exactly once.
-- Quota and placement changes MUST be revisioned, validated, auditable, and
+- Quota and mount changes MUST be revisioned, validated, auditable, and
   immediately visible to both UI and management clients.
 - Quotas are safety limits, not billing promises. Provider-side quota
   exhaustion MUST remain a distinct diagnosable error.

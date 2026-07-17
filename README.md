@@ -2,9 +2,9 @@
 
 Carrack is a complete-object virtual filesystem. A file remains one complete
 object in exactly the same byte order at its storage driver; Carrack never
-splits, packs, merges, or stripes user files. Different files in one virtual
-directory may live on different drivers while the directory remains one
-authenticated Merkle tree.
+splits, packs, merges, or stripes user files. One virtual root has a default
+driver, while an empty child directory may become a non-recursive mount point
+whose complete subtree uses one other driver.
 
 The canonical implementation has three surfaces:
 
@@ -85,7 +85,7 @@ are internal. Transfer bounds tune the pipeline; they do not alter identity.
 
 `CARRACK_OPERATOR_ACCOUNT` identifies the non-secret operator account and
 `CARRACK_OPERATOR_CREDENTIAL` authorizes redacted UI-equivalent environment
-management. `CARRACK_VFS_TOKEN` separately authorizes scoped ACL, placement,
+management. `CARRACK_VFS_TOKEN` separately authorizes scoped ACL, mount,
 and child-token operations.
 
 ```bash
@@ -97,7 +97,7 @@ carrackctl directory <directory-id>
 carrackctl driver register aliyun-main \
   --kind aliyundrive-open/v2 --config-file ./aliyun-config.json --check
 carrackctl vfs acl show /releases
-carrackctl vfs placement show /releases
+carrackctl vfs mount show /releases
 carrackctl vfs token issue /releases \
   --action directory.list,content.read \
   --expires-at <unix-seconds> --idempotency-key release-reader-v1

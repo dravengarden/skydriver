@@ -351,10 +351,10 @@ unset CLOUDFLARE_TOKEN_FACTORY_API_TOKEN CARRACK_OPERATOR_ACCOUNT \
 ```
 
 Production additionally requires `CARRACK_PROVISION_PROD=1`. The preflight and
-apply commands first inspect the exact Carrack driver and root placement
-revisions. Before VFS bootstrap there is no placement policy, so production can
-initialize and enable `r2-default` without a VFS bearer; a later bootstrap still
-starts with an empty placement as an explicit authority boundary. If no signing credential exists, they find or create the deterministic
+apply commands first inspect the exact Carrack driver and root mount revision.
+Before VFS bootstrap there is no mount policy, so production can initialize and
+enable `r2-default` without a VFS bearer; a later bootstrap installs it as the
+root default. If no signing credential exists, they find or create the deterministic
 account-owned token `carrack-r2-default-<environment>`, require the exact
 `Workers R2 Storage Bucket Item Write` permission and the single bucket resource,
 derive the S3 secret as SHA-256 of the one-time token value, and write it only to
@@ -376,15 +376,9 @@ CARRACK_PROVISION_R2=1 CARRACK_RECOVER_R2_TOKEN=1 \
   dev --recover-existing-token
 ```
 
-The provisioner enables the driver and adds `r2-default:0` only when the root
-placement set is empty. If an existing root policy omits R2, it is preserved and
-the command warns. After reviewing that complete policy, explicitly opt into an
-append with:
-
-```bash
-CARRACK_PROVISION_R2=1 node control-plane/scripts/provision-default-r2.mjs \
-  dev --append-root-placement
-```
+The provisioner enables the driver and repairs only a legacy root with no
+effective driver. If an existing root uses another default, it is preserved and
+the command warns; Linux-like VFS semantics never append a second root driver.
 
 The console never asks for the environment-owned access key; it shows only
 readiness and permits normal state and quota controls. Additional R2 buckets

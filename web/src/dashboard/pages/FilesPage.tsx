@@ -511,9 +511,24 @@ export function FilesPage({
                         spacing={0.75}
                         sx={{ mt: 2, flexWrap: "wrap" }}
                     >
-                        {directory.data.placements.map((placement) => (
-                            <Chip key={placement} label={placement} size="small" color="info" />
-                        ))}
+                        <Chip
+                            label={`${
+                                directory.data.mount.relationship === "default"
+                                    ? "Default"
+                                    : directory.data.mount.relationship === "mount"
+                                      ? "Mounted"
+                                      : "Inherited"
+                            }: ${directory.data.mount.effective_driver_id}`}
+                            size="small"
+                            color={
+                                directory.data.mount.relationship === "mount" ? "primary" : "info"
+                            }
+                            variant={
+                                directory.data.mount.relationship === "inherited"
+                                    ? "outlined"
+                                    : "filled"
+                            }
+                        />
                         <Chip
                             label={directory.data.directory.crypto_suite}
                             size="small"

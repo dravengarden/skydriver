@@ -23,7 +23,7 @@ The current implemented V2 slice includes:
   Remove, and metadata-only Rename/Move, exercised against the real local
   Worker and `local-filesystem/v2` driver; and
 - revision-consistent directory reads, Merkle-linked child creation,
-  attenuated token lifecycle, direct ACL replacement, and placement replace-all
+  attenuated token lifecycle, direct ACL replacement, and mount replacement
   through the Worker, canonical Rust client, and CLIs; and
 - a private local namespace and transfer catalog keyed by authenticated roots,
   bounded concurrent prefetch, durable verified nodes and range journals,
@@ -136,8 +136,18 @@ for each location. Drivers with stable native identifiers, such as cloud-drive
 file IDs, retain those identifiers in their typed locator and use them for
 subsequent operations.
 
-One directory may contain files on different drivers. One file version may
-also have several complete locations on independent drivers.
+Every filesystem has one virtual root and one default backing driver. An empty
+non-root directory may become an explicit mount point for one other driver;
+that complete subtree uses the mounted driver and cannot contain another mount
+point. Provider paths remain unrelated to the virtual hierarchy. A file
+version may retain several complete historical or replicated locations, but
+new publication uses exactly the effective driver of its directory.
+
+Mount changes are empty-directory operations. Carrack does not silently move
+or re-encrypt existing bytes when storage policy changes. Metadata-only rename
+across different effective drivers fails with a cross-filesystem conflict;
+callers that want a migration must explicitly copy, verify, publish, and then
+remove through normal VFS operations.
 
 ### Snapshot and channel
 

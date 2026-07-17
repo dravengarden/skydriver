@@ -1,6 +1,6 @@
 ---
 name: carrack-admin
-description: Inspect Carrack drivers, virtual filesystems, collections, files, token scopes, ACLs, placements, and management state through the validated Carrack CLI. Use when an agent must audit Carrack, explain effective access or storage, prepare a configuration change, apply a supported VFS policy mutation, verify an external UI or CLI change, or recover from a revision conflict without exposing credentials.
+description: Inspect Carrack drivers, virtual filesystems, directories, files, token scopes, ACLs, mounts, and management state through the validated Carrack CLI. Use when an agent must audit Carrack, explain effective access or storage, prepare a configuration change, apply a supported VFS policy mutation, verify an external UI or CLI change, or recover from a revision conflict without exposing credentials.
 ---
 
 # Carrack Admin
@@ -38,8 +38,8 @@ is only for filesystem data operations.
      --control-url "$CARRACK_CONTROL_URL" --format json
    ```
 
-5. Read the exact ACL or placement revision with `carrackctl vfs acl show`
-   or `carrackctl vfs placement show` before a policy mutation.
+5. Read the exact ACL or mount revision with `carrackctl vfs acl show`
+   or `carrackctl vfs mount show` before a policy mutation.
 6. State the intended complete desired state and affected resource IDs.
 
 Read [references/commands.md](references/commands.md) when selecting a command
@@ -67,7 +67,7 @@ or handling a failure.
 
 For token annotation, typed driver registration, write-only driver credential,
 driver state, directory or driver quota, principal/group lifecycle, group
-membership, ACL, placement, child-token issue, and child-token revocation:
+membership, ACL, mount, child-token issue, and child-token revocation:
 
 1. Read current state and its exact revision.
 2. Build the complete desired replacement locally.
@@ -78,6 +78,12 @@ membership, ACL, placement, child-token issue, and child-token revocation:
 6. Verify the returned schema, resource identity, final revision, policy, and
    durable state.
 7. Re-read effective state with the matching `carrackctl` read command.
+
+Mounts follow the Linux-like VFS model: root has one default driver, an empty
+non-root directory may mount one different driver, and nested mounts are
+forbidden. Use `vfs mount set` to select a driver and `vfs mount inherit` to
+remove an explicit mount. Neither command migrates data; a non-empty target or
+cross-driver metadata rename is a conflict, not a reason to bypass validation.
 
 For a token label or operator note, run `carrackctl token annotate` with
 `--check` first. Review the normalized label, note, exact metadata revision,

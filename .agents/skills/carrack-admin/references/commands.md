@@ -5,7 +5,7 @@
 | Surface | Environment variable | Authority |
 |---|---|---|
 | `carrackctl snapshot`, `metrics`, `analytics`, `watch`, `directory`, `driver`, `quota`, `token annotate` | `CARRACK_OPERATOR_ACCOUNT`, `CARRACK_OPERATOR_CREDENTIAL` | Redacted environment management |
-| `carrackctl vfs acl`, `vfs placement`, `vfs token` | `CARRACK_VFS_TOKEN` | Explicit token actions and directory scope |
+| `carrackctl vfs acl`, `vfs mount`, `vfs token` | `CARRACK_VFS_TOKEN` | Explicit token actions and directory scope |
 
 `CARRACK_OPERATOR_ACCOUNT` is a canonical non-secret lowercase identifier.
 Both credentials are canonical unpadded base64url values encoding 32 bytes;
@@ -39,7 +39,7 @@ carrackctl inventory --control-url "$CARRACK_CONTROL_URL" --format json
 carrackctl inventory --refresh-driver "$driver_id" \
   --control-url "$CARRACK_CONTROL_URL" --format json
 carrackctl vfs acl show /collection --control-url "$CARRACK_CONTROL_URL" --format json
-carrackctl vfs placement show /collection --control-url "$CARRACK_CONTROL_URL" --format json
+carrackctl vfs mount show /collection --control-url "$CARRACK_CONTROL_URL" --format json
 ```
 
 The admin snapshot contains only redacted driver configuration and non-secret
@@ -272,19 +272,31 @@ carrackctl vfs acl replace /collection \
 Actions are a comma-separated complete replacement. Omit `--action` to clear
 that principal's direct grants.
 
-Replace the complete placement set:
+Mount a driver at one empty directory after reading its mount revision:
 
 ```bash
-carrackctl vfs placement replace /collection \
+carrackctl vfs mount set /collection \
   --control-url "$CARRACK_CONTROL_URL" \
-  --placement local-main:0,archive-backup:10 \
+  --driver local-main \
   --expected-revision "$placement_revision" \
   --idempotency-key "$idempotency_key" \
   --format json
 ```
 
-Priorities and driver IDs must each be unique. Every driver must be enabled and
-registered. The token must have unscoped `driver.manage` authority.
+Remove an explicit mount by inheriting the parent driver:
+
+```bash
+carrackctl vfs mount inherit /collection \
+  --control-url "$CARRACK_CONTROL_URL" \
+  --expected-revision "$placement_revision" \
+  --idempotency-key "$idempotency_key" \
+  --format json
+```
+
+The selected driver must be enabled and registered. The target must be empty
+when its effective driver changes, nested mounts are rejected, and the token
+must have unscoped `driver.manage` authority. The root uses `mount set` to
+change its default and cannot use `mount inherit`.
 
 Issue an attenuated child token:
 

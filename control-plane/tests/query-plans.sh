@@ -209,6 +209,16 @@ assert_uses_index group-membership-principal vfs_group_members_by_principal_grou
    WHERE principal_id = '00000000000000000000000000000001'
    ORDER BY group_id"
 
+assert_uses_index directory-effective-driver unique_active_vfs_directory_driver_priority \
+  "SELECT driver_id FROM vfs_directory_drivers
+   WHERE directory_id = '00000000000000000000000000000001'
+     AND state = 'active'"
+
+assert_uses_index driver-mounts idx_vfs_directory_mounts_driver \
+  "SELECT directory_id FROM vfs_directory_mounts
+   WHERE driver_id = 'r2-default'
+   ORDER BY directory_id"
+
 assert_uses_index catalog-outbox-claim idx_vfs_catalog_outbox_claimable \
   "SELECT outbox.revision_id FROM vfs_catalog_outbox AS outbox
        INDEXED BY idx_vfs_catalog_outbox_claimable

@@ -66,7 +66,7 @@ and indexes; collection adds no request, raw-event row, or correctness edge.
 ## Logical and physical model
 
 A directory is simultaneously a named collection, an authorization subtree,
-an encryption boundary, a quota boundary, and a placement-policy boundary.
+an encryption boundary, a quota boundary, and an effective-driver mount boundary.
 Its stable UUIDv7 identity is independent of its path.
 
 A file has a stable UUIDv7 identity. Every content change creates an immutable

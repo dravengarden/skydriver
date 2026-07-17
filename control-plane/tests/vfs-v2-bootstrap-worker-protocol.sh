@@ -17,8 +17,8 @@ port=${CARRACK_VFS_BOOTSTRAP_TEST_PORT:-8793}
 server_pid=
 
 cleanup() {
-  if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
-    kill "$server_pid" 2>/dev/null || true
+  if [[ -n "$server_pid" ]]; then
+    kill -- "-$server_pid" 2>/dev/null || kill "$server_pid" 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
   fi
   rm -rf "$state_directory"
@@ -48,7 +48,7 @@ admin_token=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA
 operator_account=draven@carrack-local
 export CARRACK_OPERATOR_ACCOUNT="$operator_account"
 
-"${wrangler[@]}" dev \
+setsid "${wrangler[@]}" dev \
   --local \
   --persist-to "$state_directory" \
   --port "$port" \

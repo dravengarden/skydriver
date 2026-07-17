@@ -6,7 +6,9 @@ use worker::{D1Database, Date, Env, Request, Response, Result, wasm_bindgen::JsV
 
 use carrack_sdk_core::VFS_ACTIONS as ACTIONS;
 
-use crate::{vfs_access, vfs_identifiers::new_uuid_v7_hex, vfs_tokens::AuthenticatedVfsToken};
+use crate::{
+    vfs_access, vfs_identifiers::new_uuid_v7_hex, vfs_mounts, vfs_tokens::AuthenticatedVfsToken,
+};
 
 const ACL_SCHEMA: &str = "carrack.vfs.acl.v1";
 const PLACEMENT_SCHEMA: &str = "carrack.vfs.placements.v1";
@@ -71,6 +73,7 @@ struct PlacementView {
     driver_revision: u64,
     write_priority: u64,
     state: String,
+    mount_kind: String,
 }
 
 #[derive(Serialize)]
@@ -328,9 +331,13 @@ pub(crate) async fn list_placements(
         .prepare(
             "SELECT placement.driver_id, driver.kind AS driver_kind,
                 driver.revision AS driver_revision, placement.write_priority,
-                placement.state
+                placement.state,
+                COALESCE(mount.kind, 'inherited') AS mount_kind
          FROM vfs_directory_drivers AS placement
          JOIN driver_instances AS driver ON driver.id = placement.driver_id
+         LEFT JOIN vfs_directory_mounts AS mount
+           ON mount.directory_id = placement.directory_id
+          AND mount.driver_id = placement.driver_id
          WHERE placement.directory_id = ?1
          ORDER BY placement.write_priority, placement.driver_id",
         )
@@ -404,6 +411,16 @@ pub(crate) async fn replace_placements(
     if policy.placement_revision != requested.expected_placement_revision {
         return Response::error("VFS placement revision changed", 409);
     }
+    let placement = &requested.placements[0];
+    let Some(mount_relationship) =
+        vfs_mounts::desired(&database, directory_id, &placement.driver_id).await?
+    else {
+        return Response::error("VFS mount would be nested or has no parent backing", 409);
+    };
+    if !vfs_mounts::change_is_safe(&database, directory_id, &placement.driver_id).await? {
+        return Response::error("VFS mount target must be empty before changing driver", 409);
+    }
+    let mount_kind = mount_relationship.stored_kind();
     let old_count = placement_count(&database, directory_id).await?;
     let final_revision = policy.placement_revision
         + old_count
@@ -426,6 +443,11 @@ pub(crate) async fn replace_placements(
     )?];
     statements.push(
         database
+            .prepare("DELETE FROM vfs_directory_mounts WHERE directory_id = ?1")
+            .bind(&[JsValue::from_str(directory_id)])?,
+    );
+    statements.push(
+        database
             .prepare("DELETE FROM vfs_directory_drivers WHERE directory_id = ?1")
             .bind(&[JsValue::from_str(directory_id)])?,
     );
@@ -441,6 +463,23 @@ pub(crate) async fn replace_placements(
                     JsValue::from_str(directory_id),
                     JsValue::from_str(&placement.driver_id),
                     number_binding(placement.write_priority),
+                    JsValue::from_str(&token.principal_id),
+                    number_binding(now),
+                ])?,
+        );
+    }
+    if let Some(kind) = mount_kind {
+        statements.push(
+            database
+                .prepare(
+                    "INSERT INTO vfs_directory_mounts (
+                         directory_id, driver_id, kind, created_by, created_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                )
+                .bind(&[
+                    JsValue::from_str(directory_id),
+                    JsValue::from_str(&placement.driver_id),
+                    JsValue::from_str(kind),
                     JsValue::from_str(&token.principal_id),
                     number_binding(now),
                 ])?,
@@ -683,8 +722,7 @@ fn role_actions(role: &str) -> Option<&'static [&'static str]> {
 }
 
 fn valid_placements_request(request: &ReplacePlacementsRequest) -> bool {
-    if request.placements.is_empty()
-        || request.placements.len() > 256
+    if request.placements.len() != 1
         || request.expected_placement_revision == 0
         || !valid_string(&request.idempotency_key, MAXIMUM_IDEMPOTENCY_BYTES)
     {
@@ -694,7 +732,7 @@ fn valid_placements_request(request: &ReplacePlacementsRequest) -> bool {
     let mut priorities = BTreeSet::new();
     request.placements.iter().all(|placement| {
         valid_string(&placement.driver_id, MAXIMUM_DRIVER_ID_BYTES)
-            && i64::try_from(placement.write_priority).is_ok()
+            && placement.write_priority == 0
             && drivers.insert(&placement.driver_id)
             && priorities.insert(placement.write_priority)
     })

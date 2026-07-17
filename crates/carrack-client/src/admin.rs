@@ -655,6 +655,15 @@ pub struct ManagementBreadcrumb {
     pub depth: u64,
 }
 
+/// One directory's materialized effective driver and Linux-like relationship.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(missing_docs, reason = "wire fields preserve management schema names")]
+pub struct ManagementDirectoryMount {
+    pub effective_driver_id: String,
+    pub relationship: String,
+}
+
 /// One complete child entry in a management directory page.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -688,6 +697,7 @@ pub struct ManagementDirectory {
     pub observed_at: u64,
     pub directory: ManagementDirectoryIdentity,
     pub breadcrumbs: Vec<ManagementBreadcrumb>,
+    pub mount: ManagementDirectoryMount,
     pub placements: Vec<String>,
     pub entries: Vec<ManagementDirectoryEntry>,
 }

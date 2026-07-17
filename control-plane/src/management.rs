@@ -343,6 +343,12 @@ struct PlacementRow {
     driver_id: String,
 }
 
+#[derive(Deserialize, Serialize)]
+struct DirectoryMountView {
+    effective_driver_id: String,
+    relationship: String,
+}
+
 #[derive(Deserialize)]
 struct EntryRow {
     name: String,
@@ -379,6 +385,7 @@ struct DirectoryResponse {
     observed_at: u64,
     directory: DirectoryView,
     breadcrumbs: Vec<BreadcrumbRow>,
+    mount: DirectoryMountView,
     placements: Vec<String>,
     entries: Vec<EntryView>,
 }
@@ -1122,19 +1129,46 @@ pub(crate) async fn directory(
         "/".clone_into(&mut root.name);
     }
 
-    let placements = database
+    let placement_rows = database
         .prepare(
-            r"SELECT driver_id FROM vfs_directory_drivers
-             WHERE directory_id = ?1 AND state = 'active'
-             ORDER BY write_priority, driver_id",
+            r"SELECT placement.driver_id
+             FROM vfs_directory_drivers AS placement
+             WHERE placement.directory_id = ?1 AND placement.state = 'active'
+             ORDER BY placement.write_priority, placement.driver_id",
         )
         .bind(&binding)?
         .all()
         .await?
-        .results::<PlacementRow>()?
-        .into_iter()
-        .map(|row| row.driver_id)
+        .results::<PlacementRow>()?;
+    let placements = placement_rows
+        .iter()
+        .map(|row| row.driver_id.clone())
         .collect();
+    let Some(effective) = placement_rows.first() else {
+        return Response::error("directory has no effective driver", 409);
+    };
+    if placement_rows.len() != 1 {
+        return Response::error("directory has multiple effective drivers", 409);
+    }
+    let mount = database
+        .prepare(
+            r"SELECT placement.driver_id AS effective_driver_id,
+                    COALESCE(mount.kind, 'inherited') AS relationship
+             FROM vfs_directory_drivers AS placement
+             LEFT JOIN vfs_directory_mounts AS mount
+               ON mount.directory_id = placement.directory_id
+              AND mount.driver_id = placement.driver_id
+             WHERE placement.directory_id = ?1
+               AND placement.driver_id = ?2
+               AND placement.state = 'active'",
+        )
+        .bind(&[
+            JsValue::from_str(directory_id),
+            JsValue::from_str(&effective.driver_id),
+        ])?
+        .first::<DirectoryMountView>(None)
+        .await?
+        .ok_or_else(|| worker::Error::RustError("directory mount disappeared".to_owned()))?;
     let entry_rows = if include_entries {
         database
             .prepare(
@@ -1196,6 +1230,7 @@ pub(crate) async fn directory(
             max_file_count: row.max_file_count,
         },
         breadcrumbs,
+        mount,
         placements,
         entries,
     })

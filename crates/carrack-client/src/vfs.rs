@@ -304,7 +304,7 @@ pub struct AclPolicy {
 pub struct Placement {
     /// Registered driver identity.
     pub driver_id: String,
-    /// Lower values receive writes first.
+    /// Reserved mount priority. V1 accepts exactly zero.
     pub write_priority: u64,
 }
 
@@ -318,10 +318,12 @@ pub struct PlacementView {
     pub driver_kind: String,
     /// Configuration and credential revision.
     pub driver_revision: u64,
-    /// Lower values receive writes first.
+    /// Reserved mount priority. V1 is always zero.
     pub write_priority: u64,
     /// Placement lifecycle state.
     pub state: String,
+    /// `default`, `mount`, or `inherited` backing relationship.
+    pub mount_kind: String,
 }
 
 /// One complete directory placement policy.
@@ -334,7 +336,7 @@ pub struct PlacementPolicy {
     pub directory_id: String,
     /// Optimistic placement revision.
     pub placement_revision: u64,
-    /// Ordered active placements.
+    /// The one materialized effective driver.
     pub placements: Vec<PlacementView>,
 }
 
@@ -1068,7 +1070,7 @@ impl VfsClient {
         Ok(receipt)
     }
 
-    /// Reads the ordered driver placement policy for one directory path.
+    /// Reads the effective driver and mount relationship for one directory path.
     ///
     /// # Errors
     ///
@@ -1090,7 +1092,20 @@ impl VfsClient {
         Ok(policy)
     }
 
-    /// Atomically replaces a directory's complete driver placement policy.
+    /// Reads the effective Linux-like mount state for one directory path.
+    ///
+    /// This is the preferred name for [`Self::placements`]. The placement wire
+    /// schema remains stable while clients migrate to the one-driver mount
+    /// vocabulary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid path, insufficient authority, or malformed policy.
+    pub async fn mount(&self, path: &str) -> Result<PlacementPolicy, Error> {
+        self.placements(path).await
+    }
+
+    /// Atomically sets the root default or one empty-directory mount.
     ///
     /// # Errors
     ///
@@ -1129,6 +1144,70 @@ impl VfsClient {
             &expected_policy,
         )?;
         Ok(receipt)
+    }
+
+    /// Sets the root default driver or mounts one driver at an empty directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid driver, non-empty target, nested mount,
+    /// insufficient authority, or revision conflict.
+    pub async fn set_mount(
+        &self,
+        path: &str,
+        driver_id: &str,
+        expected_placement_revision: u64,
+        idempotency_key: &str,
+    ) -> Result<PolicyMutationReceipt, Error> {
+        self.replace_placements(
+            path,
+            vec![Placement {
+                driver_id: driver_id.to_owned(),
+                write_priority: 0,
+            }],
+            expected_placement_revision,
+            idempotency_key,
+        )
+        .await
+    }
+
+    /// Removes one explicit non-root mount by inheriting its parent's driver.
+    ///
+    /// The server still performs the authoritative empty-directory, nesting,
+    /// authorization, and optimistic-revision checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for the root path, invalid paths, unavailable parent
+    /// policy, insufficient authority, or revision conflict.
+    pub async fn inherit_mount(
+        &self,
+        path: &str,
+        expected_placement_revision: u64,
+        idempotency_key: &str,
+    ) -> Result<PolicyMutationReceipt, Error> {
+        let mut components = canonical_components(path)?;
+        if components.pop().is_none() {
+            return Err(Error::Rejected {
+                status: 400,
+                message: "the VFS root default driver cannot be inherited".to_owned(),
+            });
+        }
+        let parent_path = canonical_path(&components);
+        let parent = self.mount(&parent_path).await?;
+        let driver_id = parent
+            .placements
+            .first()
+            .ok_or_else(|| Error::InvalidResponse("parent mount is missing".to_owned()))?
+            .driver_id
+            .clone();
+        self.set_mount(
+            path,
+            &driver_id,
+            expected_placement_revision,
+            idempotency_key,
+        )
+        .await
     }
 
     /// Issues a same-principal child token that can only narrow this token.
@@ -1481,7 +1560,7 @@ fn validate_placement_policy(policy: &PlacementPolicy, directory_id: &str) -> Re
     if policy.schema != "carrack.vfs.placements.v1"
         || policy.directory_id != directory_id
         || policy.placement_revision == 0
-        || policy.placements.is_empty()
+        || policy.placements.len() != 1
     {
         return Err(Error::InvalidResponse(
             "invalid VFS placement policy".to_owned(),
@@ -1492,8 +1571,12 @@ fn validate_placement_policy(policy: &PlacementPolicy, directory_id: &str) -> Re
         if !valid_bounded_string(&placement.driver_id, MAXIMUM_DRIVER_ID_BYTES)
             || carrack_driver_contract::DriverKind::parse(&placement.driver_kind).is_none()
             || placement.driver_revision == 0
-            || placement.write_priority > i64::MAX as u64
+            || placement.write_priority != 0
             || placement.state != "active"
+            || !matches!(
+                placement.mount_kind.as_str(),
+                "default" | "mount" | "inherited"
+            )
         {
             return Err(Error::InvalidResponse(
                 "invalid VFS placement identity".to_owned(),
@@ -1635,11 +1718,10 @@ fn canonicalize_placements(placements: &mut [Placement]) -> Result<(), Error> {
         .iter()
         .map(|placement| placement.write_priority)
         .collect::<BTreeSet<_>>();
-    if placements.is_empty()
-        || placements.len() > 256
+    if placements.len() != 1
         || placements.iter().any(|placement| {
             !valid_bounded_string(&placement.driver_id, MAXIMUM_DRIVER_ID_BYTES)
-                || placement.write_priority > i64::MAX as u64
+                || placement.write_priority != 0
         })
         || unique_drivers.len() != placements.len()
         || unique_priorities.len() != placements.len()

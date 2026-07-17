@@ -177,7 +177,7 @@ enum ManagementCommand {
         #[command(subcommand)]
         command: QuotaCommand,
     },
-    /// Manage VFS ACLs, placements, and scoped access tokens with a root VFS token.
+    /// Manage VFS ACLs, mounts, and scoped access tokens with a root VFS token.
     Vfs {
         #[command(subcommand)]
         command: VfsManagementCommand,
@@ -423,10 +423,11 @@ enum VfsManagementCommand {
         #[command(subcommand)]
         command: VfsAclCommand,
     },
-    /// Read or replace one directory's complete driver placement set.
-    Placement {
+    /// Inspect or change the effective driver mounted at a directory.
+    #[command(alias = "placement")]
+    Mount {
         #[command(subcommand)]
-        command: VfsPlacementCommand,
+        command: VfsMountCommand,
     },
     /// Issue or revoke a narrowed filesystem token.
     Token {
@@ -470,14 +471,37 @@ enum VfsAclCommand {
 }
 
 #[derive(Debug, Subcommand)]
-enum VfsPlacementCommand {
-    /// Show the complete ordered placement policy and optimistic revision.
+enum VfsMountCommand {
+    /// Show the effective driver, relationship, and optimistic revision.
     Show {
         path: String,
         #[arg(long = "format", value_enum, default_value_t = Output::Json)]
         output: Output,
     },
-    /// Replace the complete placement set using `DRIVER_ID:PRIORITY` values.
+    /// Set the root default or mount a driver at one empty non-root directory.
+    Set {
+        path: String,
+        #[arg(long)]
+        driver: String,
+        #[arg(long)]
+        expected_revision: u64,
+        #[arg(long)]
+        idempotency_key: String,
+        #[arg(long = "format", value_enum, default_value_t = Output::Json)]
+        output: Output,
+    },
+    /// Remove an explicit mount and inherit the parent directory's driver.
+    Inherit {
+        path: String,
+        #[arg(long)]
+        expected_revision: u64,
+        #[arg(long)]
+        idempotency_key: String,
+        #[arg(long = "format", value_enum, default_value_t = Output::Json)]
+        output: Output,
+    },
+    /// Legacy replace-all spelling retained for automation migration.
+    #[command(hide = true)]
     Replace {
         path: String,
         #[arg(long = "placement", value_delimiter = ',', num_args = 1..)]
@@ -1456,11 +1480,38 @@ async fn run_vfs_management_command(
                 write_json(output, &receipt)?;
             }
         },
-        VfsManagementCommand::Placement { command } => match command {
-            VfsPlacementCommand::Show { path, output } => {
-                write_json(output, &client.placements(&path).await?)?;
+        VfsManagementCommand::Mount { command } => match command {
+            VfsMountCommand::Show { path, output } => {
+                write_json(output, &client.mount(&path).await?)?;
             }
-            VfsPlacementCommand::Replace {
+            VfsMountCommand::Set {
+                path,
+                driver,
+                expected_revision,
+                idempotency_key,
+                output,
+            } => {
+                write_json(
+                    output,
+                    &client
+                        .set_mount(&path, &driver, expected_revision, &idempotency_key)
+                        .await?,
+                )?;
+            }
+            VfsMountCommand::Inherit {
+                path,
+                expected_revision,
+                idempotency_key,
+                output,
+            } => {
+                write_json(
+                    output,
+                    &client
+                        .inherit_mount(&path, expected_revision, &idempotency_key)
+                        .await?,
+                )?;
+            }
+            VfsMountCommand::Replace {
                 path,
                 placements,
                 expected_revision,

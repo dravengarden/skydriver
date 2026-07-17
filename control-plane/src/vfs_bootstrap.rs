@@ -388,6 +388,20 @@ fn bootstrap_statements(
                     number_binding(now),
                 ])?,
         );
+        statements.push(
+            database
+                .prepare(
+                    "INSERT INTO vfs_directory_mounts (
+                         directory_id, driver_id, kind, created_by, created_at
+                     ) VALUES (?1, ?2, 'default', ?3, ?4)",
+                )
+                .bind(&[
+                    JsValue::from_str(root_directory_id),
+                    JsValue::from_str(&driver.id),
+                    JsValue::from_str(principal_id),
+                    number_binding(now),
+                ])?,
+        );
     }
 
     for action in ACTIONS {
@@ -636,7 +650,7 @@ async fn resolve_driver(
                 kind: DriverKind::R2V1.as_str(),
                 config_json: serde_json::to_string(&config)?,
                 create: false,
-                place: false,
+                place: true,
             }))
         }
         _ => Ok(None),

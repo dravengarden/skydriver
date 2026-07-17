@@ -15,8 +15,8 @@ port=${CARRACK_VFS_TEST_PORT:-8792}
 server_pid=
 
 cleanup() {
-  if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
-    kill "$server_pid" 2>/dev/null || true
+  if [[ -n "$server_pid" ]]; then
+    kill -- "-$server_pid" 2>/dev/null || kill "$server_pid" 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
   fi
   rm -rf "$state_directory"
@@ -140,7 +140,7 @@ printf '%s' "$manifest_hex" | xxd -r -p >"$state_directory/block-manifest.bin"
     WHERE id IN ('$token_id_1', '$token_id_2');
   " >/dev/null
 
-"${wrangler[@]}" dev \
+setsid "${wrangler[@]}" dev \
   --local \
   --persist-to "$state_directory" \
   --port "$port" \

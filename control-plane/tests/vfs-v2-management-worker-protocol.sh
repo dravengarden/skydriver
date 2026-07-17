@@ -17,8 +17,8 @@ port=${CARRACK_VFS_MANAGEMENT_TEST_PORT:-8794}
 server_pid=
 
 cleanup() {
-  if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
-    kill "$server_pid" 2>/dev/null || true
+  if [[ -n "$server_pid" ]]; then
+    kill -- "-$server_pid" 2>/dev/null || kill "$server_pid" 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
   fi
   rm -rf "$state_directory"
@@ -56,12 +56,21 @@ wrangler=(
     3600, 'driver-phase-test', 'token-phase-test', 'directory-phase-test', 'download',
     10, 10485760, 10000, 20000, 0, 10, 2000, 3000, 10000, 4000, 10, 3600
   )" >/dev/null
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local \
+  --persist-to "$state_directory" \
+  --command "INSERT INTO driver_instances (
+    id, kind, config_json, enabled, revision, created_at, updated_at
+  ) VALUES (
+    'local-secondary', 'local-filesystem/v2',
+    json_object('root', '$state_directory/provider-secondary'), 1, 1, 1, 1
+  )" >/dev/null
 
 admin_token=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA
 operator_account=draven
 export CARRACK_OPERATOR_ACCOUNT="$operator_account"
 
-"${wrangler[@]}" dev \
+setsid "${wrangler[@]}" dev \
   --local \
   --persist-to "$state_directory" \
   --port "$port" \
@@ -264,6 +273,8 @@ management_directory=$(curl --silent --show-error --fail-with-body \
   "$base_url/api/admin/directories/$root_directory_id?entries=false")
 [[ "$(jq -r '.schema' <<<"$management_directory")" == carrack.management.directory.v1 ]]
 [[ "$(jq -r '.entries | length' <<<"$management_directory")" == 0 ]]
+[[ "$(jq -r '.mount.relationship' <<<"$management_directory")" == default ]]
+[[ "$(jq -r '.mount.effective_driver_id' <<<"$management_directory")" == local-main ]]
 management_revision=$(jq -r '.directory.revision' <<<"$management_directory")
 management_page_one=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" \
@@ -328,6 +339,9 @@ placements=$(curl --silent --show-error --fail-with-body \
   -H "$root_authorization" \
   "$base_url/api/v2/directories/$created_directory_id/placements")
 [[ "$(jq -r '.schema' <<<"$placements")" == carrack.vfs.placements.v1 ]]
+[[ "$(jq -r '.placements | length' <<<"$placements")" == 1 ]]
+[[ "$(jq -r '.placements[0].driver_id' <<<"$placements")" == local-main ]]
+[[ "$(jq -r '.placements[0].mount_kind' <<<"$placements")" == inherited ]]
 placement_revision=$(jq -r '.placement_revision' <<<"$placements")
 placement_replace_request=$(jq -cn \
   --argjson expected "$placement_revision" \
@@ -350,6 +364,80 @@ stale_placement_status=$(curl --silent --output /dev/null --write-out '%{http_co
   --data "$(jq '.idempotency_key = "placement-stale-v1"' <<<"$placement_replace_request")" \
   "$base_url/api/v2/directories/$created_directory_id/placements/replace")
 [[ "$stale_placement_status" == 409 ]]
+
+mount_directory=$(curl --silent --show-error --fail-with-body \
+  -H "$root_authorization" -H "$json" \
+  --data '{"name":"secondary","idempotency_key":"mkdir-secondary-mount-v1"}' \
+  "$base_url/api/v2/directories/$root_directory_id/children")
+mount_directory_id=$(jq -r '.directory_id' <<<"$mount_directory")
+mount_before=$(curl --silent --show-error --fail-with-body \
+  -H "$root_authorization" \
+  "$base_url/api/v2/directories/$mount_directory_id/placements")
+mount_revision=$(jq -r '.placement_revision' <<<"$mount_before")
+mount_request=$(jq -cn --argjson expected "$mount_revision" '{
+  placements: [{driver_id: "local-secondary", write_priority: 0}],
+  expected_placement_revision: $expected,
+  idempotency_key: "mount-secondary-v1"
+}')
+curl --silent --show-error --fail-with-body \
+  -H "$root_authorization" -H "$json" --data "$mount_request" \
+  "$base_url/api/v2/directories/$mount_directory_id/placements/replace" >/dev/null
+mount_after=$(curl --silent --show-error --fail-with-body \
+  -H "$root_authorization" \
+  "$base_url/api/v2/directories/$mount_directory_id/placements")
+[[ "$(jq -r '.placements[0].driver_id' <<<"$mount_after")" == local-secondary ]]
+[[ "$(jq -r '.placements[0].mount_kind' <<<"$mount_after")" == mount ]]
+
+nested_directory=$(curl --silent --show-error --fail-with-body \
+  -H "$root_authorization" -H "$json" \
+  --data '{"name":"nested","idempotency_key":"mkdir-secondary-nested-v1"}' \
+  "$base_url/api/v2/directories/$mount_directory_id/children")
+nested_directory_id=$(jq -r '.directory_id' <<<"$nested_directory")
+nested_policy=$(curl --silent --show-error --fail-with-body \
+  -H "$root_authorization" \
+  "$base_url/api/v2/directories/$nested_directory_id/placements")
+[[ "$(jq -r '.placements[0].driver_id' <<<"$nested_policy")" == local-secondary ]]
+[[ "$(jq -r '.placements[0].mount_kind' <<<"$nested_policy")" == inherited ]]
+nested_mount_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$root_authorization" -H "$json" \
+  --data "$(jq -cn --argjson expected "$(jq -r '.placement_revision' <<<"$nested_policy")" '{
+    placements: [{driver_id: "local-main", write_priority: 0}],
+    expected_placement_revision: $expected,
+    idempotency_key: "reject-nested-mount-v1"
+  }')" \
+  "$base_url/api/v2/directories/$nested_directory_id/placements/replace")
+[[ "$nested_mount_status" == 409 ]]
+
+nonempty_unmount_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$root_authorization" -H "$json" \
+  --data "$(jq -cn --argjson expected "$(jq -r '.placement_revision' <<<"$mount_after")" '{
+    placements: [{driver_id: "local-main", write_priority: 0}],
+    expected_placement_revision: $expected,
+    idempotency_key: "reject-nonempty-unmount-v1"
+  }')" \
+  "$base_url/api/v2/directories/$mount_directory_id/placements/replace")
+[[ "$nonempty_unmount_status" == 409 ]]
+
+cross_driver_source=$(curl --silent --show-error --fail-with-body \
+  -H "$root_authorization" -H "$json" \
+  --data '{"name":"cross-source","idempotency_key":"mkdir-cross-source-v1"}' \
+  "$base_url/api/v2/directories/$root_directory_id/children")
+cross_driver_source_id=$(jq -r '.directory_id' <<<"$cross_driver_source")
+cross_driver_source_revision=$(curl --silent --show-error --fail-with-body \
+  -H "$root_authorization" \
+  "$base_url/api/v2/directories/$root_directory_id/entries" | \
+  jq -r '.entries[] | select(.name == "cross-source").revision')
+cross_driver_rename_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$root_authorization" -H "$json" \
+  --data "$(jq -cn --argjson revision "$cross_driver_source_revision" --arg destination "$mount_directory_id" '{
+    source_name: "cross-source",
+    expected_source_revision: $revision,
+    destination_directory_id: $destination,
+    destination_name: "cross-source",
+    idempotency_key: "reject-cross-driver-rename-v1"
+  }')" \
+  "$base_url/api/v2/directories/$root_directory_id/rename")
+[[ "$cross_driver_rename_status" == 409 ]]
 
 issue_request=$(jq -cn \
   --arg root "$created_directory_id" \
@@ -463,7 +551,7 @@ cli_directory_id=$(jq -r '.directory_id' <<<"$cli_mkdir")
 rust_list=$(env CARRACK_VFS_TOKEN="$root_token" CARRACK_CONTROL_URL="$base_url" \
   "$cli_binary" list /)
 [[ "$(jq -r '.schema' <<<"$rust_list")" == carrack.fs-list.v1 ]]
-[[ "$(jq -r '.entries | length' <<<"$rust_list")" == 5 ]]
+[[ "$(jq -r '.entries | length' <<<"$rust_list")" == 7 ]]
 rust_mkdir=$(env CARRACK_VFS_TOKEN="$root_token" CARRACK_CONTROL_URL="$base_url" \
   "$cli_binary" mkdir /rust-native --idempotency-key rust-native-mkdir-v1)
 [[ "$(jq -r '.schema' <<<"$rust_mkdir")" == carrack.fs-mkdir.v1 ]]
@@ -489,19 +577,35 @@ cli_acl_replaced=$(env CARRACK_VFS_TOKEN="$root_token" \
 [[ "$(jq -c '.policy.actions' <<<"$cli_acl_replaced")" == '["content.read","directory.list"]' ]]
 
 cli_placements=$(env CARRACK_VFS_TOKEN="$root_token" \
-	  "$control_binary" vfs placement show /releases/artifacts \
+	  "$control_binary" vfs mount show /releases/artifacts \
   --control-url "$base_url" --format json)
 [[ "$(jq -r '.schema' <<<"$cli_placements")" == carrack.vfs.placements.v1 ]]
 cli_placement_revision=$(jq -r '.placement_revision' <<<"$cli_placements")
 cli_placement_replaced=$(env CARRACK_VFS_TOKEN="$root_token" \
-	  "$control_binary" vfs placement replace /releases/artifacts \
+	  "$control_binary" vfs mount set /releases/artifacts \
   --control-url "$base_url" \
-  --placement local-main:0 \
+  --driver local-secondary \
   --expected-revision "$cli_placement_revision" \
-  --idempotency-key cli-placement-local-v1 \
+  --idempotency-key cli-mount-secondary-v1 \
   --format json)
 [[ "$(jq -r '.kind' <<<"$cli_placement_replaced")" == placement.replace ]]
-[[ "$(jq -r '.policy.placements[0].driver_id' <<<"$cli_placement_replaced")" == local-main ]]
+[[ "$(jq -r '.policy.placements[0].driver_id' <<<"$cli_placement_replaced")" == local-secondary ]]
+cli_mounted=$(env CARRACK_VFS_TOKEN="$root_token" \
+	  "$control_binary" vfs mount show /releases/artifacts \
+  --control-url "$base_url" --format json)
+[[ "$(jq -r '.placements[0].mount_kind' <<<"$cli_mounted")" == mount ]]
+cli_inherited=$(env CARRACK_VFS_TOKEN="$root_token" \
+	  "$control_binary" vfs mount inherit /releases/artifacts \
+  --control-url "$base_url" \
+  --expected-revision "$(jq -r '.placement_revision' <<<"$cli_mounted")" \
+  --idempotency-key cli-mount-inherit-v1 \
+  --format json)
+[[ "$(jq -r '.kind' <<<"$cli_inherited")" == placement.replace ]]
+cli_inherited_policy=$(env CARRACK_VFS_TOKEN="$root_token" \
+	  "$control_binary" vfs mount show /releases/artifacts \
+  --control-url "$base_url" --format json)
+[[ "$(jq -r '.placements[0].driver_id' <<<"$cli_inherited_policy")" == local-main ]]
+[[ "$(jq -r '.placements[0].mount_kind' <<<"$cli_inherited_policy")" == inherited ]]
 
 cli_issue=$(env CARRACK_VFS_TOKEN="$root_token" \
 	  "$control_binary" vfs token issue / \
@@ -722,11 +826,11 @@ jq -e --arg directory "$created_directory_id" '
        AND (SELECT COUNT(*) FROM vfs_token_revoke_receipts) = 3
        AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'token_issued') = 4
        AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'token_revoked') = 3
-       AND (SELECT COUNT(*) FROM vfs_directory_create_receipts) = 7
-       AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'directory_created') = 7
-       AND (SELECT COUNT(*) FROM vfs_policy_mutation_receipts) = 4
+       AND (SELECT COUNT(*) FROM vfs_directory_create_receipts) = 10
+       AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'directory_created') = 10
+       AND (SELECT COUNT(*) FROM vfs_policy_mutation_receipts) = 6
        AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'acl.replace') = 2
-       AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'placement.replace') = 2
+       AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'placement.replace') = 4
        AND EXISTS (
          SELECT 1
          FROM vfs_directories AS child

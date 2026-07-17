@@ -18,18 +18,17 @@ import {
 } from "./default-r2-provisioning.mjs";
 
 const [environmentName, ...options] = process.argv.slice(2);
-const allowedOptions = new Set(["--check", "--append-root-placement", "--recover-existing-token"]);
+const allowedOptions = new Set(["--check", "--recover-existing-token"]);
 if (
     (environmentName !== "dev" && environmentName !== "prod") ||
     options.some((option) => !allowedOptions.has(option))
 ) {
     throw new Error(
         "usage: provision-default-r2.mjs <dev|prod> [--check] " +
-            "[--append-root-placement] [--recover-existing-token]",
+            "[--recover-existing-token]",
     );
 }
 const check = options.includes("--check");
-const appendRootPlacement = options.includes("--append-root-placement");
 const recoverExistingToken = options.includes("--recover-existing-token");
 if (!check && process.env.CARRACK_PROVISION_R2 !== "1") {
     throw new Error("set CARRACK_PROVISION_R2=1 to authorize environment R2 provisioning");
@@ -107,7 +106,7 @@ function snapshot() {
 function rootPlacements() {
     return runCarrackctl([
         "vfs",
-        "placement",
+        "mount",
         "show",
         "/",
         "--control-url",
@@ -190,7 +189,7 @@ if (hasVfs && !process.env.CARRACK_VFS_TOKEN) {
 }
 let placementPolicy = hasVfs ? rootPlacements() : null;
 let placementPlan = hasVfs
-    ? desiredRootPlacements(placementPolicy, appendRootPlacement)
+    ? desiredRootPlacements(placementPolicy)
     : { action: "not-applicable", placements: [] };
 let tokenPlan = null;
 if (!driver.credential_present) tokenPlan = await inspectTokenFactory();
@@ -342,30 +341,28 @@ if (!driver.enabled) {
 
 if (hasVfs) {
     placementPolicy = rootPlacements();
-    placementPlan = desiredRootPlacements(placementPolicy, appendRootPlacement);
+    placementPlan = desiredRootPlacements(placementPolicy);
 }
 if (
     placementPolicy !== null &&
-    (placementPlan.action === "add-to-empty-root" || placementPlan.action === "append-to-root")
+    placementPlan.action === "add-to-empty-root"
 ) {
-    const encoded = placementPlan.placements
-        .map(({ driverId, priority }) => `${driverId}:${String(priority)}`)
-        .join(",");
+    const [{ driverId }] = placementPlan.placements;
     runCarrackctl([
         "vfs",
-        "placement",
-        "replace",
+        "mount",
+        "set",
         "/",
         "--control-url",
         profile.controlUrl,
-        "--placement",
-        encoded,
+        "--driver",
+        driverId,
         "--expected-revision",
         String(placementPolicy.placement_revision),
         "--idempotency-key",
         stableKey(
             `environment-r2-${environmentName}-root-r${String(placementPolicy.placement_revision)}`,
-            encoded,
+            driverId,
         ),
         "--format",
         "json",
@@ -376,10 +373,10 @@ if (
         throw new Error("r2-default root placement did not match the verified replacement");
     }
     placementPlan = { ...placementPlan, action: "applied" };
-} else if (placementPlan.action === "preserve-nonempty-root") {
+} else if (placementPlan.action === "preserve-other-default") {
     console.error(
-        "warning: root already has placements; r2-default was enabled but policy was preserved. " +
-            "Re-run with --append-root-placement only after reviewing the complete root policy.",
+        "warning: root already uses another default driver; r2-default was enabled but the " +
+            "filesystem mount was preserved.",
     );
 }
 

@@ -16,8 +16,8 @@ port=${CARRACK_ENVIRONMENT_DEFAULTS_TEST_PORT:-8795}
 server_pid=
 
 cleanup() {
-  if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
-    kill "$server_pid" 2>/dev/null || true
+  if [[ -n "$server_pid" ]]; then
+    kill -- "-$server_pid" 2>/dev/null || kill "$server_pid" 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
   fi
   rm -rf "$state_directory"
@@ -54,7 +54,7 @@ admin_token=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA
 operator_account=draven
 r2_endpoint=https://0123456789abcdef.r2.cloudflarestorage.com
 
-"${wrangler[@]}" dev \
+setsid "${wrangler[@]}" dev \
   --local \
   --persist-to "$state_directory" \
   --port "$port" \
@@ -169,7 +169,8 @@ replayed=$(curl --silent --show-error --fail-with-body \
 root_directory_id=$(jq -r '.root_directory_id' <<<"$bootstrapped")
 directory=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" "$base_url/api/admin/directories/$root_directory_id")
-[[ "$(jq -r '.placements | length' <<<"$directory")" == 0 ]]
+[[ "$(jq -c '.placements' <<<"$directory")" == '["r2-default"]' ]]
+[[ "$(jq -r '.mount.relationship' <<<"$directory")" == default ]]
 
 # Hosted inventory is conservative under provider drift: an object that has no
 # D1 identity becomes quarantine evidence and remains physically present.
@@ -575,11 +576,20 @@ cmp "$retry_source" "$retry_readback"
        '{\"endpoint\":\"https://fault.r2.cloudflarestorage.com\",\"bucket\":\"fault\",\"prefix\":\"\",\"managed\":false}',
        1, 1, unixepoch(), unixepoch()
    );
+   DELETE FROM vfs_directory_mounts
+   WHERE directory_id = '$root_directory_id';
+   DELETE FROM vfs_directory_drivers
+   WHERE directory_id = '$root_directory_id';
    INSERT INTO vfs_directory_drivers (
        directory_id, driver_id, write_priority, created_by, created_at, updated_at
    ) VALUES (
-       '$root_directory_id', 'r2-cleanup-fault', 90, '$principal_id',
+       '$root_directory_id', 'r2-cleanup-fault', 0, '$principal_id',
        unixepoch(), unixepoch()
+   );
+   INSERT INTO vfs_directory_mounts (
+       directory_id, driver_id, kind, created_by, created_at
+   ) VALUES (
+       '$root_directory_id', 'r2-cleanup-fault', 'default', '$principal_id', unixepoch()
    );
    INSERT INTO vfs_put_intents (
        id, filesystem_id, principal_id, token_id, directory_id, entry_name,

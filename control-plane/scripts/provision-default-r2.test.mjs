@@ -74,7 +74,7 @@ if (args[0] === "compatibility") {
     fs.writeFileSync(stateFile, JSON.stringify(state), { mode: 0o600 });
     console.log(JSON.stringify({ driver_id: "r2-default", final_revision: state.revision }));
   }
-} else if (args[0] === "vfs" && args[1] === "placement" && args[2] === "show") {
+} else if (args[0] === "vfs" && args[1] === "mount" && args[2] === "show") {
   console.log(JSON.stringify({
     placement_revision: state.placementRevision,
     placements: state.placements.map(({ driverId, priority }) => ({
@@ -83,13 +83,11 @@ if (args[0] === "compatibility") {
       driver_revision: state.revision,
       write_priority: priority,
       state: "active",
+      mount_kind: "default",
     })),
   }));
-} else if (args[0] === "vfs" && args[1] === "placement" && args[2] === "replace") {
-  state.placements = value("--placement").split(",").map((encoded) => {
-    const [driverId, priority] = encoded.split(":");
-    return { driverId, priority: Number(priority) };
-  });
+} else if (args[0] === "vfs" && args[1] === "mount" && args[2] === "set") {
+  state.placements = [{ driverId: value("--driver"), priority: 0 }];
   state.placementRevision += 1;
   fs.writeFileSync(stateFile, JSON.stringify(state), { mode: 0o600 });
   console.log(JSON.stringify({ final_revision: state.placementRevision }));
