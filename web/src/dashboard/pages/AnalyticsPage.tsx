@@ -24,8 +24,11 @@ import { useState } from "react";
 import {
     fetchManagementSnapshot,
     fetchTransferAnalytics,
+    type DirectoryOption,
+    type TokenView,
     type TransferAnalyticsRow,
 } from "../../api/client";
+import { DirectoryPicker, TokenPicker } from "../components/ResourcePickers";
 import { PageHeading, formatBytes } from "./shared";
 
 const DAY_SECONDS = 86_400;
@@ -165,8 +168,8 @@ interface Breakdown {
 export function AnalyticsPage() {
     const [days, setDays] = useState(30);
     const [driverId, setDriverId] = useState("");
-    const [tokenId, setTokenId] = useState("");
-    const [directoryId, setDirectoryId] = useState("");
+    const [token, setToken] = useState<TokenView | null>(null);
+    const [directory, setDirectory] = useState<DirectoryOption | null>(null);
     const [includeDescendants, setIncludeDescendants] = useState(false);
     const [direction, setDirection] = useState<"both" | "upload" | "download">("both");
     const [groupBy, setGroupBy] = useState<"none" | "driver" | "token" | "directory">("driver");
@@ -183,8 +186,8 @@ export function AnalyticsPage() {
         groupBy,
         direction,
         ...(driverId === "" ? {} : { driverId }),
-        ...(tokenId === "" ? {} : { tokenId }),
-        ...(directoryId === "" ? {} : { directoryId, includeDescendants }),
+        ...(token === null ? {} : { tokenId: token.id }),
+        ...(directory === null ? {} : { directoryId: directory.id, includeDescendants }),
     };
     const analytics = useQuery({
         queryKey: ["transfer-analytics", query],
@@ -206,8 +209,10 @@ export function AnalyticsPage() {
     for (const driver of snapshot.data?.drivers ?? []) names.set(driver.id, driver.id);
     for (const token of snapshot.data?.tokens ?? [])
         names.set(token.id, token.label === "" ? token.id : token.label);
+    if (token !== null) names.set(token.id, token.label);
     for (const filesystem of snapshot.data?.filesystems ?? [])
         names.set(filesystem.root_directory_id, `${filesystem.name} /`);
+    if (directory !== null) names.set(directory.id, directory.path);
     const summaries: ReadonlyArray<readonly [string, string]> = [
         ["Estimated bytes", formatBytes(bytes)],
         ["Transfers", `≈ ${transfers.toLocaleString()}`],
@@ -261,27 +266,8 @@ export function AnalyticsPage() {
                             </MenuItem>
                         ))}
                     </TextField>
-                    <TextField
-                        select
-                        label="Token"
-                        value={tokenId}
-                        onChange={(event) => setTokenId(event.target.value)}
-                        size="small"
-                    >
-                        <MenuItem value="">All tokens</MenuItem>
-                        {(snapshot.data?.tokens ?? []).map((token) => (
-                            <MenuItem key={token.id} value={token.id}>
-                                {token.label === "" ? token.id : token.label}
-                            </MenuItem>
-                        ))}
-                    </TextField>
-                    <TextField
-                        label="Directory ID"
-                        value={directoryId}
-                        onChange={(event) => setDirectoryId(event.target.value.trim())}
-                        placeholder="All directories"
-                        size="small"
-                    />
+                    <TokenPicker value={token} onChange={setToken} />
+                    <DirectoryPicker value={directory} onChange={setDirectory} />
                     <TextField
                         select
                         label="Direction"
@@ -320,7 +306,7 @@ export function AnalyticsPage() {
                         control={
                             <Checkbox
                                 checked={includeDescendants}
-                                disabled={directoryId === ""}
+                                disabled={directory === null}
                                 onChange={(event) => setIncludeDescendants(event.target.checked)}
                                 size="small"
                             />

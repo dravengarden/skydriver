@@ -77,6 +77,21 @@ assert_uses_index management-event-page "USING INTEGER PRIMARY KEY" \
    WHERE id > 1 AND id <= 1000
    ORDER BY id LIMIT 101"
 
+assert_uses_index management-recent-event-page "USING INTEGER PRIMARY KEY" \
+  "SELECT id, event_kind FROM vfs_audit_events
+   WHERE id < 1000
+   ORDER BY id DESC LIMIT 101"
+
+assert_uses_index management-token-picker idx_vfs_token_metadata_picker \
+  "SELECT token_id, label FROM vfs_token_metadata
+   WHERE lower(label) > lower('release')
+   ORDER BY lower(label), token_id LIMIT 51"
+
+assert_uses_index management-directory-picker idx_vfs_directories_picker \
+  "SELECT id, name FROM vfs_directories
+   WHERE state = 'active' AND lower(name) > lower('market')
+   ORDER BY lower(name), id LIMIT 51"
+
 # Cron retention and claim loops are bounded only when their deadline indexes
 # remain usable by the exact production predicates.
 assert_uses_index read-lease-retirement idx_vfs_read_leases_retirement \

@@ -84,6 +84,12 @@ unauthenticated_activity=$(curl --silent --output /dev/null --write-out '%{http_
 unauthenticated_events=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   "$base_url/api/admin/events?after=0&limit=1")
 [[ "$unauthenticated_events" == 401 ]]
+unauthenticated_recent_events=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  "$base_url/api/admin/events/recent?before=0&limit=1")
+[[ "$unauthenticated_recent_events" == 401 ]]
+unauthenticated_token_options=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  "$base_url/api/admin/options/tokens?q=&limit=1")
+[[ "$unauthenticated_token_options" == 401 ]]
 unauthenticated_metrics=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   "$base_url/api/admin/metrics/global/all")
 [[ "$unauthenticated_metrics" == 401 ]]
@@ -576,6 +582,17 @@ ahead_event_status=$(curl --silent --output /dev/null --write-out '%{http_code}'
   "$base_url/api/admin/events?after=$((event_page_1_cursor + 1))&limit=1")
 [[ "$ahead_event_status" == 409 ]]
 
+recent_events=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" "$base_url/api/admin/events/recent?before=0&limit=2")
+jq -e '
+  .schema == "carrack.management.recent-events.v1" and
+  .before == 0 and
+  .has_more == true and
+  (.events | length) == 2 and
+  .events[0].id > .events[1].id and
+  .next_before == .events[-1].id
+' <<<"$recent_events" >/dev/null
+
 cli_event_page=$(env CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
   "$control_binary" watch --after 0 --limit 2 \
   --control-url "$base_url" --format json)
@@ -588,13 +605,44 @@ jq -e '
 
 activity_headers="$state_directory/activity-headers.txt"
 activity=$(curl --silent --show-error --fail-with-body \
-  -D "$activity_headers" -b "$cookie_jar" "$base_url/api/admin/activity")
+  -D "$activity_headers" -b "$cookie_jar" \
+  "$base_url/api/admin/activity?attention=all&offset=0&limit=25")
 grep -iq '^cache-control: no-store, max-age=0' "$activity_headers"
-[[ "$(jq -r '.schema' <<<"$activity")" == carrack.management.activity.v1 ]]
-[[ "$(jq -r '.event_cursor > 0' <<<"$activity")" == true ]]
-[[ "$(jq -r '.active_items | type' <<<"$activity")" == array ]]
-[[ "$(jq -r '[.events[].event_kind] | index("directory_created") != null' <<<"$activity")" == true ]]
-[[ "$(jq -r '[.events[].event_kind] | index("token_issued") != null' <<<"$activity")" == true ]]
+jq -e '
+  .schema == "carrack.management.activity.v2" and
+  .offset == 0 and .limit == 25 and
+  (.has_more | type) == "boolean" and
+  (.active_items | type) == "array"
+' <<<"$activity" >/dev/null
+
+token_options=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" "$base_url/api/admin/options/tokens?q=&limit=1")
+jq -e '
+  .schema == "carrack.management.token-options.v1" and
+  (.tokens | length) == 1 and
+  .has_more == true and
+  .next_after_label == .tokens[0].label and
+  .next_after_id == .tokens[0].id
+' <<<"$token_options" >/dev/null
+
+exact_token_option=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" "$base_url/api/admin/options/tokens?q=$child_token_id&limit=25")
+jq -e --arg token "$child_token_id" '
+  (.tokens | length) == 1 and .tokens[0].id == $token
+' <<<"$exact_token_option" >/dev/null
+
+directory_options=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" "$base_url/api/admin/options/directories?q=&limit=25")
+jq -e --arg directory "$created_directory_id" '
+  .schema == "carrack.management.directory-options.v1" and
+  ([.directories[] | select(.id == $directory)][0].path | startswith("/"))
+' <<<"$directory_options" >/dev/null
+
+exact_directory_option=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" "$base_url/api/admin/options/directories?q=$created_directory_id&limit=25")
+jq -e --arg directory "$created_directory_id" '
+  (.directories | length) == 1 and .directories[0].id == $directory
+' <<<"$exact_directory_option" >/dev/null
 
 "${wrangler[@]}" d1 execute CARRACK_INDEX \
   --local \

@@ -246,11 +246,13 @@ describe("parseHealth", () => {
 });
 
 describe("parseManagementActivity", () => {
-    it("accepts durable lifecycle work and audit events", () => {
+    it("accepts a bounded durable lifecycle work page", () => {
         const parsed = parseManagementActivity({
-            schema: "carrack.management.activity.v1",
+            schema: "carrack.management.activity.v2",
             observed_at: 10,
-            event_cursor: 7,
+            offset: 0,
+            limit: 25,
+            has_more: false,
             active_items: [
                 {
                     kind: "credential_refresh",
@@ -267,23 +269,10 @@ describe("parseManagementActivity", () => {
                     attention_required: true,
                 },
             ],
-            events: [
-                {
-                    id: 7,
-                    filesystem_id: null,
-                    principal_id: null,
-                    token_id: null,
-                    event_kind: "driver.credential.refreshed",
-                    subject_kind: "driver",
-                    subject_id: "aliyun-main",
-                    details: { source: "control_plane" },
-                    created_at: 8,
-                },
-            ],
         });
 
         expect(parsed.active_items[0]?.attention_required).toBe(true);
-        expect(parsed.events[0]?.event_kind).toBe("driver.credential.refreshed");
+        expect(parsed.has_more).toBe(false);
     });
 
     it("rejects legacy archive activity payloads", () => {

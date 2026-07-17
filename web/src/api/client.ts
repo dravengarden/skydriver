@@ -92,6 +92,34 @@ const ManagementSnapshotSchema = v.object({
     tokens: v.array(TokenViewSchema),
 });
 
+const TokenOptionPageSchema = v.object({
+    schema: v.literal("carrack.management.token-options.v1"),
+    observed_at: v.number(),
+    query: v.string(),
+    next_after_label: v.string(),
+    next_after_id: v.string(),
+    has_more: v.boolean(),
+    tokens: v.array(TokenViewSchema),
+});
+
+const DirectoryOptionSchema = v.object({
+    id: v.string(),
+    filesystem_id: v.string(),
+    filesystem_name: v.string(),
+    name: v.string(),
+    path: v.string(),
+});
+
+const DirectoryOptionPageSchema = v.object({
+    schema: v.literal("carrack.management.directory-options.v1"),
+    observed_at: v.number(),
+    query: v.string(),
+    next_after_name: v.string(),
+    next_after_id: v.string(),
+    has_more: v.boolean(),
+    directories: v.array(DirectoryOptionSchema),
+});
+
 const ManagementEventCursorSchema = v.object({
     schema: v.literal("carrack.management.event-cursor.v1"),
     observed_at: v.number(),
@@ -125,12 +153,23 @@ const ManagementActivityEventSchema = v.object({
     created_at: v.number(),
 });
 
-const ManagementActivitySchema = v.object({
-    schema: v.literal("carrack.management.activity.v1"),
+const RecentManagementEventPageSchema = v.object({
+    schema: v.literal("carrack.management.recent-events.v1"),
     observed_at: v.number(),
+    before: v.number(),
     event_cursor: v.number(),
-    active_items: v.array(ManagementActivityItemSchema),
+    next_before: v.number(),
+    has_more: v.boolean(),
     events: v.array(ManagementActivityEventSchema),
+});
+
+const ManagementActivitySchema = v.object({
+    schema: v.literal("carrack.management.activity.v2"),
+    observed_at: v.number(),
+    offset: v.number(),
+    limit: v.number(),
+    has_more: v.boolean(),
+    active_items: v.array(ManagementActivityItemSchema),
 });
 
 const TransferMetricRowSchema = v.object({
@@ -477,9 +516,13 @@ export type DriverView = v.InferOutput<typeof DriverViewSchema>;
 export type FilesystemView = v.InferOutput<typeof FilesystemViewSchema>;
 export type TokenView = v.InferOutput<typeof TokenViewSchema>;
 export type ManagementSnapshot = v.InferOutput<typeof ManagementSnapshotSchema>;
+export type TokenOptionPage = v.InferOutput<typeof TokenOptionPageSchema>;
+export type DirectoryOption = v.InferOutput<typeof DirectoryOptionSchema>;
+export type DirectoryOptionPage = v.InferOutput<typeof DirectoryOptionPageSchema>;
 export type ManagementEventCursor = v.InferOutput<typeof ManagementEventCursorSchema>;
 export type ManagementActivityItem = v.InferOutput<typeof ManagementActivityItemSchema>;
 export type ManagementActivityEvent = v.InferOutput<typeof ManagementActivityEventSchema>;
+export type RecentManagementEventPage = v.InferOutput<typeof RecentManagementEventPageSchema>;
 export type ManagementActivity = v.InferOutput<typeof ManagementActivitySchema>;
 export type TransferMetrics = v.InferOutput<typeof TransferMetricsSchema>;
 export type TransferMetricScope = TransferMetrics["scope_kind"];
@@ -620,6 +663,40 @@ export function disableConfiguration(): Promise<ConfigurationSession> {
 
 export function fetchManagementSnapshot(): Promise<ManagementSnapshot> {
     return requestJson("/api/admin/snapshot", undefined, ManagementSnapshotSchema);
+}
+
+export function fetchTokenOptions(
+    query: string,
+    afterLabel = "",
+    afterId = "",
+): Promise<TokenOptionPage> {
+    const parameters = new URLSearchParams({ q: query, limit: "50" });
+    if (afterLabel !== "") {
+        parameters.set("after_label", afterLabel);
+        parameters.set("after_id", afterId);
+    }
+    return requestJson(
+        `/api/admin/options/tokens?${parameters.toString()}`,
+        undefined,
+        TokenOptionPageSchema,
+    );
+}
+
+export function fetchDirectoryOptions(
+    query: string,
+    afterName = "",
+    afterId = "",
+): Promise<DirectoryOptionPage> {
+    const parameters = new URLSearchParams({ q: query, limit: "50" });
+    if (afterName !== "") {
+        parameters.set("after_name", afterName);
+        parameters.set("after_id", afterId);
+    }
+    return requestJson(
+        `/api/admin/options/directories?${parameters.toString()}`,
+        undefined,
+        DirectoryOptionPageSchema,
+    );
 }
 
 export function fetchManagementAccess(): Promise<ManagementAccess> {
@@ -913,6 +990,31 @@ function newIdempotencyKey(): string {
     return `ui-${Array.from(entropy, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-export function fetchManagementActivity(): Promise<ManagementActivity> {
-    return requestJson("/api/admin/activity", undefined, ManagementActivitySchema);
+export function fetchManagementActivity(
+    attention: "all" | "required" | "normal" = "all",
+    offset = 0,
+    limit = 25,
+): Promise<ManagementActivity> {
+    const parameters = new URLSearchParams({
+        attention,
+        offset: String(offset),
+        limit: String(limit),
+    });
+    return requestJson(
+        `/api/admin/activity?${parameters.toString()}`,
+        undefined,
+        ManagementActivitySchema,
+    );
+}
+
+export function fetchRecentManagementEvents(
+    before: number,
+    limit: number,
+): Promise<RecentManagementEventPage> {
+    const parameters = new URLSearchParams({ before: String(before), limit: String(limit) });
+    return requestJson(
+        `/api/admin/events/recent?${parameters.toString()}`,
+        undefined,
+        RecentManagementEventPageSchema,
+    );
 }

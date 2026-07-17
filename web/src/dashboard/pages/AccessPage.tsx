@@ -765,15 +765,17 @@ export function AccessPage({
                     <Stack spacing={2}>
                         <TextField
                             autoFocus
-                            label="Label"
+                            label="Purpose / label"
                             value={draft?.label ?? ""}
                             slotProps={{ htmlInput: { maxLength: 128 } }}
+                            helperText="A short human name, for example Dev driver speed test."
                             onChange={(event) => updateDraft({ label: event.target.value })}
                         />
                         <TextField
-                            label="Operator note"
+                            label="Device or workload details"
                             value={draft?.note ?? ""}
                             slotProps={{ htmlInput: { maxLength: 2048 } }}
+                            helperText="Record the device, agent, service, owner, and intended use. This metadata never grants authority."
                             minRows={4}
                             multiline
                             onChange={(event) => updateDraft({ note: event.target.value })}

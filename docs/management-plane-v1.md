@@ -45,10 +45,17 @@ credential input or rotation action. Unsupported acceleration features are
 shown as warnings with the correctness-preserving fallback and a recommended
 replacement driver when one exists.
 
-Token rows show a human label and note, principal, root collection, explicit
+Token rows show a human purpose label and device or workload note, principal, root collection, explicit
 actions, optional driver scope, optional snapshot, parent, creation and expiry,
 revocation state, and last use. The bearer is shown exactly once at issuance
 and never appears in list or detail responses.
+
+Token and directory selectors never require an operator to remember an opaque
+identifier. They use bounded server-side prefix search, stable label/ID
+continuation, and lazy option pages. Token options include authority, scope,
+status, last use, and the descriptive device/workload note. Directory options
+include the filesystem name and canonical breadcrumb path. Opaque IDs remain
+visible only as secondary disambiguation and may still be searched exactly.
 
 ## Read mode and configuration mode
 

@@ -423,18 +423,25 @@ materialization.
 
 ## Activity and lifecycle health
 
-The authenticated dashboard polls `GET /api/admin/activity`. Its bounded V2
-projection contains current upload intents, read leases, server-owned delete
-and cleanup work, credential renewal failures, and the newest immutable
-`vfs_audit_events`. Retry, blocked, and reauthorization states are explicitly
-marked as needing attention.
+The authenticated dashboard polls `GET /api/admin/activity` independently for
+normal and attention-required work. Its bounded V2 projection contains current
+upload intents, read leases, server-owned delete and cleanup work, and
+credential renewal failures. Retry, blocked, and reauthorization states are
+explicitly marked as needing attention. `offset` and `limit` are validated and
+the Worker reads only enough live rows to return the requested page plus a
+`has_more` proof; partial indexes exclude retained terminal history.
 
 Direct transfers do not proxy bytes through the Worker, so byte progress is
 intentionally absent from this endpoint. The client that owns a transfer may
 show local progress, while the dashboard reports only durable checkpoints and
-server-side lifecycle state. The response is `Cache-Control: no-store`, returns
-at most 100 active items and 100 newest events, and requires an operator
-session.
+server-side lifecycle state. Responses are `Cache-Control: no-store`, page size
+is bounded to 100, and an operator session is required.
+
+The browser reads newest audit history through
+`GET /api/admin/events/recent?before=<cursor>&limit=<1..250>`. The first page
+uses `before=0`; later pages use the returned `next_before`. Pages are ordered
+by descending immutable event ID, so new events do not extend or reshuffle an
+older page.
 
 Agents consume the same immutable audit stream through
 `GET /api/admin/events?after=<cursor>&limit=<1..250>`. The Worker reads the

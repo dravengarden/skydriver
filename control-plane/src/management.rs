@@ -7,6 +7,8 @@ use crate::{environment_defaults, operator_sessions};
 const DATABASE_BINDING: &str = "CARRACK_INDEX";
 const DEFAULT_EVENT_PAGE_SIZE: u64 = 100;
 const MAXIMUM_EVENT_PAGE_SIZE: u64 = 250;
+const DEFAULT_RESOURCE_PAGE_SIZE: u64 = 25;
+const MAXIMUM_RESOURCE_PAGE_SIZE: u64 = 100;
 
 #[derive(Deserialize)]
 struct DriverRow {
@@ -207,9 +209,10 @@ struct ActivityEventView {
 struct ActivityResponse {
     schema: &'static str,
     observed_at: u64,
-    event_cursor: u64,
+    offset: u64,
+    limit: u64,
+    has_more: bool,
     active_items: Vec<ActivityItemView>,
-    events: Vec<ActivityEventView>,
 }
 
 #[derive(Serialize)]
@@ -221,6 +224,55 @@ struct EventPageResponse {
     next_after: u64,
     has_more: bool,
     events: Vec<ActivityEventView>,
+}
+
+#[derive(Serialize)]
+struct RecentEventPageResponse {
+    schema: &'static str,
+    observed_at: u64,
+    before: u64,
+    event_cursor: u64,
+    next_before: u64,
+    has_more: bool,
+    events: Vec<ActivityEventView>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct DirectoryOptionView {
+    id: String,
+    filesystem_id: String,
+    filesystem_name: String,
+    name: String,
+    path: String,
+}
+
+#[derive(Serialize)]
+struct DirectoryOptionPageResponse {
+    schema: &'static str,
+    observed_at: u64,
+    query: String,
+    next_after_name: String,
+    next_after_id: String,
+    has_more: bool,
+    directories: Vec<DirectoryOptionView>,
+}
+
+#[derive(Serialize)]
+struct TokenOptionPageResponse {
+    schema: &'static str,
+    observed_at: u64,
+    query: String,
+    next_after_label: String,
+    next_after_id: String,
+    has_more: bool,
+    tokens: Vec<TokenView>,
+}
+
+struct ResourcePageOptions {
+    query: String,
+    after_name: String,
+    after_id: String,
+    limit: u64,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -489,28 +541,7 @@ pub(crate) async fn snapshot(request: &Request, env: &Env) -> Result<Response> {
         .all()
         .await?
         .results::<TokenRow>()?;
-    let tokens = token_rows
-        .into_iter()
-        .map(|row| TokenView {
-            label: row.label,
-            note: row.note,
-            metadata_revision: row.metadata_revision,
-            id: row.id,
-            principal_id: row.principal_id,
-            principal_name: row.principal_name,
-            root_directory_id: row.root_directory_id,
-            root_directory_name: row.root_directory_name,
-            parent_token_id: row.parent_token_id,
-            snapshot_id: row.snapshot_id,
-            actions: parse_string_array(&row.actions_json),
-            driver_ids: parse_string_array(&row.drivers_json),
-            expires_at: row.expires_at,
-            sealed_at: row.sealed_at,
-            revoked_at: row.revoked_at,
-            created_at: row.created_at,
-            last_used_at: row.last_used_at,
-        })
-        .collect();
+    let tokens = token_rows.into_iter().map(token_view).collect();
     let cursor = database
         .prepare("SELECT COALESCE(MAX(id), 0) AS event_cursor FROM vfs_audit_events")
         .first::<CursorRow>(None)
@@ -524,6 +555,142 @@ pub(crate) async fn snapshot(request: &Request, env: &Env) -> Result<Response> {
         drivers,
         filesystems,
         tokens,
+    })
+}
+
+/// Returns one bounded, searchable token-option page for operator pickers.
+pub(crate) async fn token_options(request: &Request, env: &Env) -> Result<Response> {
+    if !operator_sessions::authorized(request, env).await? {
+        return Response::error("authentication required", 401);
+    }
+    let Some(options) = resource_page_options(request, "after_label")? else {
+        return Response::error("invalid token option query", 400);
+    };
+    let query_pattern = prefix_pattern(&options.query);
+    let database = env.d1(DATABASE_BINDING)?;
+    let bindings = [
+        JsValue::from_str(&query_pattern),
+        JsValue::from_str(&options.after_name),
+        JsValue::from_str(&options.after_id),
+        JsValue::from_str(&(options.limit + 1).to_string()),
+        JsValue::from_str(&options.query),
+    ];
+    let mut rows = database
+        .prepare(
+            r"SELECT token.id, metadata.label, metadata.note,
+                    metadata.revision AS metadata_revision,
+                    token.principal_id, principal.display_name AS principal_name,
+                    token.root_directory_id, directory.name AS root_directory_name,
+                    token.parent_token_id, token.snapshot_id,
+                    COALESCE((SELECT json_group_array(action) FROM
+                        (SELECT action FROM vfs_token_actions
+                         WHERE token_id = token.id ORDER BY action)), '[]') AS actions_json,
+                    COALESCE((SELECT json_group_array(driver_id) FROM
+                        (SELECT driver_id FROM vfs_token_drivers
+                         WHERE token_id = token.id ORDER BY driver_id)), '[]') AS drivers_json,
+                    token.expires_at, token.sealed_at, token.revoked_at, token.created_at,
+                    (SELECT MAX(event.created_at) FROM vfs_audit_events AS event
+                     WHERE event.token_id = token.id) AS last_used_at
+             FROM vfs_token_verifiers AS token
+             JOIN vfs_token_metadata AS metadata ON metadata.token_id = token.id
+             JOIN vfs_principals AS principal ON principal.id = token.principal_id
+             JOIN vfs_directories AS directory ON directory.id = token.root_directory_id
+             WHERE (metadata.label LIKE ?1 ESCAPE '\' OR token.id = ?5)
+               AND (?2 = '' OR lower(metadata.label) > lower(?2)
+                    OR (lower(metadata.label) = lower(?2) AND token.id > ?3))
+             ORDER BY lower(metadata.label), token.id
+             LIMIT CAST(?4 AS INTEGER)",
+        )
+        .bind(&bindings)?
+        .all()
+        .await?
+        .results::<TokenRow>()?;
+    let has_more = rows.len() > usize::try_from(options.limit).unwrap_or(usize::MAX);
+    rows.truncate(usize::try_from(options.limit).unwrap_or(usize::MAX));
+    let tokens: Vec<TokenView> = rows.into_iter().map(token_view).collect();
+    let (next_after_label, next_after_id) = tokens.last().map_or_else(
+        || (options.after_name, options.after_id),
+        |token| (token.label.clone(), token.id.clone()),
+    );
+    no_store_json(&TokenOptionPageResponse {
+        schema: "carrack.management.token-options.v1",
+        observed_at: now_seconds(),
+        query: options.query,
+        next_after_label,
+        next_after_id,
+        has_more,
+        tokens,
+    })
+}
+
+/// Returns one bounded directory page with human-readable absolute paths.
+pub(crate) async fn directory_options(request: &Request, env: &Env) -> Result<Response> {
+    if !operator_sessions::authorized(request, env).await? {
+        return Response::error("authentication required", 401);
+    }
+    let Some(options) = resource_page_options(request, "after_name")? else {
+        return Response::error("invalid directory option query", 400);
+    };
+    let query_pattern = prefix_pattern(&options.query);
+    let database = env.d1(DATABASE_BINDING)?;
+    let bindings = [
+        JsValue::from_str(&query_pattern),
+        JsValue::from_str(&options.after_name),
+        JsValue::from_str(&options.after_id),
+        JsValue::from_str(&(options.limit + 1).to_string()),
+        JsValue::from_str(&options.query),
+    ];
+    let mut directories = database
+        .prepare(
+            r"WITH RECURSIVE candidates AS (
+                 SELECT directory.id, directory.filesystem_id, directory.parent_id,
+                        directory.name, filesystem.name AS filesystem_name
+                 FROM vfs_directories AS directory
+                 JOIN vfs_filesystems AS filesystem ON filesystem.id = directory.filesystem_id
+                 WHERE directory.state = 'active'
+                   AND (directory.name LIKE ?1 ESCAPE '\'
+                        OR filesystem.name LIKE ?1 ESCAPE '\'
+                        OR directory.id = ?5)
+                   AND (?2 = '' OR lower(directory.name) > lower(?2)
+                        OR (lower(directory.name) = lower(?2) AND directory.id > ?3))
+                 ORDER BY lower(directory.name), directory.id
+                 LIMIT CAST(?4 AS INTEGER)
+             ), paths(candidate_id, id, parent_id, path) AS (
+                 SELECT id, id, parent_id, name FROM candidates
+                 UNION ALL
+                 SELECT path.candidate_id, parent.id, parent.parent_id,
+                        CASE WHEN parent.name = '' THEN '/' || path.path
+                             ELSE parent.name || '/' || path.path END
+                 FROM paths AS path
+                 JOIN vfs_directories AS parent ON parent.id = path.parent_id
+             )
+             SELECT candidate.id, candidate.filesystem_id, candidate.filesystem_name,
+                    candidate.name,
+                    CASE WHEN candidate.parent_id IS NULL THEN '/'
+                         ELSE COALESCE((SELECT path FROM paths
+                                       WHERE candidate_id = candidate.id AND parent_id IS NULL),
+                                      candidate.name) END AS path
+             FROM candidates AS candidate
+             ORDER BY lower(candidate.name), candidate.id",
+        )
+        .bind(&bindings)?
+        .all()
+        .await?
+        .results::<DirectoryOptionView>()?;
+    let has_more = directories.len() > usize::try_from(options.limit).unwrap_or(usize::MAX);
+    directories.truncate(usize::try_from(options.limit).unwrap_or(usize::MAX));
+    let (next_after_name, next_after_id) = directories.last().map_or_else(
+        || (options.after_name, options.after_id),
+        |directory| (directory.name.clone(), directory.id.clone()),
+    );
+    no_store_json(&DirectoryOptionPageResponse {
+        schema: "carrack.management.directory-options.v1",
+        observed_at: now_seconds(),
+        query: options.query,
+        next_after_name,
+        next_after_id,
+        has_more,
+        directories,
     })
 }
 
@@ -601,6 +768,56 @@ pub(crate) async fn events(request: &Request, env: &Env) -> Result<Response> {
     })
 }
 
+/// Returns one bounded newest-first audit page before an immutable event ID.
+pub(crate) async fn recent_events(request: &Request, env: &Env) -> Result<Response> {
+    if !operator_sessions::authorized(request, env).await? {
+        return Response::error("authentication required", 401);
+    }
+    let Some((before, limit)) = recent_event_page_options(request)? else {
+        return Response::error("invalid recent management event query", 400);
+    };
+    let database = env.d1(DATABASE_BINDING)?;
+    let event_cursor = database
+        .prepare("SELECT COALESCE(MAX(id), 0) AS event_cursor FROM vfs_audit_events")
+        .first::<CursorRow>(None)
+        .await?
+        .map_or(0, |row| row.event_cursor);
+    if before > event_cursor.saturating_add(1) {
+        return Response::error("management event cursor is ahead of this environment", 409);
+    }
+    let bindings = [
+        JsValue::from_str(&before.to_string()),
+        JsValue::from_str(&event_cursor.to_string()),
+        JsValue::from_str(&(limit + 1).to_string()),
+    ];
+    let mut rows = database
+        .prepare(
+            r"SELECT id, filesystem_id, principal_id, token_id, event_kind,
+                     subject_kind, subject_id, details_json, created_at
+              FROM vfs_audit_events
+              WHERE (?1 = '0' OR id < CAST(?1 AS INTEGER))
+                AND id <= CAST(?2 AS INTEGER)
+              ORDER BY id DESC
+              LIMIT CAST(?3 AS INTEGER)",
+        )
+        .bind(&bindings)?
+        .all()
+        .await?
+        .results::<ActivityEventRow>()?;
+    let has_more = rows.len() > usize::try_from(limit).unwrap_or(usize::MAX);
+    rows.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+    let next_before = rows.last().map_or(before, |row| row.id);
+    no_store_json(&RecentEventPageResponse {
+        schema: "carrack.management.recent-events.v1",
+        observed_at: now_seconds(),
+        before,
+        event_cursor,
+        next_before,
+        has_more,
+        events: rows.into_iter().map(event_view).collect(),
+    })
+}
+
 /// Returns bounded, current VFS lifecycle work and the newest audit events.
 ///
 /// Direct provider payload progress remains client-local by design. This view
@@ -614,10 +831,18 @@ pub(crate) async fn activity(request: &Request, env: &Env) -> Result<Response> {
     if !operator_sessions::authorized(request, env).await? {
         return Response::error("authentication required", 401);
     }
+    let Some((attention, offset, limit)) = activity_page_options(request)? else {
+        return Response::error("invalid management activity query", 400);
+    };
 
     let database = env.d1(DATABASE_BINDING)?;
     let now = now_seconds();
-    let binding = [JsValue::from_str(&now.to_string())];
+    let candidate_limit = offset.saturating_add(limit).saturating_add(1);
+    let bindings = [
+        JsValue::from_str(&now.to_string()),
+        JsValue::from_str(&attention.to_string()),
+        JsValue::from_str(&candidate_limit.to_string()),
+    ];
     let mut item_rows = database
         .prepare(
             r"SELECT kind, id, subject_kind, subject_id, state, driver_id,
@@ -672,10 +897,12 @@ pub(crate) async fn activity(request: &Request, env: &Env) -> Result<Response> {
                    AND head.revision_id = revision.id
                   WHERE outbox.state IN ('pending', 'claimed')
               )
-              ORDER BY attention_required DESC, updated_at DESC, id
-              LIMIT 100",
+              WHERE (CAST(?2 AS INTEGER) = -1
+                     OR attention_required = CAST(?2 AS INTEGER))
+              ORDER BY attention_required DESC, updated_at DESC, kind, id
+              LIMIT CAST(?3 AS INTEGER)",
         )
-        .bind(&binding)?
+        .bind(&bindings)?
         .all()
         .await?
         .results::<ActivityItemRow>()?;
@@ -727,9 +954,15 @@ pub(crate) async fn activity(request: &Request, env: &Env) -> Result<Response> {
                   FROM driver_credential_refreshes AS refresh
                   WHERE refresh.state IN ('claimed', 'retry', 'reauth_required')
                   )
-                  ORDER BY attention_required DESC, updated_at DESC, id
-                  LIMIT 100",
+                  WHERE (CAST(?1 AS INTEGER) = -1
+                         OR attention_required = CAST(?1 AS INTEGER))
+                  ORDER BY attention_required DESC, updated_at DESC, kind, id
+                  LIMIT CAST(?2 AS INTEGER)",
             )
+            .bind(&[
+                JsValue::from_str(&attention.to_string()),
+                JsValue::from_str(&candidate_limit.to_string()),
+            ])?
             .all()
             .await?
             .results::<ActivityItemRow>()?,
@@ -739,11 +972,15 @@ pub(crate) async fn activity(request: &Request, env: &Env) -> Result<Response> {
             .attention_required
             .cmp(&left.attention_required)
             .then_with(|| right.updated_at.cmp(&left.updated_at))
+            .then_with(|| left.kind.cmp(&right.kind))
             .then_with(|| left.id.cmp(&right.id))
     });
-    item_rows.truncate(100);
+    let has_more =
+        item_rows.len() > usize::try_from(offset.saturating_add(limit)).unwrap_or(usize::MAX);
     let active_items = item_rows
         .into_iter()
+        .skip(usize::try_from(offset).unwrap_or(usize::MAX))
+        .take(usize::try_from(limit).unwrap_or(usize::MAX))
         .map(|row| ActivityItemView {
             kind: row.kind,
             id: row.id,
@@ -760,26 +997,13 @@ pub(crate) async fn activity(request: &Request, env: &Env) -> Result<Response> {
         })
         .collect();
 
-    let event_rows = database
-        .prepare(
-            r"SELECT id, filesystem_id, principal_id, token_id, event_kind,
-                     subject_kind, subject_id, details_json, created_at
-              FROM vfs_audit_events
-              ORDER BY id DESC
-              LIMIT 100",
-        )
-        .all()
-        .await?
-        .results::<ActivityEventRow>()?;
-    let event_cursor = event_rows.first().map_or(0, |row| row.id);
-    let events = event_rows.into_iter().map(event_view).collect();
-
     no_store_json(&ActivityResponse {
-        schema: "carrack.management.activity.v1",
+        schema: "carrack.management.activity.v2",
         observed_at: now,
-        event_cursor,
+        offset,
+        limit,
+        has_more,
         active_items,
-        events,
     })
 }
 
@@ -948,6 +1172,28 @@ fn parse_string_array(encoded: &str) -> Vec<String> {
     serde_json::from_str(encoded).unwrap_or_default()
 }
 
+fn token_view(row: TokenRow) -> TokenView {
+    TokenView {
+        label: row.label,
+        note: row.note,
+        metadata_revision: row.metadata_revision,
+        id: row.id,
+        principal_id: row.principal_id,
+        principal_name: row.principal_name,
+        root_directory_id: row.root_directory_id,
+        root_directory_name: row.root_directory_name,
+        parent_token_id: row.parent_token_id,
+        snapshot_id: row.snapshot_id,
+        actions: parse_string_array(&row.actions_json),
+        driver_ids: parse_string_array(&row.drivers_json),
+        expires_at: row.expires_at,
+        sealed_at: row.sealed_at,
+        revoked_at: row.revoked_at,
+        created_at: row.created_at,
+        last_used_at: row.last_used_at,
+    }
+}
+
 fn redact_config(encoded: &str) -> Value {
     let mut value = serde_json::from_str(encoded).unwrap_or(Value::Null);
     redact_value(&mut value);
@@ -1032,6 +1278,140 @@ fn event_page_options(request: &Request) -> Result<Option<(u64, u64)>> {
     Ok(Some((after, limit)))
 }
 
+fn recent_event_page_options(request: &Request) -> Result<Option<(u64, u64)>> {
+    let url = request.url()?;
+    let mut before = 0;
+    let mut limit = DEFAULT_EVENT_PAGE_SIZE;
+    let mut saw_before = false;
+    let mut saw_limit = false;
+    for (key, value) in url.query_pairs() {
+        match key.as_ref() {
+            "before" if !saw_before => {
+                saw_before = true;
+                let Some(parsed) = canonical_integer(&value) else {
+                    return Ok(None);
+                };
+                before = parsed;
+            }
+            "limit" if !saw_limit => {
+                saw_limit = true;
+                let Some(parsed) = canonical_integer(&value) else {
+                    return Ok(None);
+                };
+                if !(1..=MAXIMUM_EVENT_PAGE_SIZE).contains(&parsed) {
+                    return Ok(None);
+                }
+                limit = parsed;
+            }
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some((before, limit)))
+}
+
+fn activity_page_options(request: &Request) -> Result<Option<(i64, u64, u64)>> {
+    let url = request.url()?;
+    let mut attention = -1_i64;
+    let mut offset = 0;
+    let mut limit = DEFAULT_RESOURCE_PAGE_SIZE;
+    let mut seen = std::collections::BTreeSet::new();
+    for (key, value) in url.query_pairs() {
+        if !seen.insert(key.to_string()) {
+            return Ok(None);
+        }
+        match key.as_ref() {
+            "attention" => match value.as_ref() {
+                "all" => attention = -1,
+                "required" => attention = 1,
+                "normal" => attention = 0,
+                _ => return Ok(None),
+            },
+            "offset" => {
+                let Some(parsed) = canonical_integer(&value) else {
+                    return Ok(None);
+                };
+                if parsed > 100_000 {
+                    return Ok(None);
+                }
+                offset = parsed;
+            }
+            "limit" => {
+                let Some(parsed) = canonical_integer(&value) else {
+                    return Ok(None);
+                };
+                if !(1..=MAXIMUM_RESOURCE_PAGE_SIZE).contains(&parsed) {
+                    return Ok(None);
+                }
+                limit = parsed;
+            }
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some((attention, offset, limit)))
+}
+
+fn resource_page_options(
+    request: &Request,
+    cursor_name_key: &str,
+) -> Result<Option<ResourcePageOptions>> {
+    let url = request.url()?;
+    let mut query = String::new();
+    let mut after_name = String::new();
+    let mut after_id = String::new();
+    let mut limit = DEFAULT_RESOURCE_PAGE_SIZE;
+    let mut seen = std::collections::BTreeSet::new();
+    for (key, value) in url.query_pairs() {
+        if !seen.insert(key.to_string()) {
+            return Ok(None);
+        }
+        match key.as_ref() {
+            "q" => value.trim().clone_into(&mut query),
+            key if key == cursor_name_key => after_name = value.into_owned(),
+            "after_id" => after_id = value.into_owned(),
+            "limit" => {
+                let Some(parsed) = canonical_integer(&value) else {
+                    return Ok(None);
+                };
+                if !(1..=MAXIMUM_RESOURCE_PAGE_SIZE).contains(&parsed) {
+                    return Ok(None);
+                }
+                limit = parsed;
+            }
+            _ => return Ok(None),
+        }
+    }
+    if query.len() > 128
+        || query.chars().any(char::is_control)
+        || after_name.len() > 255
+        || after_name.chars().any(char::is_control)
+        || (after_name.is_empty() != after_id.is_empty())
+        || (!after_id.is_empty() && !valid_identifier(&after_id))
+    {
+        return Ok(None);
+    }
+    Ok(Some(ResourcePageOptions {
+        query,
+        after_name,
+        after_id,
+        limit,
+    }))
+}
+
+fn prefix_pattern(query: &str) -> String {
+    if query.is_empty() {
+        return "%".to_owned();
+    }
+    let mut pattern = String::with_capacity(query.len() + 1);
+    for character in query.chars() {
+        if matches!(character, '%' | '_' | '\\') {
+            pattern.push('\\');
+        }
+        pattern.push(character);
+    }
+    pattern.push('%');
+    pattern
+}
+
 fn canonical_integer(value: &str) -> Option<u64> {
     if value.is_empty()
         || (value.len() > 1 && value.starts_with('0'))
@@ -1061,7 +1441,7 @@ fn now_seconds() -> u64 {
 mod tests {
     use serde_json::json;
 
-    use super::{canonical_integer, redact_value, sensitive_key, valid_identifier};
+    use super::{canonical_integer, prefix_pattern, redact_value, sensitive_key, valid_identifier};
 
     #[test]
     fn redacts_secret_shaped_driver_configuration() {
@@ -1095,5 +1475,12 @@ mod tests {
         assert_eq!(canonical_integer("+1"), None);
         assert_eq!(canonical_integer("-1"), None);
         assert_eq!(canonical_integer("9223372036854775808"), None);
+    }
+
+    #[test]
+    fn resource_prefix_search_escapes_sql_wildcards() {
+        assert_eq!(prefix_pattern(""), "%");
+        assert_eq!(prefix_pattern("market"), "market%");
+        assert_eq!(prefix_pattern(r"a%b_c\d"), r"a\%b\_c\\d%");
     }
 }

@@ -532,6 +532,18 @@ pub async fn main(request: Request, env: Env, context: Context) -> Result<Respon
         .get_async("/api/admin/snapshot", |request, context| async move {
             management::snapshot(&request, &context.env).await
         })
+        .get_async(
+            "/api/admin/options/tokens",
+            |request, context| async move {
+                management::token_options(&request, &context.env).await
+            },
+        )
+        .get_async(
+            "/api/admin/options/directories",
+            |request, context| async move {
+                management::directory_options(&request, &context.env).await
+            },
+        )
         .get_async("/api/admin/access", |request, context| async move {
             management_access::snapshot(request, &context.env).await
         })
@@ -571,6 +583,12 @@ pub async fn main(request: Request, env: Env, context: Context) -> Result<Respon
         .get_async("/api/admin/events", |request, context| async move {
             management::events(&request, &context.env).await
         })
+        .get_async(
+            "/api/admin/events/recent",
+            |request, context| async move {
+                management::recent_events(&request, &context.env).await
+            },
+        )
         .get_async(
             "/api/admin/metrics/:scope/:id",
             |request, context| async move {
