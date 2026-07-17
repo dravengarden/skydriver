@@ -36,6 +36,8 @@ static LOCAL_REUSE_ORDINAL: AtomicU64 = AtomicU64::new(0);
 pub struct SyncOptions {
     /// Private state and provider-download journal directory.
     pub state_directory: PathBuf,
+    /// Persist authenticated metadata/Merkle catalog acceleration locally.
+    pub use_catalog_cache: bool,
     /// Provider range segment bytes for each changed file.
     pub transfer_part_bytes: u64,
     /// Maximum files downloaded concurrently.
@@ -561,7 +563,12 @@ impl VfsClient {
         ensure_private_directory(&options.state_directory, "sync state directory")?;
         let _destination_lock = acquire_sync_lock(destination)?;
         let session = self.session().await?;
-        let catalog = CatalogStore::new(&options.state_directory, &session.token_id)?;
+        let catalog = CatalogStore::new(
+            &options.state_directory,
+            &session.token_id,
+            &self.token,
+            options.use_catalog_cache,
+        )?;
         let checkpoint_condition = catalog.checkpoint_condition()?;
         let checkpoint = match self
             .catalog_checkpoint(&session, checkpoint_condition.as_ref())
@@ -575,9 +582,10 @@ impl VfsClient {
         };
         let bulk_catalog_authorized = match checkpoint {
             CatalogCheckpointOutcome::Delivered(delivery) => {
-                if catalog
-                    .publish_checkpoint(&delivery.checkpoint, &delivery.etag)
-                    .is_ok()
+                if options.use_catalog_cache
+                    && catalog
+                        .publish_checkpoint(&delivery.checkpoint, &delivery.etag)
+                        .is_ok()
                 {
                     true
                 } else {
@@ -586,7 +594,9 @@ impl VfsClient {
                 }
             }
             CatalogCheckpointOutcome::Delta(delivery) => {
-                if catalog.apply_delta(&delivery.delta, &delivery.etag).is_ok() {
+                if options.use_catalog_cache
+                    && catalog.apply_delta(&delivery.delta, &delivery.etag).is_ok()
+                {
                     true
                 } else {
                     catalog.discard_head()?;
@@ -1803,6 +1813,7 @@ mod tests {
         let options =
             |transfer_part_bytes, maximum_concurrency, maximum_file_concurrency| SyncOptions {
                 state_directory: temporary.path().join("state"),
+                use_catalog_cache: true,
                 transfer_part_bytes,
                 maximum_concurrency,
                 maximum_file_concurrency,
@@ -1813,6 +1824,7 @@ mod tests {
         for invalid in [
             SyncOptions {
                 state_directory: "relative/state".into(),
+                use_catalog_cache: true,
                 transfer_part_bytes: 1024,
                 maximum_concurrency: 1,
                 maximum_file_concurrency: 1,
@@ -2317,6 +2329,7 @@ mod tests {
         let destination = temporary.path().join("destination");
         let options = SyncOptions {
             state_directory: temporary.path().join("state"),
+            use_catalog_cache: true,
             transfer_part_bytes: 1024,
             maximum_concurrency: 2,
             maximum_file_concurrency: 2,

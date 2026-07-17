@@ -34,6 +34,11 @@ one-way dependency on directory integrity because a catalog closure commits to
 directory roots. `acceptance` owns no protocol rule and exists only to prove
 that the same public implementation runs under Worker WASM.
 
+Disposable metadata-cache encryption is deliberately outside this crate in
+`carrack-metadata-cache`. That orthogonal primitive knows only authority scope,
+logical record context, byte bounds, and authenticated encryption; it owns no
+VFS or Merkle semantics and cannot establish protocol correctness.
+
 ## Change policy
 
 A driver, UI, CLI, telemetry, quota, or provider change should not edit this

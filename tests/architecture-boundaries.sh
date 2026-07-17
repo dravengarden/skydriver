@@ -96,6 +96,12 @@ for core_module in "${core_modules[@]}"; do
   fi
 done
 
+if rg --line-number 'carrack-(sdk-core|client|driver-contract)|reqwest|tokio|rusqlite|fs2|worker' \
+  crates/carrack-metadata-cache/Cargo.toml crates/carrack-metadata-cache/src; then
+  echo "metadata cache primitive must remain independent of VFS semantics and I/O" >&2
+  exit 1
+fi
+
 if rg --line-number 'carrack-sdk-core|carrack-control-plane|reqwest' \
   crates/carrack-cli/Cargo.toml crates/carrack-cli/src; then
   echo "CLI binaries must remain thin carrack-client consumers" >&2

@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use carrack_metadata_cache::MetadataCacheCipher;
 use carrack_sdk_core::{
     CatalogCheckpoint, CatalogDelta, MAXIMUM_CATALOG_CHECKPOINT_BYTES, MAXIMUM_CATALOG_DELTA_BYTES,
     catalog_checkpoint_etag, validate_catalog_checkpoint, validate_catalog_checkpoint_etag,
@@ -53,6 +54,14 @@ impl VfsToken {
 
     pub(crate) fn encode(&self) -> String {
         URL_SAFE_NO_PAD.encode(self.0)
+    }
+
+    pub(crate) fn metadata_cache_cipher(
+        &self,
+        token_id: &[u8; 16],
+    ) -> Result<MetadataCacheCipher, Error> {
+        MetadataCacheCipher::new(&self.0, token_id)
+            .map_err(|error| Error::InvalidResponse(error.to_string()))
     }
 }
 

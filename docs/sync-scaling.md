@@ -81,6 +81,23 @@ HTTP catalog path and mandatory final fence. This can avoid finishing a large
 download for a namespace that already changed without adding a correctness
 dependency or routing payload bytes through Cloudflare.
 
+The native catalog cache stores only VFS metadata and Merkle directory nodes,
+never provider payload or irreplaceable state. Each record is authenticated and
+encrypted with a cache-only key derived from the exact VFS token; its logical
+content address is authenticated as associated data. Clients sharing the same
+owner-private state directory and token may therefore reuse immutable nodes,
+while another token or a copied, stale, or modified record fails authentication
+and is discarded. Cache schema upgrades deliberately fail closed into normal
+checkpoint or paginated hydration. Head comparison and publication are
+serialized across processes so an older client cannot overwrite a newer delta
+base. Deleting the complete cache remains a supported recovery operation.
+After a verified head publication, maintenance scans exactly one of 256
+content-address shards and deletes nodes outside that head's complete verified
+closure. The encrypted shard cursor advances only as a disposable hint; a
+missing or corrupt cursor restarts at shard zero. Publication and maintenance
+share the cross-process head lock, and any cleanup failure is ignored, so GC
+cannot reject a sync or make cache data authoritative.
+
 ## Acceptance matrix
 
 - Normal CI authenticates 100,000 ordered directory entries while asserting

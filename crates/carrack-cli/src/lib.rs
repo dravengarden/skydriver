@@ -684,6 +684,9 @@ enum FilesystemCommand {
         /// Private sync state and download journal directory.
         #[arg(long)]
         state_directory: Option<std::path::PathBuf>,
+        /// Disable persistent encrypted metadata/Merkle catalog acceleration.
+        #[arg(long)]
+        no_catalog_cache: bool,
         /// Provider range/resume segment bytes within each file.
         #[arg(long, default_value_t = 16 * 1024 * 1024)]
         transfer_part_bytes: u64,
@@ -806,9 +809,9 @@ struct ErrorDisposition {
 /// fails, the request cannot complete, or structured output cannot be encoded.
 pub async fn run(surface: Surface) -> Result<(), Error> {
     if matches!(surface, Surface::Filesystem) {
-        run_filesystem().await
+        Box::pin(run_filesystem()).await
     } else {
-        run_management().await
+        Box::pin(run_management()).await
     }
 }
 
@@ -1801,6 +1804,7 @@ async fn run_filesystem() -> Result<(), Error> {
             source,
             destination,
             state_directory,
+            no_catalog_cache,
             transfer_part_bytes,
             maximum_concurrency,
             maximum_file_concurrency,
@@ -1818,6 +1822,7 @@ async fn run_filesystem() -> Result<(), Error> {
                         &destination,
                         &SyncOptions {
                             state_directory,
+                            use_catalog_cache: !no_catalog_cache,
                             transfer_part_bytes,
                             maximum_concurrency,
                             maximum_file_concurrency,

@@ -448,9 +448,11 @@ dependencies = [
  "base64 0.22.1",
  "cap-std",
  "carrack-driver-contract",
+ "carrack-metadata-cache",
  "carrack-sdk-core",
  "fs2",
  "futures-util",
+ "getrandom 0.4.3",
  "hex",
  "httpmock",
  "reqwest",
@@ -497,6 +499,17 @@ version = "0.3.6"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "carrack-metadata-cache"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "hkdf",
+ "sha2",
+ "thiserror 2.0.18",
+ "zeroize",
 ]
 
 [[package]]

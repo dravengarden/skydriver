@@ -1,11 +1,13 @@
 //! Private content-addressed directory catalog used by incremental sync.
 
+use carrack_metadata_cache::MetadataCacheCipher;
 use carrack_sdk_core::{
     CATALOG_CHECKPOINT_SCHEMA, CatalogCheckpoint, CatalogCheckpointDirectory,
     CatalogCheckpointEntry, CatalogCheckpointEntryKind, CatalogDelta, DirectoryMerkleEntry,
     apply_catalog_delta, directory_merkle_root, validate_catalog_checkpoint,
     validate_catalog_checkpoint_etag,
 };
+use fs2::FileExt as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::{
@@ -16,14 +18,15 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use crate::{DirectoryEntry, EntryKind, Error, private_fs::ensure_private_directory};
+use crate::{DirectoryEntry, EntryKind, Error, VfsToken, private_fs::ensure_private_directory};
 
 const NODE_SCHEMA: &str = "carrack.vfs.catalog-node.v1";
 const ENVELOPE_SCHEMA: &str = "carrack.vfs.catalog-node-envelope.v1";
 const HEAD_SCHEMA: &str = "carrack.vfs.catalog-head.v1";
 const HEAD_ENVELOPE_SCHEMA: &str = "carrack.vfs.catalog-head-envelope.v1";
-const MAXIMUM_NODE_BYTES: u64 = 512 * 1024 * 1024;
-const MAXIMUM_HEAD_BYTES: u64 = 64 * 1024;
+const MAXIMUM_NODE_BYTES: usize = 512 * 1024 * 1024;
+const MAXIMUM_HEAD_BYTES: usize = 64 * 1024;
+const MAXIMUM_GC_CURSOR_BYTES: usize = 1;
 static TEMPORARY_ORDINAL: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -90,19 +93,36 @@ pub(crate) struct CatalogCheckpointCondition {
 pub(crate) struct CatalogStore {
     root: PathBuf,
     nodes: PathBuf,
+    cipher: MetadataCacheCipher,
+    enabled: bool,
 }
 
 impl CatalogStore {
-    pub(crate) fn new(state_directory: &Path, token_id: &str) -> Result<Self, Error> {
-        validate_hex::<16>(token_id, "catalog token identity")?;
+    pub(crate) fn new(
+        state_directory: &Path,
+        token_id: &str,
+        token: &VfsToken,
+        enabled: bool,
+    ) -> Result<Self, Error> {
+        let token_identity = decode_hex::<16>(token_id, "catalog token identity")?;
         let root = state_directory.join("catalog/tokens").join(token_id);
         let nodes = root.join("nodes");
-        ensure_private_directory(&root, "catalog root")?;
-        ensure_private_directory(&nodes, "catalog node directory")?;
-        Ok(Self { root, nodes })
+        if enabled {
+            ensure_private_directory(&root, "catalog root")?;
+            ensure_private_directory(&nodes, "catalog node directory")?;
+        }
+        Ok(Self {
+            root,
+            nodes,
+            cipher: token.metadata_cache_cipher(&token_identity)?,
+            enabled,
+        })
     }
 
     pub(crate) fn checkpoint_condition(&self) -> Result<Option<CatalogCheckpointCondition>, Error> {
+        if !self.enabled {
+            return Ok(None);
+        }
         let head = if let Ok(head) = self.load_head() {
             head
         } else {
@@ -136,6 +156,9 @@ impl CatalogStore {
         directory_id: &str,
         data_root: &str,
     ) -> Result<Option<CatalogNode>, Error> {
+        if !self.enabled {
+            return Ok(None);
+        }
         validate_hex::<16>(directory_id, "catalog directory identity")?;
         validate_hex::<32>(data_root, "catalog directory root")?;
         let path = self.node_path(directory_id, data_root)?;
@@ -146,14 +169,26 @@ impl CatalogStore {
         };
         if !metadata.file_type().is_file()
             || metadata.file_type().is_symlink()
-            || metadata.len() > MAXIMUM_NODE_BYTES
+            || metadata.len()
+                > u64::try_from(MetadataCacheCipher::maximum_encoded_bytes(
+                    MAXIMUM_NODE_BYTES,
+                ))
+                .unwrap_or(u64::MAX)
         {
             return Err(Error::InvalidResponse(
                 "catalog node is not a bounded regular file".to_owned(),
             ));
         }
-        let encoded =
+        let sealed =
             std::fs::read(&path).map_err(|error| local_error("read catalog node", error))?;
+        let encoded = self
+            .cipher
+            .open(
+                &node_context(directory_id, data_root),
+                &sealed,
+                MAXIMUM_NODE_BYTES,
+            )
+            .map_err(|error| Error::InvalidResponse(error.to_string()))?;
         let envelope: CatalogEnvelope = serde_json::from_slice(&encoded)
             .map_err(|error| Error::InvalidResponse(format!("decode catalog node: {error}")))?;
         if serde_json::to_vec(&envelope)
@@ -187,7 +222,12 @@ impl CatalogStore {
             data_root: data_root.to_owned(),
             entries: entries.iter().map(CatalogEntry::from).collect(),
         };
-        self.publish_node(node)
+        if self.enabled {
+            self.publish_node(node)
+        } else {
+            validate_node(&node, directory_id, data_root)?;
+            Ok(node)
+        }
     }
 
     pub(crate) fn publish_checkpoint(
@@ -199,22 +239,29 @@ impl CatalogStore {
             .map_err(|error| Error::InvalidResponse(error.to_string()))?;
         validate_catalog_checkpoint_etag(etag)
             .map_err(|error| Error::InvalidResponse(error.to_string()))?;
+        if !self.enabled {
+            return Ok(());
+        }
+        let _lock = self.acquire_head_lock()?;
         for directory in &checkpoint.directories {
             self.publish_node(checkpoint_node(directory))?;
         }
-        self.publish_checkpoint_head(checkpoint, etag)
+        if self.publish_checkpoint_head_locked(checkpoint, etag)? {
+            let _ = self.prune_one_shard(checkpoint);
+        }
+        Ok(())
     }
 
-    fn publish_checkpoint_head(
+    fn publish_checkpoint_head_locked(
         &self,
         checkpoint: &CatalogCheckpoint,
         etag: &str,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         let checkpoint_bytes = serde_json::to_vec(checkpoint).map_err(|error| {
             Error::InvalidResponse(format!("encode catalog checkpoint receipt: {error}"))
         })?;
         let checkpoint_sha256 = hex::encode(Sha256::digest(&checkpoint_bytes));
-        self.publish_head(CatalogHead {
+        self.publish_head_locked(CatalogHead {
             schema: HEAD_SCHEMA.to_owned(),
             filesystem_id: checkpoint.filesystem_id.clone(),
             revision_id: checkpoint.revision_id,
@@ -222,11 +269,11 @@ impl CatalogStore {
             root_data_root: checkpoint.root_data_root.clone(),
             etag: etag.to_owned(),
             checkpoint_sha256,
-        })?;
-        Ok(())
+        })
     }
 
     pub(crate) fn apply_delta(&self, delta: &CatalogDelta, etag: &str) -> Result<(), Error> {
+        let _lock = self.acquire_head_lock()?;
         let head = self.load_head()?.ok_or_else(|| {
             Error::InvalidResponse("catalog delta has no local base head".to_owned())
         })?;
@@ -240,7 +287,10 @@ impl CatalogStore {
         for directory in &delta.directories {
             self.publish_node(checkpoint_node(directory))?;
         }
-        self.publish_checkpoint_head(&checkpoint, etag)
+        if self.publish_checkpoint_head_locked(&checkpoint, etag)? {
+            let _ = self.prune_one_shard(&checkpoint);
+        }
+        Ok(())
     }
 
     fn reconstruct_checkpoint(&self, head: &CatalogHead) -> Result<CatalogCheckpoint, Error> {
@@ -313,14 +363,22 @@ impl CatalogStore {
         };
         if !metadata.file_type().is_file()
             || metadata.file_type().is_symlink()
-            || metadata.len() > MAXIMUM_HEAD_BYTES
+            || metadata.len()
+                > u64::try_from(MetadataCacheCipher::maximum_encoded_bytes(
+                    MAXIMUM_HEAD_BYTES,
+                ))
+                .unwrap_or(u64::MAX)
         {
             return Err(Error::InvalidResponse(
                 "catalog head is not a bounded regular file".to_owned(),
             ));
         }
-        let encoded =
+        let sealed =
             std::fs::read(path).map_err(|error| local_error("read catalog head", error))?;
+        let encoded = self
+            .cipher
+            .open("head", &sealed, MAXIMUM_HEAD_BYTES)
+            .map_err(|error| Error::InvalidResponse(error.to_string()))?;
         let envelope: CatalogHeadEnvelope = serde_json::from_slice(&encoded)
             .map_err(|error| Error::InvalidResponse(format!("decode catalog head: {error}")))?;
         if serde_json::to_vec(&envelope)
@@ -342,7 +400,7 @@ impl CatalogStore {
         Ok(Some(envelope.head))
     }
 
-    fn publish_head(&self, head: CatalogHead) -> Result<(), Error> {
+    fn publish_head_locked(&self, head: CatalogHead) -> Result<bool, Error> {
         validate_head(&head)?;
         let existing = if let Ok(existing) = self.load_head() {
             existing
@@ -352,7 +410,7 @@ impl CatalogStore {
         };
         if let Some(existing) = existing {
             if existing.revision_id > head.revision_id {
-                return Ok(());
+                return Ok(false);
             }
             if existing.revision_id == head.revision_id {
                 if canonical_head_bytes(&existing)? != canonical_head_bytes(&head)? {
@@ -360,7 +418,7 @@ impl CatalogStore {
                         "catalog head differs at one revision".to_owned(),
                     ));
                 }
-                return Ok(());
+                return Ok(true);
             }
         }
         let head_bytes = canonical_head_bytes(&head)?;
@@ -371,7 +429,7 @@ impl CatalogStore {
         };
         let encoded = serde_json::to_vec(&envelope)
             .map_err(|error| Error::InvalidResponse(format!("encode catalog head: {error}")))?;
-        if u64::try_from(encoded.len()).unwrap_or(u64::MAX) > MAXIMUM_HEAD_BYTES {
+        if encoded.len() > MAXIMUM_HEAD_BYTES {
             return Err(Error::InvalidResponse(
                 "catalog head exceeds the local size bound".to_owned(),
             ));
@@ -381,10 +439,12 @@ impl CatalogStore {
             std::process::id(),
             TEMPORARY_ORDINAL.fetch_add(1, Ordering::Relaxed)
         ));
-        write_private_file(&temporary, &encoded)?;
+        let sealed = self.seal("head", &encoded)?;
+        write_private_file(&temporary, &sealed)?;
         std::fs::rename(&temporary, self.root.join("head.json"))
             .map_err(|error| local_error("publish catalog head", error))?;
-        sync_directory(&self.root)
+        sync_directory(&self.root)?;
+        Ok(true)
     }
 
     fn publish_node(&self, node: CatalogNode) -> Result<CatalogNode, Error> {
@@ -413,7 +473,7 @@ impl CatalogStore {
         };
         let encoded = serde_json::to_vec(&envelope)
             .map_err(|error| Error::InvalidResponse(format!("encode catalog envelope: {error}")))?;
-        if u64::try_from(encoded.len()).unwrap_or(u64::MAX) > MAXIMUM_NODE_BYTES {
+        if encoded.len() > MAXIMUM_NODE_BYTES {
             return Err(Error::InvalidResponse(
                 "catalog node exceeds the local size bound".to_owned(),
             ));
@@ -428,7 +488,8 @@ impl CatalogStore {
             std::process::id(),
             TEMPORARY_ORDINAL.fetch_add(1, Ordering::Relaxed)
         ));
-        write_private_file(&temporary, &encoded)?;
+        let sealed = self.seal(&node_context(&directory_id, &data_root), &encoded)?;
+        write_private_file(&temporary, &sealed)?;
         match std::fs::hard_link(&temporary, &final_path) {
             Ok(()) => {
                 sync_directory(parent)?;
@@ -468,13 +529,128 @@ impl CatalogStore {
     }
 
     pub(crate) fn discard_node(&self, directory_id: &str, data_root: &str) -> Result<(), Error> {
+        if !self.enabled {
+            return Ok(());
+        }
         let path = self.node_path(directory_id, data_root)?;
         remove_cache_file(&path, "discard invalid catalog node")
     }
 
     pub(crate) fn discard_head(&self) -> Result<(), Error> {
+        if !self.enabled {
+            return Ok(());
+        }
         remove_cache_file(&self.root.join("head.json"), "discard invalid catalog head")
     }
+
+    fn seal(&self, context: &str, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+        let mut nonce = [0_u8; 12];
+        getrandom::fill(&mut nonce)
+            .map_err(|error| Error::InvalidResponse(format!("generate cache nonce: {error}")))?;
+        self.cipher
+            .seal(context, nonce, plaintext)
+            .map_err(|error| Error::InvalidResponse(error.to_string()))
+    }
+
+    fn acquire_head_lock(&self) -> Result<std::fs::File, Error> {
+        let path = self.root.join("head.lock");
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let file = options
+            .open(path)
+            .map_err(|error| local_error("open catalog head lock", error))?;
+        let metadata = file
+            .metadata()
+            .map_err(|error| local_error("inspect catalog head lock", error))?;
+        if !metadata.is_file() {
+            return Err(Error::InvalidResponse(
+                "catalog head lock is not a regular file".to_owned(),
+            ));
+        }
+        file.lock_exclusive()
+            .map_err(|error| local_error("lock catalog head", error))?;
+        Ok(file)
+    }
+
+    fn prune_one_shard(&self, checkpoint: &CatalogCheckpoint) -> Result<(), Error> {
+        let shard = self.load_gc_shard();
+        let shard_name = format!("{shard:02x}");
+        let directory = self.nodes.join(&shard_name);
+        let reachable = checkpoint
+            .directories
+            .iter()
+            .filter(|node| node.data_root.starts_with(&shard_name))
+            .map(|node| self.node_path(&node.directory_id, &node.data_root))
+            .collect::<Result<HashSet<_>, _>>()?;
+        match std::fs::read_dir(&directory) {
+            Ok(entries) => {
+                for entry in entries {
+                    let entry =
+                        entry.map_err(|error| local_error("read catalog GC entry", error))?;
+                    let path = entry.path();
+                    let metadata = std::fs::symlink_metadata(&path)
+                        .map_err(|error| local_error("inspect catalog GC entry", error))?;
+                    if metadata.file_type().is_file()
+                        && !metadata.file_type().is_symlink()
+                        && path
+                            .extension()
+                            .is_some_and(|extension| extension == "json")
+                        && !reachable.contains(&path)
+                    {
+                        match std::fs::remove_file(&path) {
+                            Ok(()) => {}
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(error) => {
+                                return Err(local_error("remove stale catalog node", error));
+                            }
+                        }
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(local_error("open catalog GC shard", error)),
+        }
+        self.publish_gc_shard(shard.wrapping_add(1))
+    }
+
+    fn load_gc_shard(&self) -> u8 {
+        let path = self.root.join("gc.cursor");
+        let Ok(sealed) = std::fs::read(&path) else {
+            return 0;
+        };
+        match self
+            .cipher
+            .open("gc-cursor", &sealed, MAXIMUM_GC_CURSOR_BYTES)
+        {
+            Ok(plaintext) if plaintext.len() == 1 => plaintext[0],
+            _ => {
+                let _ = std::fs::remove_file(path);
+                0
+            }
+        }
+    }
+
+    fn publish_gc_shard(&self, shard: u8) -> Result<(), Error> {
+        let temporary = self.root.join(format!(
+            ".gc.{}.{}.tmp",
+            std::process::id(),
+            TEMPORARY_ORDINAL.fetch_add(1, Ordering::Relaxed)
+        ));
+        let sealed = self.seal("gc-cursor", &[shard])?;
+        write_private_file(&temporary, &sealed)?;
+        std::fs::rename(&temporary, self.root.join("gc.cursor"))
+            .map_err(|error| local_error("publish catalog GC cursor", error))?;
+        sync_directory(&self.root)
+    }
+}
+
+fn node_context(directory_id: &str, data_root: &str) -> String {
+    format!("node/{directory_id}/{data_root}")
 }
 
 fn remove_cache_file(path: &Path, context: &'static str) -> Result<(), Error> {
@@ -702,7 +878,12 @@ fn local_error(context: &str, error: impl std::fmt::Display) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use carrack_sdk_core::build_catalog_delta;
+
+    fn cache_token(byte: u8) -> VfsToken {
+        VfsToken::parse(&URL_SAFE_NO_PAD.encode([byte; 32])).expect("cache token")
+    }
 
     fn empty_checkpoint() -> CatalogCheckpoint {
         let root = hex::encode(directory_merkle_root(&[]).expect("empty directory root"));
@@ -727,8 +908,13 @@ mod tests {
     #[test]
     fn publishes_loads_and_rejects_corrupt_nodes() {
         let temporary = tempfile::tempdir().expect("temporary catalog");
-        let store = CatalogStore::new(temporary.path(), "101112131415161718191a1b1c1d1e1f")
-            .expect("catalog store");
+        let store = CatalogStore::new(
+            temporary.path(),
+            "101112131415161718191a1b1c1d1e1f",
+            &cache_token(1),
+            true,
+        )
+        .expect("catalog store");
         let directory_id = "2031425364758697a8b9cadbecfd0e1f";
         let data_root = "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254";
         let node = store
@@ -765,10 +951,20 @@ mod tests {
     #[test]
     fn isolates_nodes_between_vfs_tokens() {
         let temporary = tempfile::tempdir().expect("temporary catalog");
-        let first = CatalogStore::new(temporary.path(), "101112131415161718191a1b1c1d1e1f")
-            .expect("first token catalog");
-        let second = CatalogStore::new(temporary.path(), "202122232425262728292a2b2c2d2e2f")
-            .expect("second token catalog");
+        let first = CatalogStore::new(
+            temporary.path(),
+            "101112131415161718191a1b1c1d1e1f",
+            &cache_token(1),
+            true,
+        )
+        .expect("first token catalog");
+        let second = CatalogStore::new(
+            temporary.path(),
+            "202122232425262728292a2b2c2d2e2f",
+            &cache_token(2),
+            true,
+        )
+        .expect("second token catalog");
         let directory_id = "303132333435363738393a3b3c3d3e3f";
         let data_root = "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254";
 
@@ -785,10 +981,68 @@ mod tests {
     }
 
     #[test]
+    fn encrypts_metadata_at_rest_and_reopens_only_with_the_same_token() {
+        let temporary = tempfile::tempdir().expect("temporary catalog");
+        let token_id = "101112131415161718191a1b1c1d1e1f";
+        let token = cache_token(1);
+        let store =
+            CatalogStore::new(temporary.path(), token_id, &token, true).expect("catalog store");
+        let directory_id = "2031425364758697a8b9cadbecfd0e1f";
+        let data_root = "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254";
+        store
+            .publish(directory_id, data_root, &[])
+            .expect("publish encrypted node");
+        let path = store
+            .node_path(directory_id, data_root)
+            .expect("catalog node path");
+        let sealed = std::fs::read(path).expect("read sealed node");
+        assert!(!String::from_utf8_lossy(&sealed).contains(NODE_SCHEMA));
+
+        let reopened = CatalogStore::new(temporary.path(), token_id, &token, true)
+            .expect("reopen catalog store");
+        assert!(
+            reopened
+                .load(directory_id, data_root)
+                .expect("open same-token node")
+                .is_some()
+        );
+        let wrong_token = CatalogStore::new(temporary.path(), token_id, &cache_token(2), true)
+            .expect("wrong-token store");
+        assert!(wrong_token.load(directory_id, data_root).is_err());
+    }
+
+    #[test]
+    fn disabled_catalog_cache_keeps_metadata_ephemeral() {
+        let temporary = tempfile::tempdir().expect("temporary catalog");
+        let token_id = "101112131415161718191a1b1c1d1e1f";
+        let store = CatalogStore::new(temporary.path(), token_id, &cache_token(1), false)
+            .expect("disabled catalog store");
+        let directory_id = "2031425364758697a8b9cadbecfd0e1f";
+        let data_root = "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254";
+        store
+            .publish(directory_id, data_root, &[])
+            .expect("validate ephemeral node");
+
+        assert!(
+            store
+                .load(directory_id, data_root)
+                .expect("disabled cache miss")
+                .is_none()
+        );
+        assert!(store.checkpoint_condition().expect("no head").is_none());
+        assert!(!temporary.path().join("catalog").exists());
+    }
+
+    #[test]
     fn persists_only_a_verified_checkpoint_head() {
         let temporary = tempfile::tempdir().expect("temporary catalog");
-        let store = CatalogStore::new(temporary.path(), "303132333435363738393a3b3c3d3e3f")
-            .expect("catalog store");
+        let store = CatalogStore::new(
+            temporary.path(),
+            "303132333435363738393a3b3c3d3e3f",
+            &cache_token(3),
+            true,
+        )
+        .expect("catalog store");
         let checkpoint = empty_checkpoint();
         let checkpoint_sha256 = hex::encode(Sha256::digest(
             serde_json::to_vec(&checkpoint).expect("encode checkpoint"),
@@ -820,10 +1074,112 @@ mod tests {
     }
 
     #[test]
+    fn catalog_head_never_regresses_when_clients_share_one_cache() {
+        let temporary = tempfile::tempdir().expect("temporary catalog");
+        let token = cache_token(3);
+        let store = CatalogStore::new(
+            temporary.path(),
+            "303132333435363738393a3b3c3d3e3f",
+            &token,
+            true,
+        )
+        .expect("catalog store");
+        let newer = checkpoint_with_child(2, Some(1), "newer");
+        let older = checkpoint_with_child(1, None, "older");
+        store
+            .publish_checkpoint(&newer, &format!("\"sha256:{}\"", checkpoint_sha256(&newer)))
+            .expect("publish newer head");
+        store
+            .publish_checkpoint(&older, &format!("\"sha256:{}\"", checkpoint_sha256(&older)))
+            .expect("ignore older head");
+
+        assert_eq!(
+            store
+                .checkpoint_condition()
+                .expect("load monotonic head")
+                .expect("catalog head")
+                .revision_id,
+            2
+        );
+    }
+
+    #[test]
+    fn catalog_gc_removes_only_nodes_outside_the_published_closure() {
+        let temporary = tempfile::tempdir().expect("temporary catalog");
+        let store = CatalogStore::new(
+            temporary.path(),
+            "303132333435363738393a3b3c3d3e3f",
+            &cache_token(3),
+            true,
+        )
+        .expect("catalog store");
+        let old = checkpoint_with_child(1, None, "old");
+        let current = checkpoint_with_child(2, Some(1), "current");
+        store
+            .publish_checkpoint(&old, &format!("\"sha256:{}\"", checkpoint_sha256(&old)))
+            .expect("publish old checkpoint");
+        let old_root = store
+            .node_path(&old.root_directory_id, &old.root_data_root)
+            .expect("old root path");
+        let current_root = store
+            .node_path(&current.root_directory_id, &current.root_data_root)
+            .expect("current root path");
+        let shard = u8::from_str_radix(&old.root_data_root[..2], 16).expect("old root shard");
+        store.publish_gc_shard(shard).expect("select GC shard");
+
+        store
+            .publish_checkpoint(
+                &current,
+                &format!("\"sha256:{}\"", checkpoint_sha256(&current)),
+            )
+            .expect("publish current checkpoint");
+
+        assert!(!old_root.exists());
+        assert!(current_root.exists());
+        assert_eq!(
+            store
+                .checkpoint_condition()
+                .expect("current condition")
+                .expect("current head")
+                .revision_id,
+            2
+        );
+    }
+
+    #[test]
+    fn corrupt_catalog_gc_cursor_falls_back_without_affecting_publication() {
+        let temporary = tempfile::tempdir().expect("temporary catalog");
+        let store = CatalogStore::new(
+            temporary.path(),
+            "303132333435363738393a3b3c3d3e3f",
+            &cache_token(3),
+            true,
+        )
+        .expect("catalog store");
+        std::fs::write(store.root.join("gc.cursor"), b"not a sealed cursor")
+            .expect("write corrupt cursor");
+        let checkpoint = empty_checkpoint();
+        store
+            .publish_checkpoint(
+                &checkpoint,
+                &format!("\"sha256:{}\"", checkpoint_sha256(&checkpoint)),
+            )
+            .expect("publish despite corrupt GC hint");
+
+        assert_eq!(store.load_gc_shard(), 1);
+        assert!(store.checkpoint_condition().expect("head").is_some());
+    }
+
+    #[test]
     fn applies_minimal_delta_over_verified_content_addressed_base() {
         let temporary = tempfile::tempdir().expect("temporary catalog");
-        let store = CatalogStore::new(temporary.path(), "303132333435363738393a3b3c3d3e3f")
-            .expect("catalog store");
+        let store = CatalogStore::new(
+            temporary.path(),
+            "303132333435363738393a3b3c3d3e3f",
+            &cache_token(3),
+            true,
+        )
+        .expect("catalog store");
         let base = checkpoint_with_child(1, None, "docs");
         let target = checkpoint_with_child(2, Some(1), "archive");
         let base_sha256 = checkpoint_sha256(&base);

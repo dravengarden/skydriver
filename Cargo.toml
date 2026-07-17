@@ -4,6 +4,7 @@ members = [
   "crates/carrack-client",
   "crates/carrack-cli",
   "crates/carrack-driver-contract",
+  "crates/carrack-metadata-cache",
   "crates/carrack-sdk-core",
 ]
 resolver = "3"
