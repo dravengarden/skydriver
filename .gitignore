@@ -6,6 +6,7 @@
 /.dev.vars
 /target/
 /control-plane/build/
+/control-plane/.wrangler/
 /node_modules/
 /web/dist/
 /web/node_modules/
