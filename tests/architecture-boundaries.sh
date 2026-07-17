@@ -330,3 +330,10 @@ if ! rg -U -q \
   echo "Activity must keep R2 cleanup as the indexed outer relation" >&2
   exit 1
 fi
+
+operator_rotation=control-plane/scripts/rotate-operator-credential.mjs
+if ! rg -q '"CARRACK_ADMIN_TOKEN"' "$operator_rotation" \
+  || rg -q 'CARRACK_VFS_MASTER_KEY|CARRACK_VFS_TOKEN|secretName|secret_name' "$operator_rotation"; then
+  echo "operator credential rotation must be a non-generic ADMIN_TOKEN-only command" >&2
+  exit 1
+fi

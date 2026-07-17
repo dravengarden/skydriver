@@ -98,8 +98,9 @@ removes the terminal semicolon from SQLite trigger definitions; D1 then rejects
 the incomplete trigger. The Carrack runner imports one migration and its
 `d1_migrations` receipt atomically, and verifies that receipt before advancing.
 
-The operator console requires the committed canonical account
-`CARRACK_OPERATOR_ACCOUNT=draven` plus one independent
+The operator console requires one exact environment-scoped canonical account,
+`draven@carrack-dev` for development and `draven@carrack-prod` for production,
+plus one independent
 `CARRACK_ADMIN_TOKEN` Worker secret per environment. The account is a
 non-secret login identity, not an additional authentication factor or account
 directory. A successful login exchanges the exact account and credential for a
@@ -109,10 +110,9 @@ deletes expired operator and configuration sessions, so cleanup does not depend
 on a later login.
 
 The unauthenticated health response exposes the non-secret account so the UI
-can present a site-qualified password-manager identity. Safari stores
-`draven@carrack-dev` and `draven@carrack-prod`, while the UI submits only the
-canonical `draven` account to the Worker. The
-password-manager suffix is not an account, principal, or authorization input.
+and password manager use the exact same environment-scoped identity. The
+Worker accepts only that configured identity; there is no display-only alias
+or cross-environment fallback.
 The login endpoint also accepts only the exact legacy alias for its own
 environment so an older cached UI cannot lock the operator out; a dev alias is
 always rejected by production and vice versa.
@@ -153,6 +153,21 @@ token, and development and production must never share it.
 directory keys and derives the recoverable one-shot bootstrap token. Preserve
 the version while either V2 envelopes or the bootstrap receipt depend on it;
 see `vfs-bootstrap-v1.md`.
+
+After initial provisioning, rotate only the operator credential through the
+non-generic stdin-only recipe:
+
+```bash
+just rotate-operator-dev < "$owner_private_operator_credential_file"
+CARRACK_ROTATE_OPERATOR_PROD=1 just rotate-operator-prod \
+  < "$owner_private_operator_credential_file"
+```
+
+These recipes are hard-coded to `CARRACK_ADMIN_TOKEN`. An operator account or
+password change must never put, delete, regenerate, or otherwise mutate
+`CARRACK_VFS_MASTER_KEY_V1`, any wrapped directory key, or bootstrap recovery
+authority. Without a separately designed envelope-rewrapping migration,
+changing that master key makes existing encrypted data unrecoverable.
 
 Build and deploy only through the environment-specific recipes. Production
 requires an additional explicit acknowledgement:
@@ -228,7 +243,7 @@ The stable UI endpoints are:
 
 The workers.dev subdomain and version preview URLs are disabled for both
 environments. After deployment, verify that `/api/health` reports the expected
-`environment`, sign in as `draven` with the environment's operator credential, and confirm
+`environment`, sign in with that environment's exact configured operator account and credential, and confirm
 `/api/admin/snapshot` and `/api/admin/activity` read only that environment's D1
 database.
 
@@ -247,7 +262,7 @@ deployment credential boundary:
 ```bash
 export CLOUDFLARE_TOKEN_FACTORY_API_TOKEN='<short-lived Account API Tokens Write credential>'
 export CARRACK_OPERATOR_CREDENTIAL='<environment operator credential>'
-export CARRACK_OPERATOR_ACCOUNT=draven
+export CARRACK_OPERATOR_ACCOUNT=draven@carrack-dev
 # Required only when this environment already has a bootstrapped VFS.
 export CARRACK_VFS_TOKEN='<environment root or scoped driver.manage token>'
 

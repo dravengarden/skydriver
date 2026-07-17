@@ -13,7 +13,6 @@ import {
 import { useState, type FormEvent } from "react";
 import { CarrackMark } from "../brand/CarrackLogo";
 import { OceanBackdrop } from "../brand/OceanBackdrop";
-import { passwordManagerIdentity, resolvePasswordManagerIdentity } from "./loginIdentity";
 
 interface LoginPageProps {
     readonly environment: string;
@@ -30,19 +29,17 @@ export function LoginPage({
     error,
     onLogin,
 }: LoginPageProps) {
-    const expectedIdentity = passwordManagerIdentity(operatorAccount, environment);
-    const [savedIdentity, setSavedIdentity] = useState(expectedIdentity);
+    const [savedIdentity, setSavedIdentity] = useState(operatorAccount);
     const [identityError, setIdentityError] = useState(false);
     const [password, setPassword] = useState("");
 
     function submit(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
-        const account = resolvePasswordManagerIdentity(savedIdentity, operatorAccount, environment);
-        if (account === null) {
+        if (savedIdentity !== operatorAccount) {
             setIdentityError(true);
         } else if (password !== "") {
             setIdentityError(false);
-            onLogin(account, password);
+            onLogin(operatorAccount, password);
         }
     }
 
@@ -145,8 +142,8 @@ export function LoginPage({
                         error={identityError}
                         helperText={
                             identityError
-                                ? `Use ${expectedIdentity} for this environment.`
-                                : `Carrack account ${operatorAccount}; qualified so Safari keeps environments separate.`
+                                ? `Use ${operatorAccount} for this environment.`
+                                : "This environment-scoped account keeps saved credentials separate."
                         }
                         slotProps={{
                             htmlInput: {

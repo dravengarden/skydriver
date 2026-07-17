@@ -10,7 +10,6 @@ import {
     validateDriverRegistration,
     validateDriverState,
 } from "./client";
-import { passwordManagerIdentity, resolvePasswordManagerIdentity } from "../auth/loginIdentity";
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -78,15 +77,6 @@ describe("parseSession", () => {
 });
 
 describe("operator session", () => {
-    it("keeps saved identities separate while preserving the server account", () => {
-        expect(passwordManagerIdentity("draven", "dev")).toBe("draven@carrack-dev");
-        expect(passwordManagerIdentity("draven", "prod")).toBe("draven@carrack-prod");
-        expect(resolvePasswordManagerIdentity("draven@carrack-dev", "draven", "dev")).toBe(
-            "draven",
-        );
-        expect(resolvePasswordManagerIdentity("draven@carrack-prod", "draven", "dev")).toBeNull();
-    });
-
     it("maps an unauthorized status to a logged-out session", async () => {
         vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 401 })));
 
@@ -99,13 +89,15 @@ describe("operator session", () => {
             .mockResolvedValue(Response.json({ authenticated: true }, { status: 200 }));
         vi.stubGlobal("fetch", fetchMock);
 
-        await expect(login({ account: "draven", password: "operator-secret" })).resolves.toEqual({
+        await expect(
+            login({ account: "draven@carrack-dev", password: "operator-secret" }),
+        ).resolves.toEqual({
             authenticated: true,
         });
         const call = fetchMock.mock.calls[0];
         expect(call?.[0]).toBe("/api/auth/login");
         expect(JSON.parse(String(call?.[1]?.body))).toEqual({
-            account: "draven",
+            account: "draven@carrack-dev",
             password: "operator-secret",
         });
     });

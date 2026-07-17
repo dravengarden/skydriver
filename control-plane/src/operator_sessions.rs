@@ -79,7 +79,6 @@ struct ConfigurationSessionResponse {
 pub(crate) async fn login(request: &mut Request, env: &Env) -> Result<Response> {
     let credentials = request.json::<LoginRequest>().await?;
     let configured_account = env.var(OPERATOR_ACCOUNT_BINDING)?.to_string();
-    let environment = env.var("CARRACK_ENVIRONMENT")?.to_string();
     if !canonical_account(&configured_account) {
         return Err(worker::Error::RustError(
             "CARRACK_OPERATOR_ACCOUNT must be a canonical account name".to_owned(),
@@ -100,7 +99,7 @@ pub(crate) async fn login(request: &mut Request, env: &Env) -> Result<Response> 
     let now = now_seconds();
     let ip = client_ip(request)?;
     let ip_subject = rate_limit_subject(&configured, LOGIN_IP_POLICY.scope, &ip)?;
-    let account_is_valid = account_matches(&credentials.account, &configured_account, &environment);
+    let account_is_valid = account_matches(&credentials.account, &configured_account);
     let account_subject = account_is_valid
         .then(|| rate_limit_subject(&configured, LOGIN_ACCOUNT_POLICY.scope, &configured_account))
         .transpose()?;
@@ -387,6 +386,15 @@ fn canonical_token(token: &str) -> bool {
 fn canonical_account(account: &str) -> bool {
     let bytes = account.as_bytes();
     (1..=64).contains(&bytes.len())
+        && account.split_once('@').map_or_else(
+            || canonical_account_part(account),
+            |(name, realm)| canonical_account_part(name) && canonical_account_part(realm),
+        )
+}
+
+fn canonical_account_part(part: &str) -> bool {
+    let bytes = part.as_bytes();
+    !bytes.is_empty()
         && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
         && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
         && bytes
@@ -394,8 +402,8 @@ fn canonical_account(account: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(byte))
 }
 
-fn account_matches(candidate: &str, configured: &str, environment: &str) -> bool {
-    candidate == configured || candidate == format!("{configured}@{environment}")
+fn account_matches(candidate: &str, configured: &str) -> bool {
+    candidate == configured
 }
 
 fn credential_matches(candidate: &str, configured: &str) -> bool {
@@ -575,17 +583,22 @@ mod tests {
     fn accepts_only_canonical_operator_accounts() {
         assert!(canonical_account("draven"));
         assert!(canonical_account("operator.dev-1"));
+        assert!(canonical_account("draven@carrack-dev"));
         assert!(!canonical_account(""));
         assert!(!canonical_account("Draven"));
         assert!(!canonical_account("-operator"));
+        assert!(!canonical_account("draven@@carrack-dev"));
+        assert!(!canonical_account("draven@-carrack-dev"));
     }
 
     #[test]
-    fn accepts_only_the_canonical_or_exact_environment_identity() {
-        assert!(account_matches("draven", "draven", "dev"));
-        assert!(account_matches("draven@dev", "draven", "dev"));
-        assert!(!account_matches("draven@prod", "draven", "dev"));
-        assert!(!account_matches("other@dev", "draven", "dev"));
+    fn accepts_only_the_exact_configured_account() {
+        assert!(account_matches("draven@carrack-dev", "draven@carrack-dev"));
+        assert!(!account_matches("draven", "draven@carrack-dev"));
+        assert!(!account_matches(
+            "draven@carrack-prod",
+            "draven@carrack-dev"
+        ));
     }
 
     #[test]

@@ -202,6 +202,11 @@ This document is the normative product and correctness baseline. The key words
 - Secret input MUST use stdin, an owner-private file, browser paste, or an
   equivalent non-argv channel. A secret MUST never be returned after storage;
   only redacted health and expiry metadata may be displayed.
+- Operator-account or operator-credential rotation MUST NOT create, replace,
+  delete, or otherwise mutate a VFS master key, wrapped directory key, or VFS
+  recovery authority. VFS master-key migration requires a separate,
+  explicitly reviewed rewrapping protocol; changing the operator password is
+  never such a migration.
 
 ## Quota and placement
 

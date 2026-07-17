@@ -59,6 +59,7 @@ const expected = {
         bucket: "carrack-manifests-dev",
         payload: "carrack-payload-dev",
         hostname: "dev.carrack.stormbird.xyz",
+        operatorAccount: "draven@carrack-dev",
     },
     prod: {
         worker: "carrack-control-plane-prod",
@@ -66,6 +67,7 @@ const expected = {
         bucket: "carrack-manifests-prod",
         payload: "carrack-payload-prod",
         hostname: "carrack.stormbird.xyz",
+        operatorAccount: "draven@carrack-prod",
     },
 };
 const expectedR2Endpoint =
@@ -99,8 +101,8 @@ for (const [name, wanted] of Object.entries(expected)) {
     if (environment.vars?.CARRACK_ENVIRONMENT !== name) {
         fail(`${name} must identify itself through CARRACK_ENVIRONMENT`);
     }
-    if (environment.vars?.CARRACK_OPERATOR_ACCOUNT !== "draven") {
-        fail(`${name} must require the draven operator account`);
+    if (environment.vars?.CARRACK_OPERATOR_ACCOUNT !== wanted.operatorAccount) {
+        fail(`${name} must require the environment-scoped operator account`);
     }
     if (environment.vars?.CARRACK_R2_ENDPOINT !== expectedR2Endpoint) {
         fail(`${name} must pin the account R2 S3 endpoint used for direct grants`);

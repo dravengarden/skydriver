@@ -145,7 +145,7 @@ for (const environment of Object.values(expected)) {
     const operatorAccount = settings.bindings.find(
         ({ type, name }) => type === "plain_text" && name === "CARRACK_OPERATOR_ACCOUNT",
     );
-    if (operatorAccount?.text !== environment.operatorAccount || operatorAccount.text !== "draven") {
+    if (operatorAccount?.text !== environment.operatorAccount) {
         throw new Error(`${environment.name} Worker has the wrong operator account`);
     }
 

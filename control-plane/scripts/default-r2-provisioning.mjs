@@ -3,6 +3,17 @@ import { createHash } from "node:crypto";
 export const DEFAULT_R2_DRIVER_ID = "r2-default";
 export const R2_BUCKET_WRITE_PERMISSION = "Workers R2 Storage Bucket Item Write";
 
+function canonicalOperatorAccount(account) {
+    if (typeof account !== "string" || account.length === 0 || account.length > 64) {
+        return false;
+    }
+    const parts = account.split("@");
+    return (
+        parts.length <= 2 &&
+        parts.every((part) => /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/.test(part))
+    );
+}
+
 export function environmentProfile(config, environmentName, accountId) {
     if (environmentName !== "dev" && environmentName !== "prod") {
         throw new Error("environment must be dev or prod");
@@ -19,7 +30,7 @@ export function environmentProfile(config, environmentName, accountId) {
     const hostname = environment?.routes?.[0]?.pattern;
     if (
         typeof endpoint !== "string" ||
-        !/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/.test(operatorAccount ?? "") ||
+        !canonicalOperatorAccount(operatorAccount) ||
         payloadBindings?.length !== 1 ||
         typeof payloadBindings[0].bucket_name !== "string" ||
         typeof hostname !== "string"

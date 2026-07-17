@@ -31,6 +31,7 @@ test:
     node --check control-plane/scripts/audit-environments.mjs
     node --check control-plane/scripts/deploy-worker.mjs
     node --check control-plane/scripts/provision-default-r2.mjs
+    node --check control-plane/scripts/rotate-operator-credential.mjs
     node --test control-plane/scripts/deployment-acceptance.test.mjs
     node --test control-plane/scripts/default-r2-provisioning.test.mjs
     node --test control-plane/scripts/provision-default-r2.test.mjs
@@ -58,6 +59,13 @@ migrate-dev:
 migrate-prod:
     test "${CARRACK_MIGRATE_PROD:-}" = "1"
     node control-plane/scripts/apply-migrations.mjs prod
+
+rotate-operator-dev:
+    node control-plane/scripts/rotate-operator-credential.mjs dev
+
+rotate-operator-prod:
+    test "${CARRACK_ROTATE_OPERATOR_PROD:-}" = "1"
+    node control-plane/scripts/rotate-operator-credential.mjs prod
 
 deploy-dev: verify
     node control-plane/scripts/deploy-worker.mjs dev

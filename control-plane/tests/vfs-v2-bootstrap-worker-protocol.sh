@@ -45,7 +45,7 @@ wrangler=(
   --persist-to "$state_directory" >/dev/null
 
 admin_token=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA
-operator_account=draven
+operator_account=draven@carrack-local
 export CARRACK_OPERATOR_ACCOUNT="$operator_account"
 
 "${wrangler[@]}" dev \
@@ -114,15 +114,12 @@ wrong_account_status=$(curl --silent --output /dev/null --write-out '%{http_code
   "$base_url/api/auth/login")
 [[ "$wrong_account_status" == 401 ]]
 
-alias_cookie_jar="$state_directory/alias-cookies.txt"
-curl --silent --show-error --fail-with-body \
-  -c "$alias_cookie_jar" -H "$json" \
+unqualified_account_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H "$json" \
   --data "$(jq -cn --arg password "$admin_token" \
-    '{account: "draven@local", password: $password}')" \
-  "$base_url/api/auth/login" | jq -e '.authenticated == true' >/dev/null
-curl --silent --show-error --fail-with-body \
-  -b "$alias_cookie_jar" -X POST "$base_url/api/auth/logout" \
-  | jq -e '.authenticated == false' >/dev/null
+    '{account: "draven", password: $password}')" \
+  "$base_url/api/auth/login")
+[[ "$unqualified_account_status" == 401 ]]
 
 curl --silent --show-error --fail-with-body \
   -c "$cookie_jar" -H "$json" \

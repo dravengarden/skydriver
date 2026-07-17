@@ -11,6 +11,13 @@
 Both credentials are canonical unpadded base64url values encoding 32 bytes;
 keep them out of argv and output.
 
+Development uses `draven@carrack-dev`; production uses
+`draven@carrack-prod`. Operator password rotation is outside `carrackctl` and
+must use the dedicated stdin-only `just rotate-operator-dev` or
+production-gated recipe. Those commands update only `CARRACK_ADMIN_TOKEN`.
+Never change a VFS master key, wrapped directory key, bootstrap token, or
+recovery authority as part of an account or password change.
+
 ## Read commands
 
 ```bash

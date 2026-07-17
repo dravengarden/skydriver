@@ -220,11 +220,10 @@ impl OperatorAccount {
     pub fn parse(account: &str) -> Result<Self, Error> {
         let bytes = account.as_bytes();
         if !(1..=64).contains(&bytes.len())
-            || !bytes.first().is_some_and(u8::is_ascii_alphanumeric)
-            || !bytes.last().is_some_and(u8::is_ascii_alphanumeric)
-            || !bytes.iter().all(|byte| {
-                byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(byte)
-            })
+            || !account.split_once('@').map_or_else(
+                || canonical_account_part(account),
+                |(name, realm)| canonical_account_part(name) && canonical_account_part(realm),
+            )
         {
             return Err(Error::InvalidResponse(
                 "operator account must be a canonical lowercase identifier".to_owned(),
@@ -236,6 +235,16 @@ impl OperatorAccount {
     fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+fn canonical_account_part(part: &str) -> bool {
+    let bytes = part.as_bytes();
+    !bytes.is_empty()
+        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(byte))
 }
 
 /// Environment-scoped break-glass credential used only to mint short sessions.
@@ -2007,8 +2016,10 @@ mod tests {
     #[test]
     fn rejects_noncanonical_operator_accounts() {
         assert!(OperatorAccount::parse("draven").is_ok());
+        assert!(OperatorAccount::parse("draven@carrack-dev").is_ok());
         assert!(OperatorAccount::parse("Draven").is_err());
         assert!(OperatorAccount::parse("-operator").is_err());
+        assert!(OperatorAccount::parse("draven@@carrack-dev").is_err());
     }
 
     #[test]

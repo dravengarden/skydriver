@@ -89,6 +89,12 @@ agent processes are SDK consumers, not a third architectural component.
   token verifiers, encrypted provider-credential envelopes, and wrapped VFS
   directory keys. VFS master keys stay in Cloudflare secrets or Secrets Store
   and have tested offline recovery copies.
+- Changing an operator account or password MUST NEVER rotate, replace, delete,
+  or regenerate `CARRACK_VFS_MASTER_KEY_V1`, wrapped directory keys, bootstrap
+  authority, or VFS recovery material. Use only the dedicated operator
+  credential rotation command. VFS master-key migration is a separate
+  recovery operation and is forbidden without an explicit reviewed request
+  and a complete envelope-rewrapping protocol.
 - The pinned Nix development shell owns the Go, Rust, Node, Worker, and lint
   toolchains. From the repository root, run project commands as
   `nix develop -c <command>`; never use the host Rustup/Cargo toolchain for a

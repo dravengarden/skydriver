@@ -48,12 +48,16 @@ or handling a failure.
 ## Keep credentials separate
 
 - Read the non-secret canonical account from `CARRACK_OPERATOR_ACCOUNT`.
-  Dev and production currently use `draven`; do not guess a different account
-  from a URL, token label, or local username.
+  Development uses `draven@carrack-dev` and production uses
+  `draven@carrack-prod`; never strip or substitute the environment realm.
 - Read `CARRACK_OPERATOR_CREDENTIAL` only from the environment or an approved
   private secret injection. Never pass it in argv, print it, persist it in a
   plan, or write it to Git.
 - Use the operator credential for redacted environment management only.
+- An operator password change may update only `CARRACK_ADMIN_TOKEN` through
+  `just rotate-operator-dev` or the production-gated equivalent. It must never
+  touch the VFS master key, wrapped directory keys, bootstrap authority, or
+  recovery material.
 - Use `CARRACK_VFS_TOKEN` for VFS content or supported VFS policy operations.
 - Never assume management authority includes `content.read`.
 - Treat the bootstrap all-actions VFS bearer as offline recovery authority.

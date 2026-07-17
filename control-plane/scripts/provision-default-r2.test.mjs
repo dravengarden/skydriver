@@ -16,6 +16,7 @@ test("orchestrates validated enablement and empty-root placement without forward
             fs.readFileSync(path.join(repositoryRoot, "control-plane/wrangler.jsonc"), "utf8"),
         );
         const endpoint = config.env.dev.vars.CARRACK_R2_ENDPOINT;
+        const expectedOperatorAccount = config.env.dev.vars.CARRACK_OPERATOR_ACCOUNT;
         const accountId = new URL(endpoint).hostname.split(".")[0];
         const stateFile = path.join(stateDirectory, "state.json");
         const logFile = path.join(stateDirectory, "calls.jsonl");
@@ -136,7 +137,7 @@ if (args[0] === "compatibility") {
             calls
                 .filter(({ command }) => command[0] === "snapshot")
                 .every(({ operator, operatorAccount, vfs }) =>
-                    operator && operatorAccount === "draven" && !vfs),
+                    operator && operatorAccount === expectedOperatorAccount && !vfs),
         );
         assert.ok(
             calls
