@@ -132,7 +132,7 @@ payload size, cache posture, control-plane calls, provider concurrency, local
 bytes hashed, peak resident memory, spool bytes, and elapsed time. A faster
 result is acceptable only when all roots and final fences are identical.
 
-Three explicit release-only acceptances make the local scaling costs repeatable
+Four explicit release-only acceptances make the local scaling costs repeatable
 without adding a benchmark framework to the product dependency graph:
 
 ```console
@@ -142,12 +142,14 @@ nix develop -c just performance-acceptance
 The first acceptance reports disk-spool, SQLite build, indexed lookup, and
 database-size costs for 100,000 records. The second reports the mandatory
 complete local-Merkle pass over 10,000 unchanged files and asserts that every
-decision is local reuse. The third proves that a one-million-entry directory
-uses logarithmic Merkle accumulator state. These are machine-local acceptance
-measurements, not production throughput claims; provider and control-plane
-latency require a separately identified environment and must report the full
-measurement fields above. Wall-clock values are observations, not pass/fail
-thresholds, so host load cannot turn a correct build into a flaky failure.
+decision is local reuse. The third streams 100,000 entries through the actual
+page JSON, fence, Merkle, and private-spool primitives. The fourth proves that
+a one-million-entry directory uses logarithmic Merkle accumulator state. These
+are machine-local acceptance measurements, not production throughput claims;
+provider and control-plane latency require a separately identified environment
+and must report the full measurement fields above. Wall-clock values are
+observations, not pass/fail thresholds, so host load cannot turn a correct
+build into a flaky failure.
 
 ## Recorded local acceptance observations
 
@@ -180,3 +182,32 @@ tree is a real or hermetic wide-directory hydration measurement that separates
 canonical JSON bytes, page count, control-plane latency, local cache hits, and
 Merkle time. Likewise, download-plan batching needs a changed-small-file run
 showing that authenticated plan latency, rather than provider I/O, dominates.
+
+### 2026-07-17 wide-directory follow-up
+
+The complete four-test acceptance was repeated on `hawk` from exact Git
+revision `c496440`. This is a separate observation; it does not replace the
+earlier `a4344ac` measurements.
+
+| Acceptance | Shape | Measured result |
+|---|---|---|
+| Indexed sync state | 100,000 records | record spool 27 ms; SQLite publication 187 ms; 100,000 primary-key lookups 352 ms; database 18,763,776 B |
+| Mandatory warm verification | 10,000 files of 4,096 B; 1,024 B Merkle blocks | 40,960,000 local bytes rehashed in 44 ms; provider bytes 0 |
+| Wide-directory hydration | 100,000 file entries in 100 pages | wire JSON 38,244,379 B; private spool 34,800,000 B; JSON encode/decode 42 ms; fence, Merkle, and spool append 117 ms; complete spool decode 64 ms; total 264 ms; whole-node cache not retained |
+| Streaming directory Merkle | 1,000,000 ordered directory entries | 283 ms; peak retained subtree digests 19 |
+
+The wide-directory acceptance constructs deterministic revision-consistent
+pages locally, so its `wire JSON` value is the uncompressed HTTP-body shape but
+its elapsed time excludes network, Worker execution, and D1. It follows the
+same 1,000-entry page size and 20,000-entry whole-node retention bound as the
+client. The result shows that local parsing, verification, and spooling are
+small relative to a potential 38.2 MB metadata transfer, but it does not prove
+that a page tree is worthwhile for normal directory shapes.
+
+A content-addressed page tree is therefore justified only for repeatedly
+changing directories above the whole-node cache bound, where subsequent syncs
+would otherwise fetch most or all of these pages. It must authenticate an
+exact page closure beneath the existing directory `data_root`, preserve the
+current revision-pinned page fallback, and never make a cached page an
+authorization source. Ordinary nested directories already reuse immutable
+subtrees and should not pay this additional protocol or D1 complexity.
