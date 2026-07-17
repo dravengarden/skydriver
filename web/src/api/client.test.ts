@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     fetchSession,
+    fetchManagementDirectoryEntries,
     fetchTransferAnalytics,
     login,
     parseHealth,
@@ -13,6 +14,56 @@ import {
 
 afterEach(() => {
     vi.unstubAllGlobals();
+});
+
+describe("management directory entry pages", () => {
+    it("serializes a revision-pinned keyset cursor and validates the page", async () => {
+        const response = {
+            schema: "carrack.management.directory-entry-page.v1",
+            observed_at: 2_000_000_000,
+            directory_id: "0123456789abcdef0123456789abcdef",
+            directory_revision: 7,
+            prefix: "archive-",
+            after_kind: "directory",
+            after_name: "archive-a",
+            next_after_kind: "file",
+            next_after_name: "archive-b.parquet",
+            limit: 25,
+            has_more: false,
+            entries: [
+                {
+                    name: "archive-b.parquet",
+                    kind: "file",
+                    file_id: "1123456789abcdef0123456789abcdef",
+                    version_id: "2123456789abcdef0123456789abcdef",
+                    child_directory_id: null,
+                    size_bytes: 4096,
+                    data_root: "sha256:plain",
+                    metadata_root: "sha256:metadata",
+                    revision: 4,
+                    updated_at: 2_000_000_000,
+                    driver_ids: ["r2-default"],
+                },
+            ],
+        };
+        const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(Response.json(response));
+        vi.stubGlobal("fetch", fetchMock);
+
+        await expect(
+            fetchManagementDirectoryEntries(
+                response.directory_id,
+                7,
+                "archive-",
+                "directory",
+                "archive-a",
+                25,
+            ),
+        ).resolves.toEqual(response);
+        expect(fetchMock).toHaveBeenCalledWith(
+            `/api/admin/directories/${response.directory_id}/entries?revision=7&prefix=archive-&after_kind=directory&after_name=archive-a&limit=25`,
+            expect.any(Object),
+        );
+    });
 });
 
 describe("transfer analytics", () => {

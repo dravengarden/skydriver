@@ -14,6 +14,7 @@ use crate::{
 const SNAPSHOT_SCHEMA: &str = "carrack.management.snapshot.v2";
 const EVENTS_SCHEMA: &str = "carrack.management.events.v1";
 const DIRECTORY_SCHEMA: &str = "carrack.management.directory.v1";
+const DIRECTORY_ENTRY_PAGE_SCHEMA: &str = "carrack.management.directory-entry-page.v1";
 const TRANSFER_METRICS_SCHEMA: &str = "carrack.management.transfer-metrics.v1";
 const TRANSFER_ANALYTICS_SCHEMAS: [&str; 2] = [
     "carrack.management.transfer-analytics.v1",
@@ -691,6 +692,25 @@ pub struct ManagementDirectory {
     pub entries: Vec<ManagementDirectoryEntry>,
 }
 
+/// One revision-pinned, keyset-paginated management directory entry page.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(missing_docs, reason = "wire fields preserve management schema names")]
+pub struct ManagementDirectoryEntryPage {
+    pub schema: String,
+    pub observed_at: u64,
+    pub directory_id: String,
+    pub directory_revision: u64,
+    pub prefix: String,
+    pub after_kind: String,
+    pub after_name: String,
+    pub next_after_kind: String,
+    pub next_after_name: String,
+    pub limit: u64,
+    pub has_more: bool,
+    pub entries: Vec<ManagementDirectoryEntry>,
+}
+
 /// Server-normalized token annotation validation.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -1157,6 +1177,90 @@ impl AdminClient {
             ));
         }
         Ok(directory)
+    }
+
+    /// Reads one revision-pinned directory entry page in folders-first order.
+    ///
+    /// `prefix` is a case-sensitive entry-name prefix. A subsequent page must
+    /// pass the returned `next_after_kind` and `next_after_name` unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on an unsafe cursor, a changed directory revision, or an
+    /// invalid response identity.
+    pub async fn directory_entries(
+        &self,
+        id: &str,
+        revision: u64,
+        prefix: &str,
+        after_kind: &str,
+        after_name: &str,
+        limit: u64,
+    ) -> Result<ManagementDirectoryEntryPage, Error> {
+        if !valid_identifier(id)
+            || revision == 0
+            || i64::try_from(revision).is_err()
+            || prefix.len() > 255
+            || prefix.contains(['/', '\0'])
+            || !(1..=250).contains(&limit)
+            || ((after_kind.is_empty() && !after_name.is_empty())
+                || (!after_kind.is_empty()
+                    && (!matches!(after_kind, "directory" | "file")
+                        || after_name.is_empty()
+                        || after_name.len() > 255
+                        || after_name.contains(['/', '\0']))))
+        {
+            return Err(Error::InvalidResponse(
+                "invalid management directory entry query".to_owned(),
+            ));
+        }
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("revision", &revision.to_string())
+            .append_pair("prefix", prefix)
+            .append_pair("after_kind", after_kind)
+            .append_pair("after_name", after_name)
+            .append_pair("limit", &limit.to_string())
+            .finish();
+        let cookie = self.login().await?;
+        let page: ManagementDirectoryEntryPage = self
+            .request(
+                &format!("api/admin/directories/{id}/entries?{query}"),
+                &cookie,
+            )
+            .await?;
+        if page.schema != DIRECTORY_ENTRY_PAGE_SCHEMA
+            || page.observed_at == 0
+            || page.directory_id != id
+            || page.directory_revision != revision
+            || page.prefix != prefix
+            || page.after_kind != after_kind
+            || page.after_name != after_name
+            || page.limit != limit
+            || page.entries.len() > usize::try_from(limit).unwrap_or(usize::MAX)
+            || page.entries.windows(2).any(|entries| {
+                (entries[0].kind.as_str(), entries[0].name.as_str())
+                    >= (entries[1].kind.as_str(), entries[1].name.as_str())
+            })
+            || page.entries.iter().any(|entry| {
+                !matches!(entry.kind.as_str(), "directory" | "file")
+                    || !entry.name.starts_with(prefix)
+            })
+            || (!after_kind.is_empty()
+                && page.entries.first().is_some_and(|first| {
+                    (first.kind.as_str(), first.name.as_str()) <= (after_kind, after_name)
+                }))
+            || page.entries.last().is_some_and(|last| {
+                page.next_after_kind != last.kind || page.next_after_name != last.name
+            })
+            || (page.entries.is_empty()
+                && (!page.next_after_kind.is_empty() || !page.next_after_name.is_empty()))
+            || (page.has_more && page.entries.len() != usize::try_from(limit).unwrap_or(usize::MAX))
+        {
+            return Err(Error::InvalidResponse(
+                "invalid management directory entry page".to_owned(),
+            ));
+        }
+        Ok(page)
     }
 
     /// Validates a complete desired token label and note.

@@ -109,6 +109,9 @@ unauthenticated_metrics=$(curl --silent --output /dev/null --write-out '%{http_c
 unauthenticated_analytics=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   "$base_url/api/admin/analytics/transfers")
 [[ "$unauthenticated_analytics" == 401 ]]
+unauthenticated_directory_entries=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  "$base_url/api/admin/directories/0123456789abcdef0123456789abcdef/entries?revision=1")
+[[ "$unauthenticated_directory_entries" == 401 ]]
 
 for retired_get_route in \
   /api/client/session \
@@ -246,6 +249,50 @@ root_after_mkdir=$(curl --silent --show-error --fail-with-body \
 [[ "$(jq -r '.entries[0].child_directory_id' <<<"$root_after_mkdir")" == "$created_directory_id" ]]
 [[ "$(jq -r '.entries[0].data_root' <<<"$root_after_mkdir")" == "$created_directory_root" ]]
 [[ "$(jq -r '.directory.data_root' <<<"$root_after_mkdir")" != "$initial_root" ]]
+
+for name in archive-a archive-b archive-c; do
+  curl --silent --show-error --fail-with-body \
+    -H "$root_authorization" -H "$json" \
+    --data "$(jq -cn --arg name "$name" '{
+      name: $name,
+      idempotency_key: ("management-page-" + $name + "-v1")
+    }')" \
+    "$base_url/api/v2/directories/$root_directory_id/children" >/dev/null
+done
+management_directory=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" \
+  "$base_url/api/admin/directories/$root_directory_id?entries=false")
+[[ "$(jq -r '.schema' <<<"$management_directory")" == carrack.management.directory.v1 ]]
+[[ "$(jq -r '.entries | length' <<<"$management_directory")" == 0 ]]
+management_revision=$(jq -r '.directory.revision' <<<"$management_directory")
+management_page_one=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" \
+  "$base_url/api/admin/directories/$root_directory_id/entries?revision=$management_revision&prefix=archive-&after_kind=&after_name=&limit=2")
+[[ "$(jq -r '.schema' <<<"$management_page_one")" == carrack.management.directory-entry-page.v1 ]]
+[[ "$(jq -c '[.entries[].name]' <<<"$management_page_one")" == '["archive-a","archive-b"]' ]]
+[[ "$(jq -r '.has_more' <<<"$management_page_one")" == true ]]
+next_kind=$(jq -r '.next_after_kind' <<<"$management_page_one")
+next_name=$(jq -r '.next_after_name' <<<"$management_page_one")
+management_page_two=$(curl --silent --show-error --fail-with-body \
+  -b "$cookie_jar" \
+  --get \
+  --data-urlencode "revision=$management_revision" \
+  --data-urlencode 'prefix=archive-' \
+  --data-urlencode "after_kind=$next_kind" \
+  --data-urlencode "after_name=$next_name" \
+  --data-urlencode 'limit=2' \
+  "$base_url/api/admin/directories/$root_directory_id/entries")
+[[ "$(jq -c '[.entries[].name]' <<<"$management_page_two")" == '["archive-c"]' ]]
+[[ "$(jq -r '.has_more' <<<"$management_page_two")" == false ]]
+
+curl --silent --show-error --fail-with-body \
+  -H "$root_authorization" -H "$json" \
+  --data '{"name":"archive-d","idempotency_key":"management-page-archive-d-v1"}' \
+  "$base_url/api/v2/directories/$root_directory_id/children" >/dev/null
+stale_management_page=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -b "$cookie_jar" \
+  "$base_url/api/admin/directories/$root_directory_id/entries?revision=$management_revision&limit=2")
+[[ "$stale_management_page" == 409 ]]
 
 acl=$(curl --silent --show-error --fail-with-body \
   -H "$root_authorization" \
@@ -416,7 +463,7 @@ cli_directory_id=$(jq -r '.directory_id' <<<"$cli_mkdir")
 rust_list=$(env CARRACK_VFS_TOKEN="$root_token" CARRACK_CONTROL_URL="$base_url" \
   "$cli_binary" list /)
 [[ "$(jq -r '.schema' <<<"$rust_list")" == carrack.fs-list.v1 ]]
-[[ "$(jq -r '.entries | length' <<<"$rust_list")" == 1 ]]
+[[ "$(jq -r '.entries | length' <<<"$rust_list")" == 5 ]]
 rust_mkdir=$(env CARRACK_VFS_TOKEN="$root_token" CARRACK_CONTROL_URL="$base_url" \
   "$cli_binary" mkdir /rust-native --idempotency-key rust-native-mkdir-v1)
 [[ "$(jq -r '.schema' <<<"$rust_mkdir")" == carrack.fs-mkdir.v1 ]]
@@ -675,8 +722,8 @@ jq -e --arg directory "$created_directory_id" '
        AND (SELECT COUNT(*) FROM vfs_token_revoke_receipts) = 3
        AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'token_issued') = 4
        AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'token_revoked') = 3
-       AND (SELECT COUNT(*) FROM vfs_directory_create_receipts) = 3
-       AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'directory_created') = 3
+       AND (SELECT COUNT(*) FROM vfs_directory_create_receipts) = 7
+       AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'directory_created') = 7
        AND (SELECT COUNT(*) FROM vfs_policy_mutation_receipts) = 4
        AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'acl.replace') = 2
        AND (SELECT COUNT(*) FROM vfs_audit_events WHERE event_kind = 'placement.replace') = 2

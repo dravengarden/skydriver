@@ -92,6 +92,12 @@ assert_uses_index management-directory-picker idx_vfs_directories_picker \
    WHERE state = 'active' AND lower(name) > lower('market')
    ORDER BY lower(name), id LIMIT 51"
 
+assert_uses_index management-directory-entry-page idx_vfs_directory_entries_management_page \
+  "SELECT name, kind FROM vfs_directory_entries
+   WHERE directory_id = 'directory-a'
+     AND (kind > 'directory' OR (kind = 'directory' AND name > 'archive'))
+   ORDER BY kind, name LIMIT 101"
+
 # Cron retention and claim loops are bounded only when their deadline indexes
 # remain usable by the exact production predicates.
 assert_uses_index read-lease-retirement idx_vfs_read_leases_retirement \

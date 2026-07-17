@@ -253,6 +253,20 @@ const TransferAnalyticsSchema = v.object({
     rows: v.array(TransferAnalyticsRowSchema),
 });
 
+const ManagementDirectoryEntrySchema = v.object({
+    name: v.string(),
+    kind: v.picklist(["directory", "file"]),
+    file_id: v.nullable(v.string()),
+    version_id: v.nullable(v.string()),
+    child_directory_id: v.nullable(v.string()),
+    size_bytes: v.number(),
+    data_root: v.string(),
+    metadata_root: v.nullable(v.string()),
+    revision: v.number(),
+    updated_at: v.number(),
+    driver_ids: v.array(v.string()),
+});
+
 const ManagementDirectorySchema = v.object({
     schema: v.literal("carrack.management.directory.v1"),
     observed_at: v.number(),
@@ -279,21 +293,22 @@ const ManagementDirectorySchema = v.object({
     }),
     breadcrumbs: v.array(v.object({ id: v.string(), name: v.string(), depth: v.number() })),
     placements: v.array(v.string()),
-    entries: v.array(
-        v.object({
-            name: v.string(),
-            kind: v.string(),
-            file_id: v.nullable(v.string()),
-            version_id: v.nullable(v.string()),
-            child_directory_id: v.nullable(v.string()),
-            size_bytes: v.number(),
-            data_root: v.string(),
-            metadata_root: v.nullable(v.string()),
-            revision: v.number(),
-            updated_at: v.number(),
-            driver_ids: v.array(v.string()),
-        }),
-    ),
+    entries: v.array(ManagementDirectoryEntrySchema),
+});
+
+const ManagementDirectoryEntryPageSchema = v.object({
+    schema: v.literal("carrack.management.directory-entry-page.v1"),
+    observed_at: v.number(),
+    directory_id: v.string(),
+    directory_revision: v.number(),
+    prefix: v.string(),
+    after_kind: v.string(),
+    after_name: v.string(),
+    next_after_kind: v.string(),
+    next_after_name: v.string(),
+    limit: v.number(),
+    has_more: v.boolean(),
+    entries: v.array(ManagementDirectoryEntrySchema),
 });
 
 const TokenAnnotationValidationSchema = v.object({
@@ -545,6 +560,8 @@ export interface TransferAnalyticsQuery {
     readonly direction: "both" | "upload" | "download";
 }
 export type ManagementDirectory = v.InferOutput<typeof ManagementDirectorySchema>;
+export type ManagementDirectoryEntry = v.InferOutput<typeof ManagementDirectoryEntrySchema>;
+export type ManagementDirectoryEntryPage = v.InferOutput<typeof ManagementDirectoryEntryPageSchema>;
 export type TokenAnnotationValidation = v.InferOutput<typeof TokenAnnotationValidationSchema>;
 export type TokenAnnotationReceipt = v.InferOutput<typeof TokenAnnotationReceiptSchema>;
 export type DriverStateValidation = v.InferOutput<typeof DriverStateValidationSchema>;
@@ -789,9 +806,31 @@ export function fetchTransferAnalytics(query: TransferAnalyticsQuery): Promise<T
 
 export function fetchManagementDirectory(directoryId: string): Promise<ManagementDirectory> {
     return requestJson(
-        `/api/admin/directories/${encodeURIComponent(directoryId)}`,
+        `/api/admin/directories/${encodeURIComponent(directoryId)}?entries=false`,
         undefined,
         ManagementDirectorySchema,
+    );
+}
+
+export function fetchManagementDirectoryEntries(
+    directoryId: string,
+    revision: number,
+    prefix: string,
+    afterKind: string,
+    afterName: string,
+    limit = 100,
+): Promise<ManagementDirectoryEntryPage> {
+    const parameters = new URLSearchParams({
+        revision: String(revision),
+        prefix,
+        after_kind: afterKind,
+        after_name: afterName,
+        limit: String(limit),
+    });
+    return requestJson(
+        `/api/admin/directories/${encodeURIComponent(directoryId)}/entries?${parameters.toString()}`,
+        undefined,
+        ManagementDirectoryEntryPageSchema,
     );
 }
 

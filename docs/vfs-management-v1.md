@@ -28,6 +28,7 @@ The currently implemented management surface is:
 | Group ACL replacement | Yes | `replace_group_acl` | `carrackctl vfs acl replace --group-id` |
 | Typed driver registration or credential rotation | Operator API | `AdminClient` | `carrackctl driver register`, `carrackctl driver credential set` |
 | Snapshot-pinned metadata reads | No | No | No |
+| Operator Files browser entry pages | Yes | `AdminClient::directory_entries` | `carrackctl directory --revision` |
 
 These operator-authorized driver mutations are deliberately outside the VFS
 token routes documented below. The V2 payload implementation currently has
@@ -99,6 +100,35 @@ The cursor embeds the observed directory revision. The client must pass it
 back unchanged. If the directory changes before the next page, the Worker
 returns `409` instead of mixing entries from different revisions. Clients that
 receive `409` restart from the first page.
+
+## Operator Files browser
+
+The operator console reads directory identity and recursive totals separately
+from a bounded, revision-pinned entry stream. The summary request is:
+
+```http
+GET /api/admin/directories/:id?entries=false
+```
+
+The entry request is:
+
+```http
+GET /api/admin/directories/:id/entries?revision=7&prefix=archive-&after_kind=directory&after_name=archive-a&limit=100
+```
+
+Pages are ordered by `(kind, name)`, with directories before files, and use an
+exclusive keyset cursor. `prefix` is a case-sensitive direct-entry name prefix;
+it does not recursively search descendants. The Worker checks the exact active
+directory revision both before and after the D1 page query. A concurrent
+namespace mutation therefore returns `409` rather than mixing revisions. The
+console restarts from the new summary revision.
+
+The page size is from 1 through 250. The Files UI defaults to 100, debounces
+prefix changes, and requests more pages only on operator demand. This makes a
+directory with more than 1,000 direct entries fully browsable without loading
+the entire directory into Worker, browser, or CLI memory. The legacy unpaged
+operator directory response remains bounded to 1,000 entries for compatibility
+and must not be used to infer that a directory is complete.
 
 ## Child-directory creation
 

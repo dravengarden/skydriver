@@ -296,6 +296,16 @@ struct DirectoryRow {
     max_file_bytes: Option<u64>,
     max_logical_bytes: Option<u64>,
     max_file_count: Option<u64>,
+    filesystem_revision: u64,
+}
+
+#[derive(Deserialize)]
+struct DirectoryFenceRow {
+    directory: u64,
+    acl: u64,
+    placement: u64,
+    quota: u64,
+    filesystem: u64,
 }
 
 #[derive(Serialize)]
@@ -371,6 +381,30 @@ struct DirectoryResponse {
     breadcrumbs: Vec<BreadcrumbRow>,
     placements: Vec<String>,
     entries: Vec<EntryView>,
+}
+
+#[derive(Serialize)]
+struct DirectoryEntryPageResponse {
+    schema: &'static str,
+    observed_at: u64,
+    directory_id: String,
+    directory_revision: u64,
+    prefix: String,
+    after_kind: String,
+    after_name: String,
+    next_after_kind: String,
+    next_after_name: String,
+    limit: u64,
+    has_more: bool,
+    entries: Vec<EntryView>,
+}
+
+struct DirectoryEntryPageOptions {
+    revision: u64,
+    prefix: String,
+    after_kind: String,
+    after_name: String,
+    limit: u64,
 }
 
 #[allow(
@@ -1023,6 +1057,11 @@ pub(crate) async fn directory(
         return Response::error("valid directory ID is required", 400);
     };
 
+    let include_entries = match request.url()?.query() {
+        None | Some("") => true,
+        Some("entries=false") => false,
+        Some(_) => return Response::error("invalid directory query", 400),
+    };
     let database = env.d1(DATABASE_BINDING)?;
     let binding = [JsValue::from_str(directory_id)];
     let Some(row) = database
@@ -1040,6 +1079,7 @@ pub(crate) async fn directory(
                     directory.placement_revision,
                     quota.revision AS quota_revision, quota.max_file_bytes,
                     quota.max_logical_bytes, quota.max_file_count,
+                    filesystem.revision AS filesystem_revision,
                     (SELECT COUNT(*) FROM vfs_directories AS child
                      WHERE child.parent_id = directory.id AND child.state = 'active')
                         AS child_directory_count,
@@ -1051,6 +1091,7 @@ pub(crate) async fn directory(
                               WHERE entry.directory_id IN (SELECT id FROM descendants)
                                 AND entry.kind = 'file'), 0) AS recursive_logical_bytes
              FROM vfs_directories AS directory
+             JOIN vfs_filesystems AS filesystem ON filesystem.id = directory.filesystem_id
              JOIN vfs_directory_quota_policies AS quota ON quota.directory_id = directory.id
              WHERE directory.id = ?1 AND directory.state = 'active'",
         )
@@ -1094,9 +1135,10 @@ pub(crate) async fn directory(
         .into_iter()
         .map(|row| row.driver_id)
         .collect();
-    let entry_rows = database
-        .prepare(
-            r"SELECT entry.name, entry.kind, entry.file_id, entry.version_id,
+    let entry_rows = if include_entries {
+        database
+            .prepare(
+                r"SELECT entry.name, entry.kind, entry.file_id, entry.version_id,
                     entry.child_directory_id, entry.size_bytes, entry.data_root,
                     entry.metadata_root, entry.revision, entry.updated_at,
                     CASE WHEN entry.version_id IS NULL THEN '[]' ELSE
@@ -1108,27 +1150,26 @@ pub(crate) async fn directory(
              FROM vfs_directory_entries AS entry
              WHERE entry.directory_id = ?1
              ORDER BY entry.kind, entry.name LIMIT 1000",
-        )
-        .bind(&binding)?
-        .all()
-        .await?
-        .results::<EntryRow>()?;
-    let entries = entry_rows
-        .into_iter()
-        .map(|entry| EntryView {
-            name: entry.name,
-            kind: entry.kind,
-            file_id: entry.file_id,
-            version_id: entry.version_id,
-            child_directory_id: entry.child_directory_id,
-            size_bytes: entry.size_bytes,
-            data_root: entry.data_root,
-            metadata_root: entry.metadata_root,
-            revision: entry.revision,
-            updated_at: entry.updated_at,
-            driver_ids: parse_string_array(&entry.driver_ids_json),
-        })
-        .collect();
+            )
+            .bind(&binding)?
+            .all()
+            .await?
+            .results::<EntryRow>()?
+    } else {
+        Vec::new()
+    };
+    let entries = entry_rows.into_iter().map(entry_view).collect();
+
+    let expected_fence = DirectoryFenceRow {
+        directory: row.revision,
+        acl: row.acl_revision,
+        placement: row.placement_revision,
+        quota: row.quota_revision,
+        filesystem: row.filesystem_revision,
+    };
+    if !directory_fence_matches(&database, directory_id, &expected_fence).await? {
+        return Response::error("directory changed during read", 409);
+    }
 
     no_store_json(&DirectoryResponse {
         schema: "carrack.management.directory.v1",
@@ -1158,6 +1199,231 @@ pub(crate) async fn directory(
         placements,
         entries,
     })
+}
+
+pub(crate) async fn directory_entries(
+    request: &Request,
+    env: &Env,
+    directory_id: Option<&str>,
+) -> Result<Response> {
+    if !operator_sessions::authorized(request, env).await? {
+        return Response::error("authentication required", 401);
+    }
+    let Some(directory_id) = directory_id.filter(|value| valid_identifier(value)) else {
+        return Response::error("valid directory ID is required", 400);
+    };
+    let options = match directory_entry_page_options(request) {
+        Ok(options) => options,
+        Err(message) => return Response::error(message, 400),
+    };
+    let database = env.d1(DATABASE_BINDING)?;
+    let current_revision = database
+        .prepare("SELECT revision FROM vfs_directories WHERE id = ?1 AND state = 'active'")
+        .bind(&[JsValue::from_str(directory_id)])?
+        .first::<RevisionRow>(None)
+        .await?;
+    let Some(current_revision) = current_revision else {
+        return Response::error("directory not found", 404);
+    };
+    if current_revision.revision != options.revision {
+        return Response::error("directory revision changed", 409);
+    }
+
+    let mut bindings = vec![JsValue::from_str(directory_id)];
+    let mut predicates = vec!["entry.directory_id = ?1".to_owned()];
+    if !options.prefix.is_empty() {
+        bindings.push(JsValue::from_str(&options.prefix));
+        predicates.push(format!("entry.name >= ?{}", bindings.len()));
+        if let Some(upper) = prefix_upper_bound(&options.prefix) {
+            bindings.push(JsValue::from_str(&upper));
+            predicates.push(format!("entry.name < ?{}", bindings.len()));
+        }
+    }
+    if !options.after_kind.is_empty() {
+        bindings.push(JsValue::from_str(&options.after_kind));
+        let kind_parameter = bindings.len();
+        bindings.push(JsValue::from_str(&options.after_name));
+        let name_parameter = bindings.len();
+        predicates.push(format!(
+            "(entry.kind > ?{kind_parameter} OR (entry.kind = ?{kind_parameter} AND entry.name > ?{name_parameter}))"
+        ));
+    }
+    bindings.push(JsValue::from_str(&(options.limit + 1).to_string()));
+    let sql = format!(
+        "SELECT entry.name, entry.kind, entry.file_id, entry.version_id,
+                entry.child_directory_id, entry.size_bytes, entry.data_root,
+                entry.metadata_root, entry.revision, entry.updated_at,
+                CASE WHEN entry.version_id IS NULL THEN '[]' ELSE
+                    COALESCE((SELECT json_group_array(driver_id) FROM
+                        (SELECT location.driver_id FROM vfs_locations AS location
+                         WHERE location.version_id = entry.version_id
+                           AND location.state = 'available'
+                         ORDER BY location.driver_id)), '[]') END AS driver_ids_json
+         FROM vfs_directory_entries AS entry
+         WHERE {}
+         ORDER BY entry.kind, entry.name LIMIT ?{}",
+        predicates.join(" AND "),
+        bindings.len()
+    );
+    let mut entries = database
+        .prepare(&sql)
+        .bind(&bindings)?
+        .all()
+        .await?
+        .results::<EntryRow>()?
+        .into_iter()
+        .map(entry_view)
+        .collect::<Vec<_>>();
+    if !directory_revision_matches(&database, directory_id, options.revision).await? {
+        return Response::error("directory changed during read", 409);
+    }
+    let has_more = entries.len() > usize::try_from(options.limit).unwrap_or(usize::MAX);
+    entries.truncate(usize::try_from(options.limit).unwrap_or(usize::MAX));
+    let (next_after_kind, next_after_name) = entries.last().map_or_else(
+        || (String::new(), String::new()),
+        |entry| (entry.kind.clone(), entry.name.clone()),
+    );
+    no_store_json(&DirectoryEntryPageResponse {
+        schema: "carrack.management.directory-entry-page.v1",
+        observed_at: now_seconds(),
+        directory_id: directory_id.to_owned(),
+        directory_revision: options.revision,
+        prefix: options.prefix,
+        after_kind: options.after_kind,
+        after_name: options.after_name,
+        next_after_kind,
+        next_after_name,
+        limit: options.limit,
+        has_more,
+        entries,
+    })
+}
+
+#[derive(Deserialize)]
+struct RevisionRow {
+    revision: u64,
+}
+
+fn directory_entry_page_options(
+    request: &Request,
+) -> std::result::Result<DirectoryEntryPageOptions, &'static str> {
+    let url = request.url().map_err(|_| "invalid directory entry query")?;
+    let mut revision = None;
+    let mut prefix = None;
+    let mut after_kind = None;
+    let mut after_name = None;
+    let mut limit = None;
+    for (key, value) in url.query_pairs() {
+        match key.as_ref() {
+            "revision" if revision.is_none() => revision = canonical_integer(&value),
+            "prefix" if prefix.is_none() => prefix = Some(value.into_owned()),
+            "after_kind" if after_kind.is_none() => after_kind = Some(value.into_owned()),
+            "after_name" if after_name.is_none() => after_name = Some(value.into_owned()),
+            "limit" if limit.is_none() => limit = canonical_integer(&value),
+            _ => return Err("invalid or duplicate directory entry query parameter"),
+        }
+    }
+    let revision = revision
+        .filter(|value| *value > 0)
+        .ok_or("directory revision is required")?;
+    let prefix = prefix.unwrap_or_default();
+    if prefix.len() > 255 || prefix.contains(['/', '\0']) {
+        return Err("invalid directory entry prefix");
+    }
+    let after_kind = after_kind.unwrap_or_default();
+    let after_name = after_name.unwrap_or_default();
+    if (after_kind.is_empty() && !after_name.is_empty())
+        || (!after_kind.is_empty()
+            && (!matches!(after_kind.as_str(), "directory" | "file")
+                || after_name.is_empty()
+                || after_name.len() > 255
+                || after_name.contains(['/', '\0'])))
+    {
+        return Err("invalid directory entry cursor");
+    }
+    let limit = limit.unwrap_or(100);
+    if !(1..=250).contains(&limit) {
+        return Err("invalid directory entry page size");
+    }
+    Ok(DirectoryEntryPageOptions {
+        revision,
+        prefix,
+        after_kind,
+        after_name,
+        limit,
+    })
+}
+
+fn prefix_upper_bound(prefix: &str) -> Option<String> {
+    let mut characters = prefix.chars().collect::<Vec<_>>();
+    for index in (0..characters.len()).rev() {
+        let scalar = u32::from(characters[index]);
+        let next = if scalar == 0xD7FF { 0xE000 } else { scalar + 1 };
+        if let Some(next) = char::from_u32(next) {
+            characters[index] = next;
+            characters.truncate(index + 1);
+            return Some(characters.into_iter().collect());
+        }
+    }
+    None
+}
+
+fn entry_view(entry: EntryRow) -> EntryView {
+    EntryView {
+        name: entry.name,
+        kind: entry.kind,
+        file_id: entry.file_id,
+        version_id: entry.version_id,
+        child_directory_id: entry.child_directory_id,
+        size_bytes: entry.size_bytes,
+        data_root: entry.data_root,
+        metadata_root: entry.metadata_root,
+        revision: entry.revision,
+        updated_at: entry.updated_at,
+        driver_ids: parse_string_array(&entry.driver_ids_json),
+    }
+}
+
+async fn directory_fence_matches(
+    database: &worker::D1Database,
+    directory_id: &str,
+    expected: &DirectoryFenceRow,
+) -> Result<bool> {
+    let current = database
+        .prepare(
+            r"SELECT directory.revision AS directory,
+                     directory.acl_revision AS acl,
+                     directory.placement_revision AS placement,
+                     quota.revision AS quota,
+                     filesystem.revision AS filesystem
+              FROM vfs_directories AS directory
+              JOIN vfs_filesystems AS filesystem ON filesystem.id = directory.filesystem_id
+              JOIN vfs_directory_quota_policies AS quota ON quota.directory_id = directory.id
+              WHERE directory.id = ?1 AND directory.state = 'active'",
+        )
+        .bind(&[JsValue::from_str(directory_id)])?
+        .first::<DirectoryFenceRow>(None)
+        .await?;
+    Ok(current.is_some_and(|current| {
+        current.directory == expected.directory
+            && current.acl == expected.acl
+            && current.placement == expected.placement
+            && current.quota == expected.quota
+            && current.filesystem == expected.filesystem
+    }))
+}
+
+async fn directory_revision_matches(
+    database: &worker::D1Database,
+    directory_id: &str,
+    expected_revision: u64,
+) -> Result<bool> {
+    let current = database
+        .prepare("SELECT revision FROM vfs_directories WHERE id = ?1 AND state = 'active'")
+        .bind(&[JsValue::from_str(directory_id)])?
+        .first::<RevisionRow>(None)
+        .await?;
+    Ok(current.is_some_and(|current| current.revision == expected_revision))
 }
 
 fn no_store_json<T: Serialize>(value: &T) -> Result<Response> {
@@ -1441,7 +1707,10 @@ fn now_seconds() -> u64 {
 mod tests {
     use serde_json::json;
 
-    use super::{canonical_integer, prefix_pattern, redact_value, sensitive_key, valid_identifier};
+    use super::{
+        canonical_integer, prefix_pattern, prefix_upper_bound, redact_value, sensitive_key,
+        valid_identifier,
+    };
 
     #[test]
     fn redacts_secret_shaped_driver_configuration() {
@@ -1482,5 +1751,12 @@ mod tests {
         assert_eq!(prefix_pattern(""), "%");
         assert_eq!(prefix_pattern("market"), "market%");
         assert_eq!(prefix_pattern(r"a%b_c\d"), r"a\%b\_c\\d%");
+    }
+
+    #[test]
+    fn directory_entry_prefix_bounds_preserve_unicode_order() {
+        assert_eq!(prefix_upper_bound("archive-"), Some("archive.".to_owned()));
+        assert_eq!(prefix_upper_bound("\u{1000}"), Some("\u{1001}".to_owned()));
+        assert_eq!(prefix_upper_bound("\u{10ffff}"), None);
     }
 }

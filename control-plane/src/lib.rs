@@ -630,6 +630,18 @@ pub async fn main(request: Request, env: Env, context: Context) -> Result<Respon
             },
         )
         .get_async(
+            "/api/admin/directories/:id/entries",
+            |request, context| async move {
+                let directory_id = context.param("id").cloned();
+                management::directory_entries(
+                    &request,
+                    &context.env,
+                    directory_id.as_deref(),
+                )
+                .await
+            },
+        )
+        .get_async(
             "/api/admin/directories/:id",
             |request, context| async move {
                 let directory_id = context.param("id").cloned();

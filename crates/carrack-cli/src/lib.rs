@@ -124,6 +124,21 @@ enum ManagementCommand {
     Directory {
         /// Stable directory identifier from a snapshot.
         id: String,
+        /// Revision-pinned entry page; omit to read directory summary.
+        #[arg(long)]
+        revision: Option<u64>,
+        /// Case-sensitive entry-name prefix for a paged read.
+        #[arg(long, default_value = "")]
+        prefix: String,
+        /// Returned entry-kind cursor from the previous page.
+        #[arg(long, default_value = "")]
+        after_kind: String,
+        /// Returned entry-name cursor from the previous page.
+        #[arg(long, default_value = "")]
+        after_name: String,
+        /// Maximum entries in a revision-pinned page.
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u64).range(1..=250))]
+        limit: u64,
         /// Output encoding.
         #[arg(long = "format", value_enum, default_value_t = Output::Json)]
         output: Output,
@@ -816,20 +831,8 @@ pub async fn run(surface: Surface) -> Result<(), Error> {
 }
 
 async fn run_management() -> Result<(), Error> {
-    let arguments = match ManagementArguments::try_parse() {
-        Ok(arguments) => arguments,
-        Err(error)
-            if matches!(
-                error.kind(),
-                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
-            ) =>
-        {
-            error
-                .print()
-                .map_err(|print_error| Error::Arguments(print_error.to_string()))?;
-            return Ok(());
-        }
-        Err(error) => return Err(Error::Arguments(error.to_string())),
+    let Some(arguments) = parse_management_arguments()? else {
+        return Ok(());
     };
     match arguments.command {
         ManagementCommand::Version { output } => write_version(output, Surface::Management)?,
@@ -862,10 +865,25 @@ async fn run_management() -> Result<(), Error> {
             client.check_compatibility().await?;
             write_json(output, &client.events(after, limit).await?)?;
         }
-        ManagementCommand::Directory { id, output } => {
+        ManagementCommand::Directory {
+            id,
+            revision,
+            prefix,
+            after_kind,
+            after_name,
+            limit,
+            output,
+        } => {
             let client = admin_client(arguments.control_url)?;
             client.check_compatibility().await?;
-            write_json(output, &client.directory(&id).await?)?;
+            let page = revision.map(|revision| DirectoryPageQuery {
+                revision,
+                prefix,
+                after_kind,
+                after_name,
+                limit,
+            });
+            run_directory_read(&client, &id, page.as_ref(), output).await?;
         }
         ManagementCommand::Authority { command } => {
             let client = admin_client(arguments.control_url)?;
@@ -883,12 +901,7 @@ async fn run_management() -> Result<(), Error> {
         } => {
             let client = admin_client(arguments.control_url)?;
             client.check_compatibility().await?;
-            let inventory = if let Some(driver_id) = refresh_driver {
-                client.refresh_provider_inventory(&driver_id).await?
-            } else {
-                client.provider_inventory().await?
-            };
-            write_json(output, &inventory)?;
+            run_inventory_read(&client, refresh_driver.as_deref(), output).await?;
         }
         ManagementCommand::Token { command } => {
             let client = admin_client(arguments.control_url)?;
@@ -912,6 +925,70 @@ async fn run_management() -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+fn parse_management_arguments() -> Result<Option<ManagementArguments>, Error> {
+    match ManagementArguments::try_parse() {
+        Ok(arguments) => Ok(Some(arguments)),
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+            ) =>
+        {
+            error
+                .print()
+                .map_err(|print_error| Error::Arguments(print_error.to_string()))?;
+            Ok(None)
+        }
+        Err(error) => Err(Error::Arguments(error.to_string())),
+    }
+}
+
+async fn run_inventory_read(
+    client: &AdminClient,
+    refresh_driver: Option<&str>,
+    output: Output,
+) -> Result<(), Error> {
+    let inventory = if let Some(driver_id) = refresh_driver {
+        client.refresh_provider_inventory(driver_id).await?
+    } else {
+        client.provider_inventory().await?
+    };
+    write_json(output, &inventory)
+}
+
+struct DirectoryPageQuery {
+    revision: u64,
+    prefix: String,
+    after_kind: String,
+    after_name: String,
+    limit: u64,
+}
+
+async fn run_directory_read(
+    client: &AdminClient,
+    id: &str,
+    page: Option<&DirectoryPageQuery>,
+    output: Output,
+) -> Result<(), Error> {
+    if let Some(page) = page {
+        write_json(
+            output,
+            &client
+                .directory_entries(
+                    id,
+                    page.revision,
+                    &page.prefix,
+                    &page.after_kind,
+                    &page.after_name,
+                    page.limit,
+                )
+                .await?,
+        )
+    } else {
+        write_json(output, &client.directory(id).await?)
+    }
 }
 
 async fn run_analytics(
@@ -2117,6 +2194,28 @@ mod tests {
             "r2-default",
         ]);
         assert!(parsed.is_ok());
+        assert!(
+            ManagementArguments::try_parse_from([
+                "carrackctl",
+                "directory",
+                "0123456789abcdef0123456789abcdef",
+            ])
+            .is_ok()
+        );
+        assert!(
+            ManagementArguments::try_parse_from([
+                "carrackctl",
+                "directory",
+                "0123456789abcdef0123456789abcdef",
+                "--revision",
+                "7",
+                "--prefix",
+                "archive-",
+                "--limit",
+                "25",
+            ])
+            .is_ok()
+        );
     }
 
     #[test]
