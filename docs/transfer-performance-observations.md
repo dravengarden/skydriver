@@ -99,6 +99,41 @@ evidence against changing defaults from isolated samples; future comparison
 should first collect several successful and failed baseline attempts under a
 named network path.
 
+### Host and egress correlation
+
+The following read-only correlation was performed after the runs against
+hawk's retained VictoriaMetrics and VictoriaLogs data. The windows are wider
+than the individual stage boundaries because the first acceptance harness did
+not persist exact start timestamps for every stage. Network values are whole
+host `lan0` rates, not Carrack process accounting.
+
+| Correlation window (CST) | CPU mean / max | Memory used mean / max | Busiest disk mean / max | `lan0` receive mean / max | `lan0` transmit mean / max |
+|---|---:|---:|---:|---:|---:|
+| Successful baseline, 19:30-19:43 | 14.13% / 27.51% | 19.38% / 21.55% | 2.60% / 5.03% | 60.91 / 115.61 Mbit/s | 7.66 / 23.37 Mbit/s |
+| Failed tuning sample, 20:05-20:17 | 1.88% / 9.37% | 17.46% / 18.22% | 1.86% / 15.14% | 5.29 / 22.29 Mbit/s | 5.55 / 22.68 Mbit/s |
+| Failed repeated baseline, 20:30-20:36 | 14.20% / 41.00% | 18.94% / 20.48% | 1.64% / 4.05% | 1.22 / 2.47 Mbit/s | 6.34 / 17.58 Mbit/s |
+
+None of the windows shows host memory or disk saturation. CPU headroom also
+remained substantial, including during the repeated baseline timeout. Host
+resource exhaustion is therefore not a supported explanation for either
+failed acceptance.
+
+Omega had started at 16:33:27 CST, before all three windows, and subsequently
+reported zero service restarts. Its logs show no matching connection error in
+the successful baseline window. During the failed tuning window they show
+seven five-second `i/o timeout` failures in the selected proxy underlay while
+opening connections to the Cloudflare endpoint. During the failed repeated
+baseline window they show no explicit connection failure even though traffic
+continued through the same transparent proxy path.
+
+This evidence establishes that the failed tuning sample overlapped a degraded
+egress path. It does not establish that every slow stage was caused by omega,
+nor does the absence of an error log prove a healthy long-lived connection.
+The repeated baseline timeout remains unlocalized between the end-to-end
+network path and provider. Future live runs should persist stage start and end
+timestamps plus an opaque run identifier so process-scoped telemetry can be
+correlated without relying on widened windows or whole-host traffic.
+
 ### Interpretation boundary
 
 - These are practical end-to-end observations, not isolated provider limits.
