@@ -57,14 +57,20 @@ fi
 carrack_command() {
   local stage=$1
   shift
-  local status
+  local status started_ns finished_ns started_at finished_at elapsed_ms
+  started_ns=$(carrack_now_ns)
+  started_at=$(carrack_now_utc)
   timeout --signal=INT --kill-after=15s "${operation_timeout_seconds}s" \
     "$carrack_bin" "$@" || {
     status=$?
+    finished_at=$(carrack_now_utc)
+    finished_ns=$(carrack_now_ns)
+    elapsed_ms=$(carrack_elapsed_ms "$started_ns" "$finished_ns")
     carrack_live_failure_json \
-      carrack.r2-live-acceptance-failure.v1 "$driver_id" "$stage" "$status" \
-      "$operation_timeout_seconds" "$payload_bytes" "$transfer_part_bytes" \
-      "$maximum_concurrency" >&2
+      carrack.r2-live-acceptance-failure.v2 "$driver_id" "$run_id" "$stage" \
+      "$status" "$operation_timeout_seconds" "$payload_bytes" \
+      "$transfer_part_bytes" "$maximum_concurrency" "$started_at" \
+      "$finished_at" "$elapsed_ms" >&2
     return "$status"
   }
 }
@@ -72,6 +78,8 @@ carrack_command() {
 state=$(mktemp -d)
 chmod 0700 "$state"
 identifier=$(openssl rand -hex 8)
+run_id=$identifier
+run_started_at=$(carrack_now_utc)
 name="carrack-r2-live-$identifier.bin"
 if [[ $directory == / ]]; then
   destination="/$name"
@@ -102,6 +110,7 @@ carrack_command compatibility compatibility --control-url "$control_url" --forma
   jq -e '.protocol_epoch == 2 and .enforcement == "required"' >/dev/null
 
 upload_started_ns=$(carrack_now_ns)
+upload_started_at=$(carrack_now_utc)
 put_result=$(carrack_command upload put \
   "$source_file" "$destination" \
   --control-url "$control_url" \
@@ -112,6 +121,7 @@ put_result=$(carrack_command upload put \
   --maximum-concurrency "$maximum_concurrency" \
   --format json)
 upload_finished_ns=$(carrack_now_ns)
+upload_finished_at=$(carrack_now_utc)
 jq -e --arg driver "$driver_id" '
   .schema == "carrack.fs-put.v1" and
   .receipt.state == "committed" and
@@ -121,6 +131,7 @@ jq -e --arg driver "$driver_id" '
 put_committed=true
 
 download_started_ns=$(carrack_now_ns)
+download_started_at=$(carrack_now_utc)
 get_result=$(carrack_command download get \
   "$destination" "$download_file" \
   --control-url "$control_url" \
@@ -129,11 +140,13 @@ get_result=$(carrack_command download get \
   --maximum-concurrency "$maximum_concurrency" \
   --format json)
 download_finished_ns=$(carrack_now_ns)
+download_finished_at=$(carrack_now_utc)
 jq -e '.schema == "carrack.fs-get.v1"' <<<"$get_result" >/dev/null
 [[ $(sha256sum "$download_file" | cut -d' ' -f1) == "$source_sha" ]]
 
 set +e
 resume_started_ns=$(carrack_now_ns)
+resume_started_at=$(carrack_now_utc)
 timeout 0.2s "$carrack_bin" get \
   "$destination" "$resumed_file" \
   --control-url "$control_url" \
@@ -157,6 +170,7 @@ if [[ $interrupted_status != 0 ]]; then
     --format json >/dev/null
 fi
 resume_finished_ns=$(carrack_now_ns)
+resume_finished_at=$(carrack_now_utc)
 [[ $(sha256sum "$resumed_file" | cut -d' ' -f1) == "$source_sha" ]]
 
 upload_elapsed_ns=$((upload_finished_ns - upload_started_ns))
@@ -178,11 +192,21 @@ put_committed=false
 listing=$(carrack_command list list \
   "$directory" --control-url "$control_url" --format json)
 jq -e --arg name "$name" 'all(.entries[]; .name != $name)' <<<"$listing" >/dev/null
+run_finished_at=$(carrack_now_utc)
 
 jq -n \
-  --arg schema carrack.r2-live-acceptance.v1 \
+  --arg schema carrack.r2-live-acceptance.v2 \
   --arg driver_id "$driver_id" \
+  --arg run_id "$run_id" \
+  --arg run_started_at "$run_started_at" \
+  --arg run_finished_at "$run_finished_at" \
   --arg source_sha256 "$source_sha" \
+  --arg upload_started_at "$upload_started_at" \
+  --arg upload_finished_at "$upload_finished_at" \
+  --arg download_started_at "$download_started_at" \
+  --arg download_finished_at "$download_finished_at" \
+  --arg resume_started_at "$resume_started_at" \
+  --arg resume_finished_at "$resume_finished_at" \
   --argjson plaintext_bytes "$payload_bytes" \
   --argjson transfer_part_bytes "$transfer_part_bytes" \
   --argjson maximum_concurrency "$maximum_concurrency" \
@@ -195,6 +219,11 @@ jq -n \
   '{
     schema: $schema,
     driver_id: $driver_id,
+    run_id: $run_id,
+    run_timing: {
+      started_at: $run_started_at,
+      finished_at: $run_finished_at
+    },
     plaintext_bytes: $plaintext_bytes,
     source_sha256: $source_sha256,
     pipeline: {
@@ -202,12 +231,24 @@ jq -n \
       maximum_concurrency: $maximum_concurrency
     },
     end_to_end: {
-      upload_elapsed_ms: $upload_elapsed_ms,
-      upload_bytes_per_second: $upload_bytes_per_second,
-      download_elapsed_ms: $download_elapsed_ms,
-      download_bytes_per_second: $download_bytes_per_second,
-      interrupted_resume_elapsed_ms: $resume_elapsed_ms,
-      interrupted_resume_bytes_per_second: $resume_bytes_per_second
+      upload: {
+        started_at: $upload_started_at,
+        finished_at: $upload_finished_at,
+        elapsed_ms: $upload_elapsed_ms,
+        bytes_per_second: $upload_bytes_per_second
+      },
+      download: {
+        started_at: $download_started_at,
+        finished_at: $download_finished_at,
+        elapsed_ms: $download_elapsed_ms,
+        bytes_per_second: $download_bytes_per_second
+      },
+      interrupted_resume: {
+        started_at: $resume_started_at,
+        finished_at: $resume_finished_at,
+        elapsed_ms: $resume_elapsed_ms,
+        bytes_per_second: $resume_bytes_per_second
+      }
     },
     encrypted_multipart_upload_verified: true,
     concurrent_range_download_verified: true,

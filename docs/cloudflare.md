@@ -211,7 +211,10 @@ for a test. The JSON result also reports end-to-end upload, verified download,
 and interrupted-resume elapsed milliseconds and effective plaintext bytes per
 second. These wall-clock observations include control-plane, cryptography,
 provider, verification, and local publication work; they are practical client
-throughput rather than provider-only or billing metrics.
+throughput rather than provider-only or billing metrics. Successful v2 results
+also carry one random 64-bit `run_id`, the run's UTC bounds, and UTC bounds for
+each measured transfer stage. The identifier is correlation metadata only; it
+is not an authorization, idempotency, integrity, or provider identity.
 
 The managed R2 acceptance uses the same safety boundary but defaults to a
 128 MiB random payload and eight concurrent 8 MiB parts so the real multipart,
@@ -247,10 +250,12 @@ including the exact environment, payload, pipeline, timeout, cleanup outcome,
 and whether a number came from end-to-end timing or sampled telemetry. Never
 replace a failed acceptance with the successful stages that preceded it.
 Timeout and CLI failures also emit a compact
-`carrack.*.live-acceptance-failure.v1` JSON object on stderr with the stage,
-exit status, safety timeout, payload size, and requested pipeline. It contains
-no bearer, signed URL, provider locator, or local path and remains a failed
-nonzero process result.
+`carrack.*.live-acceptance-failure.v2` JSON object on stderr with the same
+opaque run ID plus the stage, UTC bounds, elapsed milliseconds, exit status,
+safety timeout, payload size, and requested pipeline. It contains no bearer,
+signed URL, provider locator, or local path and remains a failed nonzero
+process result. Use the run ID and exact bounds to correlate host or egress
+telemetry; do not infer a provider cause merely from a timeout.
 
 Each recipe uploads a tagged Worker version and then moves 100% of that
 environment's traffic to it. It does not rewrite the already-audited custom

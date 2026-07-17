@@ -28,20 +28,31 @@ if carrack_require_integer_range TEST_VALUE invalid 2 64 >/dev/null 2>&1; then
 fi
 
 failure=$(carrack_live_failure_json \
-  carrack.r2-live-acceptance-failure.v1 r2-default resume 124 300 \
-  134217728 8388608 8)
+  carrack.r2-live-acceptance-failure.v2 r2-default 0123456789abcdef \
+  resume 124 300 134217728 8388608 8 \
+  2026-07-17T12:00:00Z 2026-07-17T12:05:00Z 300000)
 jq -e '
-  .schema == "carrack.r2-live-acceptance-failure.v1" and
+  .schema == "carrack.r2-live-acceptance-failure.v2" and
   .driver_id == "r2-default" and
+  .run_id == "0123456789abcdef" and
   .stage == "resume" and
+  .stage_timing.started_at == "2026-07-17T12:00:00Z" and
+  .stage_timing.finished_at == "2026-07-17T12:05:00Z" and
+  .stage_timing.elapsed_ms == 300000 and
   .exit_status == 124 and
   .timeout_seconds == 300 and
   .plaintext_bytes == 134217728 and
   .pipeline.transfer_part_bytes == 8388608 and
   .pipeline.maximum_concurrency == 8
 ' <<<"$failure" >/dev/null
-if carrack_live_failure_json failure driver stage 0 300 1 1 1 >/dev/null 2>&1; then
+if carrack_live_failure_json failure driver 0123456789abcdef stage 0 300 1 1 1 \
+  2026-07-17T12:00:00Z 2026-07-17T12:00:01Z 1000 >/dev/null 2>&1; then
   echo "live failure accepted a successful exit status" >&2
+  exit 1
+fi
+if carrack_live_failure_json failure driver not-opaque stage 1 300 1 1 1 \
+  2026-07-17T12:00:00Z 2026-07-17T12:00:01Z 1000 >/dev/null 2>&1; then
+  echo "live failure accepted a noncanonical run identifier" >&2
   exit 1
 fi
 
