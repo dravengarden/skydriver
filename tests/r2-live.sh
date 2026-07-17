@@ -55,8 +55,15 @@ if [[ ! -x $carrack_bin ]]; then
 fi
 
 carrack_command() {
+  local stage=$1
+  shift
+  local status
   timeout --signal=INT --kill-after=15s "${operation_timeout_seconds}s" \
-    env CARRACK_VFS_TOKEN="$CARRACK_VFS_TOKEN" "$carrack_bin" "$@"
+    "$carrack_bin" "$@" || {
+    status=$?
+    echo "R2 live $stage failed with exit status $status" >&2
+    return "$status"
+  }
 }
 
 state=$(mktemp -d)
@@ -76,7 +83,7 @@ remove_key="r2-live-remove-$identifier"
 
 cleanup() {
   if [[ $put_committed == true ]]; then
-    carrack_command remove "$destination" \
+    carrack_command "cleanup remove" remove "$destination" \
       --control-url "$control_url" --idempotency-key "$remove_key" \
       --format json >/dev/null 2>&1 || \
       echo "warning: live object cleanup must be retried for $destination" >&2
@@ -88,11 +95,11 @@ trap cleanup EXIT
 head -c "$payload_bytes" /dev/urandom >"$source_file"
 source_sha=$(sha256sum "$source_file" | cut -d' ' -f1)
 
-carrack_command compatibility --control-url "$control_url" --format json |
+carrack_command compatibility compatibility --control-url "$control_url" --format json |
   jq -e '.protocol_epoch == 2 and .enforcement == "required"' >/dev/null
 
 upload_started_ns=$(carrack_now_ns)
-put_result=$(carrack_command put \
+put_result=$(carrack_command upload put \
   "$source_file" "$destination" \
   --control-url "$control_url" \
   --preferred-driver-id "$driver_id" \
@@ -111,7 +118,7 @@ jq -e --arg driver "$driver_id" '
 put_committed=true
 
 download_started_ns=$(carrack_now_ns)
-get_result=$(carrack_command get \
+get_result=$(carrack_command download get \
   "$destination" "$download_file" \
   --control-url "$control_url" \
   --staging-directory "$state/download-staging" \
@@ -124,7 +131,7 @@ jq -e '.schema == "carrack.fs-get.v1"' <<<"$get_result" >/dev/null
 
 set +e
 resume_started_ns=$(carrack_now_ns)
-timeout 0.2s env CARRACK_VFS_TOKEN="$CARRACK_VFS_TOKEN" "$carrack_bin" get \
+timeout 0.2s "$carrack_bin" get \
   "$destination" "$resumed_file" \
   --control-url "$control_url" \
   --staging-directory "$state/resume-staging" \
@@ -138,7 +145,7 @@ if [[ $interrupted_status != 0 && $interrupted_status != 124 ]]; then
   exit 1
 fi
 if [[ $interrupted_status != 0 ]]; then
-  carrack_command get \
+  carrack_command resume get \
     "$destination" "$resumed_file" \
     --control-url "$control_url" \
     --staging-directory "$state/resume-staging" \
@@ -159,13 +166,13 @@ upload_bytes_per_second=$(carrack_bytes_per_second "$payload_bytes" "$upload_ela
 download_bytes_per_second=$(carrack_bytes_per_second "$payload_bytes" "$download_elapsed_ns")
 resume_bytes_per_second=$(carrack_bytes_per_second "$payload_bytes" "$resume_elapsed_ns")
 
-remove_result=$(carrack_command remove \
+remove_result=$(carrack_command remove remove \
   "$destination" --control-url "$control_url" \
   --idempotency-key "$remove_key" --format json)
 jq -e '.schema == "carrack.vfs.remove-receipt.v1"' <<<"$remove_result" >/dev/null
 put_committed=false
 
-listing=$(carrack_command list \
+listing=$(carrack_command list list \
   "$directory" --control-url "$control_url" --format json)
 jq -e --arg name "$name" 'all(.entries[]; .name != $name)' <<<"$listing" >/dev/null
 

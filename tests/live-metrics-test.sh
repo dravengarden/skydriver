@@ -46,3 +46,7 @@ if env CARRACK_R2_LIVE_TEST=1 CARRACK_VFS_TOKEN=redacted \
   echo "R2 acceptance claimed concurrent ranges at concurrency one" >&2
   exit 1
 fi
+if rg -q 'env CARRACK_VFS_TOKEN' "$root/tests/r2-live.sh" "$root/tests/aliyun-live.sh"; then
+  echo "live acceptance exposed a VFS token through command arguments" >&2
+  exit 1
+fi
