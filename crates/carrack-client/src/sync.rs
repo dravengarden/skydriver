@@ -1654,6 +1654,8 @@ mod tests {
     use httpmock::{Method::GET, MockServer};
     use serde_json::json;
     use sha2::{Digest as _, Sha256};
+    use std::path::PathBuf;
+    use std::time::Instant;
 
     use super::{
         LEGACY_STATE_SCHEMA, LocalDisposition, LocalReusePlan, PlannedFile, RecordSpool,
@@ -2214,5 +2216,123 @@ mod tests {
         checkpoint_delivery.assert_hits_async(2).await;
         root_fence.assert_hits_async(6).await;
         child_catalog.assert_hits_async(0).await;
+    }
+
+    #[test]
+    #[ignore = "release-only scaling acceptance"]
+    fn indexed_state_accepts_one_hundred_thousand_records_without_linear_lookup() {
+        const RECORDS: usize = 100_000;
+        let temporary = tempfile::tempdir().expect("state scaling temporary directory");
+        let state_root = temporary.path().join("state");
+        let mut spool =
+            RecordSpool::<StateRecord>::create(&state_root).expect("create state scaling spool");
+        let root = "42".repeat(32);
+        let started = Instant::now();
+        for index in 0..RECORDS {
+            spool
+                .append(&StateRecord {
+                    relative_path: format!("partition-{index:06}.parquet").into(),
+                    version_id: format!("version-{index:06}"),
+                    size_bytes: 4096,
+                    file_root: root.clone(),
+                    verification_block_bytes: 1024,
+                })
+                .expect("append state scaling record");
+        }
+        let spool_elapsed = started.elapsed();
+        let path = state_root.join("state.sqlite3");
+        let build_started = Instant::now();
+        write_state(
+            &path,
+            "/benchmark",
+            spool.finish().expect("seal state scaling spool"),
+        )
+        .expect("publish indexed scaling state");
+        let build_elapsed = build_started.elapsed();
+        let state = StateIndex::open(&path, "/benchmark").expect("open indexed scaling state");
+        let lookup_started = Instant::now();
+        for index in 0..RECORDS {
+            let relative_path = PathBuf::from(format!("partition-{index:06}.parquet"));
+            let record = state.lookup(&relative_path).expect("indexed state record");
+            assert_eq!(record.relative_path, relative_path);
+        }
+        let lookup_elapsed = lookup_started.elapsed();
+        eprintln!(
+            "carrack_sync_state_benchmark records={RECORDS} spool_ms={} build_ms={} lookup_ms={} database_bytes={}",
+            spool_elapsed.as_millis(),
+            build_elapsed.as_millis(),
+            lookup_elapsed.as_millis(),
+            std::fs::metadata(path)
+                .expect("state database metadata")
+                .len()
+        );
+    }
+
+    #[test]
+    #[ignore = "release-only scaling acceptance"]
+    fn warm_sync_rehashes_ten_thousand_files_without_provider_payload() {
+        const FILES: usize = 10_000;
+        const FILE_BYTES: usize = 4096;
+        const BLOCK_BYTES: u64 = 1024;
+        let temporary = tempfile::tempdir().expect("warm scaling temporary directory");
+        let destination = temporary.path().join("destination");
+        std::fs::create_dir(&destination).expect("create warm scaling destination");
+        let payload = vec![0x5a; FILE_BYTES];
+        let mut accumulator = carrack_sdk_core::FileMerkleAccumulator::new(BLOCK_BYTES)
+            .expect("create warm scaling accumulator");
+        let block_bytes = usize::try_from(BLOCK_BYTES).expect("benchmark block size fits usize");
+        for block in payload.chunks(block_bytes) {
+            accumulator
+                .push_block(block)
+                .expect("hash warm scaling payload block");
+        }
+        let root = hex::encode(accumulator.finish().expect("finish warm scaling payload"));
+        for index in 0..FILES {
+            std::fs::write(
+                destination.join(format!("partition-{index:05}.parquet")),
+                &payload,
+            )
+            .expect("write warm scaling file");
+        }
+        let started = Instant::now();
+        for index in 0..FILES {
+            let relative_path = PathBuf::from(format!("partition-{index:05}.parquet"));
+            let record = StateRecord {
+                relative_path: relative_path.clone(),
+                version_id: format!("version-{index:05}"),
+                size_bytes: FILE_BYTES as u64,
+                file_root: root.clone(),
+                verification_block_bytes: BLOCK_BYTES,
+            };
+            let evaluation = evaluate_local_file(
+                &destination,
+                LocalReusePlan {
+                    file: PlannedFile {
+                        vfs_path: format!(
+                            "/{relative_path}",
+                            relative_path = relative_path.display()
+                        ),
+                        relative_path,
+                        file_id: format!("file-{index:05}"),
+                        version_id: record.version_id.clone(),
+                        size_bytes: record.size_bytes,
+                        file_root: record.file_root.clone(),
+                    },
+                    exact: Some(record),
+                    relocated: Vec::new(),
+                },
+            )
+            .expect("verify warm scaling file");
+            assert!(matches!(
+                evaluation.disposition,
+                LocalDisposition::Reused(_)
+            ));
+        }
+        let elapsed = started.elapsed();
+        eprintln!(
+            "carrack_warm_sync_benchmark files={FILES} local_bytes={} provider_bytes=0 elapsed_ms={}",
+            FILES * FILE_BYTES,
+            elapsed.as_millis()
+        );
     }
 }
