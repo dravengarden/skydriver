@@ -216,6 +216,11 @@ const TransferAnalyticsRowSchema = v.object({
     weighted_provider_ms: v.number(),
     weighted_total_ms: v.number(),
     weighted_retries: v.number(),
+    weighted_phase_transfers: v.number(),
+    weighted_plan_ms: v.number(),
+    weighted_queue_ms: v.number(),
+    weighted_phase_provider_ms: v.number(),
+    weighted_post_provider_ms: v.number(),
     speed_b0: v.number(),
     speed_b1: v.number(),
     speed_b2: v.number(),
@@ -231,7 +236,7 @@ const TransferAnalyticsRowSchema = v.object({
 });
 
 const TransferAnalyticsSchema = v.object({
-    schema: v.literal("carrack.management.transfer-analytics.v1"),
+    schema: v.literal("carrack.management.transfer-analytics.v2"),
     observed_at: v.number(),
     from: v.number(),
     to: v.number(),

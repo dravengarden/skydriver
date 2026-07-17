@@ -293,6 +293,12 @@ pub(crate) struct TransferTelemetry {
     provider_ms: u64,
     total_ms: u64,
     retries: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plan_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    queue_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    post_provider_ms: Option<u64>,
 }
 
 impl TransferTelemetry {
@@ -302,6 +308,43 @@ impl TransferTelemetry {
             provider_ms: duration_ms(provider),
             total_ms: duration_ms(total).max(duration_ms(provider)),
             retries: 0,
+            plan_ms: None,
+            queue_ms: None,
+            post_provider_ms: None,
+        }
+    }
+
+    pub(crate) fn measured_download(
+        plan: std::time::Duration,
+        queue: std::time::Duration,
+        provider: std::time::Duration,
+        post_provider: std::time::Duration,
+        total: std::time::Duration,
+    ) -> Self {
+        let plan_ms = duration_ms(plan);
+        let queue_ms = duration_ms(queue);
+        let provider_ms = duration_ms(provider);
+        let post_provider_ms = duration_ms(post_provider);
+        let phase_total = plan_ms
+            .saturating_add(queue_ms)
+            .saturating_add(provider_ms)
+            .saturating_add(post_provider_ms);
+        Self {
+            schema: "carrack.transfer-telemetry.v2".to_owned(),
+            provider_ms,
+            total_ms: duration_ms(total).max(phase_total),
+            retries: 0,
+            plan_ms: Some(plan_ms),
+            queue_ms: Some(queue_ms),
+            post_provider_ms: Some(post_provider_ms),
+        }
+    }
+
+    pub(crate) fn add_post_provider(&mut self, elapsed: std::time::Duration) {
+        let elapsed_ms = duration_ms(elapsed);
+        if let Some(post_provider_ms) = self.post_provider_ms.as_mut() {
+            *post_provider_ms = post_provider_ms.saturating_add(elapsed_ms);
+            self.total_ms = self.total_ms.saturating_add(elapsed_ms);
         }
     }
 }
@@ -1004,12 +1047,12 @@ fn validate_receipt(
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::{io::Cursor, time::Duration};
 
     use super::{
-        BoundedRangeUploadSource, CancelSafeStage, Preparation, PutOptions, run_source_worker,
-        run_stage_worker, spool_bounded_reader, spool_exact_reader, spool_range_source,
-        validate_preparation,
+        BoundedRangeUploadSource, CancelSafeStage, Preparation, PutOptions, TransferTelemetry,
+        run_source_worker, run_stage_worker, spool_bounded_reader, spool_exact_reader,
+        spool_range_source, validate_preparation,
     };
 
     fn put_options(staging_directory: &std::path::Path) -> PutOptions {
@@ -1023,6 +1066,34 @@ mod tests {
             transfer_part_bytes: 4,
             maximum_concurrency: 1,
         }
+    }
+
+    #[test]
+    fn download_telemetry_is_a_complete_bounded_phase_partition() {
+        let telemetry = TransferTelemetry::measured_download(
+            Duration::from_millis(2),
+            Duration::from_millis(3),
+            Duration::from_millis(5),
+            Duration::from_millis(7),
+            Duration::from_millis(18),
+        );
+        let value = serde_json::to_value(telemetry).expect("serialize telemetry");
+        assert_eq!(value["schema"], "carrack.transfer-telemetry.v2");
+        assert_eq!(value["plan_ms"], 2);
+        assert_eq!(value["queue_ms"], 3);
+        assert_eq!(value["provider_ms"], 5);
+        assert_eq!(value["post_provider_ms"], 7);
+        assert_eq!(value["total_ms"], 18);
+
+        let legacy = serde_json::to_value(TransferTelemetry::measured(
+            Duration::from_millis(5),
+            Duration::from_millis(8),
+        ))
+        .expect("serialize legacy telemetry");
+        assert_eq!(legacy["schema"], "carrack.transfer-telemetry.v1");
+        assert!(legacy.get("plan_ms").is_none());
+        assert!(legacy.get("queue_ms").is_none());
+        assert!(legacy.get("post_provider_ms").is_none());
     }
 
     fn valid_preparation() -> Preparation {

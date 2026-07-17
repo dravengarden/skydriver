@@ -34,6 +34,14 @@ pub(crate) struct ReadLeaseCompletion {
     telemetry: Option<TransferTelemetry>,
 }
 
+impl ReadLeaseCompletion {
+    pub(crate) fn include_publication(&mut self, elapsed: Duration) {
+        if let Some(telemetry) = self.telemetry.as_mut() {
+            telemetry.add_post_provider(elapsed);
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct CompletionRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -121,6 +129,15 @@ fn zeroize_json_value(value: &mut Value) {
 pub(crate) struct PreparedDownload {
     plan: DownloadPlan,
     transfer_started: Instant,
+    plan_elapsed: Duration,
+    plan_completed_at: Instant,
+}
+
+#[derive(Clone, Copy)]
+struct DownloadPhases {
+    queue: Duration,
+    provider: Duration,
+    post_provider: Duration,
 }
 
 /// Verified native file download result.
@@ -298,9 +315,12 @@ impl VfsClient {
             )
             .await?;
         validate_plan(&plan, expected)?;
+        let plan_completed_at = Instant::now();
         Ok(PreparedDownload {
             plan,
             transfer_started,
+            plan_elapsed: plan_completed_at.duration_since(transfer_started),
+            plan_completed_at,
         })
     }
 
@@ -330,13 +350,20 @@ impl VfsClient {
                 destination,
                 options,
                 &mut prepared.plan,
+                prepared.plan_completed_at,
                 defer_successful_completion,
             )
             .await;
         let completion = ReadLeaseCompletion {
             read_lease_id: prepared.plan.read_lease_id.clone(),
-            telemetry: outcome.as_ref().ok().map(|(_, provider_elapsed, _)| {
-                TransferTelemetry::measured(*provider_elapsed, prepared.transfer_started.elapsed())
+            telemetry: outcome.as_ref().ok().map(|(_, phases, _)| {
+                TransferTelemetry::measured_download(
+                    prepared.plan_elapsed,
+                    phases.queue,
+                    phases.provider,
+                    phases.post_provider,
+                    prepared.transfer_started.elapsed(),
+                )
             }),
         };
         match outcome {
@@ -435,9 +462,11 @@ impl VfsClient {
         destination: &Path,
         options: &GetOptions,
         plan: &mut DownloadPlan,
+        plan_completed_at: Instant,
         defer_publication: bool,
-    ) -> Result<(GetResult, Duration, Option<VerifiedPublication>), Error> {
+    ) -> Result<(GetResult, DownloadPhases, Option<VerifiedPublication>), Error> {
         let provider_started = Instant::now();
+        let queue = provider_started.duration_since(plan_completed_at);
         let mut opened_driver = DriverRegistry::open(
             &plan.driver_kind,
             std::mem::take(&mut plan.config),
@@ -457,6 +486,7 @@ impl VfsClient {
             })
             .await?;
         let provider_elapsed = provider_started.elapsed();
+        let post_provider_started = Instant::now();
         let mut directory_key = decode_directory_key(plan)?;
         let descriptor = Descriptor {
             directory_id: parse_identifier(&plan.directory_id)?,
@@ -507,7 +537,11 @@ impl VfsClient {
                 driver_id: plan.driver_id.clone(),
                 warnings,
             },
-            provider_elapsed,
+            DownloadPhases {
+                queue,
+                provider: provider_elapsed,
+                post_provider: post_provider_started.elapsed(),
+            },
             publication,
         ))
     }

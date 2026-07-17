@@ -43,6 +43,19 @@ wrangler=(
 "${wrangler[@]}" d1 migrations apply CARRACK_INDEX \
   --local \
   --persist-to "$state_directory" >/dev/null
+"${wrangler[@]}" d1 execute CARRACK_INDEX \
+  --local \
+  --persist-to "$state_directory" \
+  --command "INSERT INTO vfs_transfer_hourly_analytics (
+    bucket, driver_id, token_id, directory_id, direction,
+    weighted_transfers, weighted_bytes, weighted_provider_ms,
+    weighted_total_ms, weighted_retries, weighted_phase_transfers,
+    weighted_plan_ms, weighted_queue_ms, weighted_phase_provider_ms,
+    weighted_post_provider_ms, speed_b1, updated_at
+  ) VALUES (
+    3600, 'driver-phase-test', 'token-phase-test', 'directory-phase-test', 'download',
+    10, 10485760, 10000, 20000, 0, 10, 2000, 3000, 10000, 4000, 10, 3600
+  )" >/dev/null
 
 admin_token=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA
 operator_account=draven
@@ -154,11 +167,17 @@ oversized_metrics_window=$(curl --silent --output /dev/null --write-out '%{http_
 transfer_analytics=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" \
   "$base_url/api/admin/analytics/transfers?from=1&to=86401&interval=hour&group_by=driver&direction=both")
-[[ "$(jq -r '.schema' <<<"$transfer_analytics")" == carrack.management.transfer-analytics.v1 ]]
+[[ "$(jq -r '.schema' <<<"$transfer_analytics")" == carrack.management.transfer-analytics.v2 ]]
 [[ "$(jq -r '.interval' <<<"$transfer_analytics")" == hour ]]
 [[ "$(jq -r '.group_by' <<<"$transfer_analytics")" == driver ]]
 [[ "$(jq -r '.approximate' <<<"$transfer_analytics")" == true ]]
-[[ "$(jq -r '.rows | length' <<<"$transfer_analytics")" == 0 ]]
+[[ "$(jq -r '.rows | length' <<<"$transfer_analytics")" == 1 ]]
+[[ "$(jq -r '.rows[0].group_id' <<<"$transfer_analytics")" == driver-phase-test ]]
+[[ "$(jq -r '.rows[0].weighted_phase_transfers' <<<"$transfer_analytics")" == 10 ]]
+[[ "$(jq -r '.rows[0].weighted_plan_ms' <<<"$transfer_analytics")" == 2000 ]]
+[[ "$(jq -r '.rows[0].weighted_queue_ms' <<<"$transfer_analytics")" == 3000 ]]
+[[ "$(jq -r '.rows[0].weighted_phase_provider_ms' <<<"$transfer_analytics")" == 10000 ]]
+[[ "$(jq -r '.rows[0].weighted_post_provider_ms' <<<"$transfer_analytics")" == 4000 ]]
 invalid_descendant_analytics=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   -b "$cookie_jar" \
   "$base_url/api/admin/analytics/transfers?include_descendants=true")

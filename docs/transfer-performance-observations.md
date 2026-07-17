@@ -173,9 +173,10 @@ This sampled ratio is directional evidence, not an exact decomposition of the
 bounded plan/payload queueing, decryption, plaintext verification, and local
 publication. The difference between `total_ms` and `provider_ms` therefore
 cannot be assigned to Worker or D1 latency, and this run does not justify a
-download-plan batch endpoint. A future telemetry schema must measure plan,
-queue, provider, and verification/publication intervals separately before such
-a protocol optimization is accepted.
+download-plan batch endpoint. Download telemetry v2 now measures plan, client
+queue, provider, and verification/publication intervals separately. Its
+coverage counter excludes legacy v1 samples from phase averages; a later
+repeated live run is required before accepting a protocol optimization.
 
 ### Interpretation boundary
 

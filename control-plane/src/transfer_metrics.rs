@@ -18,6 +18,9 @@ pub(crate) struct TransferTelemetry {
     pub(crate) provider_ms: u64,
     pub(crate) total_ms: u64,
     pub(crate) retries: u64,
+    pub(crate) plan_ms: Option<u64>,
+    pub(crate) queue_ms: Option<u64>,
+    pub(crate) post_provider_ms: Option<u64>,
 }
 
 pub(crate) struct TransferIdentity<'a> {
@@ -123,6 +126,11 @@ struct AnalyticsRow {
     weighted_provider_ms: u64,
     weighted_total_ms: u64,
     weighted_retries: u64,
+    weighted_phase_transfers: u64,
+    weighted_plan_ms: u64,
+    weighted_queue_ms: u64,
+    weighted_phase_provider_ms: u64,
+    weighted_post_provider_ms: u64,
     speed_b0: u64,
     speed_b1: u64,
     speed_b2: u64,
@@ -195,31 +203,9 @@ pub(crate) async fn record(
         return Ok(());
     }
 
-    let Some(weighted_bytes) = identity.encoded_bytes.checked_mul(weight) else {
+    let Some(weighted) = weighted_observation(identity, telemetry, weight) else {
         return Ok(());
     };
-    let Some(weighted_provider_ms) = telemetry.provider_ms.checked_mul(weight) else {
-        return Ok(());
-    };
-    let Some(weighted_total_ms) = telemetry.total_ms.checked_mul(weight) else {
-        return Ok(());
-    };
-    let Some(weighted_retries) = telemetry.retries.checked_mul(weight) else {
-        return Ok(());
-    };
-    if [
-        weight,
-        weighted_bytes,
-        weighted_provider_ms,
-        weighted_total_ms,
-        weighted_retries,
-    ]
-    .into_iter()
-    .any(|value| i64::try_from(value).is_err())
-    {
-        return Ok(());
-    }
-
     let inserted = database
         .prepare(
             "INSERT INTO vfs_transfer_metric_receipts (operation_id, recorded_at)
@@ -250,14 +236,21 @@ pub(crate) async fn record(
             "INSERT INTO {table} (
                  bucket, driver_id, token_id, directory_id, direction,
                  weighted_transfers, weighted_bytes, weighted_provider_ms,
-                 weighted_total_ms, weighted_retries, {bucket_column}, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?6, ?11)
+                 weighted_total_ms, weighted_retries, weighted_phase_transfers,
+                 weighted_plan_ms, weighted_queue_ms, weighted_post_provider_ms,
+                 weighted_phase_provider_ms, {bucket_column}, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?6, ?16)
              ON CONFLICT(bucket, driver_id, token_id, directory_id, direction) DO UPDATE SET
                  weighted_transfers = weighted_transfers + excluded.weighted_transfers,
                  weighted_bytes = weighted_bytes + excluded.weighted_bytes,
                  weighted_provider_ms = weighted_provider_ms + excluded.weighted_provider_ms,
                  weighted_total_ms = weighted_total_ms + excluded.weighted_total_ms,
                  weighted_retries = weighted_retries + excluded.weighted_retries,
+                 weighted_phase_transfers = weighted_phase_transfers + excluded.weighted_phase_transfers,
+                 weighted_plan_ms = weighted_plan_ms + excluded.weighted_plan_ms,
+                 weighted_queue_ms = weighted_queue_ms + excluded.weighted_queue_ms,
+                 weighted_phase_provider_ms = weighted_phase_provider_ms + excluded.weighted_phase_provider_ms,
+                 weighted_post_provider_ms = weighted_post_provider_ms + excluded.weighted_post_provider_ms,
                  {bucket_column} = {bucket_column} + excluded.{bucket_column},
                  updated_at = excluded.updated_at"
         );
@@ -268,15 +261,75 @@ pub(crate) async fn record(
             JsValue::from_str(identity.directory_id),
             JsValue::from_str(identity.direction),
             number_binding(weight),
-            number_binding(weighted_bytes),
-            number_binding(weighted_provider_ms),
-            number_binding(weighted_total_ms),
-            number_binding(weighted_retries),
+            number_binding(weighted.bytes),
+            number_binding(weighted.provider),
+            number_binding(weighted.total),
+            number_binding(weighted.retries),
+            number_binding(weighted.phase_transfers),
+            number_binding(weighted.plan),
+            number_binding(weighted.queue),
+            number_binding(weighted.post_provider),
+            number_binding(weighted.phase_provider),
             number_binding(now),
         ])?);
     }
     database.batch(statements).await?;
     Ok(())
+}
+
+struct WeightedObservation {
+    bytes: u64,
+    provider: u64,
+    total: u64,
+    retries: u64,
+    phase_transfers: u64,
+    plan: u64,
+    queue: u64,
+    phase_provider: u64,
+    post_provider: u64,
+}
+
+fn weighted_observation(
+    identity: &TransferIdentity<'_>,
+    telemetry: &TransferTelemetry,
+    weight: u64,
+) -> Option<WeightedObservation> {
+    let phases = (identity.direction == "download")
+        .then(|| telemetry.phases())
+        .flatten();
+    let provider = telemetry.provider_ms.checked_mul(weight)?;
+    let weighted = WeightedObservation {
+        bytes: identity.encoded_bytes.checked_mul(weight)?,
+        provider,
+        total: telemetry.total_ms.checked_mul(weight)?,
+        retries: telemetry.retries.checked_mul(weight)?,
+        phase_transfers: if phases.is_some() { weight } else { 0 },
+        plan: phases
+            .and_then(|value| value.plan.checked_mul(weight))
+            .unwrap_or(0),
+        queue: phases
+            .and_then(|value| value.queue.checked_mul(weight))
+            .unwrap_or(0),
+        phase_provider: if phases.is_some() { provider } else { 0 },
+        post_provider: phases
+            .and_then(|value| value.post_provider.checked_mul(weight))
+            .unwrap_or(0),
+    };
+    [
+        weight,
+        weighted.bytes,
+        weighted.provider,
+        weighted.total,
+        weighted.retries,
+        weighted.phase_transfers,
+        weighted.plan,
+        weighted.queue,
+        weighted.phase_provider,
+        weighted.post_provider,
+    ]
+    .into_iter()
+    .all(|value| i64::try_from(value).is_ok())
+    .then_some(weighted)
 }
 
 pub(crate) async fn management(
@@ -417,7 +470,7 @@ pub(crate) async fn analytics(request: &Request, env: &Env) -> Result<Response> 
     }
     rows.shrink_to_fit();
     let mut response = Response::from_json(&AnalyticsResponse {
-        schema: "carrack.management.transfer-analytics.v1",
+        schema: "carrack.management.transfer-analytics.v2",
         observed_at: now,
         from: resolved.from,
         to: resolved.to,
@@ -512,6 +565,11 @@ fn analytics_statement(
                 SUM(weighted_provider_ms) AS weighted_provider_ms,
                 SUM(weighted_total_ms) AS weighted_total_ms,
                 SUM(weighted_retries) AS weighted_retries,
+                SUM(weighted_phase_transfers) AS weighted_phase_transfers,
+                SUM(weighted_plan_ms) AS weighted_plan_ms,
+                SUM(weighted_queue_ms) AS weighted_queue_ms,
+                SUM(weighted_phase_provider_ms) AS weighted_phase_provider_ms,
+                SUM(weighted_post_provider_ms) AS weighted_post_provider_ms,
                 SUM(speed_b0) AS speed_b0, SUM(speed_b1) AS speed_b1,
                 SUM(speed_b2) AS speed_b2, SUM(speed_b3) AS speed_b3,
                 SUM(speed_b4) AS speed_b4, SUM(speed_b5) AS speed_b5,
@@ -608,11 +666,46 @@ fn valid_scope_id(value: &str) -> bool {
 }
 
 fn valid(value: &TransferTelemetry) -> bool {
-    value.schema == "carrack.transfer-telemetry.v1"
-        && value.provider_ms > 0
+    matches!(
+        value.schema.as_str(),
+        "carrack.transfer-telemetry.v1" | "carrack.transfer-telemetry.v2"
+    ) && value.provider_ms > 0
         && value.provider_ms <= value.total_ms
         && value.total_ms <= MAXIMUM_DURATION_MS
         && value.retries <= MAXIMUM_RETRIES
+        && match value.schema.as_str() {
+            "carrack.transfer-telemetry.v1" => {
+                value.plan_ms.is_none()
+                    && value.queue_ms.is_none()
+                    && value.post_provider_ms.is_none()
+            }
+            "carrack.transfer-telemetry.v2" => value.phases().is_some_and(|phases| {
+                phases
+                    .plan
+                    .checked_add(phases.queue)
+                    .and_then(|total| total.checked_add(value.provider_ms))
+                    .and_then(|total| total.checked_add(phases.post_provider))
+                    .is_some_and(|total| total <= value.total_ms)
+            }),
+            _ => false,
+        }
+}
+
+#[derive(Clone, Copy)]
+struct TransferPhases {
+    plan: u64,
+    queue: u64,
+    post_provider: u64,
+}
+
+impl TransferTelemetry {
+    fn phases(&self) -> Option<TransferPhases> {
+        Some(TransferPhases {
+            plan: self.plan_ms?,
+            queue: self.queue_ms?,
+            post_provider: self.post_provider_ms?,
+        })
+    }
 }
 
 fn sample_weight(operation_id: &str, bytes: u64) -> u64 {
@@ -666,8 +759,33 @@ mod tests {
             provider_ms: 1_000,
             total_ms: 2_000,
             retries: 0,
+            plan_ms: None,
+            queue_ms: None,
+            post_provider_ms: None,
         };
         assert!(valid(&observation));
+        let phased = TransferTelemetry {
+            schema: "carrack.transfer-telemetry.v2".to_owned(),
+            provider_ms: 1_000,
+            total_ms: 2_000,
+            retries: 0,
+            plan_ms: Some(200),
+            queue_ms: Some(300),
+            post_provider_ms: Some(400),
+        };
+        assert!(valid(&phased));
+        assert!(!valid(&TransferTelemetry {
+            schema: "carrack.transfer-telemetry.v1".to_owned(),
+            ..phased.clone()
+        }));
+        assert!(!valid(&TransferTelemetry {
+            total_ms: 1_899,
+            ..phased.clone()
+        }));
+        assert!(!valid(&TransferTelemetry {
+            queue_ms: None,
+            ..phased
+        }));
         assert!(speed_bucket(128 * 1024, 1_000) > speed_bucket(1, 1_000));
     }
 

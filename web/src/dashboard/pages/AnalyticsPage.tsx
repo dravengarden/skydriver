@@ -77,6 +77,89 @@ function percentileRate(rows: readonly TransferAnalyticsRow[], percentile: numbe
     return null;
 }
 
+function formatDuration(milliseconds: number): string {
+    if (milliseconds < 1_000) return `${milliseconds.toFixed(0)} ms`;
+    return `${(milliseconds / 1_000).toFixed(2)} s`;
+}
+
+function PhaseBreakdown({ rows }: { readonly rows: readonly TransferAnalyticsRow[] }) {
+    const phasedTransfers = rows.reduce((sum, row) => sum + row.weighted_phase_transfers, 0);
+    if (phasedTransfers === 0) {
+        return (
+            <Alert severity="info">
+                Phase timing will appear after a v2 client completes a sampled download.
+            </Alert>
+        );
+    }
+    const phases = [
+        ["Plan", rows.reduce((sum, row) => sum + row.weighted_plan_ms, 0), "#7a5af8"],
+        ["Client queue", rows.reduce((sum, row) => sum + row.weighted_queue_ms, 0), "#f59e0b"],
+        [
+            "Provider I/O",
+            rows.reduce((sum, row) => sum + row.weighted_phase_provider_ms, 0),
+            "#1689a7",
+        ],
+        [
+            "Verify + publish",
+            rows.reduce((sum, row) => sum + row.weighted_post_provider_ms, 0),
+            "#2f6fed",
+        ],
+    ] as const;
+    const total = phases.reduce((sum, [, milliseconds]) => sum + milliseconds, 0);
+    return (
+        <Box>
+            <Box
+                sx={{
+                    display: "flex",
+                    height: 18,
+                    overflow: "hidden",
+                    borderRadius: 999,
+                    bgcolor: "action.hover",
+                    my: 2,
+                }}
+            >
+                {phases.map(([label, milliseconds, color]) => (
+                    <Box
+                        key={label}
+                        title={`${label}: ${formatDuration(milliseconds / phasedTransfers)} average`}
+                        sx={{
+                            width: `${total === 0 ? 0 : (milliseconds / total) * 100}%`,
+                            bgcolor: color,
+                            minWidth: milliseconds === 0 ? 0 : 2,
+                        }}
+                    />
+                ))}
+            </Box>
+            <Box
+                sx={{
+                    display: "grid",
+                    gridTemplateColumns: { xs: "1fr 1fr", md: "repeat(4, 1fr)" },
+                    gap: 1.5,
+                }}
+            >
+                {phases.map(([label, milliseconds, color]) => (
+                    <Box key={label}>
+                        <Typography variant="caption" color="text.secondary">
+                            <Box component="span" sx={{ color, mr: 0.5 }}>
+                                ●
+                            </Box>
+                            {label.toUpperCase()}
+                        </Typography>
+                        <Typography sx={{ fontWeight: 800 }}>
+                            {formatDuration(milliseconds / phasedTransfers)} avg
+                        </Typography>
+                    </Box>
+                ))}
+            </Box>
+            <Typography color="text.secondary" variant="caption" sx={{ display: "block", mt: 2 }}>
+                Based on ≈ {phasedTransfers.toLocaleString()} sampled v2 downloads. Client queue
+                includes local scheduling and shared staging-lock wait; verify + publish includes
+                decryption, integrity verification, and atomic publication.
+            </Typography>
+        </Box>
+    );
+}
+
 function ThroughputChart({ rows }: { readonly rows: readonly TransferAnalyticsRow[] }) {
     const buckets = [...new Set(rows.map((row) => row.bucket))].sort((left, right) => left - right);
     if (buckets.length === 0) {
@@ -361,6 +444,15 @@ export function AnalyticsPage() {
                             </Box>
                         </Stack>
                         <ThroughputChart rows={rows} />
+                    </Paper>
+                    <Paper variant="outlined" sx={{ p: { xs: 1.5, md: 2.5 } }}>
+                        <Typography variant="h6" sx={{ fontWeight: 850 }}>
+                            Download phase latency
+                        </Typography>
+                        <Typography color="text.secondary" variant="caption">
+                            Instrumented in the client with no extra control-plane requests
+                        </Typography>
+                        <PhaseBreakdown rows={rows} />
                     </Paper>
                     <Paper variant="outlined">
                         <Box sx={{ px: 2, py: 1.5 }}>

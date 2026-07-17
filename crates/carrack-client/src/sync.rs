@@ -11,6 +11,7 @@ use std::{
     marker::PhantomData,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+    time::Instant,
 };
 use zeroize::Zeroize as _;
 
@@ -1307,7 +1308,7 @@ async fn download_one(
             true,
         )
         .await?;
-    let completion = completion.ok_or_else(|| {
+    let mut completion = completion.ok_or_else(|| {
         Error::InvalidResponse("sync download omitted deferred completion".to_owned())
     })?;
     if result.version_id != file.version_id || result.file_root != file.file_root {
@@ -1318,9 +1319,11 @@ async fn download_one(
     let publication = publication.ok_or_else(|| {
         Error::InvalidResponse("sync download omitted verified publication".to_owned())
     })?;
+    let publication_started = Instant::now();
     result
         .warnings
         .extend(publication.publish_replace(&target)?);
+    completion.include_publication(publication_started.elapsed());
     Ok(Downloaded {
         record: StateRecord {
             relative_path: file.relative_path.clone(),

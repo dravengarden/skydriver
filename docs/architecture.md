@@ -57,6 +57,11 @@ deterministically samples it into hourly and daily aggregates that retain the
 driver, token, directory, and direction dimensions together. The management
 SDK, CLI, and UI share a closed, bounded analytics query contract. Missing or
 dropped telemetry only reduces diagnostic coverage and never changes VFS state.
+Download telemetry v2 partitions client wall time into plan, local queue,
+provider I/O, and post-provider verification/publication intervals. Legacy v1
+observations remain accepted, but a separate weighted coverage counter keeps
+them out of phase averages. Phase columns reuse the same sampled aggregate row
+and indexes; collection adds no request, raw-event row, or correctness edge.
 
 ## Logical and physical model
 

@@ -18,7 +18,7 @@ afterEach(() => {
 describe("transfer analytics", () => {
     it("serializes intersecting filters and validates the sampled response", async () => {
         const response = {
-            schema: "carrack.management.transfer-analytics.v1",
+            schema: "carrack.management.transfer-analytics.v2",
             observed_at: 2_000_000_000,
             from: 1_999_900_000,
             to: 2_000_000_000,
@@ -32,7 +32,35 @@ describe("transfer analytics", () => {
             approximate: true,
             small_transfer_sample_modulus: 10,
             large_transfer_bytes: 67_108_864,
-            rows: [],
+            rows: [
+                {
+                    bucket: 1_999_900_800,
+                    group_id: "driver-a",
+                    direction: "download",
+                    weighted_transfers: 10,
+                    weighted_bytes: 10_485_760,
+                    weighted_provider_ms: 10_000,
+                    weighted_total_ms: 20_000,
+                    weighted_retries: 0,
+                    weighted_phase_transfers: 10,
+                    weighted_plan_ms: 2_000,
+                    weighted_queue_ms: 3_000,
+                    weighted_phase_provider_ms: 10_000,
+                    weighted_post_provider_ms: 4_000,
+                    speed_b0: 0,
+                    speed_b1: 10,
+                    speed_b2: 0,
+                    speed_b3: 0,
+                    speed_b4: 0,
+                    speed_b5: 0,
+                    speed_b6: 0,
+                    speed_b7: 0,
+                    speed_b8: 0,
+                    speed_b9: 0,
+                    speed_b10: 0,
+                    speed_b11: 0,
+                },
+            ],
         };
         const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(Response.json(response));
         vi.stubGlobal("fetch", fetchMock);

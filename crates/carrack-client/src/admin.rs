@@ -15,7 +15,10 @@ const SNAPSHOT_SCHEMA: &str = "carrack.management.snapshot.v2";
 const EVENTS_SCHEMA: &str = "carrack.management.events.v1";
 const DIRECTORY_SCHEMA: &str = "carrack.management.directory.v1";
 const TRANSFER_METRICS_SCHEMA: &str = "carrack.management.transfer-metrics.v1";
-const TRANSFER_ANALYTICS_SCHEMA: &str = "carrack.management.transfer-analytics.v1";
+const TRANSFER_ANALYTICS_SCHEMAS: [&str; 2] = [
+    "carrack.management.transfer-analytics.v1",
+    "carrack.management.transfer-analytics.v2",
+];
 const TOKEN_ANNOTATION_VALIDATION_SCHEMA: &str =
     "carrack.management.token-annotation-validation.v1";
 const TOKEN_ANNOTATION_RECEIPT_SCHEMA: &str = "carrack.management.token-annotation-receipt.v1";
@@ -440,6 +443,16 @@ pub struct TransferAnalyticsRow {
     pub weighted_provider_ms: u64,
     pub weighted_total_ms: u64,
     pub weighted_retries: u64,
+    #[serde(default)]
+    pub weighted_phase_transfers: u64,
+    #[serde(default)]
+    pub weighted_plan_ms: u64,
+    #[serde(default)]
+    pub weighted_queue_ms: u64,
+    #[serde(default)]
+    pub weighted_phase_provider_ms: u64,
+    #[serde(default)]
+    pub weighted_post_provider_ms: u64,
     pub speed_b0: u64,
     pub speed_b1: u64,
     pub speed_b2: u64,
@@ -1848,7 +1861,7 @@ fn validate_transfer_analytics(
         86_400
     };
     let first_bucket = analytics.from - analytics.from % bucket_seconds;
-    if analytics.schema != TRANSFER_ANALYTICS_SCHEMA
+    if !TRANSFER_ANALYTICS_SCHEMAS.contains(&analytics.schema.as_str())
         || analytics.observed_at == 0
         || analytics.from >= analytics.to
         || query.from.is_some_and(|from| analytics.from != from)
@@ -1909,6 +1922,19 @@ fn invalid_analytics_row(
         || row.weighted_transfers == 0
         || row.weighted_provider_ms == 0
         || row.weighted_provider_ms > row.weighted_total_ms
+        || row.weighted_phase_transfers > row.weighted_transfers
+        || (analytics.schema == "carrack.management.transfer-analytics.v1"
+            && (row.weighted_phase_transfers != 0
+                || row.weighted_plan_ms != 0
+                || row.weighted_queue_ms != 0
+                || row.weighted_phase_provider_ms != 0
+                || row.weighted_post_provider_ms != 0))
+        || row
+            .weighted_plan_ms
+            .checked_add(row.weighted_queue_ms)
+            .and_then(|total| total.checked_add(row.weighted_phase_provider_ms))
+            .and_then(|total| total.checked_add(row.weighted_post_provider_ms))
+            .is_none_or(|total| total > row.weighted_total_ms)
         || histogram_total != Some(row.weighted_transfers)
 }
 
