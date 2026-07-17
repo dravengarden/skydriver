@@ -4,27 +4,60 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    crane.url = "github:ipetkov/crane";
   };
 
   outputs =
-    { nixpkgs, flake-utils, ... }:
+    {
+      nixpkgs,
+      flake-utils,
+      rust-overlay,
+      crane,
+      ...
+    }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = import nixpkgs { inherit system; };
-        carrack = pkgs.rustPlatform.buildRustPackage {
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ rust-overlay.overlays.default ];
+        };
+        lib = pkgs.lib;
+        rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+        version = "0.3.6";
+        cargoSrc = craneLib.cleanCargoSource ./.;
+        rustSrc = lib.cleanSourceWith {
+          src = lib.cleanSource ./.;
+          filter =
+            path: type:
+            craneLib.filterCargoSources path type
+            || path == toString ./testdata
+            || lib.hasPrefix "${toString ./testdata}/" (toString path);
+          name = "carrack-rust-source";
+        };
+        cargoArtifacts = craneLib.buildDepsOnly {
+          pname = "carrack-deps";
+          inherit version;
+          src = cargoSrc;
+          strictDeps = true;
+          cargoExtraArgs = "--locked --package carrack-cli";
+          # The repository gate owns Clippy and workspace tests, while the
+          # final package still runs carrack-cli's release tests. This layer
+          # only needs linkable dependency artifacts.
+          buildPhaseCargoCommand = "cargoWithProfile build --locked --package carrack-cli";
+          doCheck = false;
+        };
+        carrack = craneLib.buildPackage {
           pname = "carrack";
-          version = "0.3.6";
-          src = pkgs.lib.cleanSource ./.;
-          cargoLock.lockFile = ./Cargo.lock;
-          cargoBuildFlags = [
-            "--package"
-            "carrack-cli"
-          ];
-          cargoTestFlags = [
-            "--package"
-            "carrack-cli"
-          ];
+          inherit version cargoArtifacts;
+          src = rustSrc;
+          strictDeps = true;
+          cargoExtraArgs = "--locked --package carrack-cli";
           meta = {
             description = "Encrypted complete-object VFS client and operator CLI";
             mainProgram = "carrack";
@@ -53,19 +86,21 @@
             go1265
             golangci-lint
             govulncheck
-            cargo
-            rustc
-            rustfmt
-            clippy
-            lld
+            rustToolchain
+            sccache
+            cargo-nextest
+            rust-analyzer
             worker-build
             nodejs_24
             pnpm
             just
+            nixfmt
             git
             jq
             ripgrep
           ];
+
+          RUSTC_WRAPPER = "sccache";
 
           shellHook = ''
             export PATH="$PWD/bin:$PWD/node_modules/.bin:$PATH"

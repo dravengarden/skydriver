@@ -5,18 +5,20 @@ default: verify
 fmt:
     golangci-lint fmt
     cargo fmt --all
+    nixfmt flake.nix
     pnpm --filter @carrack/web format
 
 check-format:
     test -z "$(gofmt -l -- $(rg --files -g '*.go'))"
     golangci-lint fmt --diff
     cargo fmt --all --check
+    nixfmt --check flake.nix
     pnpm --filter @carrack/web format:check
 
 lint:
     go vet ./...
     golangci-lint run
-    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     pnpm --filter @carrack/web check
     pnpm --filter @carrack/web lint
 
@@ -36,7 +38,7 @@ test:
     node --test control-plane/scripts/default-r2-provisioning.test.mjs
     node --test control-plane/scripts/provision-default-r2.test.mjs
     go test -race ./...
-    cargo test --workspace --all-features
+    cargo test --workspace --all-features --locked
     pnpm --filter @carrack/web test
     control-plane/tests/vfs-v2-protocol.sh
     control-plane/tests/vfs-v2-put-protocol.sh
@@ -50,13 +52,20 @@ test:
 # clock time as a correctness threshold. Use --nocapture to retain the measured
 # SQLite, spool, and mandatory local hashing costs in CI or operator logs.
 performance-acceptance:
-    cargo test -p carrack-client sync::tests::indexed_state_accepts_one_hundred_thousand_records_without_linear_lookup --release -- --ignored --exact --nocapture
-    cargo test -p carrack-client sync::tests::warm_sync_rehashes_ten_thousand_files_without_provider_payload --release -- --ignored --exact --nocapture
-    cargo test -p carrack-sdk-core integrity::tests::streaming_directory_accepts_one_million_entries_with_logarithmic_state --release -- --ignored --exact --nocapture
+    cargo test -p carrack-client sync::tests::indexed_state_accepts_one_hundred_thousand_records_without_linear_lookup --release --locked -- --ignored --exact --nocapture
+    cargo test -p carrack-client sync::tests::warm_sync_rehashes_ten_thousand_files_without_provider_payload --release --locked -- --ignored --exact --nocapture
+    cargo test -p carrack-sdk-core integrity::tests::streaming_directory_accepts_one_million_entries_with_logarithmic_state --release --locked -- --ignored --exact --nocapture
+
+test-fast:
+    cargo nextest run --workspace --all-features --locked
+
+cache-stats:
+    sccache --show-stats
 
 build:
     go build ./...
-    cargo check -p carrack-sdk-core --target wasm32-unknown-unknown
+    cargo build --workspace --all-features --locked
+    cargo check -p carrack-sdk-core --target wasm32-unknown-unknown --locked
     pnpm --filter @carrack/web build
     pnpm exec wrangler deploy --dry-run --env dev --config control-plane/wrangler.jsonc
     pnpm exec wrangler deploy --dry-run --env prod --config control-plane/wrangler.jsonc
@@ -85,20 +94,20 @@ audit-cloudflare:
     node control-plane/scripts/audit-environments.mjs
 
 provision-r2-dev:
-    env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_TOKEN_FACTORY_API_TOKEN -u CARRACK_OPERATOR_CREDENTIAL -u CARRACK_VFS_TOKEN cargo build -p carrack-cli --bin carrackctl
+    env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_TOKEN_FACTORY_API_TOKEN -u CARRACK_OPERATOR_CREDENTIAL -u CARRACK_VFS_TOKEN cargo build -p carrack-cli --bin carrackctl --locked
     node control-plane/scripts/provision-default-r2.mjs dev
 
 provision-r2-prod:
     test "${CARRACK_PROVISION_PROD:-}" = "1"
-    env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_TOKEN_FACTORY_API_TOKEN -u CARRACK_OPERATOR_CREDENTIAL -u CARRACK_VFS_TOKEN cargo build -p carrack-cli --bin carrackctl
+    env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_TOKEN_FACTORY_API_TOKEN -u CARRACK_OPERATOR_CREDENTIAL -u CARRACK_VFS_TOKEN cargo build -p carrack-cli --bin carrackctl --locked
     node control-plane/scripts/provision-default-r2.mjs prod
 
 check-r2-dev:
-    env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_TOKEN_FACTORY_API_TOKEN -u CARRACK_OPERATOR_CREDENTIAL -u CARRACK_VFS_TOKEN cargo build -p carrack-cli --bin carrackctl
+    env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_TOKEN_FACTORY_API_TOKEN -u CARRACK_OPERATOR_CREDENTIAL -u CARRACK_VFS_TOKEN cargo build -p carrack-cli --bin carrackctl --locked
     node control-plane/scripts/provision-default-r2.mjs dev --check
 
 check-r2-prod:
-    env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_TOKEN_FACTORY_API_TOKEN -u CARRACK_OPERATOR_CREDENTIAL -u CARRACK_VFS_TOKEN cargo build -p carrack-cli --bin carrackctl
+    env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_TOKEN_FACTORY_API_TOKEN -u CARRACK_OPERATOR_CREDENTIAL -u CARRACK_VFS_TOKEN cargo build -p carrack-cli --bin carrackctl --locked
     node control-plane/scripts/provision-default-r2.mjs prod --check
 
 verify: check-format lint test build
