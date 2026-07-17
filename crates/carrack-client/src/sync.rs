@@ -2068,12 +2068,13 @@ mod tests {
             plans.recv().await,
             Some(PlanMessage::File(file)) if file.is_ok()
         ));
-        for _ in 0..100 {
-            if mocks[2].hits_async().await == 1 {
-                break;
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while mocks[2].hits_async().await != 1 {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
-            tokio::task::yield_now().await;
-        }
+        })
+        .await
+        .expect("the next plan was not prefetched before the bounded deadline");
         assert_eq!(
             mocks[2].hits_async().await,
             1,
