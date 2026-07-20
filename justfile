@@ -2,6 +2,9 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 
 default: verify
 
+toolchain-check:
+    required="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].rust_version')"; actual="$(rustc --version --verbose | awk '/^release:/ { print $2 }')"; test "$required" = "$actual" || { echo "rust-version $required does not match pinned rustc $actual" >&2; exit 1; }
+
 fmt:
     golangci-lint fmt
     cargo fmt --all
@@ -141,4 +144,4 @@ check-r2-prod:
     env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_TOKEN_FACTORY_API_TOKEN -u CARRACK_OPERATOR_CREDENTIAL -u CARRACK_VFS_TOKEN cargo build -p carrack-cli --bin carrackctl --locked
     node control-plane/scripts/provision-default-r2.mjs prod --check
 
-verify: check-format lint dependencies test build
+verify: toolchain-check check-format lint dependencies build test
