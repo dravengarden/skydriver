@@ -25,8 +25,8 @@ use crate::{
     vfs::{CatalogCheckpointOutcome, canonical_components},
 };
 
-const LEGACY_STATE_SCHEMA: &str = "carrack.local-sync-state.v1";
-const STATE_SCHEMA: &str = "carrack.local-sync-state.v2";
+const LEGACY_STATE_SCHEMA: &str = "skydriver.local-sync-state.v1";
+const STATE_SCHEMA: &str = "skydriver.local-sync-state.v2";
 const CATALOG_PAGE_SIZE: u32 = 1_000;
 const MAXIMUM_TRANSFER_PART_BYTES: u64 = 256 * 1024 * 1024;
 const MAXIMUM_PIPELINE_CONCURRENCY: usize = 64;
@@ -34,7 +34,7 @@ const MAXIMUM_MEMORY_DIRECTORY_ENTRIES: usize = 20_000;
 const MAXIMUM_SPOOL_RECORD_BYTES: usize = 1024 * 1024;
 const READ_LEASE_COMPLETION_BATCH_ITEMS: usize = 64;
 const SPOOL_RECORD_TAG_BYTES: usize = 32;
-const SPOOL_RECORD_TAG_DOMAIN: &[u8] = b"carrack.sync-record-spool.v1\0";
+const SPOOL_RECORD_TAG_DOMAIN: &[u8] = b"skydriver.sync-record-spool.v1\0";
 static PLAN_SPOOL_ORDINAL: AtomicU64 = AtomicU64::new(0);
 static STATE_TEMPORARY_ORDINAL: AtomicU64 = AtomicU64::new(0);
 static LOCAL_REUSE_ORDINAL: AtomicU64 = AtomicU64::new(0);
@@ -924,7 +924,7 @@ impl VfsClient {
         warnings.sort();
         warnings.dedup();
         Ok(SyncResult {
-            schema: "carrack.fs-sync.v1",
+            schema: "skydriver.fs-sync.v1",
             source: source.to_owned(),
             destination: result_destination,
             directories,
@@ -1262,7 +1262,7 @@ fn validate_page_identity(
     data_root: &str,
     fence: Option<(&str, u64)>,
 ) -> Result<(), Error> {
-    if page.schema != "carrack.vfs.directory-list.v1"
+    if page.schema != "skydriver.vfs.directory-list.v1"
         || page.directory.id != directory_id
         || page.directory.data_root != data_root
         || page.directory.revision == 0
@@ -1511,7 +1511,7 @@ fn stage_local_version(
     let (temporary, mut output) = loop {
         let ordinal = LOCAL_REUSE_ORDINAL.fetch_add(1, Ordering::Relaxed);
         let temporary = parent.join(format!(
-            ".{file_name}.carrack-reuse-{}-{ordinal:016x}.tmp",
+            ".{file_name}.skydriver-reuse-{}-{ordinal:016x}.tmp",
             std::process::id()
         ));
         let mut options = std::fs::OpenOptions::new();
@@ -1969,7 +1969,7 @@ mod tests {
         root_data_root: &str,
     ) -> CatalogWatchEvent {
         CatalogWatchEvent {
-            schema: "carrack.vfs.catalog-watch.v1".to_owned(),
+            schema: "skydriver.vfs.catalog-watch.v1".to_owned(),
             kind: "catalog_head".to_owned(),
             filesystem_id: filesystem_id.to_owned(),
             revision_id: 7,
@@ -1982,7 +1982,7 @@ mod tests {
 
     fn download_plan(file_id: &str, version_id: &str, lease_id: &str) -> serde_json::Value {
         json!({
-            "schema": "carrack.vfs.download-plan.v1",
+            "schema": "skydriver.vfs.download-plan.v1",
             "filesystem_id": "11111111111111111111111111111111",
             "directory_id": "22222222222222222222222222222222",
             "file_id": file_id,
@@ -2551,7 +2551,7 @@ mod tests {
                     .expect("target entry")
                     .file_name()
                     .to_string_lossy()
-                    .contains("carrack-reuse"))
+                    .contains("skydriver-reuse"))
         );
 
         let cancelled = PlannedFile {
@@ -2567,7 +2567,7 @@ mod tests {
             .map(|entry| entry.expect("cancelled staging entry").path())
             .find(|path| {
                 path.file_name()
-                    .is_some_and(|name| name.to_string_lossy().contains("carrack-reuse"))
+                    .is_some_and(|name| name.to_string_lossy().contains("skydriver-reuse"))
             })
             .expect("cancelled staging identity");
         assert!(staged_path.is_file());
@@ -2666,7 +2666,7 @@ mod tests {
         let filesystem_id = "101112131415161718191a1b1c1d1e1f";
         let root_id = "202122232425262728292a2b2c2d2e2f";
         let child_id = "303132333435363738393a3b3c3d3e3f";
-        let empty_root = "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254";
+        let empty_root = "89bbf5ec77eb8ed59a0ff9cf3a444ca00d8af51227995620a3cf7c2d380df2f0";
         let child_root: [u8; 32] = hex::decode(empty_root)
             .expect("empty directory root hex")
             .try_into()
@@ -2683,14 +2683,14 @@ mod tests {
             .expect("root directory Merkle root"),
         );
         let root_page = json!({
-            "schema": "carrack.vfs.directory-list.v1",
+            "schema": "skydriver.vfs.directory-list.v1",
             "directory": {
                 "id": root_id,
                 "filesystem_id": filesystem_id,
                 "parent_id": null,
                 "name": "",
                 "data_root": root_data_root,
-                "crypto_suite": "carrack-vfs-aes256gcm-hkdfsha256-v1",
+                "crypto_suite": "skydriver-vfs-aes256gcm-hkdfsha256-v1",
                 "active_key_epoch": 1,
                 "acl_inherits": false,
                 "revision": 7,
@@ -2712,14 +2712,14 @@ mod tests {
             "next_cursor": null
         });
         let child_page = json!({
-            "schema": "carrack.vfs.directory-list.v1",
+            "schema": "skydriver.vfs.directory-list.v1",
             "directory": {
                 "id": child_id,
                 "filesystem_id": filesystem_id,
                 "parent_id": root_id,
                 "name": "docs",
                 "data_root": empty_root,
-                "crypto_suite": "carrack-vfs-aes256gcm-hkdfsha256-v1",
+                "crypto_suite": "skydriver-vfs-aes256gcm-hkdfsha256-v1",
                 "active_key_epoch": 1,
                 "acl_inherits": true,
                 "revision": 3,
@@ -2771,7 +2771,7 @@ mod tests {
             .mock_async(|when, then| {
                 when.method(GET).path("/api/v2/session");
                 then.status(200).json_body(json!({
-                    "schema": "carrack.vfs.session.v1",
+                    "schema": "skydriver.vfs.session.v1",
                     "token_id": "404142434445464748494a4b4c4d4e4f",
                     "principal_id": "505152535455565758595a5b5c5d5e5f",
                     "root_directory_id": root_id,
@@ -2880,7 +2880,7 @@ mod tests {
         }
         let lookup_elapsed = lookup_started.elapsed();
         eprintln!(
-            "carrack_sync_state_benchmark records={RECORDS} spool_ms={} build_ms={} lookup_ms={} database_bytes={}",
+            "skydriver_sync_state_benchmark records={RECORDS} spool_ms={} build_ms={} lookup_ms={} database_bytes={}",
             spool_elapsed.as_millis(),
             build_elapsed.as_millis(),
             lookup_elapsed.as_millis(),
@@ -2952,7 +2952,7 @@ mod tests {
         }
         let elapsed = started.elapsed();
         eprintln!(
-            "carrack_warm_sync_benchmark files={FILES} local_bytes={} provider_bytes=0 elapsed_ms={}",
+            "skydriver_warm_sync_benchmark files={FILES} local_bytes={} provider_bytes=0 elapsed_ms={}",
             FILES * FILE_BYTES,
             elapsed.as_millis()
         );
@@ -3001,7 +3001,7 @@ mod tests {
             parent_id: None,
             name: String::new(),
             data_root: expected_root_hex.clone(),
-            crypto_suite: "carrack-vfs-aes256gcm-hkdfsha256-v1".to_owned(),
+            crypto_suite: "skydriver-vfs-aes256gcm-hkdfsha256-v1".to_owned(),
             active_key_epoch: 1,
             acl_inherits: false,
             revision: 7,
@@ -3022,7 +3022,7 @@ mod tests {
         for page_index in 0..PAGES {
             let first = page_index * PAGE_ENTRIES;
             let page = DirectoryPage {
-                schema: "carrack.vfs.directory-list.v1".to_owned(),
+                schema: "skydriver.vfs.directory-list.v1".to_owned(),
                 directory: directory.clone(),
                 entries: (first..first + PAGE_ENTRIES).map(entry).collect(),
                 next_cursor: (page_index + 1 < PAGES)
@@ -3087,7 +3087,7 @@ mod tests {
         assert_eq!(records, ENTRIES);
 
         eprintln!(
-            "carrack_wide_directory_benchmark entries={ENTRIES} pages={PAGES} wire_json_bytes={wire_json_bytes} spool_bytes={spool_bytes} json_ms={} hydrate_ms={} spool_read_ms={} total_ms={} whole_node_cached=false",
+            "skydriver_wide_directory_benchmark entries={ENTRIES} pages={PAGES} wire_json_bytes={wire_json_bytes} spool_bytes={spool_bytes} json_ms={} hydrate_ms={} spool_read_ms={} total_ms={} whole_node_cached=false",
             json_elapsed.as_millis(),
             hydration_elapsed.as_millis(),
             read_elapsed.as_millis(),

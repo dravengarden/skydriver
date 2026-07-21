@@ -167,7 +167,7 @@ root_authorization="Authorization: Bearer $root_token"
 
 global_metrics=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" "$base_url/api/admin/metrics/global/all")
-[[ "$(jq -r '.schema' <<<"$global_metrics")" == carrack.management.transfer-metrics.v1 ]]
+[[ "$(jq -r '.schema' <<<"$global_metrics")" == skydriver.management.transfer-metrics.v1 ]]
 [[ "$(jq -r '.scope_kind' <<<"$global_metrics")" == global ]]
 [[ "$(jq -r '.scope_id' <<<"$global_metrics")" == all ]]
 [[ "$(jq -r '.retention_days' <<<"$global_metrics")" == 400 ]]
@@ -179,7 +179,7 @@ oversized_metrics_window=$(curl --silent --output /dev/null --write-out '%{http_
 transfer_analytics=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" \
   "$base_url/api/admin/analytics/transfers?from=1&to=86401&interval=hour&group_by=driver&direction=both")
-[[ "$(jq -r '.schema' <<<"$transfer_analytics")" == carrack.management.transfer-analytics.v2 ]]
+[[ "$(jq -r '.schema' <<<"$transfer_analytics")" == skydriver.management.transfer-analytics.v2 ]]
 [[ "$(jq -r '.interval' <<<"$transfer_analytics")" == hour ]]
 [[ "$(jq -r '.group_by' <<<"$transfer_analytics")" == driver ]]
 [[ "$(jq -r '.approximate' <<<"$transfer_analytics")" == true ]]
@@ -197,7 +197,7 @@ invalid_descendant_analytics=$(curl --silent --output /dev/null --write-out '%{h
 
 vfs_session=$(curl --silent --show-error --fail-with-body \
   -H "$root_authorization" "$base_url/api/v2/session")
-[[ "$(jq -r '.schema' <<<"$vfs_session")" == carrack.vfs.session.v1 ]]
+[[ "$(jq -r '.schema' <<<"$vfs_session")" == skydriver.vfs.session.v1 ]]
 [[ "$(jq -r '.root_directory_id' <<<"$vfs_session")" == "$root_directory_id" ]]
 expires_at=$(($(date +%s) + 3600))
 
@@ -210,7 +210,7 @@ directory_page=$(curl --silent --show-error --fail-with-body \
   -D "$directory_headers" -H "$root_authorization" \
   "$base_url/api/v2/directories/$root_directory_id/entries?limit=1")
 grep -iq '^cache-control: no-store, max-age=0' "$directory_headers"
-[[ "$(jq -r '.schema' <<<"$directory_page")" == carrack.vfs.directory-list.v1 ]]
+[[ "$(jq -r '.schema' <<<"$directory_page")" == skydriver.vfs.directory-list.v1 ]]
 [[ "$(jq -r '.directory.id' <<<"$directory_page")" == "$root_directory_id" ]]
 [[ "$(jq -r '.directory.filesystem_id' <<<"$directory_page")" == "$filesystem_id" ]]
 [[ "$(jq -r '.entries | length' <<<"$directory_page")" == 0 ]]
@@ -226,10 +226,10 @@ created_directory=$(curl --silent --show-error --fail-with-body \
   --data "$mkdir_request" \
   "$base_url/api/v2/directories/$root_directory_id/children")
 grep -iq '^cache-control: no-store, max-age=0' "$mkdir_headers"
-[[ "$(jq -r '.schema' <<<"$created_directory")" == carrack.vfs.directory-create-receipt.v1 ]]
+[[ "$(jq -r '.schema' <<<"$created_directory")" == skydriver.vfs.directory-create-receipt.v1 ]]
 [[ "$(jq -r '.parent_directory_id' <<<"$created_directory")" == "$root_directory_id" ]]
 [[ "$(jq -r '.name' <<<"$created_directory")" == releases ]]
-[[ "$(jq -r '.crypto_suite' <<<"$created_directory")" == carrack-vfs-aes256gcm-hkdfsha256-v1 ]]
+[[ "$(jq -r '.crypto_suite' <<<"$created_directory")" == skydriver-vfs-aes256gcm-hkdfsha256-v1 ]]
 created_directory_id=$(jq -r '.directory_id' <<<"$created_directory")
 created_directory_root=$(jq -r '.data_root' <<<"$created_directory")
 
@@ -271,7 +271,7 @@ done
 management_directory=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" \
   "$base_url/api/admin/directories/$root_directory_id?entries=false")
-[[ "$(jq -r '.schema' <<<"$management_directory")" == carrack.management.directory.v1 ]]
+[[ "$(jq -r '.schema' <<<"$management_directory")" == skydriver.management.directory.v1 ]]
 [[ "$(jq -r '.entries | length' <<<"$management_directory")" == 0 ]]
 [[ "$(jq -r '.mount.relationship' <<<"$management_directory")" == default ]]
 [[ "$(jq -r '.mount.effective_driver_id' <<<"$management_directory")" == local-main ]]
@@ -279,7 +279,7 @@ management_revision=$(jq -r '.directory.revision' <<<"$management_directory")
 management_page_one=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" \
   "$base_url/api/admin/directories/$root_directory_id/entries?revision=$management_revision&prefix=archive-&after_kind=&after_name=&limit=2")
-[[ "$(jq -r '.schema' <<<"$management_page_one")" == carrack.management.directory-entry-page.v1 ]]
+[[ "$(jq -r '.schema' <<<"$management_page_one")" == skydriver.management.directory-entry-page.v1 ]]
 [[ "$(jq -c '[.entries[].name]' <<<"$management_page_one")" == '["archive-a","archive-b"]' ]]
 [[ "$(jq -r '.has_more' <<<"$management_page_one")" == true ]]
 next_kind=$(jq -r '.next_after_kind' <<<"$management_page_one")
@@ -308,7 +308,7 @@ stale_management_page=$(curl --silent --output /dev/null --write-out '%{http_cod
 acl=$(curl --silent --show-error --fail-with-body \
   -H "$root_authorization" \
   "$base_url/api/v2/directories/$created_directory_id/acl")
-[[ "$(jq -r '.schema' <<<"$acl")" == carrack.vfs.acl.v1 ]]
+[[ "$(jq -r '.schema' <<<"$acl")" == skydriver.vfs.acl.v1 ]]
 acl_revision=$(jq -r '.acl_revision' <<<"$acl")
 acl_replace_request=$(jq -cn \
   --arg principal_id "$principal_id" \
@@ -338,7 +338,7 @@ acl_after=$(curl --silent --show-error --fail-with-body \
 placements=$(curl --silent --show-error --fail-with-body \
   -H "$root_authorization" \
   "$base_url/api/v2/directories/$created_directory_id/placements")
-[[ "$(jq -r '.schema' <<<"$placements")" == carrack.vfs.placements.v1 ]]
+[[ "$(jq -r '.schema' <<<"$placements")" == skydriver.vfs.placements.v1 ]]
 [[ "$(jq -r '.placements | length' <<<"$placements")" == 1 ]]
 [[ "$(jq -r '.placements[0].driver_id' <<<"$placements")" == local-main ]]
 [[ "$(jq -r '.placements[0].mount_kind' <<<"$placements")" == inherited ]]
@@ -454,7 +454,7 @@ issued=$(curl --silent --show-error --fail-with-body \
   -D "$issue_headers" -H "$root_authorization" -H "$json" \
   --data "$issue_request" "$base_url/api/v2/tokens")
 grep -iq '^cache-control: no-store, max-age=0' "$issue_headers"
-[[ "$(jq -r '.schema' <<<"$issued")" == carrack.vfs.token-issue-receipt.v1 ]]
+[[ "$(jq -r '.schema' <<<"$issued")" == skydriver.vfs.token-issue-receipt.v1 ]]
 [[ "$(jq -c '.actions' <<<"$issued")" == '["content.read","directory.list"]' ]]
 [[ "$(jq -c '.driver_ids' <<<"$issued")" == '["local-main"]' ]]
 child_token_id=$(jq -r '.token_id' <<<"$issued")
@@ -545,16 +545,16 @@ cli_mkdir=$(env SKYDRIVER_VFS_TOKEN="$root_token" \
   --control-url "$base_url" \
   --idempotency-key cli-mkdir-artifacts-v1 \
   --format json)
-[[ "$(jq -r '.schema' <<<"$cli_mkdir")" == carrack.fs-mkdir.v1 ]]
+[[ "$(jq -r '.schema' <<<"$cli_mkdir")" == skydriver.fs-mkdir.v1 ]]
 cli_directory_id=$(jq -r '.directory_id' <<<"$cli_mkdir")
 
 rust_list=$(env SKYDRIVER_VFS_TOKEN="$root_token" SKYDRIVER_CONTROL_URL="$base_url" \
   "$cli_binary" list /)
-[[ "$(jq -r '.schema' <<<"$rust_list")" == carrack.fs-list.v1 ]]
+[[ "$(jq -r '.schema' <<<"$rust_list")" == skydriver.fs-list.v1 ]]
 [[ "$(jq -r '.entries | length' <<<"$rust_list")" == 7 ]]
 rust_mkdir=$(env SKYDRIVER_VFS_TOKEN="$root_token" SKYDRIVER_CONTROL_URL="$base_url" \
   "$cli_binary" mkdir /rust-native --idempotency-key rust-native-mkdir-v1)
-[[ "$(jq -r '.schema' <<<"$rust_mkdir")" == carrack.fs-mkdir.v1 ]]
+[[ "$(jq -r '.schema' <<<"$rust_mkdir")" == skydriver.fs-mkdir.v1 ]]
 [[ "$(jq -r '.state' <<<"$rust_mkdir")" == committed ]]
 rust_stat=$(env SKYDRIVER_VFS_TOKEN="$root_token" SKYDRIVER_CONTROL_URL="$base_url" \
   "$cli_binary" stat /rust-native)
@@ -563,7 +563,7 @@ rust_stat=$(env SKYDRIVER_VFS_TOKEN="$root_token" SKYDRIVER_CONTROL_URL="$base_u
 cli_acl=$(env SKYDRIVER_VFS_TOKEN="$root_token" \
 	  "$control_binary" vfs acl show /releases/artifacts \
   --control-url "$base_url" --format json)
-[[ "$(jq -r '.schema' <<<"$cli_acl")" == carrack.vfs.acl.v1 ]]
+[[ "$(jq -r '.schema' <<<"$cli_acl")" == skydriver.vfs.acl.v1 ]]
 cli_acl_revision=$(jq -r '.acl_revision' <<<"$cli_acl")
 cli_acl_replaced=$(env SKYDRIVER_VFS_TOKEN="$root_token" \
 	  "$control_binary" vfs acl replace /releases/artifacts \
@@ -579,7 +579,7 @@ cli_acl_replaced=$(env SKYDRIVER_VFS_TOKEN="$root_token" \
 cli_placements=$(env SKYDRIVER_VFS_TOKEN="$root_token" \
 	  "$control_binary" vfs mount show /releases/artifacts \
   --control-url "$base_url" --format json)
-[[ "$(jq -r '.schema' <<<"$cli_placements")" == carrack.vfs.placements.v1 ]]
+[[ "$(jq -r '.schema' <<<"$cli_placements")" == skydriver.vfs.placements.v1 ]]
 cli_placement_revision=$(jq -r '.placement_revision' <<<"$cli_placements")
 cli_placement_replaced=$(env SKYDRIVER_VFS_TOKEN="$root_token" \
 	  "$control_binary" vfs mount set /releases/artifacts \
@@ -615,13 +615,13 @@ cli_issue=$(env SKYDRIVER_VFS_TOKEN="$root_token" \
   --expires-at "$expires_at" \
   --idempotency-key cli-reader-v1 \
   --format json)
-[[ "$(jq -r '.schema' <<<"$cli_issue")" == carrack.vfs.token-issue-receipt.v1 ]]
+[[ "$(jq -r '.schema' <<<"$cli_issue")" == skydriver.vfs.token-issue-receipt.v1 ]]
 cli_token_id=$(jq -r '.token_id' <<<"$cli_issue")
 cli_token=$(jq -r '.token' <<<"$cli_issue")
 
 cli_page=$(env SKYDRIVER_VFS_TOKEN="$cli_token" \
   "$cli_binary" list / --control-url "$base_url" --format json)
-[[ "$(jq -r '.schema' <<<"$cli_page")" == carrack.fs-list.v1 ]]
+[[ "$(jq -r '.schema' <<<"$cli_page")" == skydriver.fs-list.v1 ]]
 
 cli_revoked=$(env SKYDRIVER_VFS_TOKEN="$root_token" \
 	  "$control_binary" vfs token revoke "$cli_token_id" \
@@ -721,7 +721,7 @@ event_page_1=$(curl --silent --show-error --fail-with-body \
   -D "$event_headers" -b "$cookie_jar" "$base_url/api/admin/events?after=0&limit=2")
 grep -iq '^cache-control: no-store, max-age=0' "$event_headers"
 jq -e '
-  .schema == "carrack.management.events.v1" and
+  .schema == "skydriver.management.events.v1" and
   .after == 0 and
   .has_more == true and
   (.events | length) == 2 and
@@ -736,7 +736,7 @@ event_page_2=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" \
   "$base_url/api/admin/events?after=$event_page_1_next&limit=250")
 jq -e --argjson cursor "$event_page_1_cursor" --argjson after "$event_page_1_next" '
-  .schema == "carrack.management.events.v1" and
+  .schema == "skydriver.management.events.v1" and
   .after == $after and
   .event_cursor == $cursor and
   .has_more == false and
@@ -755,7 +755,7 @@ ahead_event_status=$(curl --silent --output /dev/null --write-out '%{http_code}'
 recent_events=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" "$base_url/api/admin/events/recent?before=0&limit=2")
 jq -e '
-  .schema == "carrack.management.recent-events.v1" and
+  .schema == "skydriver.management.recent-events.v1" and
   .before == 0 and
   .has_more == true and
   (.events | length) == 2 and
@@ -767,7 +767,7 @@ cli_event_page=$(env SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
   "$control_binary" watch --after 0 --limit 2 \
   --control-url "$base_url" --format json)
 jq -e '
-  .schema == "carrack.management.events.v1" and
+  .schema == "skydriver.management.events.v1" and
   .after == 0 and
   (.events | length) == 2 and
   .next_after == .events[-1].id
@@ -779,7 +779,7 @@ activity=$(curl --silent --show-error --fail-with-body \
   "$base_url/api/admin/activity?attention=all&offset=0&limit=25")
 grep -iq '^cache-control: no-store, max-age=0' "$activity_headers"
 jq -e '
-  .schema == "carrack.management.activity.v2" and
+  .schema == "skydriver.management.activity.v2" and
   .offset == 0 and .limit == 25 and
   (.has_more | type) == "boolean" and
   (.active_items | type) == "array"
@@ -788,7 +788,7 @@ jq -e '
 token_options=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" "$base_url/api/admin/options/tokens?q=&limit=1")
 jq -e '
-  .schema == "carrack.management.token-options.v1" and
+  .schema == "skydriver.management.token-options.v1" and
   (.tokens | length) == 1 and
   .has_more == true and
   .next_after_label == .tokens[0].label and
@@ -804,7 +804,7 @@ jq -e --arg token "$child_token_id" '
 directory_options=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" "$base_url/api/admin/options/directories?q=&limit=25")
 jq -e --arg directory "$created_directory_id" '
-  .schema == "carrack.management.directory-options.v1" and
+  .schema == "skydriver.management.directory-options.v1" and
   ([.directories[] | select(.id == $directory)][0].path | startswith("/"))
 ' <<<"$directory_options" >/dev/null
 

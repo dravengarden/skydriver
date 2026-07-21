@@ -13,8 +13,10 @@ if (environmentName === "prod" && process.env.SKYDRIVER_MIGRATE_PROD !== "1") {
 
 const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
 const apiToken = process.env.CLOUDFLARE_API_TOKEN;
-if (accountId === undefined || apiToken === undefined) {
-    throw new Error("CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN are required");
+if ((accountId === undefined) !== (apiToken === undefined)) {
+    throw new Error(
+        "CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN must be provided together",
+    );
 }
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -29,6 +31,35 @@ if (!Array.isArray(databases) || databases.length !== 1) {
 const databaseId = databases[0].database_id;
 
 async function query(sql) {
+    if (accountId === undefined) {
+        const result = spawnSync(
+            "pnpm",
+            [
+                "exec",
+                "wrangler",
+                "d1",
+                "execute",
+                "SKYDRIVER_INDEX",
+                "--remote",
+                "--env",
+                environmentName,
+                "--command",
+                sql,
+                "--config",
+                configPath,
+                "--json",
+            ],
+            { cwd: repositoryRoot, encoding: "utf8" },
+        );
+        if (result.status !== 0) {
+            throw new Error(`D1 query failed for ${environmentName}`);
+        }
+        try {
+            return JSON.parse(result.stdout);
+        } catch {
+            throw new Error(`D1 query returned invalid JSON for ${environmentName}`);
+        }
+    }
     const response = await fetch(
         `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${databaseId}/query`,
         {
@@ -52,6 +83,10 @@ const migrationFiles = fs
     .filter((name) => /^\d+_[a-z0-9_]+\.sql$/.test(name))
     .sort();
 
+function sleep(milliseconds) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
 const migrationTable = await query(
     "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'd1_migrations'",
 );
@@ -71,51 +106,75 @@ for (const name of applied) {
     }
 }
 
-for (const name of migrationFiles) {
-    if (applied.has(name)) {
-        continue;
-    }
-
-    const sql = fs.readFileSync(path.join(migrationsPath, name), "utf8").trimEnd();
-    const escapedName = name.replaceAll("'", "''");
-    const migration = `${sql}\n\nINSERT INTO d1_migrations (name) VALUES ('${escapedName}');\n`;
-    const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "carrack-d1-migration-"));
-    const temporaryFile = path.join(temporaryDirectory, name);
+const pending = migrationFiles.filter((name) => !applied.has(name));
+if (pending.length !== 0) {
+    const migration = pending
+        .map((name) => {
+            const sql = fs.readFileSync(path.join(migrationsPath, name), "utf8").trimEnd();
+            const escapedName = name.replaceAll("'", "''");
+            return `${sql}\n\nINSERT INTO d1_migrations (name) VALUES ('${escapedName}');`;
+        })
+        .join("\n\n");
+    const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "skydriver-d1-migration-"));
+    const temporaryFile = path.join(temporaryDirectory, "pending.sql");
     try {
-        fs.writeFileSync(temporaryFile, migration, { encoding: "utf8", mode: 0o600 });
-        const result = spawnSync(
-            "pnpm",
-            [
-                "exec",
-                "wrangler",
-                "d1",
-                "execute",
-                "SKYDRIVER_INDEX",
-                "--remote",
-                "--env",
-                environmentName,
-                "--yes",
-                "--file",
-                temporaryFile,
-                "--config",
-                configPath,
-            ],
-            { cwd: repositoryRoot, stdio: "inherit" },
-        );
-        if (result.status !== 0) {
-            throw new Error(`${environmentName} migration ${name} failed`);
+        fs.writeFileSync(temporaryFile, `${migration}\n`, { encoding: "utf8", mode: 0o600 });
+        let imported = false;
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+            const result = spawnSync(
+                "pnpm",
+                [
+                    "exec",
+                    "wrangler",
+                    "d1",
+                    "execute",
+                    "SKYDRIVER_INDEX",
+                    "--remote",
+                    "--env",
+                    environmentName,
+                    "--yes",
+                    "--file",
+                    temporaryFile,
+                    "--config",
+                    configPath,
+                ],
+                { cwd: repositoryRoot, stdio: "inherit" },
+            );
+            if (result.status === 0) {
+                imported = true;
+                break;
+            }
+            try {
+                const rows = await query("SELECT name FROM d1_migrations ORDER BY id");
+                const received = new Set(rows[0]?.results?.map(({ name }) => name) ?? []);
+                if (pending.every((name) => received.has(name))) {
+                    imported = true;
+                    break;
+                }
+            } catch {
+                // The bounded retry below covers both an import and receipt-read outage.
+            }
+            if (attempt < 4) {
+                sleep(2 ** attempt * 1_000);
+            }
+        }
+        if (!imported) {
+            throw new Error(`${environmentName} migration batch failed after retries`);
         }
     } finally {
         fs.rmSync(temporaryDirectory, { recursive: true, force: true });
     }
-
-    const receipt = await query(
-        `SELECT name FROM d1_migrations WHERE name = '${escapedName}'`,
-    );
-    if (receipt[0]?.results?.[0]?.name !== name) {
-        throw new Error(`${environmentName} migration ${name} has no durable receipt`);
-    }
-    console.log(`${environmentName}: applied ${name}`);
 }
 
+const receiptRows = await query("SELECT name FROM d1_migrations ORDER BY id");
+const receipts = receiptRows[0]?.results?.map(({ name }) => name) ?? [];
+if (
+    receipts.length !== migrationFiles.length ||
+    receipts.some((name, index) => name !== migrationFiles[index])
+) {
+    throw new Error(`${environmentName} migration receipts are incomplete or out of order`);
+}
+if (pending.length !== 0) {
+    console.log(`${environmentName}: atomically applied ${pending.length} migrations`);
+}
 console.log(`${environmentName}: ${migrationFiles.length} migrations current`);

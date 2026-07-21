@@ -74,12 +74,12 @@ authorization immediately.
 
 ## Local node format
 
-One node uses schema `carrack.vfs.catalog-node.v1` and contains only fields
+One node uses schema `skydriver.vfs.catalog-node.v1` and contains only fields
 committed by the directory Merkle format:
 
 ```json
 {
-  "schema": "carrack.vfs.catalog-node.v1",
+  "schema": "skydriver.vfs.catalog-node.v1",
   "directory_id": "<32 lowercase hex>",
   "data_root": "<64 lowercase hex>",
   "entries": [
@@ -102,7 +102,7 @@ does not authenticate them. Local planning must never infer content correctness
 from an uncommitted convenience field.
 
 The payload is wrapped by
-`carrack.vfs.catalog-node-envelope.v1` with its exact SHA-256. Loading requires:
+`skydriver.vfs.catalog-node-envelope.v1` with its exact SHA-256. Loading requires:
 
 - a private regular file under the expected content-addressed path;
 - strict JSON with no unknown fields or trailing value;

@@ -271,7 +271,7 @@ mod tests {
         assert!(DriverRegistry::open("plugin/from-server", json!({}), None).is_err());
         let local = DriverRegistry::open(
             DriverKind::LocalFilesystemV2.as_str(),
-            json!({"root": "/tmp/carrack"}),
+            json!({"root": "/tmp/skydriver"}),
             None,
         )
         .expect("open compiled local adapter");
@@ -287,7 +287,7 @@ mod tests {
         assert!(
             DriverRegistry::open(
                 DriverKind::LocalFilesystemV2.as_str(),
-                json!({"root": "/tmp/carrack"}),
+                json!({"root": "/tmp/skydriver"}),
                 Some(json!({"secret": "wrong"})),
             )
             .is_err()

@@ -97,7 +97,7 @@ jq -e --arg endpoint "$r2_endpoint" '
     lifecycle_owner: "environment",
     config: {
       endpoint: $endpoint,
-      bucket: "carrack-payload-dev",
+      bucket: "skydriver-payload-dev",
       prefix: "",
       managed: true
     },
@@ -142,7 +142,7 @@ managed_registration=$(jq -cn --arg endpoint "$r2_endpoint" '{
   kind: "r2/v1",
   config: {
     endpoint: $endpoint,
-    bucket: "carrack-payload-dev",
+    bucket: "skydriver-payload-dev",
     prefix: "",
     managed: true
   }
@@ -178,7 +178,7 @@ unknown_source="$state_directory/unknown-provider-object"
 unknown_readback="$state_directory/unknown-provider-readback"
 printf 'unowned-provider-object\n' >"$unknown_source"
 "${wrangler[@]}" r2 object put \
-  carrack-payload-local/inventory-fault-injection/unknown \
+  skydriver-payload-local/inventory-fault-injection/unknown \
   --local --persist-to "$state_directory" --file "$unknown_source" >/dev/null
 "${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
@@ -208,7 +208,7 @@ jq -e '
   .last_error_code == null and .next_scan_at <= $observed_at
 ' <<<"$scheduled_inventory" >/dev/null
 "${wrangler[@]}" r2 object get \
-  carrack-payload-local/inventory-fault-injection/unknown \
+  skydriver-payload-local/inventory-fault-injection/unknown \
   --local --persist-to "$state_directory" --file "$unknown_readback" >/dev/null
 cmp "$unknown_source" "$unknown_readback"
 
@@ -229,10 +229,10 @@ blocked_sha=$(sha256sum "$blocked_source" | cut -d ' ' -f 1)
 deleted_sha=$(sha256sum "$deleted_source" | cut -d ' ' -f 1)
 deleted_etag=$(md5sum "$deleted_source" | cut -d ' ' -f 1)
 "${wrangler[@]}" r2 object put \
-  carrack-payload-local/lifecycle-fault-injection/blocked \
+  skydriver-payload-local/lifecycle-fault-injection/blocked \
   --local --persist-to "$state_directory" --file "$blocked_source" >/dev/null
 "${wrangler[@]}" r2 object put \
-  carrack-payload-local/lifecycle-fault-injection/deleted \
+  skydriver-payload-local/lifecycle-fault-injection/deleted \
   --local --persist-to "$state_directory" --file "$deleted_source" >/dev/null
 "${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
@@ -326,7 +326,7 @@ curl --silent --show-error --fail-with-body \
    WHERE id = 'c1111111111111111111111111111111';" --json |
   jq -e '.[0].results == [{"accepted":1}]' >/dev/null
 "${wrangler[@]}" r2 object get \
-  carrack-payload-local/lifecycle-fault-injection/blocked \
+  skydriver-payload-local/lifecycle-fault-injection/blocked \
   --local --persist-to "$state_directory" --file "$blocked_readback" >/dev/null
 cmp "$blocked_source" "$blocked_readback"
 
@@ -341,7 +341,7 @@ curl --silent --show-error --fail-with-body \
    WHERE location.id = 'c2222222222222222222222222222222';" --json |
   jq -e '.[0].results == [{"accepted":1}]' >/dev/null
 if "${wrangler[@]}" r2 object get \
-  carrack-payload-local/lifecycle-fault-injection/deleted \
+  skydriver-payload-local/lifecycle-fault-injection/deleted \
   --local --persist-to "$state_directory" \
   --file "$state_directory/unexpected-deleted-readback" >/dev/null 2>&1; then
   echo "fenced lifecycle object remained in R2 after committed deletion" >&2
@@ -358,7 +358,7 @@ printf 'actively-downloaded-object\n' >"$leased_source"
 leased_bytes=$(wc -c <"$leased_source" | tr -d ' ')
 leased_sha=$(sha256sum "$leased_source" | cut -d ' ' -f 1)
 "${wrangler[@]}" r2 object put \
-  carrack-payload-local/lifecycle-fault-injection/leased \
+  skydriver-payload-local/lifecycle-fault-injection/leased \
   --local --persist-to "$state_directory" --file "$leased_source" >/dev/null
 "${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
@@ -429,7 +429,7 @@ if ! jq -e '.[0].results == [{"accepted":1}]' <<<"$leased_fence" >/dev/null; the
   exit 1
 fi
 "${wrangler[@]}" r2 object get \
-  carrack-payload-local/lifecycle-fault-injection/leased \
+  skydriver-payload-local/lifecycle-fault-injection/leased \
   --local --persist-to "$state_directory" --file "$leased_readback" >/dev/null
 cmp "$leased_source" "$leased_readback"
 
@@ -494,7 +494,7 @@ printf 'provider-identity-mismatch!!\n' >"$retry_source"
 retry_bytes=$(wc -c <"$retry_source" | tr -d ' ')
 retry_sha=$(sha256sum "$retry_source" | cut -d ' ' -f 1)
 "${wrangler[@]}" r2 object put \
-  carrack-payload-local/lifecycle-fault-injection/identity-mismatch \
+  skydriver-payload-local/lifecycle-fault-injection/identity-mismatch \
   --local --persist-to "$state_directory" --file "$retry_source" >/dev/null
 "${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
@@ -560,7 +560,7 @@ curl --silent --show-error --fail-with-body \
    WHERE id = 'c5555555555555555555555555555555';" --json |
   jq -e '.[0].results == [{"accepted":1}]' >/dev/null
 "${wrangler[@]}" r2 object get \
-  carrack-payload-local/lifecycle-fault-injection/identity-mismatch \
+  skydriver-payload-local/lifecycle-fault-injection/identity-mismatch \
   --local --persist-to "$state_directory" --file "$retry_readback" >/dev/null
 cmp "$retry_source" "$retry_readback"
 
@@ -611,7 +611,7 @@ cmp "$retry_source" "$retry_readback"
        '2666666666666666666666666666666666666666666666666666666666666666',
        '3666666666666666666666666666666666666666666666666666666666666666',
        1, 'fault/manifests/cleanup',
-       'carrack-vfs-aes256gcm-hkdfsha256-v1', 1, 4096,
+       'skydriver-vfs-aes256gcm-hkdfsha256-v1', 1, 4096,
        '4666666666666666666666666666666666666666666666666666666666666666',
        'cleanup-fault', unixepoch() + 3600, unixepoch()
    );

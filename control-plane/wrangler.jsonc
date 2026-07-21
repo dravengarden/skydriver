@@ -35,7 +35,7 @@
   "d1_databases": [
     {
       "binding": "SKYDRIVER_INDEX",
-      "database_name": "carrack-index-local",
+      "database_name": "skydriver-index-local",
       "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "migrations"
     }
@@ -43,11 +43,11 @@
   "r2_buckets": [
     {
       "binding": "SKYDRIVER_MANIFESTS",
-      "bucket_name": "carrack-manifests-local"
+      "bucket_name": "skydriver-manifests-local"
     },
     {
       "binding": "SKYDRIVER_PAYLOAD",
-      "bucket_name": "carrack-payload-local"
+      "bucket_name": "skydriver-payload-local"
     }
   ],
   "env": {
@@ -81,19 +81,19 @@
       "d1_databases": [
         {
           "binding": "SKYDRIVER_INDEX",
-          "database_name": "carrack-index-dev",
-          "database_id": "cd94d428-62d7-4ac7-a634-3d3fe78055da",
+          "database_name": "skydriver-index-dev",
+          "database_id": "5367fbc7-9d8b-4a10-b7a4-a6e920fed7c2",
           "migrations_dir": "migrations"
         }
       ],
       "r2_buckets": [
         {
           "binding": "SKYDRIVER_MANIFESTS",
-          "bucket_name": "carrack-manifests-dev"
+          "bucket_name": "skydriver-manifests-dev"
         },
         {
           "binding": "SKYDRIVER_PAYLOAD",
-          "bucket_name": "carrack-payload-dev"
+          "bucket_name": "skydriver-payload-dev"
         }
       ]
     },
@@ -127,19 +127,19 @@
       "d1_databases": [
         {
           "binding": "SKYDRIVER_INDEX",
-          "database_name": "carrack-index-prod",
-          "database_id": "6d75fefd-d0dc-4412-aa71-fae3aa847dec",
+          "database_name": "skydriver-index-prod",
+          "database_id": "2e0874de-b3a1-4c63-8592-fcbd5a2b610b",
           "migrations_dir": "migrations"
         }
       ],
       "r2_buckets": [
         {
           "binding": "SKYDRIVER_MANIFESTS",
-          "bucket_name": "carrack-manifests-prod"
+          "bucket_name": "skydriver-manifests-prod"
         },
         {
           "binding": "SKYDRIVER_PAYLOAD",
-          "bucket_name": "carrack-payload-prod"
+          "bucket_name": "skydriver-payload-prod"
         }
       ]
     }

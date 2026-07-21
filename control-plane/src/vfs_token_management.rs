@@ -15,8 +15,8 @@ use crate::{
     vfs_tokens::{AuthenticatedVfsToken, token_verifier},
 };
 
-const TOKEN_ISSUE_SCHEMA: &str = "carrack.vfs.token-issue-receipt.v1";
-const TOKEN_REVOKE_SCHEMA: &str = "carrack.vfs.token-revoke-receipt.v1";
+const TOKEN_ISSUE_SCHEMA: &str = "skydriver.vfs.token-issue-receipt.v1";
+const TOKEN_REVOKE_SCHEMA: &str = "skydriver.vfs.token-revoke-receipt.v1";
 const MINIMUM_TOKEN_LIFETIME_SECONDS: u64 = 60;
 const MAXIMUM_IDEMPOTENCY_BYTES: usize = 256;
 const MAXIMUM_DRIVER_ID_BYTES: usize = 256;
@@ -137,7 +137,7 @@ pub(crate) async fn issue(
         expires_at: requested.expires_at,
         idempotency_key: &requested.idempotency_key,
     };
-    let request_digest = request_identity(b"carrack.vfs.token-issue.v1\0", &identity)?;
+    let request_digest = request_identity(b"skydriver.vfs.token-issue.v1\0", &identity)?;
     let request_sha256 = lowercase_hex(&request_digest)?;
     let database = env.d1("SKYDRIVER_INDEX")?;
 
@@ -494,7 +494,7 @@ pub(crate) async fn revoke(
         target_token_id,
         idempotency_key: &requested.idempotency_key,
     };
-    let request_digest = request_identity(b"carrack.vfs.token-revoke.v1\0", &identity)?;
+    let request_digest = request_identity(b"skydriver.vfs.token-revoke.v1\0", &identity)?;
     let request_sha256 = lowercase_hex(&request_digest)?;
     let database = env.d1("SKYDRIVER_INDEX")?;
 
@@ -730,7 +730,7 @@ mod tests {
         };
 
         let digest =
-            request_identity(b"carrack.vfs.token-issue.v1\0", &identity).expect("request digest");
+            request_identity(b"skydriver.vfs.token-issue.v1\0", &identity).expect("request digest");
         assert_eq!(digest.len(), 32);
         assert_eq!(actions, ["directory.list", "token.issue"]);
     }

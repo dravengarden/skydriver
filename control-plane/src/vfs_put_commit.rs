@@ -15,8 +15,8 @@ use crate::{
     vfs_tokens::AuthenticatedVfsToken,
 };
 
-const PUT_RECEIPT_SCHEMA: &str = "carrack.vfs.put-receipt.v1";
-const BLOCK_MANIFEST_SCHEMA: &str = "carrack.vfs.block-manifest-stage.v1";
+const PUT_RECEIPT_SCHEMA: &str = "skydriver.vfs.put-receipt.v1";
+const BLOCK_MANIFEST_SCHEMA: &str = "skydriver.vfs.block-manifest-stage.v1";
 const MAXIMUM_COMMIT_REBASE_ATTEMPTS: usize = 4;
 const MAXIMUM_DIRECTORY_DEPTH: usize = 32;
 const MAXIMUM_PROVIDER_IDENTITY_BYTES: usize = 1_024;
@@ -1863,7 +1863,7 @@ fn valid_string(value: &str, maximum_bytes: usize) -> bool {
 fn commit_identity(request: &CommitRequest) -> Result<String> {
     let encoded = serde_json::to_vec(request)?;
     let mut hasher = Sha256::new();
-    hasher.update(b"carrack.vfs.put.commit.v1\0");
+    hasher.update(b"skydriver.vfs.put.commit.v1\0");
     hasher.update(encoded);
     lowercase_hex(&hasher.finalize())
 }

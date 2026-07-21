@@ -54,14 +54,14 @@ The JSON request is strict and rejects unknown fields:
 {
   "filesystem_name": "Skydriver VFS",
   "principal_display_name": "VFS operator",
-  "crypto_suite": "carrack-vfs-aes256gcm-hkdfsha256-v1",
+  "crypto_suite": "skydriver-vfs-aes256gcm-hkdfsha256-v1",
   "token_lifetime_seconds": 2592000,
   "idempotency_key": "production-bootstrap-v1"
 }
 ```
 
 `crypto_suite` defaults to
-`carrack-vfs-aes256gcm-hkdfsha256-v1`; the only alternative is the explicit
+`skydriver-vfs-aes256gcm-hkdfsha256-v1`; the only alternative is the explicit
 `plaintext/v1` suite. `token_lifetime_seconds` defaults to 30 days and must be
 between one hour and 365 days. Dev and production select `r2-default`. The
 response identifies that initially disabled driver as the root default mount.
@@ -76,17 +76,17 @@ is invalid. Hosted environments should omit both fields.
 
 ## Response and replay
 
-The successful response uses schema `carrack.vfs.bootstrap-receipt.v1`:
+The successful response uses schema `skydriver.vfs.bootstrap-receipt.v1`:
 
 ```json
 {
-  "schema": "carrack.vfs.bootstrap-receipt.v1",
+  "schema": "skydriver.vfs.bootstrap-receipt.v1",
   "filesystem_id": "32 lowercase hex",
   "principal_id": "32 lowercase hex",
   "root_directory_id": "32 lowercase hex",
   "token_id": "32 lowercase hex",
   "driver_id": "r2-default",
-  "crypto_suite": "carrack-vfs-aes256gcm-hkdfsha256-v1",
+  "crypto_suite": "skydriver-vfs-aes256gcm-hkdfsha256-v1",
   "key_epoch": 1,
   "token_expires_at": 0,
   "token": "43-character base64url bearer"

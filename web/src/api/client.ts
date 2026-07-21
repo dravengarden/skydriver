@@ -84,7 +84,7 @@ const TokenViewSchema = v.object({
 });
 
 const ManagementSnapshotSchema = v.object({
-    schema: v.literal("carrack.management.snapshot.v2"),
+    schema: v.literal("skydriver.management.snapshot.v2"),
     observed_at: v.number(),
     event_cursor: v.number(),
     drivers: v.array(DriverViewSchema),
@@ -93,7 +93,7 @@ const ManagementSnapshotSchema = v.object({
 });
 
 const TokenOptionPageSchema = v.object({
-    schema: v.literal("carrack.management.token-options.v1"),
+    schema: v.literal("skydriver.management.token-options.v1"),
     observed_at: v.number(),
     query: v.string(),
     next_after_label: v.string(),
@@ -111,7 +111,7 @@ const DirectoryOptionSchema = v.object({
 });
 
 const DirectoryOptionPageSchema = v.object({
-    schema: v.literal("carrack.management.directory-options.v1"),
+    schema: v.literal("skydriver.management.directory-options.v1"),
     observed_at: v.number(),
     query: v.string(),
     next_after_name: v.string(),
@@ -121,7 +121,7 @@ const DirectoryOptionPageSchema = v.object({
 });
 
 const ManagementEventCursorSchema = v.object({
-    schema: v.literal("carrack.management.event-cursor.v1"),
+    schema: v.literal("skydriver.management.event-cursor.v1"),
     observed_at: v.number(),
     event_cursor: v.number(),
 });
@@ -154,7 +154,7 @@ const ManagementActivityEventSchema = v.object({
 });
 
 const RecentManagementEventPageSchema = v.object({
-    schema: v.literal("carrack.management.recent-events.v1"),
+    schema: v.literal("skydriver.management.recent-events.v1"),
     observed_at: v.number(),
     before: v.number(),
     event_cursor: v.number(),
@@ -164,7 +164,7 @@ const RecentManagementEventPageSchema = v.object({
 });
 
 const ManagementActivitySchema = v.object({
-    schema: v.literal("carrack.management.activity.v2"),
+    schema: v.literal("skydriver.management.activity.v2"),
     observed_at: v.number(),
     offset: v.number(),
     limit: v.number(),
@@ -198,7 +198,7 @@ const TransferMetricRowSchema = v.object({
 });
 
 const TransferMetricsSchema = v.object({
-    schema: v.literal("carrack.management.transfer-metrics.v1"),
+    schema: v.literal("skydriver.management.transfer-metrics.v1"),
     observed_at: v.number(),
     scope_kind: v.picklist(["global", "driver", "token", "directory"]),
     scope_id: v.string(),
@@ -236,7 +236,7 @@ const TransferAnalyticsRowSchema = v.object({
 });
 
 const TransferAnalyticsSchema = v.object({
-    schema: v.literal("carrack.management.transfer-analytics.v2"),
+    schema: v.literal("skydriver.management.transfer-analytics.v2"),
     observed_at: v.number(),
     from: v.number(),
     to: v.number(),
@@ -268,7 +268,7 @@ const ManagementDirectoryEntrySchema = v.object({
 });
 
 const ManagementDirectorySchema = v.object({
-    schema: v.literal("carrack.management.directory.v1"),
+    schema: v.literal("skydriver.management.directory.v1"),
     observed_at: v.number(),
     directory: v.object({
         id: v.string(),
@@ -301,7 +301,7 @@ const ManagementDirectorySchema = v.object({
 });
 
 const ManagementDirectoryEntryPageSchema = v.object({
-    schema: v.literal("carrack.management.directory-entry-page.v1"),
+    schema: v.literal("skydriver.management.directory-entry-page.v1"),
     observed_at: v.number(),
     directory_id: v.string(),
     directory_revision: v.number(),
@@ -316,7 +316,7 @@ const ManagementDirectoryEntryPageSchema = v.object({
 });
 
 const TokenAnnotationValidationSchema = v.object({
-    schema: v.literal("carrack.management.token-annotation-validation.v1"),
+    schema: v.literal("skydriver.management.token-annotation-validation.v1"),
     token_id: v.string(),
     current_label: v.string(),
     current_note: v.string(),
@@ -329,7 +329,7 @@ const TokenAnnotationValidationSchema = v.object({
 });
 
 const TokenAnnotationReceiptSchema = v.object({
-    schema: v.literal("carrack.management.token-annotation-receipt.v1"),
+    schema: v.literal("skydriver.management.token-annotation-receipt.v1"),
     operation_id: v.string(),
     token_id: v.string(),
     label: v.string(),
@@ -340,7 +340,7 @@ const TokenAnnotationReceiptSchema = v.object({
 });
 
 const DriverStateValidationSchema = v.object({
-    schema: v.literal("carrack.management.driver-state-validation.v1"),
+    schema: v.literal("skydriver.management.driver-state-validation.v1"),
     driver_id: v.string(),
     kind: v.string(),
     current_enabled: v.boolean(),
@@ -354,7 +354,7 @@ const DriverStateValidationSchema = v.object({
 });
 
 const DriverStateReceiptSchema = v.object({
-    schema: v.literal("carrack.management.driver-state-receipt.v1"),
+    schema: v.literal("skydriver.management.driver-state-receipt.v1"),
     operation_id: v.string(),
     driver_id: v.string(),
     enabled: v.boolean(),
@@ -364,7 +364,7 @@ const DriverStateReceiptSchema = v.object({
 });
 
 const DriverRegistrationValidationSchema = v.object({
-    schema: v.literal("carrack.management.driver-registration-validation.v1"),
+    schema: v.literal("skydriver.management.driver-registration-validation.v1"),
     driver_id: v.string(),
     kind: v.string(),
     config: v.unknown(),
@@ -377,7 +377,7 @@ const DriverRegistrationValidationSchema = v.object({
 });
 
 const DriverRegistrationReceiptSchema = v.object({
-    schema: v.literal("carrack.management.driver-registration-receipt.v1"),
+    schema: v.literal("skydriver.management.driver-registration-receipt.v1"),
     operation_id: v.string(),
     driver_id: v.string(),
     kind: v.string(),
@@ -389,7 +389,7 @@ const DriverRegistrationReceiptSchema = v.object({
 });
 
 const DriverCredentialValidationSchema = v.object({
-    schema: v.literal("carrack.management.driver-credential-validation.v1"),
+    schema: v.literal("skydriver.management.driver-credential-validation.v1"),
     driver_id: v.string(),
     kind: v.string(),
     current_credential_present: v.boolean(),
@@ -402,7 +402,7 @@ const DriverCredentialValidationSchema = v.object({
 });
 
 const DriverCredentialReceiptSchema = v.object({
-    schema: v.literal("carrack.management.driver-credential-receipt.v1"),
+    schema: v.literal("skydriver.management.driver-credential-receipt.v1"),
     operation_id: v.string(),
     driver_id: v.string(),
     credential_id: v.string(),
@@ -423,7 +423,7 @@ const QuotaLimitsSchema = v.object({
 });
 
 const QuotaValidationSchema = v.object({
-    schema: v.literal("carrack.management.quota-validation.v1"),
+    schema: v.literal("skydriver.management.quota-validation.v1"),
     scope: v.picklist(["directory", "driver"]),
     resource_id: v.string(),
     current_limits: QuotaLimitsSchema,
@@ -435,7 +435,7 @@ const QuotaValidationSchema = v.object({
 });
 
 const QuotaReceiptSchema = v.object({
-    schema: v.literal("carrack.management.quota-receipt.v1"),
+    schema: v.literal("skydriver.management.quota-receipt.v1"),
     operation_id: v.string(),
     scope: v.picklist(["directory", "driver"]),
     resource_id: v.string(),
@@ -459,7 +459,7 @@ const AccessMutationDesiredSchema = v.object({
 });
 
 const ManagementAccessSchema = v.object({
-    schema: v.literal("carrack.management.access.v1"),
+    schema: v.literal("skydriver.management.access.v1"),
     observed_at: v.number(),
     principals: v.array(
         v.object({
@@ -492,7 +492,7 @@ const ManagementAccessSchema = v.object({
 });
 
 const AccessMutationValidationSchema = v.object({
-    schema: v.literal("carrack.management.access-validation.v1"),
+    schema: v.literal("skydriver.management.access-validation.v1"),
     desired: AccessMutationDesiredSchema,
     validation_expires_at: v.number(),
     validation_digest: v.string(),
@@ -500,7 +500,7 @@ const AccessMutationValidationSchema = v.object({
 });
 
 const AccessMutationReceiptSchema = v.object({
-    schema: v.literal("carrack.management.access-receipt.v1"),
+    schema: v.literal("skydriver.management.access-receipt.v1"),
     operation_id: v.string(),
     operation: v.string(),
     resource_id: v.string(),
@@ -510,7 +510,7 @@ const AccessMutationReceiptSchema = v.object({
 });
 
 const ProviderInventorySchema = v.object({
-    schema: v.literal("carrack.management.provider-inventory.v1"),
+    schema: v.literal("skydriver.management.provider-inventory.v1"),
     observed_at: v.number(),
     drivers: v.array(
         v.object({

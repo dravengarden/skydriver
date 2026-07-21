@@ -137,8 +137,8 @@ verification.
 
 | Environment | UI/API | D1 | R2 |
 |---|---|---|---|
-| development | `https://dev.skydriver.stormbird.xyz` | `carrack-index-dev` | `carrack-manifests-dev` + `carrack-payload-dev` |
-| production | `https://skydriver.stormbird.xyz` | `carrack-index-prod` | `carrack-manifests-prod` + `carrack-payload-prod` |
+| development | `https://dev.skydriver.stormbird.xyz` | `skydriver-index-dev` | `skydriver-manifests-dev` + `skydriver-payload-dev` |
+| production | `https://skydriver.stormbird.xyz` | `skydriver-index-prod` | `skydriver-manifests-prod` + `skydriver-payload-prod` |
 
 The D1 and R2 names in this table are retained legacy physical resources. Their
 stable IDs and contents are reused by Skydriver; renaming them in place would

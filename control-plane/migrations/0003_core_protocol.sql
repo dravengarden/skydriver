@@ -128,7 +128,7 @@ CREATE TABLE object_versions (
 CREATE TABLE recovery_manifests (
     manifest_sha256 TEXT PRIMARY KEY CHECK (length(manifest_sha256) = 64),
     version_id TEXT NOT NULL UNIQUE REFERENCES object_versions(id) ON DELETE CASCADE,
-    schema_version TEXT NOT NULL CHECK (schema_version = 'carrack.recovery.v1'),
+    schema_version TEXT NOT NULL CHECK (schema_version = 'skydriver.recovery.v1'),
     r2_storage_key TEXT NOT NULL UNIQUE CHECK (length(r2_storage_key) BETWEEN 1 AND 4096),
     sidecar_driver_id TEXT NOT NULL REFERENCES driver_instances(id),
     sidecar_storage_key TEXT NOT NULL CHECK (

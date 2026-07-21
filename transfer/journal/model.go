@@ -11,7 +11,7 @@ import (
 	"github.com/dravengarden/skydriver/driver"
 )
 
-const schema = "carrack.transfer-journal/v1"
+const schema = "skydriver.transfer-journal/v1"
 
 var (
 	// ErrInvalidStore indicates an unsafe root or uninitialized journal store.
@@ -20,21 +20,21 @@ var (
 	// transfer planning data.
 	ErrInvalidPlan = errors.New("invalid Skydriver complete-object transfer plan")
 	// ErrJournalNotFound indicates that no complete journal has the supplied ID.
-	ErrJournalNotFound = errors.New("carrack transfer journal not found")
+	ErrJournalNotFound = errors.New("skydriver transfer journal not found")
 	// ErrJournalConflict indicates an optimistic revision or immutable receipt
 	// collision. Callers must reload the journal before retrying.
-	ErrJournalConflict = errors.New("carrack transfer journal revision conflict")
+	ErrJournalConflict = errors.New("skydriver transfer journal revision conflict")
 	// ErrJournalCorrupt indicates a malformed, truncated, hash-mismatched, or
 	// non-contiguous journal record.
-	ErrJournalCorrupt = errors.New("carrack transfer journal is corrupt")
+	ErrJournalCorrupt = errors.New("skydriver transfer journal is corrupt")
 	// ErrJournalBusy indicates an unexpired executor lease held by another run.
-	ErrJournalBusy = errors.New("carrack transfer journal has an active executor")
+	ErrJournalBusy = errors.New("skydriver transfer journal has an active executor")
 	// ErrSourceChanged indicates that a replayable upload source no longer has
 	// the immutable identity fixed by its journal.
-	ErrSourceChanged = errors.New("carrack transfer source changed")
+	ErrSourceChanged = errors.New("skydriver transfer source changed")
 	// ErrTransferIntegrity indicates payload bytes that fail exact length or
 	// SHA-256 verification.
-	ErrTransferIntegrity = errors.New("carrack complete-object transfer integrity mismatch")
+	ErrTransferIntegrity = errors.New("skydriver complete-object transfer integrity mismatch")
 )
 
 // Direction identifies the payload flow represented by one journal.

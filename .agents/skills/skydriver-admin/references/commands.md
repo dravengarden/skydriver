@@ -1,45 +1,45 @@
-# Carrack management commands
+# Skydriver management commands
 
 ## Authentication
 
 | Surface | Environment variable | Authority |
 |---|---|---|
-| `carrackctl snapshot`, `metrics`, `analytics`, `watch`, `directory`, `driver`, `quota`, `token annotate` | `CARRACK_OPERATOR_ACCOUNT`, `CARRACK_OPERATOR_CREDENTIAL` | Redacted environment management |
-| `carrackctl vfs acl`, `vfs mount`, `vfs token` | `CARRACK_VFS_TOKEN` | Explicit token actions and directory scope |
+| `skydriverctl snapshot`, `metrics`, `analytics`, `watch`, `directory`, `driver`, `quota`, `token annotate` | `SKYDRIVER_OPERATOR_ACCOUNT`, `SKYDRIVER_OPERATOR_CREDENTIAL` | Redacted environment management |
+| `skydriverctl vfs acl`, `vfs mount`, `vfs token` | `SKYDRIVER_VFS_TOKEN` | Explicit token actions and directory scope |
 
-`CARRACK_OPERATOR_ACCOUNT` is a canonical non-secret lowercase identifier.
+`SKYDRIVER_OPERATOR_ACCOUNT` is a canonical non-secret lowercase identifier.
 Both credentials are canonical unpadded base64url values encoding 32 bytes;
 keep them out of argv and output.
 
-Development uses `draven@carrack-dev`; production uses
-`draven@carrack-prod`. Operator password rotation is outside `carrackctl` and
+Development uses `draven@skydriver-dev`; production uses
+`draven@skydriver-prod`. Operator password rotation is outside `skydriverctl` and
 must use the dedicated stdin-only `just rotate-operator-dev` or
-production-gated recipe. Those commands update only `CARRACK_ADMIN_TOKEN`.
+production-gated recipe. Those commands update only `SKYDRIVER_ADMIN_TOKEN`.
 Never change a VFS master key, wrapped directory key, bootstrap token, or
 recovery authority as part of an account or password change.
 
 ## Read commands
 
 ```bash
-carrackctl snapshot --control-url "$CARRACK_CONTROL_URL" --format json
-carrackctl metrics global all --control-url "$CARRACK_CONTROL_URL" --format json
-carrackctl metrics driver "$driver_id" --control-url "$CARRACK_CONTROL_URL" --format json
-carrackctl metrics token "$token_id" --control-url "$CARRACK_CONTROL_URL" --format json
-carrackctl metrics directory "$directory_id" --control-url "$CARRACK_CONTROL_URL" --format json
-carrackctl analytics --days 30 --group-by driver \
-  --control-url "$CARRACK_CONTROL_URL" --format json
-carrackctl analytics --days 7 --driver "$driver_id" --token "$token_id" \
+skydriverctl snapshot --control-url "$SKYDRIVER_CONTROL_URL" --format json
+skydriverctl metrics global all --control-url "$SKYDRIVER_CONTROL_URL" --format json
+skydriverctl metrics driver "$driver_id" --control-url "$SKYDRIVER_CONTROL_URL" --format json
+skydriverctl metrics token "$token_id" --control-url "$SKYDRIVER_CONTROL_URL" --format json
+skydriverctl metrics directory "$directory_id" --control-url "$SKYDRIVER_CONTROL_URL" --format json
+skydriverctl analytics --days 30 --group-by driver \
+  --control-url "$SKYDRIVER_CONTROL_URL" --format json
+skydriverctl analytics --days 7 --driver "$driver_id" --token "$token_id" \
   --directory "$directory_id" --include-descendants --direction download \
-  --control-url "$CARRACK_CONTROL_URL" --format json
-carrackctl watch --after "$event_cursor" --limit 100 \
-  --control-url "$CARRACK_CONTROL_URL" --format json
-carrackctl directory "$directory_id" --control-url "$CARRACK_CONTROL_URL" --format json
-carrackctl access show --control-url "$CARRACK_CONTROL_URL" --format json
-carrackctl inventory --control-url "$CARRACK_CONTROL_URL" --format json
-carrackctl inventory --refresh-driver "$driver_id" \
-  --control-url "$CARRACK_CONTROL_URL" --format json
-carrackctl vfs acl show /collection --control-url "$CARRACK_CONTROL_URL" --format json
-carrackctl vfs mount show /collection --control-url "$CARRACK_CONTROL_URL" --format json
+  --control-url "$SKYDRIVER_CONTROL_URL" --format json
+skydriverctl watch --after "$event_cursor" --limit 100 \
+  --control-url "$SKYDRIVER_CONTROL_URL" --format json
+skydriverctl directory "$directory_id" --control-url "$SKYDRIVER_CONTROL_URL" --format json
+skydriverctl access show --control-url "$SKYDRIVER_CONTROL_URL" --format json
+skydriverctl inventory --control-url "$SKYDRIVER_CONTROL_URL" --format json
+skydriverctl inventory --refresh-driver "$driver_id" \
+  --control-url "$SKYDRIVER_CONTROL_URL" --format json
+skydriverctl vfs acl show /collection --control-url "$SKYDRIVER_CONTROL_URL" --format json
+skydriverctl vfs mount show /collection --control-url "$SKYDRIVER_CONTROL_URL" --format json
 ```
 
 The admin snapshot contains only redacted driver configuration and non-secret
@@ -68,7 +68,7 @@ descendants mean the directory's current active subtree. Results remain
 estimates and are never authorization, integrity, quota, or billing evidence.
 
 `watch` returns one ascending audit page with schema
-`carrack.management.events.v1`; it is deliberately bounded and does not stay
+`skydriver.management.events.v1`; it is deliberately bounded and does not stay
 resident. Start from a snapshot's `event_cursor`, process every event in order,
 and continue with `next_after` while `has_more` is true. Persist only a cursor
 whose events were handled successfully. A `409` for an ahead cursor usually
@@ -80,13 +80,13 @@ reconcile rather than resetting to zero automatically.
 Create and manage principals and filesystem groups with server validation:
 
 ```bash
-carrackctl access principal create --kind service --display-name "$name" \
-  --control-url "$CARRACK_CONTROL_URL" --check --format json
-carrackctl access group create "$filesystem_id" --name "$name" \
-  --control-url "$CARRACK_CONTROL_URL" --check --format json
-carrackctl access group add-member "$group_id" "$principal_id" \
+skydriverctl access principal create --kind service --display-name "$name" \
+  --control-url "$SKYDRIVER_CONTROL_URL" --check --format json
+skydriverctl access group create "$filesystem_id" --name "$name" \
+  --control-url "$SKYDRIVER_CONTROL_URL" --check --format json
+skydriverctl access group add-member "$group_id" "$principal_id" \
   --filesystem-id "$filesystem_id" --expected-revision "$group_revision" \
-  --control-url "$CARRACK_CONTROL_URL" --check --format json
+  --control-url "$SKYDRIVER_CONTROL_URL" --check --format json
 ```
 
 After review, repeat the byte-identical desired state without `--check` and
@@ -96,24 +96,24 @@ of deletion. Re-read `access show` after every apply.
 Bootstrap or recover the unexpired root authority without stdout exposure:
 
 ```bash
-carrackctl authority recover --output-file "$private_new_path" \
-  --control-url "$CARRACK_CONTROL_URL" --format json
+skydriverctl authority recover --output-file "$private_new_path" \
+  --control-url "$SKYDRIVER_CONTROL_URL" --format json
 ```
 
 Replace one complete hard-quota policy. Omitted limits mean unlimited; first
 use `--check`, then repeat with a stable idempotency key:
 
 ```bash
-carrackctl quota set directory "$directory_id" \
-  --control-url "$CARRACK_CONTROL_URL" \
+skydriverctl quota set directory "$directory_id" \
+  --control-url "$SKYDRIVER_CONTROL_URL" \
   --max-logical-bytes 107374182400 \
   --max-file-count 100000 \
   --max-file-bytes 10737418240 \
   --expected-revision "$quota_revision" \
   --check --format json
 
-carrackctl quota set driver "$driver_id" \
-  --control-url "$CARRACK_CONTROL_URL" \
+skydriverctl quota set driver "$driver_id" \
+  --control-url "$SKYDRIVER_CONTROL_URL" \
   --max-physical-bytes 107374182400 \
   --max-object-count 1000000 \
   --expected-revision "$quota_revision" \
@@ -128,8 +128,8 @@ usage is below every applicable hard limit.
 Register a typed driver in the disabled state. Validate first:
 
 ```bash
-carrackctl driver register "$driver_id" \
-  --control-url "$CARRACK_CONTROL_URL" \
+skydriverctl driver register "$driver_id" \
+  --control-url "$SKYDRIVER_CONTROL_URL" \
   --kind aliyundrive-open/v2 \
   --config-file "$config_file" \
   --check --format json
@@ -139,8 +139,8 @@ Apply the same config with a stable idempotency key. The resulting driver is
 revision 1 and disabled:
 
 ```bash
-carrackctl driver register "$driver_id" \
-  --control-url "$CARRACK_CONTROL_URL" \
+skydriverctl driver register "$driver_id" \
+  --control-url "$SKYDRIVER_CONTROL_URL" \
   --kind aliyundrive-open/v2 \
   --config-file "$config_file" \
   --idempotency-key "$idempotency_key" --format json
@@ -150,8 +150,8 @@ Set or rotate its write-only credential before enabling it:
 
 ```bash
 chmod 600 "$credential_file"
-carrackctl driver credential set "$driver_id" \
-  --control-url "$CARRACK_CONTROL_URL" \
+skydriverctl driver credential set "$driver_id" \
+  --control-url "$SKYDRIVER_CONTROL_URL" \
   --credential-file "$credential_file" \
   --expected-revision "$driver_revision" \
   --check --format json
@@ -170,27 +170,27 @@ the server reports `reauth_required`.
 
 Dev and production materialize the disabled `r2-default` identity automatically.
 Do not register or manually rotate that identity. During environment creation,
-use `just check-r2-dev` and then `CARRACK_PROVISION_R2=1 just provision-r2-dev`
+use `just check-r2-dev` and then `SKYDRIVER_PROVISION_R2=1 just provision-r2-dev`
 with separately injected `CLOUDFLARE_TOKEN_FACTORY_API_TOKEN`,
-`CARRACK_OPERATOR_CREDENTIAL`, and `CARRACK_VFS_TOKEN`. The provisioner reads
-the committed `CARRACK_OPERATOR_ACCOUNT` from the selected environment.
+`SKYDRIVER_OPERATOR_CREDENTIAL`, and `SKYDRIVER_VFS_TOKEN`. The provisioner reads
+the committed `SKYDRIVER_OPERATOR_ACCOUNT` from the selected environment.
 Production also
-requires `CARRACK_PROVISION_PROD=1`. The setup tool creates or rolls only the
+requires `SKYDRIVER_PROVISION_PROD=1`. The setup tool creates or rolls only the
 deterministically named, exact-bucket Cloudflare token, moves its derived S3
-credential through a private temporary file, calls the same `carrackctl`
+credential through a private temporary file, calls the same `skydriverctl`
 validate/apply/readback commands, and enables the driver. It adds a root
 placement only when the existing complete set is empty. Never copy the factory
 token into `.env`, the UI, D1, Worker secrets, argv, or logs.
 
 If preflight reports `recover`, stop and exclude every parallel provisioner.
-Only an explicitly reviewed recovery may set `CARRACK_RECOVER_R2_TOKEN=1` and
+Only an explicitly reviewed recovery may set `SKYDRIVER_RECOVER_R2_TOKEN=1` and
 pass `--recover-existing-token`; ordinary retries must never roll a provider
-token merely because Carrack currently reports no sealed credential.
+token merely because Skydriver currently reports no sealed credential.
 
 For an additional R2 bucket, register this configuration first:
 
 ```json
-{"endpoint":"https://ACCOUNT_ID.r2.cloudflarestorage.com","bucket":"third-party-bucket","prefix":"carrack/","managed":false}
+{"endpoint":"https://ACCOUNT_ID.r2.cloudflarestorage.com","bucket":"third-party-bucket","prefix":"skydriver/","managed":false}
 ```
 
 The server validates each key with a temporary object and stores it sealed;
@@ -203,8 +203,8 @@ complete, abort, or delete multipart uploads through provider tools.
 Validate a token annotation without changing state:
 
 ```bash
-carrackctl token annotate "$token_id" \
-  --control-url "$CARRACK_CONTROL_URL" \
+skydriverctl token annotate "$token_id" \
+  --control-url "$SKYDRIVER_CONTROL_URL" \
   --label "$label" \
   --note "$note" \
   --expected-revision "$metadata_revision" \
@@ -215,8 +215,8 @@ carrackctl token annotate "$token_id" \
 After reviewing the server-normalized desired state, apply the same input:
 
 ```bash
-carrackctl token annotate "$token_id" \
-  --control-url "$CARRACK_CONTROL_URL" \
+skydriverctl token annotate "$token_id" \
+  --control-url "$SKYDRIVER_CONTROL_URL" \
   --label "$label" \
   --note "$note" \
   --expected-revision "$metadata_revision" \
@@ -232,8 +232,8 @@ or expiry.
 Validate a driver state transition without changing state:
 
 ```bash
-carrackctl driver disable "$driver_id" \
-  --control-url "$CARRACK_CONTROL_URL" \
+skydriverctl driver disable "$driver_id" \
+  --control-url "$SKYDRIVER_CONTROL_URL" \
   --expected-revision "$driver_revision" \
   --check \
   --format json
@@ -243,8 +243,8 @@ Review the returned placement count, available-location count, expiry, and all
 warnings. Apply the exact transition with a stable idempotency key:
 
 ```bash
-carrackctl driver disable "$driver_id" \
-  --control-url "$CARRACK_CONTROL_URL" \
+skydriverctl driver disable "$driver_id" \
+  --control-url "$SKYDRIVER_CONTROL_URL" \
   --expected-revision "$driver_revision" \
   --idempotency-key "$idempotency_key" \
   --format json
@@ -260,8 +260,8 @@ enabled again.
 Replace one principal's direct ACL grants:
 
 ```bash
-carrackctl vfs acl replace /collection \
-  --control-url "$CARRACK_CONTROL_URL" \
+skydriverctl vfs acl replace /collection \
+  --control-url "$SKYDRIVER_CONTROL_URL" \
   --principal-id "$principal_id" \
   --action directory.list,content.read \
   --expected-revision "$acl_revision" \
@@ -275,8 +275,8 @@ that principal's direct grants.
 Mount a driver at one empty directory after reading its mount revision:
 
 ```bash
-carrackctl vfs mount set /collection \
-  --control-url "$CARRACK_CONTROL_URL" \
+skydriverctl vfs mount set /collection \
+  --control-url "$SKYDRIVER_CONTROL_URL" \
   --driver local-main \
   --expected-revision "$placement_revision" \
   --idempotency-key "$idempotency_key" \
@@ -286,8 +286,8 @@ carrackctl vfs mount set /collection \
 Remove an explicit mount by inheriting the parent driver:
 
 ```bash
-carrackctl vfs mount inherit /collection \
-  --control-url "$CARRACK_CONTROL_URL" \
+skydriverctl vfs mount inherit /collection \
+  --control-url "$SKYDRIVER_CONTROL_URL" \
   --expected-revision "$placement_revision" \
   --idempotency-key "$idempotency_key" \
   --format json
@@ -301,8 +301,8 @@ change its default and cannot use `mount inherit`.
 Issue an attenuated child token:
 
 ```bash
-carrackctl vfs token issue /collection \
-  --control-url "$CARRACK_CONTROL_URL" \
+skydriverctl vfs token issue /collection \
+  --control-url "$SKYDRIVER_CONTROL_URL" \
   --action directory.list,content.read \
   --driver-id local-main \
   --expires-at "$expires_at" \
@@ -316,8 +316,8 @@ the process output. The server stores only its verifier.
 Revoke it with:
 
 ```bash
-carrackctl vfs token revoke "$token_id" \
-  --control-url "$CARRACK_CONTROL_URL" \
+skydriverctl vfs token revoke "$token_id" \
+  --control-url "$SKYDRIVER_CONTROL_URL" \
   --idempotency-key "$idempotency_key" --format json
 ```
 
@@ -327,7 +327,7 @@ never substitute direct D1, raw provider HTTP, OpenList, or a provider CLI.
 
 ## Failure decisions
 
-Both `carrack` and `carrackctl` emit one `carrack.cli-error.v1` object on
+Both `skydriver` and `skydriverctl` emit one `skydriver.cli-error.v1` object on
 stderr. Prefer its stable string `code`; its `exit_status` field exactly
 matches the process status. Statuses are `2` invalid arguments, `3` invalid
 input, `4` invalid control plane, `5` required SDK upgrade, `6` invalid server

@@ -3,7 +3,7 @@ use worker::{D1Database, Date, Env, Request, Response, Result, wasm_bindgen::JsV
 
 use crate::vfs_tokens::AuthenticatedVfsToken;
 
-const TASK_SCHEMA: &str = "carrack.vfs.put-delete-task.v1";
+const TASK_SCHEMA: &str = "skydriver.vfs.put-delete-task.v1";
 const DEFAULT_LEASE_SECONDS: u64 = 60;
 const MINIMUM_LEASE_SECONDS: u64 = 15;
 const MAXIMUM_LEASE_SECONDS: u64 = 300;

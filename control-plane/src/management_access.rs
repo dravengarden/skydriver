@@ -13,7 +13,7 @@ const ADMIN_TOKEN_BINDING: &str = "SKYDRIVER_ADMIN_TOKEN";
 const VALIDATION_LIFETIME_SECONDS: u64 = 5 * 60;
 const MUTATION_KIND: &str = "access.mutation";
 const CREATION_KIND: &str = "access.create";
-const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.access.v1\0";
+const VALIDATION_DOMAIN: &[u8] = b"skydriver.management.validation.access.v1\0";
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -136,7 +136,7 @@ pub(crate) async fn snapshot(request: Request, env: &Env) -> Result<Response> {
         .await?
         .results::<MembershipRow>()?;
     no_store_json(&Snapshot {
-        schema: "carrack.management.access.v1",
+        schema: "skydriver.management.access.v1",
         observed_at: now_seconds(),
         principals,
         groups,
@@ -159,7 +159,7 @@ pub(crate) async fn validate(request: &mut Request, env: &Env) -> Result<Respons
     let warnings = warnings(&database, &desired).await?;
     let validation_expires_at = now_seconds() + VALIDATION_LIFETIME_SECONDS;
     no_store_json(&ValidationResponse {
-        schema: "carrack.management.access-validation.v1",
+        schema: "skydriver.management.access-validation.v1",
         validation_digest: validation_digest(env, &desired, validation_expires_at)?,
         desired,
         validation_expires_at,
@@ -211,7 +211,7 @@ pub(crate) async fn apply(request: &mut Request, env: &Env) -> Result<Response> 
         desired.expected_revision + 1
     };
     let receipt = ReceiptResponse {
-        schema: "carrack.management.access-receipt.v1",
+        schema: "skydriver.management.access-receipt.v1",
         operation_id: operation_id.clone(),
         operation: desired.operation.clone(),
         resource_id: resource_id(&desired).to_owned(),

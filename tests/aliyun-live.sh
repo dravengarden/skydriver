@@ -15,7 +15,7 @@ fi
 control_url=${SKYDRIVER_CONTROL_URL:-https://dev.skydriver.stormbird.xyz}
 directory=${SKYDRIVER_ALIYUN_TEST_DIRECTORY:-/}
 payload_bytes=${SKYDRIVER_ALIYUN_TEST_BYTES:-33554432}
-carrack_bin=${SKYDRIVER_BIN:-target/release/carrack}
+skydriver_bin=${SKYDRIVER_BIN:-target/release/skydriver}
 operation_timeout_seconds=${SKYDRIVER_LIVE_OPERATION_TIMEOUT_SECONDS:-300}
 
 if [[ $control_url != https://dev.skydriver.stormbird.xyz ]]; then
@@ -34,25 +34,25 @@ if [[ ! $operation_timeout_seconds =~ ^[1-9][0-9]*$ || $operation_timeout_second
   echo "SKYDRIVER_LIVE_OPERATION_TIMEOUT_SECONDS must be between 1 and 3600" >&2
   exit 2
 fi
-if [[ ! -x $carrack_bin ]]; then
-  echo "Skydriver binary is not executable: $carrack_bin" >&2
+if [[ ! -x $skydriver_bin ]]; then
+  echo "Skydriver binary is not executable: $skydriver_bin" >&2
   exit 2
 fi
 
-carrack_command() {
+skydriver_command() {
   local stage=$1
   shift
   local status started_ns finished_ns started_at finished_at elapsed_ms
-  started_ns=$(carrack_now_ns)
-  started_at=$(carrack_now_utc)
+  started_ns=$(skydriver_now_ns)
+  started_at=$(skydriver_now_utc)
   timeout --signal=INT --kill-after=15s "${operation_timeout_seconds}s" \
-    "$carrack_bin" "$@" || {
+    "$skydriver_bin" "$@" || {
     status=$?
-    finished_at=$(carrack_now_utc)
-    finished_ns=$(carrack_now_ns)
-    elapsed_ms=$(carrack_elapsed_ms "$started_ns" "$finished_ns")
-    carrack_live_failure_json \
-      carrack.aliyun-live-acceptance-failure.v2 "$SKYDRIVER_ALIYUN_DRIVER_ID" \
+    finished_at=$(skydriver_now_utc)
+    finished_ns=$(skydriver_now_ns)
+    elapsed_ms=$(skydriver_elapsed_ms "$started_ns" "$finished_ns")
+    skydriver_live_failure_json \
+      skydriver.aliyun-live-acceptance-failure.v2 "$SKYDRIVER_ALIYUN_DRIVER_ID" \
       "$run_id" "$stage" "$status" "$operation_timeout_seconds" \
       "$payload_bytes" 4194304 4 "$started_at" "$finished_at" \
       "$elapsed_ms" >&2
@@ -64,8 +64,8 @@ state=$(mktemp -d)
 chmod 0700 "$state"
 identifier=$(openssl rand -hex 8)
 run_id=$identifier
-run_started_at=$(carrack_now_utc)
-name="carrack-aliyun-live-$identifier.bin"
+run_started_at=$(skydriver_now_utc)
+name="skydriver-aliyun-live-$identifier.bin"
 if [[ $directory == / ]]; then
   destination="/$name"
 else
@@ -79,7 +79,7 @@ remove_key="aliyun-live-remove-$identifier"
 
 cleanup() {
   if [[ $put_committed == true ]]; then
-    carrack_command "cleanup remove" remove "$destination" \
+    skydriver_command "cleanup remove" remove "$destination" \
       --control-url "$control_url" --idempotency-key "$remove_key" \
       --format json >/dev/null 2>&1 || \
       echo "warning: live object cleanup must be retried for $destination" >&2
@@ -91,12 +91,12 @@ trap cleanup EXIT
 head -c "$payload_bytes" /dev/urandom >"$source_file"
 source_sha=$(sha256sum "$source_file" | cut -d' ' -f1)
 
-carrack_command compatibility compatibility --control-url "$control_url" --format json |
+skydriver_command compatibility compatibility --control-url "$control_url" --format json |
   jq -e '.protocol_epoch == 2 and .enforcement == "required"' >/dev/null
 
-upload_started_ns=$(carrack_now_ns)
-upload_started_at=$(carrack_now_utc)
-put_result=$(carrack_command upload put \
+upload_started_ns=$(skydriver_now_ns)
+upload_started_at=$(skydriver_now_utc)
+put_result=$(skydriver_command upload put \
   "$source_file" "$destination" \
   --control-url "$control_url" \
   --preferred-driver-id "$SKYDRIVER_ALIYUN_DRIVER_ID" \
@@ -105,34 +105,34 @@ put_result=$(carrack_command upload put \
   --transfer-part-bytes 4194304 \
   --maximum-concurrency 4 \
   --format json)
-upload_finished_ns=$(carrack_now_ns)
-upload_finished_at=$(carrack_now_utc)
+upload_finished_ns=$(skydriver_now_ns)
+upload_finished_at=$(skydriver_now_utc)
 jq -e --arg driver "$SKYDRIVER_ALIYUN_DRIVER_ID" '
-  .schema == "carrack.fs-put.v1" and
+  .schema == "skydriver.fs-put.v1" and
   .receipt.state == "committed" and
   .receipt.driver_id == $driver and
-  .crypto_suite == "carrack-vfs-aes256gcm-hkdfsha256-v1"
+  .crypto_suite == "skydriver-vfs-aes256gcm-hkdfsha256-v1"
 ' <<<"$put_result" >/dev/null
 put_committed=true
 
-download_started_ns=$(carrack_now_ns)
-download_started_at=$(carrack_now_utc)
-get_result=$(carrack_command download get \
+download_started_ns=$(skydriver_now_ns)
+download_started_at=$(skydriver_now_utc)
+get_result=$(skydriver_command download get \
   "$destination" "$download_file" \
   --control-url "$control_url" \
   --staging-directory "$state/download-staging" \
   --transfer-part-bytes 4194304 \
   --maximum-concurrency 4 \
   --format json)
-download_finished_ns=$(carrack_now_ns)
-download_finished_at=$(carrack_now_utc)
-jq -e '.schema == "carrack.fs-get.v1"' <<<"$get_result" >/dev/null
+download_finished_ns=$(skydriver_now_ns)
+download_finished_at=$(skydriver_now_utc)
+jq -e '.schema == "skydriver.fs-get.v1"' <<<"$get_result" >/dev/null
 [[ $(sha256sum "$download_file" | cut -d' ' -f1) == "$source_sha" ]]
 
 set +e
-resume_started_ns=$(carrack_now_ns)
-resume_started_at=$(carrack_now_utc)
-timeout 0.2s "$carrack_bin" get \
+resume_started_ns=$(skydriver_now_ns)
+resume_started_at=$(skydriver_now_utc)
+timeout 0.2s "$skydriver_bin" get \
   "$destination" "$resumed_file" \
   --control-url "$control_url" \
   --staging-directory "$state/resume-staging" \
@@ -146,7 +146,7 @@ if [[ $interrupted_status != 0 && $interrupted_status != 124 ]]; then
   exit 1
 fi
 if [[ $interrupted_status != 0 ]]; then
-  carrack_command resume get \
+  skydriver_command resume get \
     "$destination" "$resumed_file" \
     --control-url "$control_url" \
     --staging-directory "$state/resume-staging" \
@@ -154,33 +154,33 @@ if [[ $interrupted_status != 0 ]]; then
     --maximum-concurrency 4 \
     --format json >/dev/null
 fi
-resume_finished_ns=$(carrack_now_ns)
-resume_finished_at=$(carrack_now_utc)
+resume_finished_ns=$(skydriver_now_ns)
+resume_finished_at=$(skydriver_now_utc)
 [[ $(sha256sum "$resumed_file" | cut -d' ' -f1) == "$source_sha" ]]
 
 upload_elapsed_ns=$((upload_finished_ns - upload_started_ns))
 download_elapsed_ns=$((download_finished_ns - download_started_ns))
 resume_elapsed_ns=$((resume_finished_ns - resume_started_ns))
-upload_elapsed_ms=$(carrack_elapsed_ms "$upload_started_ns" "$upload_finished_ns")
-download_elapsed_ms=$(carrack_elapsed_ms "$download_started_ns" "$download_finished_ns")
-resume_elapsed_ms=$(carrack_elapsed_ms "$resume_started_ns" "$resume_finished_ns")
-upload_bytes_per_second=$(carrack_bytes_per_second "$payload_bytes" "$upload_elapsed_ns")
-download_bytes_per_second=$(carrack_bytes_per_second "$payload_bytes" "$download_elapsed_ns")
-resume_bytes_per_second=$(carrack_bytes_per_second "$payload_bytes" "$resume_elapsed_ns")
+upload_elapsed_ms=$(skydriver_elapsed_ms "$upload_started_ns" "$upload_finished_ns")
+download_elapsed_ms=$(skydriver_elapsed_ms "$download_started_ns" "$download_finished_ns")
+resume_elapsed_ms=$(skydriver_elapsed_ms "$resume_started_ns" "$resume_finished_ns")
+upload_bytes_per_second=$(skydriver_bytes_per_second "$payload_bytes" "$upload_elapsed_ns")
+download_bytes_per_second=$(skydriver_bytes_per_second "$payload_bytes" "$download_elapsed_ns")
+resume_bytes_per_second=$(skydriver_bytes_per_second "$payload_bytes" "$resume_elapsed_ns")
 
-remove_result=$(carrack_command remove remove \
+remove_result=$(skydriver_command remove remove \
   "$destination" --control-url "$control_url" \
   --idempotency-key "$remove_key" --format json)
-jq -e '.schema == "carrack.vfs.remove-receipt.v1"' <<<"$remove_result" >/dev/null
+jq -e '.schema == "skydriver.vfs.remove-receipt.v1"' <<<"$remove_result" >/dev/null
 put_committed=false
 
-listing=$(carrack_command list list \
+listing=$(skydriver_command list list \
   "$directory" --control-url "$control_url" --format json)
 jq -e --arg name "$name" 'all(.entries[]; .name != $name)' <<<"$listing" >/dev/null
-run_finished_at=$(carrack_now_utc)
+run_finished_at=$(skydriver_now_utc)
 
 jq -n \
-  --arg schema carrack.aliyun-live-acceptance.v2 \
+  --arg schema skydriver.aliyun-live-acceptance.v2 \
   --arg driver_id "$SKYDRIVER_ALIYUN_DRIVER_ID" \
   --arg run_id "$run_id" \
   --arg run_started_at "$run_started_at" \

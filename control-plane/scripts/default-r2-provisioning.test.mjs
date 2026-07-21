@@ -15,7 +15,7 @@ import {
 } from "./default-r2-provisioning.mjs";
 
 const accountId = "0123456789abcdef0123456789abcdef";
-const bucket = "carrack-payload-dev";
+const bucket = "skydriver-payload-dev";
 
 test("derives an exact environment profile and bucket-only policy", () => {
     const profile = environmentProfile(
@@ -40,7 +40,7 @@ test("derives an exact environment profile and bucket-only policy", () => {
         endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
         operatorAccount: "draven@skydriver-dev",
         bucket,
-        tokenName: "carrack-r2-default-dev",
+        tokenName: "skydriver-r2-default-dev",
     });
     assert.equal(
         bucketResource(accountId, bucket),
@@ -59,8 +59,8 @@ test("rejects ambiguous tokens and policies broader than one bucket", () => {
     assert.throws(
         () =>
             selectExactNamedToken(
-                [{ name: "carrack-r2-default-dev" }, { name: "carrack-r2-default-dev" }],
-                "carrack-r2-default-dev",
+                [{ name: "skydriver-r2-default-dev" }, { name: "skydriver-r2-default-dev" }],
+                "skydriver-r2-default-dev",
             ),
         /multiple Cloudflare tokens/,
     );

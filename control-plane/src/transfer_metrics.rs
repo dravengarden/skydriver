@@ -386,7 +386,7 @@ pub(crate) async fn management(
         .await?
         .results::<MetricRow>()?;
     let mut response = Response::from_json(&MetricsResponse {
-        schema: "carrack.management.transfer-metrics.v1",
+        schema: "skydriver.management.transfer-metrics.v1",
         observed_at: now,
         scope_kind: scope_kind.to_owned(),
         scope_id: scope_id.to_owned(),
@@ -470,7 +470,7 @@ pub(crate) async fn analytics(request: &Request, env: &Env) -> Result<Response> 
     }
     rows.shrink_to_fit();
     let mut response = Response::from_json(&AnalyticsResponse {
-        schema: "carrack.management.transfer-analytics.v2",
+        schema: "skydriver.management.transfer-analytics.v2",
         observed_at: now,
         from: resolved.from,
         to: resolved.to,
@@ -668,18 +668,18 @@ fn valid_scope_id(value: &str) -> bool {
 fn valid(value: &TransferTelemetry) -> bool {
     matches!(
         value.schema.as_str(),
-        "carrack.transfer-telemetry.v1" | "carrack.transfer-telemetry.v2"
+        "skydriver.transfer-telemetry.v1" | "skydriver.transfer-telemetry.v2"
     ) && value.provider_ms > 0
         && value.provider_ms <= value.total_ms
         && value.total_ms <= MAXIMUM_DURATION_MS
         && value.retries <= MAXIMUM_RETRIES
         && match value.schema.as_str() {
-            "carrack.transfer-telemetry.v1" => {
+            "skydriver.transfer-telemetry.v1" => {
                 value.plan_ms.is_none()
                     && value.queue_ms.is_none()
                     && value.post_provider_ms.is_none()
             }
-            "carrack.transfer-telemetry.v2" => value.phases().is_some_and(|phases| {
+            "skydriver.transfer-telemetry.v2" => value.phases().is_some_and(|phases| {
                 phases
                     .plan
                     .checked_add(phases.queue)
@@ -755,7 +755,7 @@ mod tests {
     #[test]
     fn validates_bounded_observations_and_buckets_speed() {
         let observation = TransferTelemetry {
-            schema: "carrack.transfer-telemetry.v1".to_owned(),
+            schema: "skydriver.transfer-telemetry.v1".to_owned(),
             provider_ms: 1_000,
             total_ms: 2_000,
             retries: 0,
@@ -765,7 +765,7 @@ mod tests {
         };
         assert!(valid(&observation));
         let phased = TransferTelemetry {
-            schema: "carrack.transfer-telemetry.v2".to_owned(),
+            schema: "skydriver.transfer-telemetry.v2".to_owned(),
             provider_ms: 1_000,
             total_ms: 2_000,
             retries: 0,
@@ -775,7 +775,7 @@ mod tests {
         };
         assert!(valid(&phased));
         assert!(!valid(&TransferTelemetry {
-            schema: "carrack.transfer-telemetry.v1".to_owned(),
+            schema: "skydriver.transfer-telemetry.v1".to_owned(),
             ..phased.clone()
         }));
         assert!(!valid(&TransferTelemetry {

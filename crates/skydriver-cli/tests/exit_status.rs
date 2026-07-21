@@ -17,7 +17,7 @@ fn assert_failure(output: &Output, status: i32, code: &str) {
     assert_eq!(output.status.code(), Some(status));
     assert!(output.stdout.is_empty());
     let error: Value = serde_json::from_slice(&output.stderr).expect("decode CLI error JSON");
-    assert_eq!(error["schema"], "carrack.cli-error.v1");
+    assert_eq!(error["schema"], "skydriver.cli-error.v1");
     assert_eq!(error["code"], code);
     assert_eq!(error["exit_status"], status);
     assert!(

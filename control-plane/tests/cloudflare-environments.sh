@@ -79,17 +79,17 @@ if (
 const expected = {
     dev: {
         worker: "skydriver-control-plane-dev",
-        database: "carrack-index-dev",
-        bucket: "carrack-manifests-dev",
-        payload: "carrack-payload-dev",
+        database: "skydriver-index-dev",
+        bucket: "skydriver-manifests-dev",
+        payload: "skydriver-payload-dev",
         hostname: "dev.skydriver.stormbird.xyz",
         operatorAccount: "draven@skydriver-dev",
     },
     prod: {
         worker: "skydriver-control-plane-prod",
-        database: "carrack-index-prod",
-        bucket: "carrack-manifests-prod",
-        payload: "carrack-payload-prod",
+        database: "skydriver-index-prod",
+        bucket: "skydriver-manifests-prod",
+        payload: "skydriver-payload-prod",
         hostname: "skydriver.stormbird.xyz",
         operatorAccount: "draven@skydriver-prod",
     },

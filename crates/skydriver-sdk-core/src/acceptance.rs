@@ -50,7 +50,7 @@ pub fn wasm_acceptance_proof(payload: &[u8]) -> Result<WasmAcceptanceProof, Erro
     let decoded = open(&encoded, payload.len() as u64, descriptor, &key)?;
     key.zeroize();
     let proof = WasmAcceptanceProof {
-        schema: "carrack.sdk.wasm-acceptance.v1",
+        schema: "skydriver.sdk.wasm-acceptance.v1",
         sdk_version: env!("CARGO_PKG_VERSION"),
         plaintext_bytes: payload.len() as u64,
         plaintext_merkle_root: hex::encode(root),
@@ -73,7 +73,7 @@ mod tests {
         let proof = wasm_acceptance_proof(b"abc").expect("portable proof");
         assert_eq!(
             proof.plaintext_merkle_root,
-            "d60042cf44d28c3a12f278cffde67620f94f1a3e4c82208102da97b96cd5b4d9"
+            "70da4b2a9e3eb3ba0a692191079b5910b200ed938bf49dde2b0336962b584d62"
         );
         assert_eq!(
             proof.decoded_sha256,

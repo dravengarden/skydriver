@@ -4,6 +4,15 @@ set -euo pipefail
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repository_root"
 
+legacy_brand='car''rack'
+if rg --line-number --ignore-case "$legacy_brand" --hidden \
+  --glob '!.git/**' --glob '!target/**' --glob '!node_modules/**' . \
+  || find . -path ./.git -prune -o -path ./target -prune -o \
+    -path '*/node_modules' -prune -o -iname "*$legacy_brand*" -print | grep -q .; then
+  echo "pre-v1 product identities are forbidden in the Skydriver v1 tree" >&2
+  exit 1
+fi
+
 dependency_manifests=(Cargo.toml Cargo.lock go.mod go.sum package.json pnpm-lock.yaml)
 if rg --line-number --ignore-case \
   'github\.com/(OpenListTeam/)?OpenList|api\.oplist\.org|name = "openlist"' \
@@ -50,7 +59,7 @@ if rg --line-number --ignore-case \
 fi
 
 if rg --line-number \
-  'carrack\.vfs\.(file\.(leaf|empty|node|root)|directory\.(file-entry|child-entry|empty|node|root)|block-manifest)\.v1' \
+  'skydriver\.vfs\.(file\.(leaf|empty|node|root)|directory\.(file-entry|child-entry|empty|node|root)|block-manifest)\.v1' \
   crates/skydriver-client/src control-plane/src web/src; then
   echo "portable integrity domains must be implemented only by skydriver-sdk-core" >&2
   exit 1
@@ -70,7 +79,7 @@ if rg --line-number 'sha2|unicode_normalization|canonical_tree|domain_hasher' \
 fi
 
 if rg --line-number \
-  'carrack\.vfs\.file-frame\.v1|carrack\.vfs\.file-key\.v1|encrypt_in_place_detached|decrypt_in_place_detached|Hkdf' \
+  'skydriver\.vfs\.file-frame\.v1|skydriver\.vfs\.file-key\.v1|encrypt_in_place_detached|decrypt_in_place_detached|Hkdf' \
   crates/skydriver-client/src \
   || rg --line-number '^[[:space:]]*(aes-gcm|hkdf)[[:space:]]*=' \
     crates/skydriver-client/Cargo.toml; then
@@ -96,7 +105,7 @@ for core_module in "${core_modules[@]}"; do
   fi
 done
 
-if rg --line-number 'carrack-(sdk-core|client|driver-contract)|reqwest|tokio|rusqlite|fs2|worker' \
+if rg --line-number 'skydriver-(sdk-core|client|driver-contract)|reqwest|tokio|rusqlite|fs2|worker' \
   crates/skydriver-metadata-cache/Cargo.toml crates/skydriver-metadata-cache/src; then
   echo "metadata cache primitive must remain independent of VFS semantics and I/O" >&2
   exit 1
@@ -291,7 +300,7 @@ if find transfer -maxdepth 1 -type f -name '*.go' -print -quit | grep -q .; then
 fi
 
 if rg --line-number \
-  'github\.com/dravengarden/carrack/(archive|cryptostream|manifest|provider|sdk)(/|"|$)' \
+  'github\.com/dravengarden/skydriver/(archive|cryptostream|manifest|provider|sdk)(/|"|$)' \
   --glob '*.go' .; then
   echo "retained Go conformance packages must not import the removed archive stack" >&2
   exit 1

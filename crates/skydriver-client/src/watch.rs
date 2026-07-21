@@ -248,7 +248,7 @@ fn validate_event(
     root_directory_id: &str,
     previous: Option<&CatalogWatchEvent>,
 ) -> Result<(), Error> {
-    if event.schema != "carrack.vfs.catalog-watch.v1"
+    if event.schema != "skydriver.vfs.catalog-watch.v1"
         || event.kind != "catalog_head"
         || event.revision_id == 0
         || event.root_directory_id != root_directory_id
@@ -302,7 +302,7 @@ mod tests {
 
     fn event(revision_id: u64) -> CatalogWatchEvent {
         CatalogWatchEvent {
-            schema: "carrack.vfs.catalog-watch.v1".to_owned(),
+            schema: "skydriver.vfs.catalog-watch.v1".to_owned(),
             kind: "catalog_head".to_owned(),
             filesystem_id: "019f0000000000000000000000000001".to_owned(),
             revision_id,
@@ -408,7 +408,7 @@ mod tests {
         )
         .expect("watch client");
         let session = VfsSession {
-            schema: "carrack.vfs.session.v1".to_owned(),
+            schema: "skydriver.vfs.session.v1".to_owned(),
             token_id: "019f0000000000000000000000000003".to_owned(),
             principal_id: "019f0000000000000000000000000004".to_owned(),
             root_directory_id: "019f0000000000000000000000000002".to_owned(),
@@ -439,7 +439,7 @@ mod tests {
         )
         .expect("watch client");
         let session = VfsSession {
-            schema: "carrack.vfs.session.v1".to_owned(),
+            schema: "skydriver.vfs.session.v1".to_owned(),
             token_id: "019f0000000000000000000000000003".to_owned(),
             principal_id: "019f0000000000000000000000000004".to_owned(),
             root_directory_id: "019f0000000000000000000000000002".to_owned(),

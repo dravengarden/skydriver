@@ -23,14 +23,14 @@ import (
 
 const (
 	// Suite is the first Skydriver VFS complete-file encryption format.
-	Suite = "carrack-vfs-aes256gcm-hkdfsha256-v1"
+	Suite = "skydriver-vfs-aes256gcm-hkdfsha256-v1"
 
 	directoryKeyBytes = 32
 	fileKeyBytes      = 32
 	nonceBytes        = 12
 	frameTagBytes     = uint64(16)
-	fileKeyInfo       = "carrack.vfs.file-key.v1"
-	frameAADDomain    = "carrack.vfs.file-frame.v1"
+	fileKeyInfo       = "skydriver.vfs.file-key.v1"
+	frameAADDomain    = "skydriver.vfs.file-frame.v1"
 )
 
 var (
@@ -41,7 +41,7 @@ var (
 	// ErrInvalidFrame indicates a frame with an impossible ordinal or length.
 	ErrInvalidFrame = errors.New("invalid Skydriver VFS crypto frame")
 	// ErrAuthentication indicates that an encoded frame failed AES-GCM authentication.
-	ErrAuthentication = errors.New("carrack VFS frame authentication failed")
+	ErrAuthentication = errors.New("skydriver VFS frame authentication failed")
 	// ErrStreamLength indicates short or trailing transform input.
 	ErrStreamLength = errors.New("invalid Skydriver VFS crypto stream length")
 )

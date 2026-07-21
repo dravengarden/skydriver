@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-const goldenSchema = "carrack.vfs-merkle.golden.v1"
+const goldenSchema = "skydriver.vfs-merkle.golden.v1"
 
 type goldenVectors struct {
 	Schema      string                  `json:"schema"`

@@ -7,7 +7,7 @@ use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 use crate::{operator_sessions, vfs_identifiers};
 
 const VALIDATION_LIFETIME_SECONDS: u64 = 300;
-const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.quota.v1\0";
+const VALIDATION_DOMAIN: &[u8] = b"skydriver.management.validation.quota.v1\0";
 const MAXIMUM_INTEGER: u64 = 9_007_199_254_740_991;
 type HmacSha256 = Hmac<Sha256>;
 
@@ -111,7 +111,7 @@ pub(crate) async fn validate(
     }
     let expires_at = now() + VALIDATION_LIFETIME_SECONDS;
     json(&ValidationResponse {
-        schema: "carrack.management.quota-validation.v1",
+        schema: "skydriver.management.quota-validation.v1",
         scope: scope.to_owned(),
         resource_id: resource_id.to_owned(),
         current_limits: current.limits(),
@@ -189,7 +189,7 @@ pub(crate) async fn apply(
 
     let operation_id = vfs_identifiers::new_uuid_v7_hex()?;
     let receipt = Receipt {
-        schema: "carrack.management.quota-receipt.v1",
+        schema: "skydriver.management.quota-receipt.v1",
         operation_id: operation_id.clone(),
         scope: scope.to_owned(),
         resource_id: resource_id.to_owned(),

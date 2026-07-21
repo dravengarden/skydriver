@@ -933,7 +933,7 @@ fn receipt_response(receipt: ReceiptRow, expected_digest: Option<&str>) -> Resul
         return Response::error("VFS remove idempotency identity changed", 409);
     }
     let mut response = Response::from_json(&RemoveResponse {
-        schema: "carrack.vfs.remove-receipt.v1",
+        schema: "skydriver.vfs.remove-receipt.v1",
         operation_id: receipt.intent_id,
         filesystem_id: receipt.filesystem_id,
         directory_id: receipt.directory_id,
@@ -959,7 +959,7 @@ fn rename_receipt_response(
         return Response::error("VFS rename idempotency identity changed", 409);
     }
     let mut response = Response::from_json(&RenameResponse {
-        schema: "carrack.vfs.rename-receipt.v1",
+        schema: "skydriver.vfs.rename-receipt.v1",
         operation_id: receipt.intent_id,
         filesystem_id: receipt.filesystem_id,
         source_directory_id: receipt.source_directory_id,

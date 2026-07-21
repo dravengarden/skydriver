@@ -1549,7 +1549,7 @@ mod tests {
     fn assembles_and_rejects_unreachable_catalogs() {
         let root_id = "202122232425262728292a2b2c2d2e2f";
         let child_id = "303132333435363738393a3b3c3d3e3f";
-        let empty_root = "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254";
+        let empty_root = "89bbf5ec77eb8ed59a0ff9cf3a444ca00d8af51227995620a3cf7c2d380df2f0";
         let child_root: [u8; 32] = hex::decode(empty_root)
             .expect("empty root hex")
             .try_into()

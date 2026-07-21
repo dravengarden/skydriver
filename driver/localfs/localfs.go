@@ -34,7 +34,7 @@ const (
 	temporaryAttempts    = 8
 	randomIdentityBytes  = 16
 
-	internalRoot       = ".carrack"
+	internalRoot       = ".skydriver"
 	uploadsRoot        = internalRoot + "/uploads"
 	completedRoot      = internalRoot + "/completed"
 	sessionRecordName  = "session.json"
@@ -43,9 +43,9 @@ const (
 	recordVersion      = uint32(1)
 	maximumRecordBytes = int64(16 << 10)
 
-	uploadTemporaryPrefix = ".carrack-upload-"
-	deleteTemporaryPrefix = ".carrack-delete-"
-	partTemporaryPrefix   = ".carrack-part-"
+	uploadTemporaryPrefix = ".skydriver-upload-"
+	deleteTemporaryPrefix = ".skydriver-delete-"
+	partTemporaryPrefix   = ".skydriver-part-"
 )
 
 var (
@@ -59,18 +59,18 @@ var (
 	ErrInvalidRange = errors.New("invalid Skydriver V2 local filesystem range")
 	// ErrIntegrity indicates bytes or immutable identity differ from a declared
 	// SHA-256 digest, length, or provider version.
-	ErrIntegrity = errors.New("carrack V2 local filesystem integrity mismatch")
+	ErrIntegrity = errors.New("skydriver V2 local filesystem integrity mismatch")
 	// ErrInvalidUpload indicates a malformed or contradictory upload request.
 	ErrInvalidUpload = errors.New("invalid Skydriver V2 local filesystem upload")
 	// ErrUploadNotFound indicates that no active or completed durable session has
 	// the supplied opaque session identity.
-	ErrUploadNotFound = errors.New("carrack V2 local filesystem upload not found")
+	ErrUploadNotFound = errors.New("skydriver V2 local filesystem upload not found")
 	// ErrUploadSealed indicates that completion or abort has made a session
 	// immutable; callers must recover completion or begin another session.
-	ErrUploadSealed = errors.New("carrack V2 local filesystem upload is sealed")
+	ErrUploadSealed = errors.New("skydriver V2 local filesystem upload is sealed")
 	// ErrUploadCompleted indicates that ListParts was called after the final
 	// object had already been published. CompleteUpload remains replayable.
-	ErrUploadCompleted = errors.New("carrack V2 local filesystem upload is complete")
+	ErrUploadCompleted = errors.New("skydriver V2 local filesystem upload is complete")
 
 	errInventoryPageFull = errors.New("local filesystem inventory page is full")
 )

@@ -192,7 +192,7 @@ root-folder, and upload-part fields; its write-only refresh authorization is
 sealed with AES-256-GCM and is never returned. The control plane exchanges and
 renews access tokens with fenced CAS updates. `r2/v1` accepts an exact
 `{endpoint,bucket,prefix,managed}` configuration. Managed instances are bound
-to the current environment's `carrack-payload-dev` or `carrack-payload-prod`
+to the current environment's `skydriver-payload-dev` or `skydriver-payload-prod`
 bucket; external instances may use another Cloudflare R2 bucket. Its write-only
 credential is `{access_key_id,secret_access_key}`. For `r2-default`, only the
 environment provisioner may submit that object; ordinary UI and agent flows may
@@ -214,7 +214,7 @@ revision, transport, or receipt mismatch as failure. It verifies every
 response schema, identity, revision, validation digest, and receipt before
 reporting success. Configuration mutations also re-read the redacted effective
 snapshot and require it to match the receipt before printing success. Every
-failure writes exactly one `carrack.cli-error.v1` JSON object to stderr. Its
+failure writes exactly one `skydriver.cli-error.v1` JSON object to stderr. Its
 string `code` and numeric `exit_status` carry the same stable classification:
 
 | Exit status | Code | Agent action |

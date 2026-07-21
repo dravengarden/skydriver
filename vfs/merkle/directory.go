@@ -11,12 +11,12 @@ import (
 )
 
 const (
-	directoryFileEntryDomain  = "carrack.vfs.directory.file-entry.v1"
-	directoryChildEntryDomain = "carrack.vfs.directory.child-entry.v1"
-	directoryEmptyDomain      = "carrack.vfs.directory.empty.v1"
-	directoryNodeDomain       = "carrack.vfs.directory.node.v1"
-	directoryRootDomain       = "carrack.vfs.directory.root.v1"
-	emptyMetadataDomain       = "carrack.vfs.metadata.empty.v1"
+	directoryFileEntryDomain  = "skydriver.vfs.directory.file-entry.v1"
+	directoryChildEntryDomain = "skydriver.vfs.directory.child-entry.v1"
+	directoryEmptyDomain      = "skydriver.vfs.directory.empty.v1"
+	directoryNodeDomain       = "skydriver.vfs.directory.node.v1"
+	directoryRootDomain       = "skydriver.vfs.directory.root.v1"
+	emptyMetadataDomain       = "skydriver.vfs.metadata.empty.v1"
 
 	// MaximumNameBytes keeps one canonical component portable across ordinary
 	// local filesystems. It counts normalized UTF-8 bytes, not code points.

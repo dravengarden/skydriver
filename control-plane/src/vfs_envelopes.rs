@@ -8,7 +8,7 @@ use sha2::Sha256;
 use worker::{Env, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
 
-pub(crate) const ENCRYPTED_SUITE: &str = "carrack-vfs-aes256gcm-hkdfsha256-v1";
+pub(crate) const ENCRYPTED_SUITE: &str = "skydriver-vfs-aes256gcm-hkdfsha256-v1";
 pub(crate) const PLAINTEXT_SUITE: &str = "plaintext/v1";
 pub(crate) const ENVELOPE_ALGORITHM: &str = "aes-256-gcm/v1";
 pub(crate) const MASTER_KEY_VERSION: &str = "v1";
@@ -17,10 +17,10 @@ const MASTER_KEY_BYTES: usize = 32;
 const DIRECTORY_KEY_BYTES: usize = 32;
 const NONCE_BYTES: usize = 12;
 const MAXIMUM_CREDENTIAL_BYTES: usize = 64 << 10;
-const DIRECTORY_AAD_DOMAIN: &str = "carrack.vfs.directory-key-envelope.v1";
-const CREDENTIAL_AAD_DOMAIN: &str = "carrack.vfs.driver-credential-envelope.v1";
-const BOOTSTRAP_TOKEN_INFO: &str = "carrack.vfs.bootstrap-token.v1";
-const CHILD_TOKEN_INFO: &str = "carrack.vfs.child-token.v1";
+const DIRECTORY_AAD_DOMAIN: &str = "skydriver.vfs.directory-key-envelope.v1";
+const CREDENTIAL_AAD_DOMAIN: &str = "skydriver.vfs.driver-credential-envelope.v1";
+const BOOTSTRAP_TOKEN_INFO: &str = "skydriver.vfs.bootstrap-token.v1";
+const CHILD_TOKEN_INFO: &str = "skydriver.vfs.child-token.v1";
 
 pub(crate) struct SealedEnvelope {
     pub(crate) nonce: Vec<u8>,

@@ -52,12 +52,12 @@ root=32000000000000000000000000000001
 directory=32000000000000000000000000000002
 token_id_1=42000000000000000000000000000001
 token_id_2=42000000000000000000000000000002
-empty_directory_root=9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254
-root_before=b5a22ea56c8f95ef505f5f0473a5bb1ca98f1267f438ac8a220b459a15b24d8e
-file_root=d60042cf44d28c3a12f278cffde67620f94f1a3e4c82208102da97b96cd5b4d9
-metadata_root=7f8375a6dbb0bbb8aa2a4c5893444ec014588c02e59841088b1064646663bfc7
-manifest_hex=6361727261636b2e7666732e626c6f636b2d6d616e69666573742e76310000000000000000030000000000000004000000000000000162bedb441eb622eb0eeeefe5b0f69fbe3650d5f441d9341e5d52699f4d05b6c8d60042cf44d28c3a12f278cffde67620f94f1a3e4c82208102da97b96cd5b4d9
-manifest_sha=ed1c547d98c2889e33ce3bc6effc09f93db562dbb3e4faaed3b7df50fb967f34
+empty_directory_root=89bbf5ec77eb8ed59a0ff9cf3a444ca00d8af51227995620a3cf7c2d380df2f0
+root_before=8edbc88bb44d5a7c1dc7924837fb6c180615a9c3db3ea865440289a786c41542
+file_root=70da4b2a9e3eb3ba0a692191079b5910b200ed938bf49dde2b0336962b584d62
+metadata_root=b89f2c1743553b009f2f40adbe25c1db6c3a6e6b6e36d1390585207a2984db37
+manifest_hex=736b796472697665722e7666732e626c6f636b2d6d616e69666573742e7631000000000000000003000000000000000400000000000000011f8ae35566d28c81caf8b89bbc2fb465aa3aef9280ad6364340d11a06bfd5a8a70da4b2a9e3eb3ba0a692191079b5910b200ed938bf49dde2b0336962b584d62
+manifest_sha=28016b720bc5410d0b17b13b7431b787087e620cd265e09495869b8cfdaabd1b
 manifest_bytes=$((${#manifest_hex} / 2))
 printf '%s' "$manifest_hex" | xxd -r -p >"$state_directory/block-manifest.bin"
 
@@ -168,10 +168,10 @@ fi
 
 wasm_sdk_proof=$(command curl --silent --show-error --fail-with-body \
   "http://127.0.0.1:$port/api/acceptance/wasm-sdk")
-[[ "$(jq -r '.schema' <<<"$wasm_sdk_proof")" == carrack.sdk.wasm-acceptance.v1 ]]
+[[ "$(jq -r '.schema' <<<"$wasm_sdk_proof")" == skydriver.sdk.wasm-acceptance.v1 ]]
 [[ "$(jq -r '.sdk_version' <<<"$wasm_sdk_proof")" == 0.3.6 ]]
 [[ "$(jq -r '.plaintext_merkle_root' <<<"$wasm_sdk_proof")" == \
-  d60042cf44d28c3a12f278cffde67620f94f1a3e4c82208102da97b96cd5b4d9 ]]
+  70da4b2a9e3eb3ba0a692191079b5910b200ed938bf49dde2b0336962b584d62 ]]
 [[ "$(jq -r '.decoded_sha256' <<<"$wasm_sdk_proof")" == \
   ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad ]]
 [[ "$(jq -r '.round_trip_verified' <<<"$wasm_sdk_proof")" == true ]]
@@ -183,7 +183,7 @@ json='Content-Type: application/json'
 
 compatibility=$(command curl --silent --show-error --fail-with-body \
   "$base_url/api/compatibility")
-[[ "$(jq -r '.schema' <<<"$compatibility")" == carrack.protocol-compatibility.v1 ]]
+[[ "$(jq -r '.schema' <<<"$compatibility")" == skydriver.protocol-compatibility.v1 ]]
 [[ "$(jq -r '.protocol_epoch' <<<"$compatibility")" == 2 ]]
 [[ "$(jq -r '.minimum_sdk_version' <<<"$compatibility")" == 0.3.0 ]]
 
@@ -192,7 +192,7 @@ missing_compatibility=$(command curl --silent --show-error \
   --request POST "$base_url/api/v2/puts/prepare")
 [[ "$missing_compatibility" == 426 ]]
 jq -e '
-  .schema == "carrack.protocol-error.v1" and
+  .schema == "skydriver.protocol-error.v1" and
   .code == "sdk_upgrade_required" and
   .protocol_epoch == 2 and
   .minimum_sdk_version == "0.3.0"
@@ -237,7 +237,7 @@ unauthenticated_status=$(curl --silent --output /dev/null --write-out '%{http_co
 prepared=$(curl --silent --show-error --fail-with-body \
   -H "$authorization_1" -H "$json" --data "$prepare_request" \
   "$base_url/api/v2/puts/prepare")
-[[ "$(jq -r '.schema' <<<"$prepared")" == carrack.vfs.put-preparation.v1 ]]
+[[ "$(jq -r '.schema' <<<"$prepared")" == skydriver.vfs.put-preparation.v1 ]]
 [[ "$(jq -r '.state' <<<"$prepared")" == prepared ]]
 [[ "$(jq -r '.driver_id' <<<"$prepared")" == vfs-worker-driver ]]
 [[ "$(jq -r '.storage_key' <<<"$prepared")" != *asset* ]]
@@ -265,7 +265,7 @@ staged=$(curl --silent --show-error --fail-with-body \
   -H "$authorization_1" -H 'Content-Type: application/octet-stream' \
   --data-binary "@$state_directory/block-manifest.bin" \
   "$base_url/api/v2/puts/$intent_id/block-manifest")
-[[ "$(jq -r '.schema' <<<"$staged")" == carrack.vfs.block-manifest-stage.v1 ]]
+[[ "$(jq -r '.schema' <<<"$staged")" == skydriver.vfs.block-manifest-stage.v1 ]]
 [[ "$(jq -r '.sha256' <<<"$staged")" == "$manifest_sha" ]]
 r2_version=$(jq -r '.r2_version' <<<"$staged")
 
@@ -284,7 +284,7 @@ commit_request=$(jq -cn \
 committed=$(curl --silent --show-error --fail-with-body \
   -H "$authorization_2" -H "$json" --data "$commit_request" \
   "$base_url/api/v2/puts/$intent_id/commit")
-[[ "$(jq -r '.schema' <<<"$committed")" == carrack.vfs.put-receipt.v1 ]]
+[[ "$(jq -r '.schema' <<<"$committed")" == skydriver.vfs.put-receipt.v1 ]]
 [[ "$(jq -r '.state' <<<"$committed")" == committed ]]
 [[ "$(jq -r '.file_id' <<<"$committed")" == "$file_id" ]]
 [[ "$(jq -r '.version_id' <<<"$committed")" == "$version_id" ]]
@@ -508,14 +508,14 @@ claimed=$(curl --silent --show-error --fail-with-body \
   "$base_url/api/v2/put-deletes/claim")
 [[ "$(jq -r '.state' <<<"$claimed")" == claimed ]]
 [[ "$(jq -r '.task.task_id' <<<"$claimed")" == "$race_intent_b" ]]
-[[ "$(jq -r '.task.schema' <<<"$claimed")" == carrack.vfs.put-delete-task.v1 ]]
+[[ "$(jq -r '.task.schema' <<<"$claimed")" == skydriver.vfs.put-delete-task.v1 ]]
 claim_incarnation=$(jq -r '.task.incarnation' <<<"$claimed")
 claim_fence=$(jq -r '.task.fencing_token' <<<"$claimed")
 
 driver_grant=$(curl --silent --show-error --fail-with-body \
   -H "$authorization_2" -H "$json" --data '{}' \
   "$base_url/api/v2/put-deletes/$race_intent_b/driver-grant")
-[[ "$(jq -r '.schema' <<<"$driver_grant")" == carrack.vfs.put-delete-driver-grant.v1 ]]
+[[ "$(jq -r '.schema' <<<"$driver_grant")" == skydriver.vfs.put-delete-driver-grant.v1 ]]
 [[ "$(jq -r '.task_id' <<<"$driver_grant")" == "$race_intent_b" ]]
 [[ "$(jq -r '.driver_revision' <<<"$driver_grant")" == 1 ]]
 

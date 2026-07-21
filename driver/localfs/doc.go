@@ -2,7 +2,7 @@
 // rooted local filesystem.
 //
 // Every published StorageKey names one complete regular file. Resumable upload
-// parts live only below the reserved .carrack directory and are assembled into
+// parts live only below the reserved .skydriver directory and are assembled into
 // one complete file before publication. They are never inventory objects and
 // never become independently addressable VFS data.
 //

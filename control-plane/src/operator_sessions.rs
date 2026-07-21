@@ -9,14 +9,14 @@ use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 const ADMIN_TOKEN_BINDING: &str = "SKYDRIVER_ADMIN_TOKEN";
 const OPERATOR_ACCOUNT_BINDING: &str = "SKYDRIVER_OPERATOR_ACCOUNT";
 const DATABASE_BINDING: &str = "SKYDRIVER_INDEX";
-const SESSION_COOKIE: &str = "carrack_session";
+const SESSION_COOKIE: &str = "skydriver_session";
 const SESSION_LIFETIME_SECONDS: u64 = 12 * 60 * 60;
-const CONFIGURATION_SESSION_COOKIE: &str = "carrack_configuration";
+const CONFIGURATION_SESSION_COOKIE: &str = "skydriver_configuration";
 const CONFIGURATION_SESSION_LIFETIME_SECONDS: u64 = 15 * 60;
 const MAXIMUM_CREDENTIAL_BYTES: usize = 1_024;
 const TOKEN_BYTES: usize = 32;
-const ADMIN_TOKEN_COMPARISON_DOMAIN: &[u8] = b"carrack.operator-credential.v1\0";
-const RATE_LIMIT_COMPARISON_DOMAIN: &[u8] = b"carrack.operator-rate-limit.v1\0";
+const ADMIN_TOKEN_COMPARISON_DOMAIN: &[u8] = b"skydriver.operator-credential.v1\0";
+const RATE_LIMIT_COMPARISON_DOMAIN: &[u8] = b"skydriver.operator-rate-limit.v1\0";
 const RATE_LIMIT_WINDOW_SECONDS: u64 = 15 * 60;
 const LOGIN_IP_MAXIMUM_FAILURES: u64 = 20;
 const LOGIN_IP_BLOCK_SECONDS: u64 = 15 * 60;
@@ -588,7 +588,7 @@ mod tests {
         assert!(!canonical_account("Draven"));
         assert!(!canonical_account("-operator"));
         assert!(!canonical_account("draven@@skydriver-dev"));
-        assert!(!canonical_account("draven@-carrack-dev"));
+        assert!(!canonical_account("draven@-skydriver-dev"));
     }
 
     #[test]
@@ -616,7 +616,10 @@ mod tests {
     #[test]
     fn validates_session_cookie_and_verifier() {
         assert_eq!(
-            cookie_value("theme=dark; carrack_session=token; x=1", "carrack_session"),
+            cookie_value(
+                "theme=dark; skydriver_session=token; x=1",
+                "skydriver_session"
+            ),
             Some("token")
         );
         assert_eq!(token_verifier(TOKEN).as_deref().map(str::len), Some(64));

@@ -96,7 +96,7 @@ pub(crate) async fn snapshot(request: Request, env: &Env) -> Result<Response> {
         .await?
         .results::<InventoryStatus>()?;
     no_store_json(&InventorySnapshot {
-        schema: "carrack.management.provider-inventory.v1",
+        schema: "skydriver.management.provider-inventory.v1",
         observed_at: now_seconds(),
         drivers,
     })

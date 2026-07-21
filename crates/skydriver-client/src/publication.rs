@@ -84,7 +84,7 @@ impl VerifiedPublication {
             getrandom::fill(&mut nonce).map_err(|error| {
                 Error::InvalidResponse(format!("generate publication identity: {error}"))
             })?;
-            let name = format!(".carrack-publish-{}", hex::encode(nonce));
+            let name = format!(".skydriver-publish-{}", hex::encode(nonce));
             match link_open_file(&self.file, &directory, OsStr::new(&name)) {
                 Ok(()) => break name,
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}

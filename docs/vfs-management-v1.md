@@ -76,14 +76,14 @@ receipt; reuse with a different canonical request returns `409`.
 
 | Method and route | Required action | Concurrency input | Result schema |
 |---|---|---|---|
-| `GET /api/v2/directories/:id/entries` | `directory.list` | Opaque cursor pins directory revision | `carrack.vfs.directory-list.v1` |
-| `POST /api/v2/directories/:id/children` | `content.write` | Idempotent exact create | `carrack.vfs.directory-create-receipt.v1` |
-| `POST /api/v2/tokens` | `token.issue` | Idempotent attenuation | `carrack.vfs.token-issue-receipt.v1` |
-| `POST /api/v2/tokens/:id/revoke` | `token.issue` | Idempotent monotonic revoke | `carrack.vfs.token-revoke-receipt.v1` |
-| `GET /api/v2/directories/:id/acl` | `acl.manage` | Returns `acl_revision` | `carrack.vfs.acl.v1` |
-| `POST /api/v2/directories/:id/acl/replace` | `acl.manage` | Exact `expected_acl_revision` | `carrack.vfs.policy-mutation-receipt.v1` |
-| `GET /api/v2/directories/:id/placements` | Unscoped `driver.manage` | Returns `placement_revision` | `carrack.vfs.placements.v1` |
-| `POST /api/v2/directories/:id/placements/replace` | Unscoped `driver.manage` | Exact `expected_placement_revision` | `carrack.vfs.policy-mutation-receipt.v1` |
+| `GET /api/v2/directories/:id/entries` | `directory.list` | Opaque cursor pins directory revision | `skydriver.vfs.directory-list.v1` |
+| `POST /api/v2/directories/:id/children` | `content.write` | Idempotent exact create | `skydriver.vfs.directory-create-receipt.v1` |
+| `POST /api/v2/tokens` | `token.issue` | Idempotent attenuation | `skydriver.vfs.token-issue-receipt.v1` |
+| `POST /api/v2/tokens/:id/revoke` | `token.issue` | Idempotent monotonic revoke | `skydriver.vfs.token-revoke-receipt.v1` |
+| `GET /api/v2/directories/:id/acl` | `acl.manage` | Returns `acl_revision` | `skydriver.vfs.acl.v1` |
+| `POST /api/v2/directories/:id/acl/replace` | `acl.manage` | Exact `expected_acl_revision` | `skydriver.vfs.policy-mutation-receipt.v1` |
+| `GET /api/v2/directories/:id/placements` | Unscoped `driver.manage` | Returns `placement_revision` | `skydriver.vfs.placements.v1` |
+| `POST /api/v2/directories/:id/placements/replace` | Unscoped `driver.manage` | Exact `expected_placement_revision` | `skydriver.vfs.policy-mutation-receipt.v1` |
 
 Actions are exact and non-implying. Administrative actions do not imply
 `content.read`, and content actions do not imply management authority.
@@ -138,7 +138,7 @@ and must not be used to infer that a directory is complete.
 ```json
 {
   "name": "releases",
-  "crypto_suite": "carrack-vfs-aes256gcm-hkdfsha256-v1",
+  "crypto_suite": "skydriver-vfs-aes256gcm-hkdfsha256-v1",
   "idempotency_key": "mkdir-releases-v1"
 }
 ```

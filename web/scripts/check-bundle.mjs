@@ -41,7 +41,7 @@ for (const surface of lazySurfaces) {
 
 console.log(
     JSON.stringify({
-        schema: "carrack.web-bundle-budget.v1",
+        schema: "skydriver.web-bundle-budget.v1",
         static_javascript_bytes: staticBytes,
         maximum_static_javascript_bytes: maximumStaticBytes,
         lazy_surfaces: lazySurfaces,

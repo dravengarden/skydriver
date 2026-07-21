@@ -16,7 +16,7 @@ const MAXIMUM_NAME_BYTES: usize = 255;
 const MAXIMUM_IDEMPOTENCY_BYTES: usize = 256;
 const MAXIMUM_DRIVER_ID_BYTES: usize = 256;
 const MAXIMUM_D1_REVISION: u64 = 9_223_372_036_854_775_807;
-const PUT_PREPARATION_SCHEMA: &str = "carrack.vfs.put-preparation.v1";
+const PUT_PREPARATION_SCHEMA: &str = "skydriver.vfs.put-preparation.v1";
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -244,7 +244,7 @@ async fn authorize_context(
              JOIN vfs_principals AS principal ON principal.id = verifier.principal_id
              WHERE directory.id = ?1
                AND directory.state = 'active'
-               AND directory.crypto_suite IN ('plaintext/v1', 'carrack-vfs-aes256gcm-hkdfsha256-v1')
+               AND directory.crypto_suite IN ('plaintext/v1', 'skydriver-vfs-aes256gcm-hkdfsha256-v1')
                AND placement.state = 'active'
                AND driver.enabled = 1
                AND verifier.principal_id = ?3
@@ -552,7 +552,7 @@ fn expected_block_count(size_bytes: u64, block_bytes: u64) -> u64 {
 fn request_identity(request: &PrepareRequest) -> Result<String> {
     let encoded = serde_json::to_vec(request)?;
     let mut hasher = Sha256::new();
-    hasher.update(b"carrack.vfs.put.prepare.v1\0");
+    hasher.update(b"skydriver.vfs.put.prepare.v1\0");
     hasher.update(encoded);
     lowercase_hex(&hasher.finalize())
 }

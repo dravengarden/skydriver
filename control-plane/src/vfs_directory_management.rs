@@ -20,7 +20,7 @@ use crate::{
     vfs_tokens::AuthenticatedVfsToken,
 };
 
-const DIRECTORY_CREATE_SCHEMA: &str = "carrack.vfs.directory-create-receipt.v1";
+const DIRECTORY_CREATE_SCHEMA: &str = "skydriver.vfs.directory-create-receipt.v1";
 const MAXIMUM_REBASE_ATTEMPTS: usize = 4;
 const MAXIMUM_NAME_BYTES: usize = 255;
 const MAXIMUM_IDEMPOTENCY_BYTES: usize = 256;
@@ -651,7 +651,7 @@ fn valid_string(value: &str, maximum_bytes: usize) -> bool {
 fn request_identity(identity: &CreateDirectoryIdentity<'_>) -> Result<[u8; 32]> {
     let encoded = serde_json::to_vec(identity)?;
     let mut hasher = Sha256::new();
-    hasher.update(b"carrack.vfs.directory-create.v1\0");
+    hasher.update(b"skydriver.vfs.directory-create.v1\0");
     hasher.update(encoded);
     Ok(hasher.finalize().into())
 }

@@ -10,8 +10,8 @@ use zeroize::Zeroizing;
 
 use crate::error::Error;
 
-const FILE_KEY_INFO: &[u8] = b"carrack.vfs.file-key.v1";
-const FRAME_AAD_DOMAIN: &[u8] = b"carrack.vfs.file-frame.v1\0";
+const FILE_KEY_INFO: &[u8] = b"skydriver.vfs.file-key.v1";
+const FRAME_AAD_DOMAIN: &[u8] = b"skydriver.vfs.file-frame.v1\0";
 
 /// Descriptor for one immutable encrypted file version.
 #[derive(Clone, Copy, Debug)]

@@ -154,7 +154,7 @@ mod tests {
             aliyun,
             false
         ));
-        let local = r#"{"root":"/srv/carrack"}"#;
+        let local = r#"{"root":"/srv/skydriver"}"#;
         assert!(valid_stored(
             DriverKind::LocalFilesystemV2.as_str(),
             local,

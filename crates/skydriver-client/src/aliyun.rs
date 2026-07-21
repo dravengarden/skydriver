@@ -672,7 +672,7 @@ fn create_download_staging_file(staging_root: &Path) -> Result<(PathBuf, std::fs
             Error::InvalidResponse(format!("generate Aliyun staging identity: {error}"))
         })?;
         let temporary =
-            staging_root.join(format!(".carrack-aliyun-readback-{}", hex::encode(nonce)));
+            staging_root.join(format!(".skydriver-aliyun-readback-{}", hex::encode(nonce)));
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -751,7 +751,7 @@ mod tests {
     use super::{FileRecord, create_download_staging_file, download, provider_status, upload};
 
     #[test]
-    fn download_staging_identity_is_carrack_owned() {
+    fn download_staging_identity_is_skydriver_owned() {
         let staging = tempfile::tempdir().expect("temporary staging");
         let (path, file) =
             create_download_staging_file(staging.path()).expect("create staging file");
@@ -761,7 +761,7 @@ mod tests {
         assert!(
             path.file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(".carrack-aliyun-readback-"))
+                .is_some_and(|name| name.starts_with(".skydriver-aliyun-readback-"))
         );
         assert!(path.is_file());
     }

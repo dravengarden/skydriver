@@ -254,7 +254,7 @@ pub(crate) async fn plan(
         .run()
         .await?;
     let mut response = Response::from_json(&DownloadResponse {
-        schema: "carrack.vfs.download-plan.v1",
+        schema: "skydriver.vfs.download-plan.v1",
         filesystem_id: row.filesystem_id,
         directory_id: row.directory_id,
         file_id: row.file_id,
@@ -363,7 +363,7 @@ pub(crate) async fn complete(
         );
     }
     Response::from_json(&serde_json::json!({
-        "schema": "carrack.vfs.read-lease-completion.v1",
+        "schema": "skydriver.vfs.read-lease-completion.v1",
         "read_lease_id": lease_id,
         "completed_at": now,
     }))
@@ -397,7 +397,7 @@ pub(crate) async fn complete_batch(
     let Ok(requested) = serde_json::from_slice::<CompletionBatchRequest>(&encoded) else {
         return Response::error("invalid read-lease completion batch", 400);
     };
-    if requested.schema != "carrack.vfs.read-lease-completion-batch.v1"
+    if requested.schema != "skydriver.vfs.read-lease-completion-batch.v1"
         || requested.completions.is_empty()
         || requested.completions.len() > MAXIMUM_COMPLETION_BATCH_ITEMS
         || requested
@@ -490,7 +490,7 @@ pub(crate) async fn complete_batch(
         );
     }
     Response::from_json(&CompletionBatchResponse {
-        schema: "carrack.vfs.read-lease-completion-batch.v1",
+        schema: "skydriver.vfs.read-lease-completion-batch.v1",
         completed_at: now,
         results: requested
             .completions

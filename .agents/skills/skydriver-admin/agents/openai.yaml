@@ -1,4 +1,4 @@
 interface:
-  display_name: "Carrack Admin"
-  short_description: "Safely inspect and configure Carrack"
-  default_prompt: "Use $carrack-admin to inspect Carrack and apply a validated management change."
+  display_name: "Skydriver Admin"
+  short_description: "Safely inspect and configure Skydriver"
+  default_prompt: "Use $skydriver-admin to inspect Skydriver and apply a validated management change."

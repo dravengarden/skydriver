@@ -24,7 +24,7 @@ var (
 	// ErrInvalidDirectory indicates a contradictory or non-canonical directory.
 	ErrInvalidDirectory = errors.New("invalid Skydriver VFS V2 directory tree")
 	// ErrIntegrity indicates bytes that disagree with declared length or root.
-	ErrIntegrity = errors.New("carrack VFS V2 Merkle integrity mismatch")
+	ErrIntegrity = errors.New("skydriver VFS V2 Merkle integrity mismatch")
 )
 
 // Digest is one raw SHA-256 value. String and text encoding use exactly 64

@@ -590,7 +590,7 @@ pub(crate) async fn snapshot(request: &Request, env: &Env) -> Result<Response> {
         .map_or(0, |row| row.event_cursor);
 
     no_store_json(&SnapshotResponse {
-        schema: "carrack.management.snapshot.v2",
+        schema: "skydriver.management.snapshot.v2",
         observed_at: now_seconds(),
         event_cursor: cursor,
         drivers,
@@ -654,7 +654,7 @@ pub(crate) async fn token_options(request: &Request, env: &Env) -> Result<Respon
         |token| (token.label.clone(), token.id.clone()),
     );
     no_store_json(&TokenOptionPageResponse {
-        schema: "carrack.management.token-options.v1",
+        schema: "skydriver.management.token-options.v1",
         observed_at: now_seconds(),
         query: options.query,
         next_after_label,
@@ -725,7 +725,7 @@ pub(crate) async fn directory_options(request: &Request, env: &Env) -> Result<Re
         |directory| (directory.name.clone(), directory.id.clone()),
     );
     no_store_json(&DirectoryOptionPageResponse {
-        schema: "carrack.management.directory-options.v1",
+        schema: "skydriver.management.directory-options.v1",
         observed_at: now_seconds(),
         query: options.query,
         next_after_name,
@@ -746,7 +746,7 @@ pub(crate) async fn event_cursor(request: &Request, env: &Env) -> Result<Respons
         .await?
         .map_or(0, |row| row.event_cursor);
     no_store_json(&CursorResponse {
-        schema: "carrack.management.event-cursor.v1",
+        schema: "skydriver.management.event-cursor.v1",
         observed_at: now_seconds(),
         event_cursor: cursor,
     })
@@ -799,7 +799,7 @@ pub(crate) async fn events(request: &Request, env: &Env) -> Result<Response> {
     let events = rows.into_iter().map(event_view).collect();
 
     no_store_json(&EventPageResponse {
-        schema: "carrack.management.events.v1",
+        schema: "skydriver.management.events.v1",
         observed_at: now_seconds(),
         after,
         event_cursor,
@@ -849,7 +849,7 @@ pub(crate) async fn recent_events(request: &Request, env: &Env) -> Result<Respon
     rows.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
     let next_before = rows.last().map_or(before, |row| row.id);
     no_store_json(&RecentEventPageResponse {
-        schema: "carrack.management.recent-events.v1",
+        schema: "skydriver.management.recent-events.v1",
         observed_at: now_seconds(),
         before,
         event_cursor,
@@ -1039,7 +1039,7 @@ pub(crate) async fn activity(request: &Request, env: &Env) -> Result<Response> {
         .collect();
 
     no_store_json(&ActivityResponse {
-        schema: "carrack.management.activity.v2",
+        schema: "skydriver.management.activity.v2",
         observed_at: now,
         offset,
         limit,
@@ -1206,7 +1206,7 @@ pub(crate) async fn directory(
     }
 
     no_store_json(&DirectoryResponse {
-        schema: "carrack.management.directory.v1",
+        schema: "skydriver.management.directory.v1",
         observed_at: now_seconds(),
         directory: DirectoryView {
             id: row.id,
@@ -1319,7 +1319,7 @@ pub(crate) async fn directory_entries(
         |entry| (entry.kind.clone(), entry.name.clone()),
     );
     no_store_json(&DirectoryEntryPageResponse {
-        schema: "carrack.management.directory-entry-page.v1",
+        schema: "skydriver.management.directory-entry-page.v1",
         observed_at: now_seconds(),
         directory_id: directory_id.to_owned(),
         directory_revision: options.revision,
@@ -1750,13 +1750,13 @@ mod tests {
     #[test]
     fn redacts_secret_shaped_driver_configuration() {
         let mut value = json!({
-            "root": "/srv/carrack",
+            "root": "/srv/skydriver",
             "nested": { "access_key": "secret", "bucket": "archive" },
             "client-secret": "secret"
         });
         redact_value(&mut value);
 
-        assert_eq!(value["root"], "/srv/carrack");
+        assert_eq!(value["root"], "/srv/skydriver");
         assert_eq!(value["nested"]["bucket"], "archive");
         assert_eq!(value["nested"]["access_key"], "[redacted]");
         assert_eq!(value["client-secret"], "[redacted]");

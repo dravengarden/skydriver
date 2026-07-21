@@ -23,7 +23,7 @@ use crate::{
 const TOKEN_BYTES: usize = 32;
 const DEFAULT_DIRECTORY_PAGE_SIZE: usize = 200;
 const MAXIMUM_DIRECTORY_PAGE_SIZE: u32 = 1_000;
-const ENCRYPTED_SUITE: &str = "carrack-vfs-aes256gcm-hkdfsha256-v1";
+const ENCRYPTED_SUITE: &str = "skydriver-vfs-aes256gcm-hkdfsha256-v1";
 const PLAINTEXT_SUITE: &str = "plaintext/v1";
 const MAXIMUM_IDEMPOTENCY_BYTES: usize = 256;
 const MAXIMUM_DRIVER_ID_BYTES: usize = 256;
@@ -532,7 +532,7 @@ impl VfsClient {
                 "catalog checkpoint transport receipt differs".to_owned(),
             ));
         }
-        if content_type == "application/vnd.carrack.catalog-delta+json" {
+        if content_type == "application/vnd.skydriver.catalog-delta+json" {
             if response.body.len() > MAXIMUM_CATALOG_DELTA_BYTES {
                 return Err(Error::InvalidResponse(
                     "catalog delta exceeds its transport bound".to_owned(),
@@ -1375,7 +1375,7 @@ fn validate_remove_receipt(
     validate_nonzero_hex::<16>(&receipt.operation_id, "VFS remove operation identity")?;
     validate_nonzero_hex::<16>(&receipt.filesystem_id, "VFS remove filesystem identity")?;
     validate_nonzero_hex::<16>(&receipt.subject_id, "VFS removed subject identity")?;
-    if receipt.schema != "carrack.vfs.remove-receipt.v1"
+    if receipt.schema != "skydriver.vfs.remove-receipt.v1"
         || receipt.directory_id != parent_id
         || receipt.name != name
         || expected_kind.is_some_and(|kind| receipt.kind != kind)
@@ -1407,7 +1407,7 @@ fn validate_rename_receipt(
     validate_nonzero_hex::<16>(&receipt.operation_id, "VFS rename operation identity")?;
     validate_nonzero_hex::<16>(&receipt.filesystem_id, "VFS rename filesystem identity")?;
     validate_nonzero_hex::<16>(&receipt.subject_id, "VFS renamed subject identity")?;
-    if receipt.schema != "carrack.vfs.rename-receipt.v1"
+    if receipt.schema != "skydriver.vfs.rename-receipt.v1"
         || receipt.source_directory_id != source_directory_id
         || receipt.source_name != source_name
         || receipt.destination_directory_id != destination_directory_id
@@ -1489,7 +1489,7 @@ fn validate_directory_creation(
     validate_nonzero_hex::<16>(&receipt.directory_id, "VFS created directory identity")?;
     let empty_root = skydriver_sdk_core::directory_merkle_root(&[])
         .map_err(|error| Error::InvalidResponse(error.to_string()))?;
-    if receipt.schema != "carrack.vfs.directory-create-receipt.v1"
+    if receipt.schema != "skydriver.vfs.directory-create-receipt.v1"
         || receipt.parent_directory_id != parent_directory_id
         || receipt.name != name
         || validate_nonzero_hex::<32>(&receipt.data_root, "VFS created directory root")?
@@ -1511,7 +1511,7 @@ fn validate_directory_creation(
 }
 
 fn validate_acl_policy(policy: &AclPolicy, directory_id: &str) -> Result<(), Error> {
-    if policy.schema != "carrack.vfs.acl.v1"
+    if policy.schema != "skydriver.vfs.acl.v1"
         || policy.directory_id != directory_id
         || policy.acl_revision == 0
     {
@@ -1557,7 +1557,7 @@ fn validate_acl_policy(policy: &AclPolicy, directory_id: &str) -> Result<(), Err
 }
 
 fn validate_placement_policy(policy: &PlacementPolicy, directory_id: &str) -> Result<(), Error> {
-    if policy.schema != "carrack.vfs.placements.v1"
+    if policy.schema != "skydriver.vfs.placements.v1"
         || policy.directory_id != directory_id
         || policy.placement_revision == 0
         || policy.placements.len() != 1
@@ -1601,7 +1601,7 @@ fn validate_policy_receipt(
     expected_policy: &serde_json::Value,
 ) -> Result<(), Error> {
     validate_nonzero_hex::<16>(&receipt.operation_id, "VFS policy operation identity")?;
-    if receipt.schema != "carrack.vfs.policy-mutation-receipt.v1"
+    if receipt.schema != "skydriver.vfs.policy-mutation-receipt.v1"
         || receipt.kind != kind
         || receipt.directory_id != directory_id
         || receipt.final_revision <= previous_revision
@@ -1631,7 +1631,7 @@ fn validate_issued_token(
     let bearer = VfsToken::parse(&issued.token).map_err(|error| {
         Error::InvalidResponse(format!("VFS issued bearer is invalid: {error}"))
     })?;
-    if issued.schema != "carrack.vfs.token-issue-receipt.v1"
+    if issued.schema != "skydriver.vfs.token-issue-receipt.v1"
         || issued.principal_id != parent.principal_id
         || issued.parent_token_id != parent.token_id
         || issued.root_directory_id != root_directory_id
@@ -1666,7 +1666,7 @@ fn validate_revoked_token(
 ) -> Result<(), Error> {
     validate_nonzero_hex::<16>(&revoked.principal_id, "VFS revoked principal identity")?;
     validate_nonzero_hex::<16>(&revoked.root_directory_id, "VFS revoked root identity")?;
-    if revoked.schema != "carrack.vfs.token-revoke-receipt.v1"
+    if revoked.schema != "skydriver.vfs.token-revoke-receipt.v1"
         || revoked.token_id != token_id
         || revoked.principal_id != authorizer.principal_id
         || revoked.revoked_at == 0
@@ -1765,7 +1765,7 @@ fn valid_bounded_string(value: &str, maximum_bytes: usize) -> bool {
 }
 
 fn validate_session(session: &VfsSession) -> Result<(), Error> {
-    if session.schema != "carrack.vfs.session.v1" || session.expires_at == 0 {
+    if session.schema != "skydriver.vfs.session.v1" || session.expires_at == 0 {
         return Err(Error::InvalidResponse(
             "VFS session identity differs".to_owned(),
         ));
@@ -1784,7 +1784,7 @@ fn validate_directory_page(
     requested_directory_id: &str,
     maximum_entries: usize,
 ) -> Result<(), Error> {
-    if page.schema != "carrack.vfs.directory-list.v1"
+    if page.schema != "skydriver.vfs.directory-list.v1"
         || page.directory.id != requested_directory_id
         || page.entries.len() > maximum_entries
         || (page.next_cursor.is_some() && page.entries.is_empty())
@@ -1913,7 +1913,7 @@ mod tests {
 
     fn session() -> VfsSession {
         VfsSession {
-            schema: "carrack.vfs.session.v1".to_owned(),
+            schema: "skydriver.vfs.session.v1".to_owned(),
             token_id: "303132333435363738393a3b3c3d3e3f".to_owned(),
             principal_id: "404142434445464748494a4b4c4d4e4f".to_owned(),
             root_directory_id: "202122232425262728292a2b2c2d2e2f".to_owned(),
@@ -1923,14 +1923,14 @@ mod tests {
 
     fn empty_directory_page(data_root: &str) -> serde_json::Value {
         serde_json::json!({
-            "schema": "carrack.vfs.directory-list.v1",
+            "schema": "skydriver.vfs.directory-list.v1",
             "directory": {
                 "id": "202122232425262728292a2b2c2d2e2f",
                 "filesystem_id": "101112131415161718191a1b1c1d1e1f",
                 "parent_id": null,
                 "name": "",
                 "data_root": data_root,
-                "crypto_suite": "carrack-vfs-aes256gcm-hkdfsha256-v1",
+                "crypto_suite": "skydriver-vfs-aes256gcm-hkdfsha256-v1",
                 "active_key_epoch": 1,
                 "acl_inherits": false,
                 "revision": 1,
@@ -1949,7 +1949,7 @@ mod tests {
             .mock_async(|when, then| {
                 when.method(GET).path("/api/v2/session");
                 then.status(200).json_body(serde_json::json!({
-                    "schema": "carrack.vfs.session.v1",
+                    "schema": "skydriver.vfs.session.v1",
                     "token_id": "NOT-CANONICAL",
                     "principal_id": "404142434445464748494a4b4c4d4e4f",
                     "root_directory_id": "202122232425262728292a2b2c2d2e2f",
@@ -2029,7 +2029,7 @@ mod tests {
     #[test]
     fn directory_creation_receipt_binds_empty_root_and_request() {
         let receipt = DirectoryCreation {
-            schema: "carrack.vfs.directory-create-receipt.v1".to_owned(),
+            schema: "skydriver.vfs.directory-create-receipt.v1".to_owned(),
             operation_id: "101112131415161718191a1b1c1d1e1f".to_owned(),
             filesystem_id: "202122232425262728292a2b2c2d2e2f".to_owned(),
             parent_directory_id: "303132333435363738393a3b3c3d3e3f".to_owned(),
@@ -2037,7 +2037,7 @@ mod tests {
             name: "docs".to_owned(),
             data_root: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .to_owned(),
-            crypto_suite: "carrack-vfs-aes256gcm-hkdfsha256-v1".to_owned(),
+            crypto_suite: "skydriver-vfs-aes256gcm-hkdfsha256-v1".to_owned(),
             key_epoch: 1,
             catalog_revision_id: 1,
             created_at: 1_700_000_000,
@@ -2058,7 +2058,7 @@ mod tests {
     #[test]
     fn token_issue_receipt_binds_parent_and_requested_scope() {
         let issued = IssuedToken {
-            schema: "carrack.vfs.token-issue-receipt.v1".to_owned(),
+            schema: "skydriver.vfs.token-issue-receipt.v1".to_owned(),
             token_id: "101112131415161718191a1b1c1d1e1f".to_owned(),
             principal_id: session().principal_id.clone(),
             parent_token_id: session().token_id.clone(),
@@ -2086,7 +2086,7 @@ mod tests {
     #[test]
     fn issued_bearer_session_must_match_the_receipt() {
         let issued = IssuedToken {
-            schema: "carrack.vfs.token-issue-receipt.v1".to_owned(),
+            schema: "skydriver.vfs.token-issue-receipt.v1".to_owned(),
             token_id: "101112131415161718191a1b1c1d1e1f".to_owned(),
             principal_id: session().principal_id.clone(),
             parent_token_id: session().token_id.clone(),
@@ -2109,7 +2109,7 @@ mod tests {
     #[test]
     fn policy_receipt_binds_exact_normalized_payload() {
         let receipt = PolicyMutationReceipt {
-            schema: "carrack.vfs.policy-mutation-receipt.v1".to_owned(),
+            schema: "skydriver.vfs.policy-mutation-receipt.v1".to_owned(),
             operation_id: "101112131415161718191a1b1c1d1e1f".to_owned(),
             kind: "acl.replace".to_owned(),
             directory_id: "202122232425262728292a2b2c2d2e2f".to_owned(),

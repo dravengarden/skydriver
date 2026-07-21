@@ -14,7 +14,7 @@ const ADMIN_TOKEN_BINDING: &str = "SKYDRIVER_ADMIN_TOKEN";
 const DATABASE_BINDING: &str = "SKYDRIVER_INDEX";
 const VALIDATION_LIFETIME_SECONDS: u64 = 5 * 60;
 const REGISTRATION_KIND: &str = "driver.register";
-const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.driver-registration.v1\0";
+const VALIDATION_DOMAIN: &[u8] = b"skydriver.management.validation.driver-registration.v1\0";
 #[cfg(test)]
 const ALIYUN_DRIVE_KIND: &str = DriverKind::AliyunDriveOpenV2.as_str();
 #[cfg(test)]
@@ -105,7 +105,7 @@ pub(crate) async fn validate(request: &mut Request, env: &Env) -> Result<Respons
     let validation_expires_at = now_seconds() + VALIDATION_LIFETIME_SECONDS;
     let validation_digest = validation_digest(env, &normalized, validation_expires_at)?;
     no_store_json(&ValidationResponse {
-        schema: "carrack.management.driver-registration-validation.v1",
+        schema: "skydriver.management.driver-registration-validation.v1",
         requires_credential: DriverKind::parse(&normalized.kind)
             .is_some_and(|kind| kind.credential_posture() == CredentialPosture::Required),
         warnings: registration_warnings(&normalized.kind),
@@ -171,7 +171,7 @@ pub(crate) async fn apply(request: &mut Request, env: &Env) -> Result<Response> 
     let config_json =
         serde_json::to_string(&normalized.config).map_err(|error| json_error(&error))?;
     let receipt = ReceiptResponse {
-        schema: "carrack.management.driver-registration-receipt.v1",
+        schema: "skydriver.management.driver-registration-receipt.v1",
         operation_id: operation_id.clone(),
         driver_id: normalized.driver_id.clone(),
         kind: normalized.kind.clone(),
@@ -486,7 +486,7 @@ mod tests {
             r#"{"api_base_url":"https://openapi.alipan.com","drive_type":"resource","root_folder_id":"root","upload_part_bytes":20971520}"#,
             false,
         ));
-        let r2 = r#"{"endpoint":"https://0123456789abcdef.r2.cloudflarestorage.com","bucket":"carrack-payload-dev","prefix":"","managed":true}"#;
+        let r2 = r#"{"endpoint":"https://0123456789abcdef.r2.cloudflarestorage.com","bucket":"skydriver-payload-dev","prefix":"","managed":true}"#;
         assert!(driver_configuration::valid_stored(R2_KIND, r2, true));
         assert!(!driver_configuration::valid_stored(R2_KIND, r2, false));
     }
@@ -498,7 +498,7 @@ mod tests {
             kind: R2_KIND.to_owned(),
             config: json!({
                 "endpoint": "https://0123456789abcdef.r2.cloudflarestorage.com",
-                "bucket": "carrack-payload-dev",
+                "bucket": "skydriver-payload-dev",
                 "managed": true
             }),
         })
@@ -514,7 +514,7 @@ mod tests {
             kind: AWS_S3_KIND.to_owned(),
             config: json!({
                 "region": "us-east-1",
-                "bucket": "carrack-payload-example",
+                "bucket": "skydriver-payload-example",
                 "expected_bucket_owner": "123456789012"
             }),
         })
@@ -526,7 +526,7 @@ mod tests {
                 kind: AWS_S3_KIND.to_owned(),
                 config: json!({
                     "region": "us-east-1",
-                    "bucket": "carrack-payload-example",
+                    "bucket": "skydriver-payload-example",
                     "expected_bucket_owner": "123456789012",
                     "endpoint": "https://attacker.example"
                 }),

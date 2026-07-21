@@ -304,7 +304,7 @@ pub(crate) struct TransferTelemetry {
 impl TransferTelemetry {
     pub(crate) fn measured(provider: std::time::Duration, total: std::time::Duration) -> Self {
         Self {
-            schema: "carrack.transfer-telemetry.v1".to_owned(),
+            schema: "skydriver.transfer-telemetry.v1".to_owned(),
             provider_ms: duration_ms(provider),
             total_ms: duration_ms(total).max(duration_ms(provider)),
             retries: 0,
@@ -330,7 +330,7 @@ impl TransferTelemetry {
             .saturating_add(provider_ms)
             .saturating_add(post_provider_ms);
         Self {
-            schema: "carrack.transfer-telemetry.v2".to_owned(),
+            schema: "skydriver.transfer-telemetry.v2".to_owned(),
             provider_ms,
             total_ms: duration_ms(total).max(phase_total),
             retries: 0,
@@ -672,7 +672,7 @@ impl VfsClient {
             Error::InvalidResponse(format!("remove committed staging: {error}"))
         })?;
         Ok(PutResult {
-            schema: "carrack.fs-put.v1",
+            schema: "skydriver.fs-put.v1",
             receipt: commit,
             plaintext_bytes: tree.size_bytes,
             file_root,
@@ -716,7 +716,7 @@ impl VfsClient {
             });
         }
         let staged: ManifestStage = crate::decode_json(response, 64 * 1024, false).await?;
-        if staged.schema != "carrack.vfs.block-manifest-stage.v1"
+        if staged.schema != "skydriver.vfs.block-manifest-stage.v1"
             || staged.intent_id != preparation.intent_id
             || staged.sha256 != hex::encode(Sha256::digest(manifest))
             || staged.bytes != manifest.len() as u64
@@ -920,14 +920,14 @@ fn validate_preparation(
     }
     if !matches!(
         value.crypto_suite.as_str(),
-        "plaintext/v1" | "carrack-vfs-aes256gcm-hkdfsha256-v1"
+        "plaintext/v1" | "skydriver-vfs-aes256gcm-hkdfsha256-v1"
     ) {
         return Err(Error::failure(
             crate::FailureKind::UnsupportedSuite,
             format!("unsupported crypto suite {}", value.crypto_suite),
         ));
     }
-    if value.schema != "carrack.vfs.put-preparation.v1"
+    if value.schema != "skydriver.vfs.put-preparation.v1"
         || value.directory_id != directory_id
         || value.entry_name != entry_name
         || value.expected_entry_revision != options.expected_entry_revision
@@ -948,7 +948,7 @@ fn validate_preparation(
 }
 
 fn validate_key_grant(value: &KeyGrant, preparation: &Preparation) -> Result<(), Error> {
-    if value.schema != "carrack.vfs.directory-key-grant.v1"
+    if value.schema != "skydriver.vfs.directory-key-grant.v1"
         || value.intent_id != preparation.intent_id
         || value.directory_id != preparation.directory_id
         || value.version_id != preparation.version_id
@@ -964,7 +964,7 @@ fn validate_key_grant(value: &KeyGrant, preparation: &Preparation) -> Result<(),
 }
 
 fn validate_driver_grant(value: &DriverGrant, preparation: &Preparation) -> Result<(), Error> {
-    if value.schema != "carrack.vfs.driver-grant.v1"
+    if value.schema != "skydriver.vfs.driver-grant.v1"
         || value.intent_id != preparation.intent_id
         || value.driver_id != preparation.driver_id
         || value.driver_revision == 0
@@ -1022,7 +1022,7 @@ fn validate_receipt(
     manifest: &ManifestStage,
     staged: &crate::crypto::StagedObject,
 ) -> Result<(), Error> {
-    if value.schema != "carrack.vfs.put-receipt.v1"
+    if value.schema != "skydriver.vfs.put-receipt.v1"
         || value.intent_id != preparation.intent_id
         || value.file_id != preparation.file_id
         || value.version_id != preparation.version_id
@@ -1078,7 +1078,7 @@ mod tests {
             Duration::from_millis(18),
         );
         let value = serde_json::to_value(telemetry).expect("serialize telemetry");
-        assert_eq!(value["schema"], "carrack.transfer-telemetry.v2");
+        assert_eq!(value["schema"], "skydriver.transfer-telemetry.v2");
         assert_eq!(value["plan_ms"], 2);
         assert_eq!(value["queue_ms"], 3);
         assert_eq!(value["provider_ms"], 5);
@@ -1090,7 +1090,7 @@ mod tests {
             Duration::from_millis(8),
         ))
         .expect("serialize legacy telemetry");
-        assert_eq!(legacy["schema"], "carrack.transfer-telemetry.v1");
+        assert_eq!(legacy["schema"], "skydriver.transfer-telemetry.v1");
         assert!(legacy.get("plan_ms").is_none());
         assert!(legacy.get("queue_ms").is_none());
         assert!(legacy.get("post_provider_ms").is_none());
@@ -1098,7 +1098,7 @@ mod tests {
 
     fn valid_preparation() -> Preparation {
         Preparation {
-            schema: "carrack.vfs.put-preparation.v1".to_owned(),
+            schema: "skydriver.vfs.put-preparation.v1".to_owned(),
             intent_id: "11111111111111111111111111111111".to_owned(),
             filesystem_id: "22222222222222222222222222222222".to_owned(),
             directory_id: "33333333333333333333333333333333".to_owned(),
@@ -1110,7 +1110,7 @@ mod tests {
             driver_id: "r2-default".to_owned(),
             storage_key: "opaque-key".to_owned(),
             block_manifest_r2_key: "manifest-key".to_owned(),
-            crypto_suite: "carrack-vfs-aes256gcm-hkdfsha256-v1".to_owned(),
+            crypto_suite: "skydriver-vfs-aes256gcm-hkdfsha256-v1".to_owned(),
             key_epoch: 1,
             encryption_frame_bytes: 4,
             requires_encryption_key: true,

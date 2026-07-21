@@ -18,7 +18,7 @@ file_count=${SKYDRIVER_R2_SMALL_SYNC_FILES:-64}
 file_bytes=${SKYDRIVER_R2_SMALL_SYNC_BYTES:-1048576}
 upload_concurrency=${SKYDRIVER_R2_SMALL_SYNC_UPLOAD_CONCURRENCY:-8}
 sync_concurrency=${SKYDRIVER_R2_SMALL_SYNC_CONCURRENCY:-16}
-carrack_bin=${SKYDRIVER_BIN:-target/release/carrack}
+skydriver_bin=${SKYDRIVER_BIN:-target/release/skydriver}
 operation_timeout_seconds=${SKYDRIVER_LIVE_OPERATION_TIMEOUT_SECONDS:-300}
 
 if [[ $control_url != https://dev.skydriver.stormbird.xyz ]]; then
@@ -33,13 +33,13 @@ if [[ $parent != /* || $parent == *..* || $parent == *//* ]]; then
   echo "SKYDRIVER_R2_SMALL_SYNC_PARENT must be a canonical absolute VFS path" >&2
   exit 2
 fi
-carrack_require_integer_range SKYDRIVER_R2_SMALL_SYNC_FILES "$file_count" 8 1000
-carrack_require_integer_range SKYDRIVER_R2_SMALL_SYNC_BYTES "$file_bytes" 1 16777216
-carrack_require_integer_range SKYDRIVER_R2_SMALL_SYNC_UPLOAD_CONCURRENCY "$upload_concurrency" 1 32
-carrack_require_integer_range SKYDRIVER_R2_SMALL_SYNC_CONCURRENCY "$sync_concurrency" 1 64
-carrack_require_integer_range SKYDRIVER_LIVE_OPERATION_TIMEOUT_SECONDS "$operation_timeout_seconds" 1 3600
-if [[ ! -x $carrack_bin ]]; then
-  echo "Skydriver binary is not executable: $carrack_bin" >&2
+skydriver_require_integer_range SKYDRIVER_R2_SMALL_SYNC_FILES "$file_count" 8 1000
+skydriver_require_integer_range SKYDRIVER_R2_SMALL_SYNC_BYTES "$file_bytes" 1 16777216
+skydriver_require_integer_range SKYDRIVER_R2_SMALL_SYNC_UPLOAD_CONCURRENCY "$upload_concurrency" 1 32
+skydriver_require_integer_range SKYDRIVER_R2_SMALL_SYNC_CONCURRENCY "$sync_concurrency" 1 64
+skydriver_require_integer_range SKYDRIVER_LIVE_OPERATION_TIMEOUT_SECONDS "$operation_timeout_seconds" 1 3600
+if [[ ! -x $skydriver_bin ]]; then
+  echo "Skydriver binary is not executable: $skydriver_bin" >&2
   exit 2
 fi
 
@@ -47,7 +47,7 @@ state=$(mktemp -d)
 chmod 0700 "$state"
 identifier=$(openssl rand -hex 8)
 run_id=$identifier
-name="carrack-r2-small-sync-$identifier"
+name="skydriver-r2-small-sync-$identifier"
 if [[ $parent == / ]]; then
   directory="/$name"
 else
@@ -58,12 +58,12 @@ committed="$state/committed"
 mkdir -m 0700 "$committed"
 directory_created=false
 
-carrack_command() {
+skydriver_command() {
   local stage=$1
   shift
   local status
   timeout --signal=INT --kill-after=15s "${operation_timeout_seconds}s" \
-    "$carrack_bin" "$@" || {
+    "$skydriver_bin" "$@" || {
     status=$?
     echo "small-file live acceptance failed during $stage (status $status)" >&2
     return "$status"
@@ -76,14 +76,14 @@ cleanup() {
   for marker in "$committed"/*; do
     ordinal=${marker##*/}
     path="$directory/file-$ordinal.bin"
-    carrack_command "cleanup file $ordinal" remove "$path" \
+    skydriver_command "cleanup file $ordinal" remove "$path" \
       --control-url "$control_url" \
       --idempotency-key "r2-small-sync-remove-$identifier-$ordinal" \
       --format json >/dev/null 2>&1 || \
       echo "warning: live object cleanup must be retried for $path" >&2
   done
   if [[ $directory_created == true ]]; then
-    carrack_command "cleanup directory" remove "$directory" \
+    skydriver_command "cleanup directory" remove "$directory" \
       --control-url "$control_url" \
       --idempotency-key "r2-small-sync-rmdir-$identifier" \
       --format json >/dev/null 2>&1 || \
@@ -97,18 +97,18 @@ head -c "$file_bytes" /dev/urandom >"$source_file"
 source_sha=$(sha256sum "$source_file" | cut -d' ' -f1)
 expected_bytes=$((file_count * file_bytes))
 
-carrack_command compatibility compatibility --control-url "$control_url" --format json |
+skydriver_command compatibility compatibility --control-url "$control_url" --format json |
   jq -e '.protocol_epoch == 2 and .enforcement == "required"' >/dev/null
-carrack_command mkdir mkdir "$directory" \
+skydriver_command mkdir mkdir "$directory" \
   --control-url "$control_url" \
   --idempotency-key "r2-small-sync-mkdir-$identifier" \
-  --format json | jq -e '.schema == "carrack.fs-mkdir.v1"' >/dev/null
+  --format json | jq -e '.schema == "skydriver.fs-mkdir.v1"' >/dev/null
 directory_created=true
 
 put_one() {
   local ordinal=$1
   local result
-  result=$(carrack_command "upload $ordinal" put \
+  result=$(skydriver_command "upload $ordinal" put \
     "$source_file" "$directory/file-$ordinal.bin" \
     --control-url "$control_url" \
     --preferred-driver-id "$driver_id" \
@@ -116,15 +116,15 @@ put_one() {
     --staging-directory "$state/upload-$ordinal" \
     --format json)
   jq -e --arg driver "$driver_id" '
-    .schema == "carrack.fs-put.v1" and
+    .schema == "skydriver.fs-put.v1" and
     .receipt.state == "committed" and
     .receipt.driver_id == $driver
   ' <<<"$result" >/dev/null
   : >"$committed/$ordinal"
 }
 
-upload_started_ns=$(carrack_now_ns)
-upload_started_at=$(carrack_now_utc)
+upload_started_ns=$(skydriver_now_ns)
+upload_started_at=$(skydriver_now_utc)
 if ! put_one 0; then
   echo "the first small-file upload preflight failed; concurrent uploads were not started" >&2
   exit 1
@@ -147,21 +147,21 @@ if ((upload_failed != 0)); then
   echo "one or more small-file uploads failed" >&2
   exit 1
 fi
-upload_finished_ns=$(carrack_now_ns)
-upload_finished_at=$(carrack_now_utc)
+upload_finished_ns=$(skydriver_now_ns)
+upload_finished_at=$(skydriver_now_utc)
 
-cold_started_ns=$(carrack_now_ns)
-cold_started_at=$(carrack_now_utc)
-cold_result=$(carrack_command "cold sync" sync "$directory" "$state/download" \
+cold_started_ns=$(skydriver_now_ns)
+cold_started_at=$(skydriver_now_utc)
+cold_result=$(skydriver_command "cold sync" sync "$directory" "$state/download" \
   --control-url "$control_url" \
   --state-directory "$state/sync-state" \
   --maximum-concurrency "$sync_concurrency" \
   --maximum-file-concurrency 1 \
   --format json)
-cold_finished_ns=$(carrack_now_ns)
-cold_finished_at=$(carrack_now_utc)
+cold_finished_ns=$(skydriver_now_ns)
+cold_finished_at=$(skydriver_now_utc)
 jq -e --argjson files "$file_count" --argjson bytes "$expected_bytes" '
-  .schema == "carrack.fs-sync.v1" and
+  .schema == "skydriver.fs-sync.v1" and
   .files == $files and
   .downloaded_files == $files and
   .reused_files == 0 and
@@ -172,30 +172,30 @@ for ((ordinal = 0; ordinal < file_count; ordinal++)); do
   [[ $(sha256sum "$state/download/file-$ordinal.bin" | cut -d' ' -f1) == "$source_sha" ]]
 done
 
-warm_started_ns=$(carrack_now_ns)
-warm_started_at=$(carrack_now_utc)
-warm_result=$(carrack_command "warm sync" sync "$directory" "$state/download" \
+warm_started_ns=$(skydriver_now_ns)
+warm_started_at=$(skydriver_now_utc)
+warm_result=$(skydriver_command "warm sync" sync "$directory" "$state/download" \
   --control-url "$control_url" \
   --state-directory "$state/sync-state" \
   --maximum-concurrency "$sync_concurrency" \
   --maximum-file-concurrency 1 \
   --format json)
-warm_finished_ns=$(carrack_now_ns)
-warm_finished_at=$(carrack_now_utc)
+warm_finished_ns=$(skydriver_now_ns)
+warm_finished_at=$(skydriver_now_utc)
 jq -e --argjson files "$file_count" '
-  .schema == "carrack.fs-sync.v1" and
+  .schema == "skydriver.fs-sync.v1" and
   .files == $files and
   .downloaded_files == 0 and
   .reused_files == $files and
   .downloaded_bytes == 0
 ' <<<"$warm_result" >/dev/null
 
-upload_elapsed_ms=$(carrack_elapsed_ms "$upload_started_ns" "$upload_finished_ns")
-cold_elapsed_ms=$(carrack_elapsed_ms "$cold_started_ns" "$cold_finished_ns")
-warm_elapsed_ms=$(carrack_elapsed_ms "$warm_started_ns" "$warm_finished_ns")
+upload_elapsed_ms=$(skydriver_elapsed_ms "$upload_started_ns" "$upload_finished_ns")
+cold_elapsed_ms=$(skydriver_elapsed_ms "$cold_started_ns" "$cold_finished_ns")
+warm_elapsed_ms=$(skydriver_elapsed_ms "$warm_started_ns" "$warm_finished_ns")
 
 jq -n \
-  --arg schema carrack.r2-small-sync-live-acceptance.v1 \
+  --arg schema skydriver.r2-small-sync-live-acceptance.v1 \
   --arg driver_id "$driver_id" \
   --arg run_id "$run_id" \
   --arg directory "$directory" \

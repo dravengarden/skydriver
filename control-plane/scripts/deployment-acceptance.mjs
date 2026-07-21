@@ -69,7 +69,7 @@ async function probe(profile, deploymentTag, attempt, fetchImplementation) {
         "application/json",
     );
     const wasm = await wasmResponse.json();
-    if (wasm?.schema !== "carrack.sdk.wasm-acceptance.v1" || wasm.round_trip_verified !== true) {
+    if (wasm?.schema !== "skydriver.sdk.wasm-acceptance.v1" || wasm.round_trip_verified !== true) {
         throw new Error("WASM SDK acceptance did not verify its round trip");
     }
     const indexResponse = await checkedResponse(
@@ -93,7 +93,7 @@ async function probe(profile, deploymentTag, attempt, fetchImplementation) {
         throw new Error("deployed UI asset hash differs from the verified build");
     }
     return {
-        schema: "carrack.deployment-acceptance.v1",
+        schema: "skydriver.deployment-acceptance.v1",
         environment: profile.environment,
         control_url: profile.controlUrl,
         sdk_version: wasm.sdk_version,

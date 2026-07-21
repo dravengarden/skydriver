@@ -47,7 +47,7 @@ export function environmentProfile(config, environmentName, accountId) {
         endpoint,
         operatorAccount,
         bucket: payloadBindings[0].bucket_name,
-        tokenName: `carrack-${DEFAULT_R2_DRIVER_ID}-${environmentName}`,
+        tokenName: `skydriver-${DEFAULT_R2_DRIVER_ID}-${environmentName}`,
     };
 }
 

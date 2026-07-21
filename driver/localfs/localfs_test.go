@@ -237,7 +237,7 @@ func TestKeysAndFinalSymlinksAreRejected(t *testing.T) {
 	rootPath := t.TempDir()
 	client := mustClient(t, rootPath)
 
-	for _, storageKey := range []string{"../escape", "/absolute", ".carrack/object", "objects/.carrack-upload-x"} {
+	for _, storageKey := range []string{"../escape", "/absolute", ".skydriver/object", "objects/.skydriver-upload-x"} {
 		_, err := client.Put(context.Background(), driver.PutRequest{
 			StorageKey: storageKey,
 			Body:       bytes.NewReader(nil),

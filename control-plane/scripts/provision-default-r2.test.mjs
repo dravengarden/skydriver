@@ -9,7 +9,7 @@ const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const provisioner = path.join(import.meta.dirname, "provision-default-r2.mjs");
 
 test("orchestrates validated enablement and empty-root placement without forwarding cloud secrets", () => {
-    const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "carrack-r2-provision-test-"));
+    const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "skydriver-r2-provision-test-"));
     fs.chmodSync(stateDirectory, 0o700);
     try {
         const config = JSON.parse(
@@ -52,7 +52,7 @@ if (args[0] === "compatibility") {
     lifecycle_owner: "environment",
     config: {
       endpoint: process.env.FAKE_R2_ENDPOINT,
-      bucket: "carrack-payload-dev",
+      bucket: "skydriver-payload-dev",
       prefix: "",
       managed: true,
     },
@@ -117,7 +117,7 @@ if (args[0] === "compatibility") {
             },
         });
         assert.equal(result.status, 0, result.stderr);
-        assert.match(result.stdout, /carrack\.environment-r2-provision-receipt\.v1/);
+        assert.match(result.stdout, /skydriver\.environment-r2-provision-receipt\.v1/);
         const finalState = JSON.parse(fs.readFileSync(stateFile, "utf8"));
         assert.deepEqual(finalState, {
             enabled: true,

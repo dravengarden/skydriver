@@ -37,8 +37,8 @@ resource is distinct:
 
 | Environment | Worker | Custom domain | D1 | Metadata R2 | Default payload R2 |
 |---|---|---|---|---|---|
-| `dev` | `skydriver-control-plane-dev` | `dev.skydriver.stormbird.xyz` | `carrack-index-dev` | `carrack-manifests-dev` | `carrack-payload-dev` |
-| `prod` | `skydriver-control-plane-prod` | `skydriver.stormbird.xyz` | `carrack-index-prod` | `carrack-manifests-prod` | `carrack-payload-prod` |
+| `dev` | `skydriver-control-plane-dev` | `dev.skydriver.stormbird.xyz` | `skydriver-index-dev` | `skydriver-manifests-dev` | `skydriver-payload-dev` |
+| `prod` | `skydriver-control-plane-prod` | `skydriver.stormbird.xyz` | `skydriver-index-prod` | `skydriver-manifests-prod` | `skydriver-payload-prod` |
 
 The default Wrangler configuration is local-only. It uses a non-routable D1
 sentinel, disables `workers.dev`, and must never be deployed. A remote command
@@ -76,12 +76,12 @@ between SDK clients and storage; the Worker never relays file bodies.
 Create all six isolated storage resources once before the first deployment:
 
 ```bash
-pnpm exec wrangler d1 create carrack-index-dev
-pnpm exec wrangler d1 create carrack-index-prod
-pnpm exec wrangler r2 bucket create carrack-manifests-dev
-pnpm exec wrangler r2 bucket create carrack-manifests-prod
-pnpm exec wrangler r2 bucket create carrack-payload-dev
-pnpm exec wrangler r2 bucket create carrack-payload-prod
+pnpm exec wrangler d1 create skydriver-index-dev
+pnpm exec wrangler d1 create skydriver-index-prod
+pnpm exec wrangler r2 bucket create skydriver-manifests-dev
+pnpm exec wrangler r2 bucket create skydriver-manifests-prod
+pnpm exec wrangler r2 bucket create skydriver-payload-dev
+pnpm exec wrangler r2 bucket create skydriver-payload-prod
 ```
 
 Apply migrations independently before deploying. Never run a remote migration
@@ -272,7 +272,7 @@ including the exact environment, payload, pipeline, timeout, cleanup outcome,
 and whether a number came from end-to-end timing or sampled telemetry. Never
 replace a failed acceptance with the successful stages that preceded it.
 Timeout and CLI failures also emit a compact
-`carrack.*.live-acceptance-failure.v2` JSON object on stderr with the same
+`skydriver.*.live-acceptance-failure.v2` JSON object on stderr with the same
 opaque run ID plus the stage, UTC bounds, elapsed milliseconds, exit status,
 safety timeout, payload size, and requested pipeline. It contains no bearer,
 signed URL, provider locator, or local path and remains a failed nonzero
@@ -328,7 +328,7 @@ database.
 Deployment and VFS bootstrap are separate operations. Bootstrap is
 intentionally one-shot. Every dev or production Worker materializes one
 disabled, immutable `r2-default` identity from its `SKYDRIVER_PAYLOAD` binding,
-account S3 endpoint, and environment-specific `carrack-payload-<environment>`
+account S3 endpoint, and environment-specific `skydriver-payload-<environment>`
 bucket. Driver creation atomically initializes a 100 GiB physical-byte hard
 quota from `SKYDRIVER_DEFAULT_R2_MAX_PHYSICAL_BYTES`; later UI or `skydriverctl`
 quota changes advance the independent quota revision and are never overwritten
@@ -355,7 +355,7 @@ apply commands first inspect the exact Skydriver driver and root mount revision.
 Before VFS bootstrap there is no mount policy, so production can initialize and
 enable `r2-default` without a VFS bearer; a later bootstrap installs it as the
 root default. If no signing credential exists, they find or create the deterministic
-account-owned token `carrack-r2-default-<environment>`, require the exact
+account-owned token `skydriver-r2-default-<environment>`, require the exact
 `Workers R2 Storage Bucket Item Write` permission and the single bucket resource,
 derive the S3 secret as SHA-256 of the one-time token value, and write it only to
 a mode-0600 temporary file. They then invoke `skydriverctl --check`, apply with an

@@ -384,7 +384,7 @@ mod tests {
 
         let s3 = AwsS3Config {
             region: "us-east-1".to_owned(),
-            bucket: "carrack-payload-example".to_owned(),
+            bucket: "skydriver-payload-example".to_owned(),
             expected_bucket_owner: "123456789012".to_owned(),
             prefix: "objects/".to_owned(),
         };

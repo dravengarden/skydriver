@@ -419,7 +419,7 @@ pub(crate) fn multipart_grant_from_plaintext(
     )?;
     let verify_url = presign("GET", &config, &credential, &key, lifetime)?;
     Some(serde_json::json!({
-        "schema": "carrack.vfs.r2-multipart-grant.v1",
+        "schema": "skydriver.vfs.r2-multipart-grant.v1",
         "upload_id": upload_id,
         "parts": parts,
         "complete_url": complete_url,
@@ -434,7 +434,7 @@ pub(crate) async fn verify(config: &Config, credential: &Credential) -> bool {
         return false;
     }
     let key = format!(
-        ".carrack/credential-check/{}",
+        ".skydriver/credential-check/{}",
         hex(&Sha256::digest(credential.access_key_id.as_bytes()))
     );
     let Some(put_url) = presign("PUT", config, credential, &key, 60) else {
@@ -652,13 +652,13 @@ mod tests {
         let config = Config {
             endpoint: "https://0123456789abcdef.r2.cloudflarestorage.com".to_owned(),
             bucket: "payload-dev".to_owned(),
-            prefix: "carrack/dev/".to_owned(),
+            prefix: "skydriver/dev/".to_owned(),
             managed: false,
         };
         assert!(valid_config(&config));
         assert_eq!(
             object_key(&config, "objects/v2/ab/value").as_deref(),
-            Some("carrack/dev/objects/v2/ab/value")
+            Some("skydriver/dev/objects/v2/ab/value")
         );
         assert_eq!(percent_encode("a b/c", false), "a%20b/c");
     }

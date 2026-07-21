@@ -10,9 +10,9 @@ use crate::{
     vfs_access, vfs_identifiers::new_uuid_v7_hex, vfs_mounts, vfs_tokens::AuthenticatedVfsToken,
 };
 
-const ACL_SCHEMA: &str = "carrack.vfs.acl.v1";
-const PLACEMENT_SCHEMA: &str = "carrack.vfs.placements.v1";
-const POLICY_RECEIPT_SCHEMA: &str = "carrack.vfs.policy-mutation-receipt.v1";
+const ACL_SCHEMA: &str = "skydriver.vfs.acl.v1";
+const PLACEMENT_SCHEMA: &str = "skydriver.vfs.placements.v1";
+const POLICY_RECEIPT_SCHEMA: &str = "skydriver.vfs.policy-mutation-receipt.v1";
 const MAXIMUM_IDEMPOTENCY_BYTES: usize = 256;
 const MAXIMUM_DRIVER_ID_BYTES: usize = 256;
 
@@ -844,7 +844,7 @@ fn policy_identity(
         "idempotency_key": idempotency_key, "kind": kind, "policy": payload,
     }))?;
     let mut hasher = Sha256::new();
-    hasher.update(b"carrack.vfs.policy-mutation.v1\0");
+    hasher.update(b"skydriver.vfs.policy-mutation.v1\0");
     hasher.update(encoded);
     Ok(hasher.finalize().into())
 }

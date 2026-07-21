@@ -198,7 +198,7 @@ if (check) {
     console.log(
         JSON.stringify(
             {
-                schema: "carrack.environment-r2-provision-plan.v1",
+                schema: "skydriver.environment-r2-provision-plan.v1",
                 environment: environmentName,
                 control_url: profile.controlUrl,
                 driver_id: DEFAULT_R2_DRIVER_ID,
@@ -263,7 +263,7 @@ if (!driver.credential_present) {
         credentialAction = "recovered";
     }
     const credential = credentialFromToken(tokenId, tokenValue);
-    const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "carrack-r2-"));
+    const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "skydriver-r2-"));
     fs.chmodSync(temporaryDirectory, 0o700);
     const credentialFile = path.join(temporaryDirectory, "credential.json");
     try {
@@ -383,7 +383,7 @@ if (
 console.log(
     JSON.stringify(
         {
-            schema: "carrack.environment-r2-provision-receipt.v1",
+            schema: "skydriver.environment-r2-provision-receipt.v1",
             environment: environmentName,
             control_url: profile.controlUrl,
             driver_id: DEFAULT_R2_DRIVER_ID,

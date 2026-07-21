@@ -353,7 +353,7 @@ enum AuthorityCommand {
         filesystem_name: String,
         #[arg(long)]
         principal_display_name: String,
-        #[arg(long, default_value = "carrack-vfs-aes256gcm-hkdfsha256-v1")]
+        #[arg(long, default_value = "skydriver-vfs-aes256gcm-hkdfsha256-v1")]
         crypto_suite: String,
         #[arg(long, default_value_t = 365 * 24 * 60 * 60)]
         token_lifetime_seconds: u64,
@@ -1309,7 +1309,7 @@ async fn run_authority_command(
     write_json(
         output,
         &AuthorityFileReceipt {
-            schema: "carrack.authority-file-receipt.v1",
+            schema: "skydriver.authority-file-receipt.v1",
             path: output_file.display().to_string(),
             filesystem_id: &authority.filesystem_id,
             principal_id: &authority.principal_id,
@@ -1812,7 +1812,7 @@ async fn run_filesystem() -> Result<(), Error> {
             write_json(
                 output,
                 &ListOutput {
-                    schema: "carrack.fs-list.v1",
+                    schema: "skydriver.fs-list.v1",
                     path: &path,
                     data_root: &page.directory.data_root,
                     entries,
@@ -1825,7 +1825,7 @@ async fn run_filesystem() -> Result<(), Error> {
             let resolved = client.resolve(&path).await?;
             let stat = match &resolved.entry {
                 Some(entry) => StatOutput {
-                    schema: "carrack.fs-stat.v1",
+                    schema: "skydriver.fs-stat.v1",
                     path: &path,
                     kind: entry.kind,
                     size_bytes: entry.size_bytes,
@@ -1833,7 +1833,7 @@ async fn run_filesystem() -> Result<(), Error> {
                     updated_at: Some(entry.updated_at),
                 },
                 None => StatOutput {
-                    schema: "carrack.fs-stat.v1",
+                    schema: "skydriver.fs-stat.v1",
                     path: &path,
                     kind: EntryKind::Directory,
                     size_bytes: 0,
@@ -1854,7 +1854,7 @@ async fn run_filesystem() -> Result<(), Error> {
             write_json(
                 output,
                 &MkdirOutput {
-                    schema: "carrack.fs-mkdir.v1",
+                    schema: "skydriver.fs-mkdir.v1",
                     path: &path,
                     directory_id: &receipt.directory_id,
                     data_root: &receipt.data_root,
@@ -1992,7 +1992,7 @@ fn write_version(output: Output, surface: Surface) -> Result<(), Error> {
     write_json(
         output,
         &VersionOutput {
-            schema: "carrack.cli-version.v1",
+            schema: "skydriver.cli-version.v1",
             binary: match surface {
                 Surface::Filesystem => "skydriver",
                 Surface::Management => "skydriverctl",
@@ -2032,7 +2032,7 @@ fn admin_client(control_url: Option<String>) -> Result<AdminClient, Error> {
 fn default_state_directory() -> Result<std::path::PathBuf, Error> {
     if let Some(path) = std::env::var_os("XDG_STATE_HOME") {
         let root = std::path::PathBuf::from(path);
-        let legacy = root.join("carrack");
+        let legacy = root.join("skydriver");
         return Ok(if legacy.exists() {
             legacy
         } else {
@@ -2042,7 +2042,7 @@ fn default_state_directory() -> Result<std::path::PathBuf, Error> {
     std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .map(|home| {
-            let legacy = home.join(".local/state/carrack");
+            let legacy = home.join(".local/state/skydriver");
             if legacy.exists() {
                 legacy
             } else {
@@ -2099,7 +2099,7 @@ fn read_json_object(path: &std::path::Path, secret: bool) -> Result<Value, Error
 pub fn exit_with_error(error: &Error) -> ! {
     let disposition = error_disposition(error);
     let output = ErrorOutput {
-        schema: "carrack.cli-error.v1",
+        schema: "skydriver.cli-error.v1",
         code: disposition.code,
         exit_status: disposition.exit_status,
         message: error.to_string(),
@@ -2107,7 +2107,7 @@ pub fn exit_with_error(error: &Error) -> ! {
     match serde_json::to_string(&output) {
         Ok(encoded) => eprintln!("{encoded}"),
         Err(_) => eprintln!(
-            "{{\"schema\":\"carrack.cli-error.v1\",\"code\":\"internal_output_error\",\"exit_status\":13,\"message\":\"encode Skydriver CLI error\"}}"
+            "{{\"schema\":\"skydriver.cli-error.v1\",\"code\":\"internal_output_error\",\"exit_status\":13,\"message\":\"encode Skydriver CLI error\"}}"
         ),
     }
     std::process::exit(i32::from(disposition.exit_status));
@@ -2153,7 +2153,7 @@ fn error_disposition(error: &Error) -> ErrorDisposition {
 fn error_json(error: &Error) -> Result<String, serde_json::Error> {
     let disposition = error_disposition(error);
     serde_json::to_string(&ErrorOutput {
-        schema: "carrack.cli-error.v1",
+        schema: "skydriver.cli-error.v1",
         code: disposition.code,
         exit_status: disposition.exit_status,
         message: error.to_string(),
@@ -2175,7 +2175,7 @@ fn assert_error_disposition(error: &Error, code: &str, exit_status: u8) {
     assert_eq!(disposition.exit_status, exit_status);
     let encoded = error_json(error).expect("encode CLI error");
     let decoded: Value = serde_json::from_str(&encoded).expect("decode CLI error");
-    assert_eq!(decoded["schema"], "carrack.cli-error.v1");
+    assert_eq!(decoded["schema"], "skydriver.cli-error.v1");
     assert_eq!(decoded["code"], code);
     assert_eq!(decoded["exit_status"], u64::from(exit_status));
 }
@@ -2326,7 +2326,7 @@ mod tests {
         assert_error_disposition(
             &Error::Client(skydriver_client::Error::UpgradeRequired(Box::new(
                 skydriver_client::UpgradeRequired {
-                    schema: "carrack.protocol-error.v1".to_owned(),
+                    schema: "skydriver.protocol-error.v1".to_owned(),
                     code: "sdk_upgrade_required".to_owned(),
                     message: "upgrade".to_owned(),
                     protocol_epoch: 2,

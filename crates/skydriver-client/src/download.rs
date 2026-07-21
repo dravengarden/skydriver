@@ -418,13 +418,13 @@ impl VfsClient {
                 Some(&token),
                 &[],
                 Some(&CompletionBatchRequest {
-                    schema: "carrack.vfs.read-lease-completion-batch.v1",
+                    schema: "skydriver.vfs.read-lease-completion-batch.v1",
                     completions,
                 }),
             )
             .await;
         if let Ok(response) = batched {
-            let valid = response.schema == "carrack.vfs.read-lease-completion-batch.v1"
+            let valid = response.schema == "skydriver.vfs.read-lease-completion-batch.v1"
                 && response.completed_at != 0
                 && response.results.len() == completions.len()
                 && response
@@ -528,7 +528,7 @@ impl VfsClient {
         }
         Ok((
             GetResult {
-                schema: "carrack.fs-get.v1",
+                schema: "skydriver.fs-get.v1",
                 path: vfs_path.to_owned(),
                 version_id: plan.version_id.clone(),
                 plaintext_bytes: plan.plaintext_bytes,
@@ -788,7 +788,7 @@ fn validate_plan(plan: &DownloadPlan, expected: DownloadExpectation<'_>) -> Resu
     }
     if !matches!(
         plan.crypto_suite.as_str(),
-        "plaintext/v1" | "carrack-vfs-aes256gcm-hkdfsha256-v1"
+        "plaintext/v1" | "skydriver-vfs-aes256gcm-hkdfsha256-v1"
     ) {
         return Err(Error::failure(
             crate::FailureKind::UnsupportedSuite,
@@ -805,7 +805,7 @@ fn validate_plan(plan: &DownloadPlan, expected: DownloadExpectation<'_>) -> Resu
         &plan.provider_version,
         &plan.etag,
     );
-    if plan.schema != "carrack.vfs.download-plan.v1"
+    if plan.schema != "skydriver.vfs.download-plan.v1"
         || expected.version_id != plan.version_id
         || expected.file_id != plan.file_id
         || expected.plaintext_bytes != plan.plaintext_bytes
@@ -956,7 +956,7 @@ mod tests {
 
     fn valid_plan() -> DownloadPlan {
         DownloadPlan {
-            schema: "carrack.vfs.download-plan.v1".to_owned(),
+            schema: "skydriver.vfs.download-plan.v1".to_owned(),
             filesystem_id: "11111111111111111111111111111111".to_owned(),
             directory_id: "22222222222222222222222222222222".to_owned(),
             file_id: "33333333333333333333333333333333".to_owned(),
@@ -970,7 +970,7 @@ mod tests {
             block_manifest_bytes: 1,
             block_manifest_r2_key: "manifest-key".to_owned(),
             block_manifest_r2_version: "manifest-version".to_owned(),
-            crypto_suite: "carrack-vfs-aes256gcm-hkdfsha256-v1".to_owned(),
+            crypto_suite: "skydriver-vfs-aes256gcm-hkdfsha256-v1".to_owned(),
             key_epoch: 1,
             encryption_frame_bytes: 4,
             encoded_bytes: 0,
@@ -1021,14 +1021,14 @@ mod tests {
                 when.method(POST)
                     .path("/api/v2/read-leases/complete-batch")
                     .json_body(json!({
-                        "schema": "carrack.vfs.read-lease-completion-batch.v1",
+                        "schema": "skydriver.vfs.read-lease-completion-batch.v1",
                         "completions": [
                             {"read_lease_id": first},
                             {"read_lease_id": second}
                         ]
                     }));
                 then.status(200).json_body(json!({
-                    "schema": "carrack.vfs.read-lease-completion-batch.v1",
+                    "schema": "skydriver.vfs.read-lease-completion-batch.v1",
                     "completed_at": 1,
                     "results": [
                         {"read_lease_id": first, "status": "completed"},

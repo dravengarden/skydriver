@@ -37,7 +37,7 @@ func TestSharedBlockManifestGoldenVectors(t *testing.T) {
 		t.Fatalf("decode block-manifest vectors: %v", err)
 	}
 
-	if vectors.Schema != "carrack.vfs-block-manifest.golden.v1" {
+	if vectors.Schema != "skydriver.vfs-block-manifest.golden.v1" {
 		t.Fatalf("unexpected schema %q", vectors.Schema)
 	}
 

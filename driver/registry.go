@@ -13,9 +13,9 @@ import (
 
 var (
 	// ErrDriverKindNotRegistered indicates that the binary lacks a requested compiled driver.
-	ErrDriverKindNotRegistered = errors.New("carrack V2 driver kind is not compiled")
+	ErrDriverKindNotRegistered = errors.New("skydriver V2 driver kind is not compiled")
 	// ErrDriverKindRegistered indicates a duplicate compiled factory registration.
-	ErrDriverKindRegistered = errors.New("carrack V2 driver kind is already registered")
+	ErrDriverKindRegistered = errors.New("skydriver V2 driver kind is already registered")
 )
 
 // Instance is one authorized control-plane driver grant. Config is non-secret;

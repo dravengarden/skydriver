@@ -5,17 +5,17 @@ use unicode_normalization::UnicodeNormalization as _;
 
 use crate::error::Error;
 
-const FILE_LEAF_DOMAIN: &[u8] = b"carrack.vfs.file.leaf.v1\0";
-const FILE_EMPTY_DOMAIN: &[u8] = b"carrack.vfs.file.empty.v1\0";
-const FILE_NODE_DOMAIN: &[u8] = b"carrack.vfs.file.node.v1\0";
-const FILE_ROOT_DOMAIN: &[u8] = b"carrack.vfs.file.root.v1\0";
-const DIRECTORY_FILE_ENTRY_DOMAIN: &[u8] = b"carrack.vfs.directory.file-entry.v1\0";
-const DIRECTORY_CHILD_ENTRY_DOMAIN: &[u8] = b"carrack.vfs.directory.child-entry.v1\0";
-const DIRECTORY_EMPTY_DOMAIN: &[u8] = b"carrack.vfs.directory.empty.v1\0";
-const DIRECTORY_NODE_DOMAIN: &[u8] = b"carrack.vfs.directory.node.v1\0";
-const DIRECTORY_ROOT_DOMAIN: &[u8] = b"carrack.vfs.directory.root.v1\0";
-const BLOCK_MANIFEST_DOMAIN: &[u8] = b"carrack.vfs.block-manifest.v1\0";
-const EMPTY_METADATA_DOMAIN: &[u8] = b"carrack.vfs.metadata.empty.v1\0";
+const FILE_LEAF_DOMAIN: &[u8] = b"skydriver.vfs.file.leaf.v1\0";
+const FILE_EMPTY_DOMAIN: &[u8] = b"skydriver.vfs.file.empty.v1\0";
+const FILE_NODE_DOMAIN: &[u8] = b"skydriver.vfs.file.node.v1\0";
+const FILE_ROOT_DOMAIN: &[u8] = b"skydriver.vfs.file.root.v1\0";
+const DIRECTORY_FILE_ENTRY_DOMAIN: &[u8] = b"skydriver.vfs.directory.file-entry.v1\0";
+const DIRECTORY_CHILD_ENTRY_DOMAIN: &[u8] = b"skydriver.vfs.directory.child-entry.v1\0";
+const DIRECTORY_EMPTY_DOMAIN: &[u8] = b"skydriver.vfs.directory.empty.v1\0";
+const DIRECTORY_NODE_DOMAIN: &[u8] = b"skydriver.vfs.directory.node.v1\0";
+const DIRECTORY_ROOT_DOMAIN: &[u8] = b"skydriver.vfs.directory.root.v1\0";
+const BLOCK_MANIFEST_DOMAIN: &[u8] = b"skydriver.vfs.block-manifest.v1\0";
+const EMPTY_METADATA_DOMAIN: &[u8] = b"skydriver.vfs.metadata.empty.v1\0";
 const MAXIMUM_BLOCK_BYTES: u64 = 256 * 1024 * 1024;
 const MAXIMUM_BLOCKS: usize = 1_000_000;
 const MAXIMUM_DIRECTORY_ENTRIES: usize = 1_000_000;
@@ -675,7 +675,7 @@ mod tests {
     #[test]
     fn manifest_vectors_are_exact_and_tampering_fails() {
         let vectors: GoldenManifests = serde_json::from_str(MANIFEST_GOLDEN).unwrap();
-        assert_eq!(vectors.schema, "carrack.vfs-block-manifest.golden.v1");
+        assert_eq!(vectors.schema, "skydriver.vfs-block-manifest.golden.v1");
         for vector in vectors.manifests {
             let encoded = hex::decode(&vector.manifest_hex).unwrap();
             assert_eq!(hex::encode(Sha256::digest(&encoded)), vector.sha256);
@@ -781,7 +781,7 @@ mod tests {
         assert!(peak_subtrees <= 20);
         assert_ne!(streaming.finish().expect("finish million entries"), [0; 32]);
         println!(
-            "carrack_directory_merkle_benchmark entries=1000000 elapsed_ms={} peak_subtrees={peak_subtrees}",
+            "skydriver_directory_merkle_benchmark entries=1000000 elapsed_ms={} peak_subtrees={peak_subtrees}",
             started.elapsed().as_millis()
         );
     }

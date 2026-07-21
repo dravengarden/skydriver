@@ -483,9 +483,10 @@ async fn deliver_delta(
         .body()
         .ok_or_else(|| protocol_error("published catalog delta has no R2 body"))?;
     let mut response = Response::from_body(body.response_body()?)?;
-    response
-        .headers_mut()
-        .set("Content-Type", "application/vnd.carrack.catalog-delta+json")?;
+    response.headers_mut().set(
+        "Content-Type",
+        "application/vnd.skydriver.catalog-delta+json",
+    )?;
     response
         .headers_mut()
         .set("Content-Length", &delta.bytes.to_string())?;
@@ -569,9 +570,9 @@ mod tests {
             revision_id: 1,
             filesystem_root_directory_id: "202122232425262728292a2b2c2d2e2f".to_owned(),
             filesystem_root_data_root:
-                "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254".to_owned(),
+                "89bbf5ec77eb8ed59a0ff9cf3a444ca00d8af51227995620a3cf7c2d380df2f0".to_owned(),
             root_directory_id: "202122232425262728292a2b2c2d2e2f".to_owned(),
-            root_data_root: "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254"
+            root_data_root: "89bbf5ec77eb8ed59a0ff9cf3a444ca00d8af51227995620a3cf7c2d380df2f0"
                 .to_owned(),
             r2_key: "vfs/catalog/checkpoints/fs/aa/wrong.json".to_owned(),
             sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
@@ -596,11 +597,11 @@ mod tests {
             revision_id: 1,
             filesystem_root_directory_id: "202122232425262728292a2b2c2d2e2f".to_owned(),
             filesystem_root_data_root:
-                "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254"
+                "89bbf5ec77eb8ed59a0ff9cf3a444ca00d8af51227995620a3cf7c2d380df2f0"
                     .to_owned(),
             root_directory_id: "303132333435363738393a3b3c3d3e3f".to_owned(),
             root_data_root:
-                "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254"
+                "89bbf5ec77eb8ed59a0ff9cf3a444ca00d8af51227995620a3cf7c2d380df2f0"
                     .to_owned(),
             r2_key: "vfs/catalog/checkpoints/fs/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json".to_owned(),
             sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),

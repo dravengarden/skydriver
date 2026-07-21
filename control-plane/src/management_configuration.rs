@@ -12,7 +12,7 @@ const ADMIN_TOKEN_BINDING: &str = "SKYDRIVER_ADMIN_TOKEN";
 const DATABASE_BINDING: &str = "SKYDRIVER_INDEX";
 const VALIDATION_LIFETIME_SECONDS: u64 = 5 * 60;
 const ANNOTATION_KIND: &str = "token.annotation";
-const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.token-annotation.v1\0";
+const VALIDATION_DOMAIN: &[u8] = b"skydriver.management.validation.token-annotation.v1\0";
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -102,7 +102,7 @@ pub(crate) async fn validate_token_annotation(
     let validation_expires_at = now_seconds() + VALIDATION_LIFETIME_SECONDS;
     let digest = validation_digest(env, token_id, &normalized, validation_expires_at)?;
     no_store_json(&TokenAnnotationValidation {
-        schema: "carrack.management.token-annotation-validation.v1",
+        schema: "skydriver.management.token-annotation-validation.v1",
         token_id: token_id.to_owned(),
         current_label: current.label,
         current_note: current.note,
@@ -180,7 +180,7 @@ pub(crate) async fn apply_token_annotation(
     let operation_id = vfs_identifiers::new_uuid_v7_hex()?;
     let final_revision = normalized.expected_revision + 1;
     let receipt = TokenAnnotationReceipt {
-        schema: "carrack.management.token-annotation-receipt.v1",
+        schema: "skydriver.management.token-annotation-receipt.v1",
         operation_id: operation_id.clone(),
         token_id: token_id.to_owned(),
         label: normalized.label.clone(),

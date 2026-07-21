@@ -22,7 +22,7 @@ const ADMIN_TOKEN_BINDING: &str = "SKYDRIVER_ADMIN_TOKEN";
 const DATABASE_BINDING: &str = "SKYDRIVER_INDEX";
 const VALIDATION_LIFETIME_SECONDS: u64 = 5 * 60;
 const CREDENTIAL_KIND: &str = "driver.credential";
-const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.driver-credential.v1\0";
+const VALIDATION_DOMAIN: &[u8] = b"skydriver.management.validation.driver-credential.v1\0";
 const AUTHORIZATION_CLAIM_SECONDS: u64 = 5 * 60;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -135,7 +135,7 @@ pub(crate) async fn validate(
     let validation_digest = validation_digest(env, driver_id, &requested, validation_expires_at)?;
     let is_access_key = matches!(driver_kind, DriverKind::R2V1 | DriverKind::AwsS3V1);
     no_store_json(&ValidationResponse {
-        schema: "carrack.management.driver-credential-validation.v1",
+        schema: "skydriver.management.driver-credential-validation.v1",
         driver_id: driver_id.to_owned(),
         kind: driver.kind,
         current_credential_present: driver.credential_id.is_some(),
@@ -317,7 +317,7 @@ pub(crate) async fn apply(
     let sealed = sealed?;
     let operation_id = vfs_identifiers::new_uuid_v7_hex()?;
     let receipt = ReceiptResponse {
-        schema: "carrack.management.driver-credential-receipt.v1",
+        schema: "skydriver.management.driver-credential-receipt.v1",
         operation_id: operation_id.clone(),
         driver_id: driver_id.to_owned(),
         credential_id: credential_id.clone(),

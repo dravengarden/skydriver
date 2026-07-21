@@ -3,15 +3,15 @@
 # Low-overhead wall-clock helpers for live transfer acceptance. These metrics
 # are advisory end-to-end observations, never integrity or billing evidence.
 
-carrack_now_ns() {
+skydriver_now_ns() {
   date +%s%N
 }
 
-carrack_now_utc() {
+skydriver_now_utc() {
   date -u +%Y-%m-%dT%H:%M:%SZ
 }
 
-carrack_elapsed_ms() {
+skydriver_elapsed_ms() {
   local started_ns=$1
   local finished_ns=$2
   if [[ ! $started_ns =~ ^[0-9]+$ || ! $finished_ns =~ ^[0-9]+$ || $finished_ns -lt $started_ns ]]; then
@@ -21,7 +21,7 @@ carrack_elapsed_ms() {
   printf '%s\n' "$(((finished_ns - started_ns + 999999) / 1000000))"
 }
 
-carrack_bytes_per_second() {
+skydriver_bytes_per_second() {
   local bytes=$1
   local elapsed_ns=$2
   if [[ ! $bytes =~ ^[0-9]+$ || ! $elapsed_ns =~ ^[1-9][0-9]*$ ]]; then
@@ -31,7 +31,7 @@ carrack_bytes_per_second() {
   printf '%s\n' "$((bytes * 1000000000 / elapsed_ns))"
 }
 
-carrack_require_integer_range() {
+skydriver_require_integer_range() {
   local name=$1
   local value=$2
   local minimum=$3
@@ -42,7 +42,7 @@ carrack_require_integer_range() {
   fi
 }
 
-carrack_live_failure_json() {
+skydriver_live_failure_json() {
   local schema=$1
   local driver_id=$2
   local run_id=$3
@@ -64,12 +64,12 @@ carrack_live_failure_json() {
     echo "invalid live acceptance UTC timestamp" >&2
     return 1
   fi
-  carrack_require_integer_range exit_status "$exit_status" 1 255 >/dev/null || return 1
-  carrack_require_integer_range timeout_seconds "$timeout_seconds" 1 3600 >/dev/null || return 1
-  carrack_require_integer_range plaintext_bytes "$plaintext_bytes" 1 1073741824 >/dev/null || return 1
-  carrack_require_integer_range transfer_part_bytes "$transfer_part_bytes" 1 268435456 >/dev/null || return 1
-  carrack_require_integer_range maximum_concurrency "$maximum_concurrency" 1 64 >/dev/null || return 1
-  carrack_require_integer_range elapsed_ms "$elapsed_ms" 0 7200000 >/dev/null || return 1
+  skydriver_require_integer_range exit_status "$exit_status" 1 255 >/dev/null || return 1
+  skydriver_require_integer_range timeout_seconds "$timeout_seconds" 1 3600 >/dev/null || return 1
+  skydriver_require_integer_range plaintext_bytes "$plaintext_bytes" 1 1073741824 >/dev/null || return 1
+  skydriver_require_integer_range transfer_part_bytes "$transfer_part_bytes" 1 268435456 >/dev/null || return 1
+  skydriver_require_integer_range maximum_concurrency "$maximum_concurrency" 1 64 >/dev/null || return 1
+  skydriver_require_integer_range elapsed_ms "$elapsed_ms" 0 7200000 >/dev/null || return 1
   jq -cn \
     --arg schema "$schema" \
     --arg driver_id "$driver_id" \

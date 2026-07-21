@@ -4,7 +4,7 @@ use worker::{D1Database, Request, Response, Result, wasm_bindgen::JsValue};
 
 use crate::{vfs_access, vfs_tokens::AuthenticatedVfsToken};
 
-const DIRECTORY_LIST_SCHEMA: &str = "carrack.vfs.directory-list.v1";
+const DIRECTORY_LIST_SCHEMA: &str = "skydriver.vfs.directory-list.v1";
 const DEFAULT_PAGE_SIZE: u64 = 200;
 const MAXIMUM_PAGE_SIZE: u64 = 1_000;
 

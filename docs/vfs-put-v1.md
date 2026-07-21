@@ -60,7 +60,7 @@ value pins an existing file entry; the control plane also pins its stable file
 ID, current version, and file revision. A directory at that name is always a
 conflict. The block count and frame alignment must already be canonical.
 
-The response uses schema `carrack.vfs.put-preparation.v1`. It allocates an
+The response uses schema `skydriver.vfs.put-preparation.v1`. It allocates an
 expiring intent ID, immutable version and location IDs, an existing or new
 stable file ID, an authorized driver, a content-addressed block-manifest key,
 and a separate random 192-bit provider storage name. Metadata identities are
@@ -78,7 +78,7 @@ returns the original allocation. Reusing the key with any changed field returns
 After prepare, the client requests the directory epoch key and selected driver
 instance separately and concurrently; neither grant is trusted until its full
 intent identity is validated, and each response is bounded to 256 KiB. The key
-response schema is `carrack.vfs.directory-key-grant.v1`. An encrypted directory
+response schema is `skydriver.vfs.directory-key-grant.v1`. An encrypted directory
 returns one base64url 256-bit directory key plus the pinned crypto suite, epoch,
 directory, version, and intent identities. A `plaintext/v1` directory returns no key. The
 client derives the per-version content key locally; the control plane never
@@ -92,7 +92,7 @@ the caller future was cancelled; normal resumable staging is disarmed from that
 owner and retains the existing retry semantics. Source bytes are hashed again
 after staging, and any divergence removes staging and fails before provider I/O.
 
-The driver response schema is `carrack.vfs.driver-grant.v1`. It returns the
+The driver response schema is `skydriver.vfs.driver-grant.v1`. It returns the
 prepared driver ID, compiled versioned kind, configuration revision, strict
 non-secret JSON configuration, and an optional decrypted credential JSON value.
 The Worker rechecks the token, inherited ACL, directory placement, driver
@@ -123,7 +123,7 @@ leaf hashes, not file bytes. The Worker requires exact bytes, SHA-256, layout,
 block count, recomputed file root, and EOF before a conditional
 content-addressed R2 write. A key collision is accepted only when the existing
 R2 bytes are identical. The response schema is
-`carrack.vfs.block-manifest-stage.v1` and includes the immutable R2 version used
+`skydriver.vfs.block-manifest-stage.v1` and includes the immutable R2 version used
 at commit.
 
 ## Commit
@@ -147,7 +147,7 @@ attestation produced only after the Go driver contract has verified the exact
 complete object; the control plane deliberately does not open provider payload
 objects. Optional provider identities are retained for future pinned reads and
 deletes. For `plaintext/v1`, encoded and plaintext lengths must match.
-For `carrack-vfs-aes256gcm-hkdfsha256-v1`, the required encoded length is
+For `skydriver-vfs-aes256gcm-hkdfsha256-v1`, the required encoded length is
 exactly:
 
 ```text
@@ -186,7 +186,7 @@ batch. Changes to another entry may cause the Worker to recompute and retry the
 root plan up to four times. A change to the same entry fails with `409`; it is
 never silently overwritten.
 
-The durable response schema is `carrack.vfs.put-receipt.v1`. Lost-response
+The durable response schema is `skydriver.vfs.put-receipt.v1`. Lost-response
 replay with the same commit identity returns the original receipt. Changed
 provider evidence for the same intent returns `409`.
 

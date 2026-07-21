@@ -37,11 +37,11 @@ agent processes are SDK consumers, not a third architectural component.
 - All code, comments, commit messages, and docs are English.
 - Skydriver is the canonical product, repository, CLI, SDK, client, and protocol
   name. Consumer projects depend on Skydriver; Skydriver never depends on them.
-- Persisted `carrack.*` schemas, cryptographic domain separators, local-state
-  formats, and existing Cloudflare resource names are immutable legacy wire or
-  storage identities. New product surfaces must say Skydriver, while changing
-  those compatibility identities requires an explicit versioned migration that
-  proves old ciphertext, receipts, catalogs, and recovery state remain usable.
+- `skydriver.*` schemas, cryptographic domain separators, local-state formats,
+  D1 resources, and R2 resources define the incompatible Skydriver v1 epoch.
+  Pre-v1 test data and clients are intentionally unsupported. Future changes
+  to these identities require an explicit versioned migration with complete
+  ciphertext, receipt, catalog, cache, and recovery proofs.
 - Go uses the Columbus maximum-strictness golangci-lint profile.
 - TypeScript is strict: no `any`, no unchecked boundary casts.
 - Merkle domains, block-manifest rules, encryption derivation, and catalog

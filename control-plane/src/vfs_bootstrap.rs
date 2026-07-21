@@ -19,7 +19,7 @@ use crate::{
     vfs_tokens::token_verifier,
 };
 
-const BOOTSTRAP_SCHEMA: &str = "carrack.vfs.bootstrap-receipt.v1";
+const BOOTSTRAP_SCHEMA: &str = "skydriver.vfs.bootstrap-receipt.v1";
 const LOCAL_FILESYSTEM_KIND: &str = DriverKind::LocalFilesystemV2.as_str();
 const DEFAULT_TOKEN_LIFETIME_SECONDS: u64 = 30 * 24 * 60 * 60;
 const MINIMUM_TOKEN_LIFETIME_SECONDS: u64 = 60 * 60;
@@ -682,7 +682,7 @@ fn request_identity(
             idempotency_key: &requested.idempotency_key,
         };
         (
-            b"carrack.vfs.bootstrap.v1\0".as_slice(),
+            b"skydriver.vfs.bootstrap.v1\0".as_slice(),
             serde_json::to_vec(&identity)?,
         )
     } else {
@@ -695,7 +695,7 @@ fn request_identity(
             idempotency_key: &requested.idempotency_key,
         };
         (
-            b"carrack.vfs.bootstrap.environment.v2\0".as_slice(),
+            b"skydriver.vfs.bootstrap.environment.v2\0".as_slice(),
             serde_json::to_vec(&identity)?,
         )
     };
@@ -731,7 +731,7 @@ mod tests {
             filesystem_name: "Skydriver".to_owned(),
             principal_display_name: "Operator".to_owned(),
             local_driver_id: Some("local-main".to_owned()),
-            local_root: Some("/srv/carrack".to_owned()),
+            local_root: Some("/srv/skydriver".to_owned()),
             crypto_suite: None,
             token_lifetime_seconds: None,
             idempotency_key: "bootstrap-production-v1".to_owned(),
@@ -750,7 +750,7 @@ mod tests {
 
     #[test]
     fn rejects_ambiguous_or_relative_local_roots() {
-        for root in ["relative", "/srv/../secret", "/srv/carrack/"] {
+        for root in ["relative", "/srv/../secret", "/srv/skydriver/"] {
             let request = BootstrapRequest {
                 local_root: Some(root.to_owned()),
                 ..request()
@@ -792,7 +792,7 @@ mod tests {
         let driver = BootstrapDriver {
             id: "local-main".to_owned(),
             kind: LOCAL_FILESYSTEM_KIND,
-            config_json: r#"{"root":"/srv/carrack"}"#.to_owned(),
+            config_json: r#"{"root":"/srv/skydriver"}"#.to_owned(),
             create: true,
             place: true,
         };
@@ -814,7 +814,7 @@ mod tests {
         assert_ne!(first, [0; 32]);
         assert_eq!(
             lowercase_hex(&first).expect("encode digest"),
-            "f7d5505dac38b24a0877a6903f18405bbd48bd750fe9be67f0fe8ec392c50c3c"
+            "0478ce5813185df422869b9fde101d23f6963e3ec6bbbbb2ea797009f6467057"
         );
     }
 }

@@ -10,13 +10,13 @@ import {
 } from "./deployment-acceptance.mjs";
 
 function fixture() {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "carrack-deploy-acceptance-"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "skydriver-deploy-acceptance-"));
     fs.mkdirSync(path.join(directory, "assets"));
     fs.writeFileSync(
         path.join(directory, "index.html"),
         '<!doctype html><script type="module" src="/assets/index-test.js"></script>',
     );
-    fs.writeFileSync(path.join(directory, "assets/index-test.js"), "console.log('carrack');\n");
+    fs.writeFileSync(path.join(directory, "assets/index-test.js"), "console.log('skydriver');\n");
     return directory;
 }
 
@@ -77,7 +77,7 @@ test("retries edge propagation and accepts only the exact environment and UI bui
             }
             if (url.pathname === "/api/acceptance/wasm-sdk") {
                 return Response.json({
-                    schema: "carrack.sdk.wasm-acceptance.v1",
+                    schema: "skydriver.sdk.wasm-acceptance.v1",
                     sdk_version: "0.3.6",
                     round_trip_verified: true,
                 });
@@ -117,7 +117,7 @@ test("fails closed when the deployed UI bytes do not match", async () => {
             }
             if (pathname === "/api/acceptance/wasm-sdk") {
                 return Response.json({
-                    schema: "carrack.sdk.wasm-acceptance.v1",
+                    schema: "skydriver.sdk.wasm-acceptance.v1",
                     sdk_version: "0.3.6",
                     round_trip_verified: true,
                 });

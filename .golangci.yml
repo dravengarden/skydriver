@@ -160,6 +160,6 @@ formatters:
     - goimports
   settings:
     goimports:
-      local-prefixes: [github.com/dravengarden/carrack]
+      local-prefixes: [github.com/dravengarden/skydriver]
     gofumpt:
       extra-rules: true

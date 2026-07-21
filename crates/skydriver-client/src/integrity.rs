@@ -268,7 +268,7 @@ mod tests {
             serde_json::from_str(include_str!("../../../testdata/vfs-merkle-v1.json")).unwrap();
         for vector in vectors.files {
             let directory = std::env::temp_dir();
-            let path = directory.join(format!("carrack-rust-merkle-{}", vector.expected.root));
+            let path = directory.join(format!("skydriver-rust-merkle-{}", vector.expected.root));
             std::fs::write(&path, hex::decode(vector.payload_hex).unwrap()).unwrap();
             let tree = build_file(&path, vector.expected.block_bytes).unwrap();
             std::fs::remove_file(path).unwrap();

@@ -7,7 +7,7 @@ import (
 	"math"
 )
 
-const blockManifestDomain = "carrack.vfs.block-manifest.v1"
+const blockManifestDomain = "skydriver.vfs.block-manifest.v1"
 
 // MarshalFileBlockManifest encodes one already validated FileTree into the
 // canonical V1 block-manifest binary format. The manifest contains plaintext

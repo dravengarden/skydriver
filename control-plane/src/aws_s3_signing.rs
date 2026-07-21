@@ -258,7 +258,7 @@ pub(crate) fn multipart_grant_from_plaintext(
     )?;
     let verify_url = sign("GET", &config, &credential, &key, lifetime, &[], &[])?;
     Some(json!({
-        "schema": "carrack.vfs.s3-multipart-grant.v1",
+        "schema": "skydriver.vfs.s3-multipart-grant.v1",
         "upload_id": upload_id,
         "parts": parts,
         "complete_url": complete_url,
@@ -349,7 +349,7 @@ fn verification_key(config: &Config, credential: &Credential) -> Option<String> 
     let authority = hex(&Sha256::digest(credential.access_key_id.as_bytes()));
     object_key(
         config,
-        &format!(".carrack/credential-check/{authority}/{}", hex(&random)),
+        &format!(".skydriver/credential-check/{authority}/{}", hex(&random)),
     )
 }
 
@@ -961,7 +961,7 @@ mod tests {
     fn config() -> Config {
         Config {
             region: "us-east-1".to_owned(),
-            bucket: "carrack-payload-example".to_owned(),
+            bucket: "skydriver-payload-example".to_owned(),
             expected_bucket_owner: "123456789012".to_owned(),
             prefix: "objects/".to_owned(),
         }
@@ -1011,7 +1011,7 @@ mod tests {
             "20260718T120000Z",
         )
         .expect("sign grant");
-        assert!(url.starts_with("https://carrack-payload-example.s3.us-east-1.amazonaws.com/"));
+        assert!(url.starts_with("https://skydriver-payload-example.s3.us-east-1.amazonaws.com/"));
         assert!(
             url.contains("X-Amz-SignedHeaders=host%3Bif-none-match%3Bx-amz-expected-bucket-owner")
         );

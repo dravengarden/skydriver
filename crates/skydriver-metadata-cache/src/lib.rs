@@ -12,9 +12,9 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
-const RECORD_PREFIX: &[u8] = b"carrack.metadata-cache.v1\0";
-const KEY_INFO: &[u8] = b"carrack.metadata-cache-key.v1";
-const AAD_DOMAIN: &[u8] = b"carrack.metadata-cache-record.v1\0";
+const RECORD_PREFIX: &[u8] = b"skydriver.metadata-cache.v1\0";
+const KEY_INFO: &[u8] = b"skydriver.metadata-cache-key.v1";
+const AAD_DOMAIN: &[u8] = b"skydriver.metadata-cache-record.v1\0";
 const NONCE_BYTES: usize = 12;
 const TAG_BYTES: usize = 16;
 const MAXIMUM_CONTEXT_BYTES: usize = 4 * 1024;

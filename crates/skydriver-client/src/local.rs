@@ -42,7 +42,7 @@ pub(crate) fn upload(
             .map_err(|error| Error::InvalidResponse(format!("create object parent: {error}")))?;
     }
     let part_count = encoded_bytes.div_ceil(part_bytes);
-    let part_root = PathBuf::from(format!(".carrack/uploads/{intent_id}"));
+    let part_root = PathBuf::from(format!(".skydriver/uploads/{intent_id}"));
     directory
         .create_dir_all(&part_root)
         .map_err(|error| Error::InvalidResponse(format!("create upload journal: {error}")))?;
@@ -55,7 +55,10 @@ pub(crate) fn upload(
         part_count,
         maximum_concurrency,
     )?;
-    let temporary = PathBuf::from(format!("{}.carrack-upload-{intent_id}", relative.display()));
+    let temporary = PathBuf::from(format!(
+        "{}.skydriver-upload-{intent_id}",
+        relative.display()
+    ));
     if directory.metadata(&temporary).is_ok() {
         directory
             .remove_file(&temporary)

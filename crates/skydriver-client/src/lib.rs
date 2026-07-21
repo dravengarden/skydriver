@@ -16,8 +16,8 @@ pub const PROTOCOL_EPOCH: u64 = 2;
 /// Client implementation version sent on every control-plane request.
 pub const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-const COMPATIBILITY_SCHEMA: &str = "carrack.protocol-compatibility.v1";
-const ERROR_SCHEMA: &str = "carrack.protocol-error.v1";
+const COMPATIBILITY_SCHEMA: &str = "skydriver.protocol-compatibility.v1";
+const ERROR_SCHEMA: &str = "skydriver.protocol-error.v1";
 const MAXIMUM_COMPATIBILITY_BODY_BYTES: usize = 64 * 1024;
 const MAXIMUM_CONTROL_BODY_BYTES: usize = 64 * 1024 * 1024;
 
@@ -592,7 +592,7 @@ mod tests {
             assert!(request.starts_with("get /api/compatibility http/1.1"));
             assert!(request.contains("skydriver-protocol-epoch: 2"));
             assert!(request.contains("skydriver-sdk-version: 0.3.6"));
-            let body = r#"{"schema":"carrack.protocol-compatibility.v1","protocol_epoch":2,"minimum_sdk_version":"0.3.0","server_version":"0.3.2","enforcement":"required","upgrade_command":"upgrade skydriver"}"#;
+            let body = r#"{"schema":"skydriver.protocol-compatibility.v1","protocol_epoch":2,"minimum_sdk_version":"0.3.0","server_version":"0.3.2","enforcement":"required","upgrade_command":"upgrade skydriver"}"#;
             stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.expect("write response");
         });
         let client = Client::new(&format!("http://{address}")).expect("construct client");
@@ -615,7 +615,7 @@ mod tests {
             let mut request = vec![0; 4096];
             let length = stream.read(&mut request).await.expect("read request");
             assert!(length > 0);
-            let body = r#"{"schema":"carrack.protocol-error.v1","code":"sdk_upgrade_required","message":"upgrade","protocol_epoch":3,"minimum_sdk_version":"2.0.0","server_version":"2.0.0","upgrade_command":"upgrade skydriver"}"#;
+            let body = r#"{"schema":"skydriver.protocol-error.v1","code":"sdk_upgrade_required","message":"upgrade","protocol_epoch":3,"minimum_sdk_version":"2.0.0","server_version":"2.0.0","upgrade_command":"upgrade skydriver"}"#;
             stream.write_all(format!("HTTP/1.1 426 Upgrade Required\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.expect("write response");
         });
         let client = Client::new(&format!("http://{address}")).expect("construct client");

@@ -18,7 +18,7 @@ failed acceptance even when earlier transfer stages emitted sampled telemetry.
 - Control plane: `https://dev.skydriver.stormbird.xyz`.
 - Client version: `0.3.6`; baseline code revision `69ae9ad`.
 - Source: incompressible random bytes generated from `/dev/urandom`.
-- Encryption: `carrack-vfs-aes256gcm-hkdfsha256-v1`.
+- Encryption: `skydriver-vfs-aes256gcm-hkdfsha256-v1`.
 - The measurements include control-plane calls, encryption or decryption,
   provider I/O, complete hashing, and local publication unless explicitly
   identified as sampled provider telemetry.

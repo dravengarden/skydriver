@@ -13,9 +13,9 @@ use crate::{
     vfs_tokens::AuthenticatedVfsToken,
 };
 
-const KEY_GRANT_SCHEMA: &str = "carrack.vfs.directory-key-grant.v1";
-const DRIVER_GRANT_SCHEMA: &str = "carrack.vfs.driver-grant.v1";
-const PUT_DELETE_DRIVER_GRANT_SCHEMA: &str = "carrack.vfs.put-delete-driver-grant.v1";
+const KEY_GRANT_SCHEMA: &str = "skydriver.vfs.directory-key-grant.v1";
+const DRIVER_GRANT_SCHEMA: &str = "skydriver.vfs.driver-grant.v1";
+const PUT_DELETE_DRIVER_GRANT_SCHEMA: &str = "skydriver.vfs.put-delete-driver-grant.v1";
 
 #[derive(Deserialize)]
 struct PutGrantRow {

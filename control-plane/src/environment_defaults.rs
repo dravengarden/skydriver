@@ -136,7 +136,7 @@ fn parse_initial_max_physical_bytes(value: &str) -> Result<u64> {
 fn desired_r2_config_from_values(environment: &str, endpoint: &str) -> Result<r2_signing::Config> {
     let config = r2_signing::Config {
         endpoint: endpoint.to_owned(),
-        bucket: format!("carrack-payload-{environment}"),
+        bucket: format!("skydriver-payload-{environment}"),
         prefix: String::new(),
         managed: true,
     };
@@ -256,8 +256,8 @@ mod tests {
         let endpoint = "https://0123456789abcdef.r2.cloudflarestorage.com";
         let dev = desired_r2_config_from_values("dev", endpoint).expect("dev config");
         let prod = desired_r2_config_from_values("prod", endpoint).expect("prod config");
-        assert_eq!(dev.bucket, "carrack-payload-dev");
-        assert_eq!(prod.bucket, "carrack-payload-prod");
+        assert_eq!(dev.bucket, "skydriver-payload-dev");
+        assert_eq!(prod.bucket, "skydriver-payload-prod");
         assert_ne!(dev.bucket, prod.bucket);
         assert!(dev.managed && prod.managed);
     }

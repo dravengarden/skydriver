@@ -9,7 +9,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::private_fs::ensure_private_directory;
 
-const SUITE: &str = "carrack-vfs-aes256gcm-hkdfsha256-v1";
+const SUITE: &str = "skydriver-vfs-aes256gcm-hkdfsha256-v1";
 static DOWNLOAD_TEMPORARY_ORDINAL: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) struct Descriptor {
@@ -156,7 +156,7 @@ fn create_download_temporary(parent: &Path) -> Result<(PathBuf, std::fs::File), 
     loop {
         let ordinal = DOWNLOAD_TEMPORARY_ORDINAL.fetch_add(1, Ordering::Relaxed);
         let path = parent.join(format!(
-            ".carrack-download-{}-{ordinal:016x}.tmp",
+            ".skydriver-download-{}-{ordinal:016x}.tmp",
             std::process::id()
         ));
         match std::fs::OpenOptions::new()
@@ -422,7 +422,7 @@ mod tests {
             &source,
             directory.path(),
             "corrupt",
-            "carrack-vfs-aes256gcm-hkdfsha256-v1",
+            "skydriver-vfs-aes256gcm-hkdfsha256-v1",
             &descriptor(),
             Some(&key),
         )
@@ -433,7 +433,7 @@ mod tests {
         let corrupt = restore_to_staging(
             &staged.path,
             directory.path(),
-            "carrack-vfs-aes256gcm-hkdfsha256-v1",
+            "skydriver-vfs-aes256gcm-hkdfsha256-v1",
             &descriptor(),
             Some(&key),
         )
@@ -449,7 +449,7 @@ mod tests {
                 .filter(|entry| entry
                     .file_name()
                     .to_string_lossy()
-                    .starts_with(".carrack-download-"))
+                    .starts_with(".skydriver-download-"))
                 .count(),
             0
         );

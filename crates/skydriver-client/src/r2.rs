@@ -219,7 +219,7 @@ async fn multipart_upload(
                 Error::InvalidResponse("R2 multipart initiation omitted upload ID".to_owned())
             })?;
             let journal = MultipartJournal {
-                schema: "carrack.r2-multipart-journal.v1".to_owned(),
+                schema: "skydriver.r2-multipart-journal.v1".to_owned(),
                 intent_id: intent_id.to_owned(),
                 upload_id,
                 encoded_bytes: bytes,
@@ -682,7 +682,7 @@ fn validate_multipart_grant(
 ) -> Result<(), Error> {
     if !matches!(
         grant.schema.as_str(),
-        "carrack.vfs.r2-multipart-grant.v1" | "carrack.vfs.s3-multipart-grant.v1"
+        "skydriver.vfs.r2-multipart-grant.v1" | "skydriver.vfs.s3-multipart-grant.v1"
     ) || grant.upload_id != upload_id
         || grant.parts.len() as u64 != part_count
         || grant.expires_at == 0
@@ -749,7 +749,7 @@ fn load_journal(path: &Path) -> Result<Option<MultipartJournal>, Error> {
     };
     let journal = serde_json::from_slice::<MultipartJournal>(&bytes)
         .map_err(|error| Error::InvalidResponse(format!("decode R2 journal: {error}")))?;
-    if journal.schema != "carrack.r2-multipart-journal.v1"
+    if journal.schema != "skydriver.r2-multipart-journal.v1"
         || journal.upload_id.is_empty()
         || journal.upload_id.len() > 1_024
         || journal.etags.keys().any(|part| *part == 0)
@@ -1060,7 +1060,7 @@ mod tests {
                 when.method(POST)
                     .path("/api/v2/puts/intent/r2-multipart-grant");
                 then.status(200).json_body(serde_json::json!({
-                    "schema": "carrack.vfs.r2-multipart-grant.v1",
+                    "schema": "skydriver.vfs.r2-multipart-grant.v1",
                     "upload_id": "upload-1",
                     "parts": [{"part_number": 1, "url": server.url("/part/1")}],
                     "complete_url": format!("{}?X-Amz-SignedHeaders=host%3Bif-none-match", server.url("/complete")),

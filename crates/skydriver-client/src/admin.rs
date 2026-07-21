@@ -11,34 +11,34 @@ use crate::{
     decode_upgrade_required,
 };
 
-const SNAPSHOT_SCHEMA: &str = "carrack.management.snapshot.v2";
-const EVENTS_SCHEMA: &str = "carrack.management.events.v1";
-const DIRECTORY_SCHEMA: &str = "carrack.management.directory.v1";
-const DIRECTORY_ENTRY_PAGE_SCHEMA: &str = "carrack.management.directory-entry-page.v1";
-const TRANSFER_METRICS_SCHEMA: &str = "carrack.management.transfer-metrics.v1";
+const SNAPSHOT_SCHEMA: &str = "skydriver.management.snapshot.v2";
+const EVENTS_SCHEMA: &str = "skydriver.management.events.v1";
+const DIRECTORY_SCHEMA: &str = "skydriver.management.directory.v1";
+const DIRECTORY_ENTRY_PAGE_SCHEMA: &str = "skydriver.management.directory-entry-page.v1";
+const TRANSFER_METRICS_SCHEMA: &str = "skydriver.management.transfer-metrics.v1";
 const TRANSFER_ANALYTICS_SCHEMAS: [&str; 2] = [
-    "carrack.management.transfer-analytics.v1",
-    "carrack.management.transfer-analytics.v2",
+    "skydriver.management.transfer-analytics.v1",
+    "skydriver.management.transfer-analytics.v2",
 ];
 const TOKEN_ANNOTATION_VALIDATION_SCHEMA: &str =
-    "carrack.management.token-annotation-validation.v1";
-const TOKEN_ANNOTATION_RECEIPT_SCHEMA: &str = "carrack.management.token-annotation-receipt.v1";
-const DRIVER_STATE_VALIDATION_SCHEMA: &str = "carrack.management.driver-state-validation.v1";
-const DRIVER_STATE_RECEIPT_SCHEMA: &str = "carrack.management.driver-state-receipt.v1";
+    "skydriver.management.token-annotation-validation.v1";
+const TOKEN_ANNOTATION_RECEIPT_SCHEMA: &str = "skydriver.management.token-annotation-receipt.v1";
+const DRIVER_STATE_VALIDATION_SCHEMA: &str = "skydriver.management.driver-state-validation.v1";
+const DRIVER_STATE_RECEIPT_SCHEMA: &str = "skydriver.management.driver-state-receipt.v1";
 const DRIVER_REGISTRATION_VALIDATION_SCHEMA: &str =
-    "carrack.management.driver-registration-validation.v1";
+    "skydriver.management.driver-registration-validation.v1";
 const DRIVER_REGISTRATION_RECEIPT_SCHEMA: &str =
-    "carrack.management.driver-registration-receipt.v1";
+    "skydriver.management.driver-registration-receipt.v1";
 const DRIVER_CREDENTIAL_VALIDATION_SCHEMA: &str =
-    "carrack.management.driver-credential-validation.v1";
-const DRIVER_CREDENTIAL_RECEIPT_SCHEMA: &str = "carrack.management.driver-credential-receipt.v1";
-const QUOTA_VALIDATION_SCHEMA: &str = "carrack.management.quota-validation.v1";
-const QUOTA_RECEIPT_SCHEMA: &str = "carrack.management.quota-receipt.v1";
-const BOOTSTRAP_AUTHORITY_SCHEMA: &str = "carrack.vfs.bootstrap-receipt.v1";
-const ACCESS_SCHEMA: &str = "carrack.management.access.v1";
-const ACCESS_VALIDATION_SCHEMA: &str = "carrack.management.access-validation.v1";
-const ACCESS_RECEIPT_SCHEMA: &str = "carrack.management.access-receipt.v1";
-const PROVIDER_INVENTORY_SCHEMA: &str = "carrack.management.provider-inventory.v1";
+    "skydriver.management.driver-credential-validation.v1";
+const DRIVER_CREDENTIAL_RECEIPT_SCHEMA: &str = "skydriver.management.driver-credential-receipt.v1";
+const QUOTA_VALIDATION_SCHEMA: &str = "skydriver.management.quota-validation.v1";
+const QUOTA_RECEIPT_SCHEMA: &str = "skydriver.management.quota-receipt.v1";
+const BOOTSTRAP_AUTHORITY_SCHEMA: &str = "skydriver.vfs.bootstrap-receipt.v1";
+const ACCESS_SCHEMA: &str = "skydriver.management.access.v1";
+const ACCESS_VALIDATION_SCHEMA: &str = "skydriver.management.access-validation.v1";
+const ACCESS_RECEIPT_SCHEMA: &str = "skydriver.management.access-receipt.v1";
+const PROVIDER_INVENTORY_SCHEMA: &str = "skydriver.management.provider-inventory.v1";
 
 /// Strict one-shot VFS bootstrap request used by the operator CLI.
 #[derive(Clone, Debug, Serialize)]
@@ -1743,7 +1743,7 @@ impl AdminClient {
             .get(SET_COOKIE)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.split(';').next())
-            .filter(|value| value.starts_with("carrack_session="))
+            .filter(|value| value.starts_with("skydriver_session="))
             .ok_or_else(|| {
                 Error::InvalidResponse("operator login omitted session cookie".to_owned())
             })?
@@ -1819,7 +1819,7 @@ impl AdminClient {
             .get(SET_COOKIE)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.split(';').next())
-            .filter(|value| value.starts_with("carrack_configuration="))
+            .filter(|value| value.starts_with("skydriver_configuration="))
             .ok_or_else(|| {
                 Error::InvalidResponse("configuration login omitted session cookie".to_owned())
             })?
@@ -2037,7 +2037,7 @@ fn invalid_analytics_row(
         || row.weighted_provider_ms == 0
         || row.weighted_provider_ms > row.weighted_total_ms
         || row.weighted_phase_transfers > row.weighted_transfers
-        || (analytics.schema == "carrack.management.transfer-analytics.v1"
+        || (analytics.schema == "skydriver.management.transfer-analytics.v1"
             && (row.weighted_phase_transfers != 0
                 || row.weighted_plan_ms != 0
                 || row.weighted_queue_ms != 0
@@ -2182,7 +2182,7 @@ mod tests {
             created_at: 100,
         };
         let complete = ManagementEventPage {
-            schema: "carrack.management.events.v1".to_owned(),
+            schema: "skydriver.management.events.v1".to_owned(),
             observed_at: 100,
             after: 3,
             event_cursor: 4,
@@ -2197,7 +2197,7 @@ mod tests {
         assert!(validate_event_page(&invalid, 3, 100).is_err());
 
         let paged = ManagementEventPage {
-            schema: "carrack.management.events.v1".to_owned(),
+            schema: "skydriver.management.events.v1".to_owned(),
             observed_at: 100,
             after: 3,
             event_cursor: 8,

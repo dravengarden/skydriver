@@ -11,9 +11,9 @@ use crate::{
 };
 
 /// Stable complete VFS catalog checkpoint schema.
-pub const CATALOG_CHECKPOINT_SCHEMA: &str = "carrack.vfs.catalog-checkpoint.v1";
+pub const CATALOG_CHECKPOINT_SCHEMA: &str = "skydriver.vfs.catalog-checkpoint.v1";
 /// Stable hash-linked catalog delta schema.
-pub const CATALOG_DELTA_SCHEMA: &str = "carrack.vfs.catalog-delta.v1";
+pub const CATALOG_DELTA_SCHEMA: &str = "skydriver.vfs.catalog-delta.v1";
 /// Maximum directories accepted in one complete checkpoint.
 pub const MAXIMUM_CATALOG_DIRECTORIES: usize = 5_000;
 /// Maximum entries accepted across one complete checkpoint.
@@ -62,7 +62,7 @@ pub fn catalog_checkpoint_view_etag(
         "catalog root directory identity is invalid",
     )?;
     let mut digest = Sha256::new();
-    digest.update(b"carrack.vfs.catalog-checkpoint-view-etag.v1\0");
+    digest.update(b"skydriver.vfs.catalog-checkpoint-view-etag.v1\0");
     digest.update(checkpoint_digest);
     digest.update(root);
     catalog_checkpoint_etag(&hex::encode(digest.finalize()))
@@ -813,7 +813,7 @@ mod tests {
         .expect("checkpoint view entity tag");
         assert_eq!(
             tag,
-            "\"sha256:c512d6569dbc3c3393c8c12c6c25fff666eae28a91c25ce2b12b353ec601d3cd\""
+            "\"sha256:7aca91a566d0afb2863d78ff14740603071f1683a1cadc9b736b69a20e5ea8ae\""
         );
         validate_catalog_checkpoint_etag(&tag).expect("valid view entity tag");
         assert_ne!(

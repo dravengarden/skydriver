@@ -50,15 +50,15 @@ blocks are retained in V1 metadata.
 
 ```text
 file leaf = SHA256(
-  "carrack.vfs.file.leaf.v1\0" ||
+  "skydriver.vfs.file.leaf.v1\0" ||
   block_index:u64 || exact_block_bytes:u64 || plaintext
 )
 
-file node domain  = "carrack.vfs.file.node.v1\0"
-empty tree        = SHA256("carrack.vfs.file.empty.v1\0")
+file node domain  = "skydriver.vfs.file.node.v1\0"
+empty tree        = SHA256("skydriver.vfs.file.empty.v1\0")
 
 file root = SHA256(
-  "carrack.vfs.file.root.v1\0" ||
+  "skydriver.vfs.file.root.v1\0" ||
   configured_block_bytes:u64 || exact_file_bytes:u64 ||
   block_count:u64 || tree_digest:hash
 )
@@ -75,7 +75,7 @@ recompute a file root without receiving payload bytes. Its canonical binary
 encoding is:
 
 ```text
-"carrack.vfs.block-manifest.v1\0" ||
+"skydriver.vfs.block-manifest.v1\0" ||
 exact_file_bytes:u64 || configured_block_bytes:u64 || block_count:u64 ||
 block_0_leaf:hash || ... || block_n_leaf:hash || file_root:hash
 ```
@@ -102,27 +102,27 @@ duplicate normalized names are invalid.
 
 ```text
 file entry = SHA256(
-  "carrack.vfs.directory.file-entry.v1\0" ||
+  "skydriver.vfs.directory.file-entry.v1\0" ||
   name || stable_file_id:16 || immutable_version_id:16 ||
   plaintext_bytes:u64 || file_root:hash || portable_metadata_root:hash
 )
 
 directory entry = SHA256(
-  "carrack.vfs.directory.child-entry.v1\0" ||
+  "skydriver.vfs.directory.child-entry.v1\0" ||
   name || stable_directory_id:16 || child_data_root:hash
 )
 
-directory node domain = "carrack.vfs.directory.node.v1\0"
-empty tree = SHA256("carrack.vfs.directory.empty.v1\0")
+directory node domain = "skydriver.vfs.directory.node.v1\0"
+empty tree = SHA256("skydriver.vfs.directory.empty.v1\0")
 
 directory root = SHA256(
-  "carrack.vfs.directory.root.v1\0" ||
+  "skydriver.vfs.directory.root.v1\0" ||
   entry_count:u64 || tree_digest:hash
 )
 ```
 
 V1's empty portable-metadata commitment is
-`SHA256("carrack.vfs.metadata.empty.v1\0")`. A future portable metadata schema
+`SHA256("skydriver.vfs.metadata.empty.v1\0")`. A future portable metadata schema
 gets its own domain and supplies its digest through the existing entry field.
 ACL, token, encryption-epoch, and placement-policy roots remain separate, so
 an authorization change cannot pretend that file bytes changed.

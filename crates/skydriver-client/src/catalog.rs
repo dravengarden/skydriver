@@ -20,10 +20,10 @@ use std::{
 
 use crate::{DirectoryEntry, EntryKind, Error, VfsToken, private_fs::ensure_private_directory};
 
-const NODE_SCHEMA: &str = "carrack.vfs.catalog-node.v1";
-const ENVELOPE_SCHEMA: &str = "carrack.vfs.catalog-node-envelope.v1";
-const HEAD_SCHEMA: &str = "carrack.vfs.catalog-head.v1";
-const HEAD_ENVELOPE_SCHEMA: &str = "carrack.vfs.catalog-head-envelope.v1";
+const NODE_SCHEMA: &str = "skydriver.vfs.catalog-node.v1";
+const ENVELOPE_SCHEMA: &str = "skydriver.vfs.catalog-node-envelope.v1";
+const HEAD_SCHEMA: &str = "skydriver.vfs.catalog-head.v1";
+const HEAD_ENVELOPE_SCHEMA: &str = "skydriver.vfs.catalog-head-envelope.v1";
 const MAXIMUM_NODE_BYTES: usize = 512 * 1024 * 1024;
 const MAXIMUM_HEAD_BYTES: usize = 64 * 1024;
 const MAXIMUM_GC_CURSOR_BYTES: usize = 1;
@@ -885,6 +885,10 @@ mod tests {
         VfsToken::parse(&URL_SAFE_NO_PAD.encode([byte; 32])).expect("cache token")
     }
 
+    fn empty_directory_root() -> String {
+        hex::encode(directory_merkle_root(&[]).expect("empty directory root"))
+    }
+
     fn empty_checkpoint() -> CatalogCheckpoint {
         let root = hex::encode(directory_merkle_root(&[]).expect("empty directory root"));
         CatalogCheckpoint {
@@ -916,33 +920,33 @@ mod tests {
         )
         .expect("catalog store");
         let directory_id = "2031425364758697a8b9cadbecfd0e1f";
-        let data_root = "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254";
+        let data_root = empty_directory_root();
         let node = store
-            .publish(directory_id, data_root, &[])
+            .publish(directory_id, &data_root, &[])
             .expect("publish catalog node");
         assert_eq!(node.directory_id, directory_id);
         assert_eq!(
             store
-                .load(directory_id, data_root)
+                .load(directory_id, &data_root)
                 .expect("load catalog node")
                 .expect("stored node")
                 .data_root,
             data_root
         );
         let path = store
-            .node_path(directory_id, data_root)
+            .node_path(directory_id, &data_root)
             .expect("catalog path");
         let mut bytes = std::fs::read(&path).expect("read stored node");
         let middle = bytes.len() / 2;
         bytes[middle] ^= 1;
         std::fs::write(path, bytes).expect("corrupt stored node");
-        assert!(store.load(directory_id, data_root).is_err());
+        assert!(store.load(directory_id, &data_root).is_err());
         store
-            .publish(directory_id, data_root, &[])
+            .publish(directory_id, &data_root, &[])
             .expect("verified publication replaces invalid cache node");
         assert!(
             store
-                .load(directory_id, data_root)
+                .load(directory_id, &data_root)
                 .expect("load repaired catalog node")
                 .is_some()
         );
@@ -966,15 +970,15 @@ mod tests {
         )
         .expect("second token catalog");
         let directory_id = "303132333435363738393a3b3c3d3e3f";
-        let data_root = "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254";
+        let data_root = empty_directory_root();
 
         first
-            .publish(directory_id, data_root, &[])
+            .publish(directory_id, &data_root, &[])
             .expect("publish first token node");
 
         assert!(
             second
-                .load(directory_id, data_root)
+                .load(directory_id, &data_root)
                 .expect("load second token node")
                 .is_none()
         );
@@ -988,12 +992,12 @@ mod tests {
         let store =
             CatalogStore::new(temporary.path(), token_id, &token, true).expect("catalog store");
         let directory_id = "2031425364758697a8b9cadbecfd0e1f";
-        let data_root = "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254";
+        let data_root = empty_directory_root();
         store
-            .publish(directory_id, data_root, &[])
+            .publish(directory_id, &data_root, &[])
             .expect("publish encrypted node");
         let path = store
-            .node_path(directory_id, data_root)
+            .node_path(directory_id, &data_root)
             .expect("catalog node path");
         let sealed = std::fs::read(path).expect("read sealed node");
         assert!(!String::from_utf8_lossy(&sealed).contains(NODE_SCHEMA));
@@ -1002,13 +1006,13 @@ mod tests {
             .expect("reopen catalog store");
         assert!(
             reopened
-                .load(directory_id, data_root)
+                .load(directory_id, &data_root)
                 .expect("open same-token node")
                 .is_some()
         );
         let wrong_token = CatalogStore::new(temporary.path(), token_id, &cache_token(2), true)
             .expect("wrong-token store");
-        assert!(wrong_token.load(directory_id, data_root).is_err());
+        assert!(wrong_token.load(directory_id, &data_root).is_err());
     }
 
     #[test]
@@ -1018,14 +1022,14 @@ mod tests {
         let store = CatalogStore::new(temporary.path(), token_id, &cache_token(1), false)
             .expect("disabled catalog store");
         let directory_id = "2031425364758697a8b9cadbecfd0e1f";
-        let data_root = "9b510ca4b7de6a996568f09b2eb0a5793f14c207d2a5a0f3735b11a2d109a254";
+        let data_root = empty_directory_root();
         store
-            .publish(directory_id, data_root, &[])
+            .publish(directory_id, &data_root, &[])
             .expect("validate ephemeral node");
 
         assert!(
             store
-                .load(directory_id, data_root)
+                .load(directory_id, &data_root)
                 .expect("disabled cache miss")
                 .is_none()
         );

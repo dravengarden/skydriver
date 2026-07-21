@@ -10,10 +10,10 @@ import (
 )
 
 const (
-	fileLeafDomain  = "carrack.vfs.file.leaf.v1"
-	fileEmptyDomain = "carrack.vfs.file.empty.v1"
-	fileNodeDomain  = "carrack.vfs.file.node.v1"
-	fileRootDomain  = "carrack.vfs.file.root.v1"
+	fileLeafDomain  = "skydriver.vfs.file.leaf.v1"
+	fileEmptyDomain = "skydriver.vfs.file.empty.v1"
+	fileNodeDomain  = "skydriver.vfs.file.node.v1"
+	fileRootDomain  = "skydriver.vfs.file.root.v1"
 
 	// MaximumFileBlocks bounds retained verification metadata and tree work.
 	MaximumFileBlocks = uint64(1_000_000)

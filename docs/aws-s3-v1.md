@@ -21,7 +21,7 @@ The initial configuration is deliberately small:
 ```json
 {
   "region": "us-east-1",
-  "bucket": "carrack-payload-example",
+  "bucket": "skydriver-payload-example",
   "expected_bucket_owner": "123456789012",
   "prefix": "objects/"
 }

@@ -5,12 +5,12 @@ pub(crate) const PROTOCOL_EPOCH: u64 = 2;
 pub(crate) const MINIMUM_SDK_VERSION: &str = "0.3.0";
 const MINIMUM_MANAGEMENT_LOGIN_VERSION: &str = "0.3.6";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
-const COMPATIBILITY_SCHEMA: &str = "carrack.protocol-compatibility.v1";
-const ERROR_SCHEMA: &str = "carrack.protocol-error.v1";
+const COMPATIBILITY_SCHEMA: &str = "skydriver.protocol-compatibility.v1";
+const ERROR_SCHEMA: &str = "skydriver.protocol-error.v1";
 const PROTOCOL_EPOCH_HEADER: &str = "Skydriver-Protocol-Epoch";
 const SDK_VERSION_HEADER: &str = "Skydriver-SDK-Version";
-const LEGACY_PROTOCOL_EPOCH_HEADER: &str = "Carrack-Protocol-Epoch";
-const LEGACY_SDK_VERSION_HEADER: &str = "Carrack-SDK-Version";
+const LEGACY_PROTOCOL_EPOCH_HEADER: &str = "Skydriver-Protocol-Epoch";
+const LEGACY_SDK_VERSION_HEADER: &str = "Skydriver-SDK-Version";
 
 #[derive(Serialize)]
 struct CompatibilityResponse {

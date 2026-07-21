@@ -24,7 +24,7 @@ const (
 	privateFileMode         = fs.FileMode(0o600)
 	privateDirectoryMode    = fs.FileMode(0o700)
 	maximumRecordBytes      = int64(64 << 20)
-	temporaryPrefix         = ".carrack-journal-"
+	temporaryPrefix         = ".skydriver-journal-"
 	planFileName            = "plan.json"
 	stateDirectoryName      = "state"
 	uploadPartsDirectory    = "upload-parts"

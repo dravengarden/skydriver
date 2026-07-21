@@ -60,7 +60,10 @@ pub(crate) async fn connect(
     };
     let namespace = env.durable_object(WATCH_BINDING)?;
     let stub = namespace.get_by_name(&authorization.filesystem_id)?;
-    let mut forwarded = Request::new("https://carrack.invalid/api/v2/catalog/watch", Method::Get)?;
+    let mut forwarded = Request::new(
+        "https://skydriver.invalid/api/v2/catalog/watch",
+        Method::Get,
+    )?;
     let headers = forwarded.headers_mut()?;
     headers.set("Upgrade", "websocket")?;
     headers.set(FILESYSTEM_HEADER, &authorization.filesystem_id)?;
@@ -79,7 +82,7 @@ pub(crate) async fn notify_published(env: &Env, filesystem_id: &str) -> Result<(
     let namespace = env.durable_object(WATCH_BINDING)?;
     let stub = namespace.get_by_name(filesystem_id)?;
     let mut request = Request::new(
-        "https://carrack.invalid/internal/catalog-published",
+        "https://skydriver.invalid/internal/catalog-published",
         Method::Post,
     )?;
     request
@@ -209,7 +212,7 @@ impl CatalogWatchHub {
 
 fn send_authorized(socket: &WebSocket, authorization: &CatalogWatchAuthorization) -> Result<()> {
     socket.send(&CatalogWatchEvent {
-        schema: "carrack.vfs.catalog-watch.v1",
+        schema: "skydriver.vfs.catalog-watch.v1",
         kind: "catalog_head",
         filesystem_id: &authorization.filesystem_id,
         revision_id: authorization.revision_id,

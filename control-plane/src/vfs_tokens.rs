@@ -87,7 +87,7 @@ pub(crate) async fn authenticate(
 /// resolve user-facing paths. Authority is still checked on every directory.
 pub(crate) fn session(token: &AuthenticatedVfsToken) -> Result<Response> {
     let mut response = Response::from_json(&VfsSessionResponse {
-        schema: "carrack.vfs.session.v1",
+        schema: "skydriver.vfs.session.v1",
         token_id: &token.id,
         principal_id: &token.principal_id,
         root_directory_id: &token.root_directory_id,

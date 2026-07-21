@@ -241,7 +241,7 @@ func (engine *Engine) PrepareDownload(
 
 	stagingPath := filepath.Join(
 		filepath.Dir(destination),
-		"."+filepath.Base(destination)+".carrack-"+journalID+".partial",
+		"."+filepath.Base(destination)+".skydriver-"+journalID+".partial",
 	)
 	plan := planRecord{
 		Schema:    schema,

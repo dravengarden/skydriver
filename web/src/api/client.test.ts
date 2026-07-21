@@ -19,7 +19,7 @@ afterEach(() => {
 describe("management directory entry pages", () => {
     it("serializes a revision-pinned keyset cursor and validates the page", async () => {
         const response = {
-            schema: "carrack.management.directory-entry-page.v1",
+            schema: "skydriver.management.directory-entry-page.v1",
             observed_at: 2_000_000_000,
             directory_id: "0123456789abcdef0123456789abcdef",
             directory_revision: 7,
@@ -69,7 +69,7 @@ describe("management directory entry pages", () => {
 describe("transfer analytics", () => {
     it("serializes intersecting filters and validates the sampled response", async () => {
         const response = {
-            schema: "carrack.management.transfer-analytics.v2",
+            schema: "skydriver.management.transfer-analytics.v2",
             observed_at: 2_000_000_000,
             from: 1_999_900_000,
             to: 2_000_000_000,
@@ -129,7 +129,7 @@ describe("transfer analytics", () => {
                 direction: "download",
             }),
         ).resolves.toEqual(response);
-        const requested = new URL(String(fetchMock.mock.calls[0]?.[0]), "https://carrack.test");
+        const requested = new URL(String(fetchMock.mock.calls[0]?.[0]), "https://skydriver.test");
         expect(requested.pathname).toBe("/api/admin/analytics/transfers");
         expect(Object.fromEntries(requested.searchParams)).toMatchObject({
             interval: "auto",
@@ -185,7 +185,7 @@ describe("operator session", () => {
 describe("driver configuration", () => {
     it("pins validation to the exact desired state and revision", async () => {
         const validation = {
-            schema: "carrack.management.driver-state-validation.v1",
+            schema: "skydriver.management.driver-state-validation.v1",
             driver_id: "local-main",
             kind: "local-filesystem/v2",
             current_enabled: true,
@@ -211,7 +211,7 @@ describe("driver configuration", () => {
 
     it("normalizes typed registration without embedding a credential", async () => {
         const validation = {
-            schema: "carrack.management.driver-registration-validation.v1",
+            schema: "skydriver.management.driver-registration-validation.v1",
             driver_id: "aliyun-main",
             kind: "aliyundrive-open/v2",
             config: { root_folder_id: "root" },
@@ -241,7 +241,7 @@ describe("driver configuration", () => {
 
     it("keeps the write-only credential out of the validation response", async () => {
         const validation = {
-            schema: "carrack.management.driver-credential-validation.v1",
+            schema: "skydriver.management.driver-credential-validation.v1",
             driver_id: "aliyun-main",
             kind: "aliyundrive-open/v2",
             current_credential_present: false,
@@ -327,7 +327,7 @@ describe("parseHealth", () => {
 describe("parseManagementActivity", () => {
     it("accepts a bounded durable lifecycle work page", () => {
         const parsed = parseManagementActivity({
-            schema: "carrack.management.activity.v2",
+            schema: "skydriver.management.activity.v2",
             observed_at: 10,
             offset: 0,
             limit: 25,

@@ -132,9 +132,9 @@ bootstrapped=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" -D "$bootstrap_headers" -H "$json" \
   --data "$bootstrap_request" "$base_url/api/v2/bootstrap")
 grep -iq '^cache-control: no-store, max-age=0' "$bootstrap_headers"
-[[ "$(jq -r '.schema' <<<"$bootstrapped")" == carrack.vfs.bootstrap-receipt.v1 ]]
+[[ "$(jq -r '.schema' <<<"$bootstrapped")" == skydriver.vfs.bootstrap-receipt.v1 ]]
 [[ "$(jq -r '.driver_id' <<<"$bootstrapped")" == local-main ]]
-[[ "$(jq -r '.crypto_suite' <<<"$bootstrapped")" == carrack-vfs-aes256gcm-hkdfsha256-v1 ]]
+[[ "$(jq -r '.crypto_suite' <<<"$bootstrapped")" == skydriver-vfs-aes256gcm-hkdfsha256-v1 ]]
 [[ "$(jq -r '.key_epoch' <<<"$bootstrapped")" == 1 ]]
 
 filesystem_id=$(jq -r '.filesystem_id' <<<"$bootstrapped")
@@ -152,11 +152,11 @@ management_snapshot=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" "$base_url/api/admin/snapshot")
 management_cursor=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" "$base_url/api/admin/events/cursor")
-jq -e '.schema == "carrack.management.event-cursor.v1" and (.event_cursor | type == "number")' \
+jq -e '.schema == "skydriver.management.event-cursor.v1" and (.event_cursor | type == "number")' \
   <<<"$management_cursor" >/dev/null
 jq -e --argjson cursor "$(jq '.event_cursor' <<<"$management_snapshot")" \
   '.event_cursor == $cursor' <<<"$management_cursor" >/dev/null
-[[ "$(jq -r '.schema' <<<"$management_snapshot")" == carrack.management.snapshot.v2 ]]
+[[ "$(jq -r '.schema' <<<"$management_snapshot")" == skydriver.management.snapshot.v2 ]]
 [[ "$(jq -r '.drivers | length' <<<"$management_snapshot")" == 1 ]]
 [[ "$(jq -r '.drivers[0].id' <<<"$management_snapshot")" == local-main ]]
 [[ "$(jq -r '.drivers[0].config.root' <<<"$management_snapshot")" == "$local_root" ]]
@@ -166,32 +166,32 @@ jq -e --argjson cursor "$(jq '.event_cursor' <<<"$management_snapshot")" \
 
 cli_acl=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriverctl" vfs acl show / \
   --control-url "$base_url" --format json)
-[[ "$(jq -r '.schema' <<<"$cli_acl")" == carrack.vfs.acl.v1 ]]
+[[ "$(jq -r '.schema' <<<"$cli_acl")" == skydriver.vfs.acl.v1 ]]
 [[ "$(jq -r '.directory_id' <<<"$cli_acl")" == "$root_directory_id" ]]
 cli_placements=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriverctl" vfs placement show / \
   --control-url "$base_url" --format json)
-[[ "$(jq -r '.schema' <<<"$cli_placements")" == carrack.vfs.placements.v1 ]]
+[[ "$(jq -r '.schema' <<<"$cli_placements")" == skydriver.vfs.placements.v1 ]]
 [[ "$(jq -r '.placements[0].driver_id' <<<"$cli_placements")" == local-main ]]
 child_expiry=$(( $(date +%s) + 3600 ))
 issued_child=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriverctl" vfs token issue / \
   --control-url "$base_url" --action directory.list,content.read \
   --expires-at "$child_expiry" --idempotency-key bootstrap-child-token-v1 --format json)
 child_token_id=$(jq -r '.token_id' <<<"$issued_child")
-[[ "$(jq -r '.schema' <<<"$issued_child")" == carrack.vfs.token-issue-receipt.v1 ]]
+[[ "$(jq -r '.schema' <<<"$issued_child")" == skydriver.vfs.token-issue-receipt.v1 ]]
 [[ "$(jq -r '.token | length' <<<"$issued_child")" == 43 ]]
 revoked_child=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriverctl" vfs token revoke "$child_token_id" \
   --control-url "$base_url" --idempotency-key bootstrap-child-token-revoke-v1 --format json)
-[[ "$(jq -r '.schema' <<<"$revoked_child")" == carrack.vfs.token-revoke-receipt.v1 ]]
+[[ "$(jq -r '.schema' <<<"$revoked_child")" == skydriver.vfs.token-revoke-receipt.v1 ]]
 [[ "$(jq -r '.state' <<<"$revoked_child")" == revoked ]]
 
 cli_management_snapshot=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
 	  "$rust_skydriverctl" snapshot --control-url "$base_url" --format json)
-[[ "$(jq -r '.schema' <<<"$cli_management_snapshot")" == carrack.management.snapshot.v2 ]]
+[[ "$(jq -r '.schema' <<<"$cli_management_snapshot")" == skydriver.management.snapshot.v2 ]]
 [[ "$(jq -r '.drivers[0].id' <<<"$cli_management_snapshot")" == local-main ]]
 
 management_directory=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" "$base_url/api/admin/directories/$root_directory_id")
-[[ "$(jq -r '.schema' <<<"$management_directory")" == carrack.management.directory.v1 ]]
+[[ "$(jq -r '.schema' <<<"$management_directory")" == skydriver.management.directory.v1 ]]
 [[ "$(jq -r '.directory.id' <<<"$management_directory")" == "$root_directory_id" ]]
 [[ "$(jq -r '.placements[0]' <<<"$management_directory")" == local-main ]]
 
@@ -228,7 +228,7 @@ authority_file="$authority_directory/root.json"
 authority_receipt=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
   "$rust_skydriverctl" authority recover --control-url "$base_url" \
   --output-file "$authority_file" --format json)
-[[ "$(jq -r '.schema' <<<"$authority_receipt")" == carrack.authority-file-receipt.v1 ]]
+[[ "$(jq -r '.schema' <<<"$authority_receipt")" == skydriver.authority-file-receipt.v1 ]]
 [[ "$(jq -r '.token_id' <<<"$authority_receipt")" == "$token_id" ]]
 [[ "$(jq -r '.token' "$authority_file")" == "$token" ]]
 [[ "$(stat -c '%a' "$authority_file")" == 600 ]]
@@ -236,7 +236,7 @@ authority_receipt=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
 
 access_snapshot=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
   "$rust_skydriverctl" access show --control-url "$base_url" --format json)
-[[ "$(jq -r '.schema' <<<"$access_snapshot")" == carrack.management.access.v1 ]]
+[[ "$(jq -r '.schema' <<<"$access_snapshot")" == skydriver.management.access.v1 ]]
 [[ "$(jq -r '.principals[0].id' <<<"$access_snapshot")" == "$principal_id" ]]
 service_receipt=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
   "$rust_skydriverctl" access principal create --control-url "$base_url" \
@@ -286,7 +286,7 @@ annotation_validation=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" -H "$json" \
   --data '{"label":"Release agent","note":"Publishes verified releases.","expected_revision":1}' \
   "$base_url/api/admin/tokens/$token_id/annotation/validate")
-[[ "$(jq -r '.schema' <<<"$annotation_validation")" == carrack.management.token-annotation-validation.v1 ]]
+[[ "$(jq -r '.schema' <<<"$annotation_validation")" == skydriver.management.token-annotation-validation.v1 ]]
 [[ "$(jq -r '.label' <<<"$annotation_validation")" == 'Release agent' ]]
 validation_expires_at=$(jq -r '.validation_expires_at' <<<"$annotation_validation")
 validation_digest=$(jq -r '.validation_digest' <<<"$annotation_validation")
@@ -304,7 +304,7 @@ annotation_apply=$(jq -cn \
 annotation_receipt=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" -H "$json" --data "$annotation_apply" \
   "$base_url/api/admin/tokens/$token_id/annotation/apply")
-[[ "$(jq -r '.schema' <<<"$annotation_receipt")" == carrack.management.token-annotation-receipt.v1 ]]
+[[ "$(jq -r '.schema' <<<"$annotation_receipt")" == skydriver.management.token-annotation-receipt.v1 ]]
 [[ "$(jq -r '.final_revision' <<<"$annotation_receipt")" == 2 ]]
 annotation_replay=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" -H "$json" --data "$annotation_apply" \
@@ -328,7 +328,7 @@ cli_annotation_check=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
     --expected-revision 2 \
     --check \
     --format json)
-[[ "$(jq -r '.schema' <<<"$cli_annotation_check")" == carrack.management.token-annotation-validation.v1 ]]
+[[ "$(jq -r '.schema' <<<"$cli_annotation_check")" == skydriver.management.token-annotation-validation.v1 ]]
 cli_annotation_receipt=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
 	  "$rust_skydriverctl" token annotate "$token_id" \
     --control-url "$base_url" \
@@ -337,14 +337,14 @@ cli_annotation_receipt=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
     --expected-revision 2 \
     --idempotency-key annotate-release-agent-v2 \
     --format json)
-[[ "$(jq -r '.schema' <<<"$cli_annotation_receipt")" == carrack.management.token-annotation-receipt.v1 ]]
+[[ "$(jq -r '.schema' <<<"$cli_annotation_receipt")" == skydriver.management.token-annotation-receipt.v1 ]]
 [[ "$(jq -r '.final_revision' <<<"$cli_annotation_receipt")" == 3 ]]
 
 driver_validation=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" -H "$json" \
   --data '{"enabled":false,"expected_revision":1}' \
   "$base_url/api/admin/drivers/local-main/state/validate")
-[[ "$(jq -r '.schema' <<<"$driver_validation")" == carrack.management.driver-state-validation.v1 ]]
+[[ "$(jq -r '.schema' <<<"$driver_validation")" == skydriver.management.driver-state-validation.v1 ]]
 [[ "$(jq -r '.current_enabled' <<<"$driver_validation")" == true ]]
 [[ "$(jq -r '.enabled' <<<"$driver_validation")" == false ]]
 [[ "$(jq -r '.placement_count' <<<"$driver_validation")" == 1 ]]
@@ -364,7 +364,7 @@ driver_apply=$(jq -cn \
 driver_receipt=$(curl --silent --show-error --fail-with-body \
   -b "$cookie_jar" -H "$json" --data "$driver_apply" \
   "$base_url/api/admin/drivers/local-main/state/apply")
-[[ "$(jq -r '.schema' <<<"$driver_receipt")" == carrack.management.driver-state-receipt.v1 ]]
+[[ "$(jq -r '.schema' <<<"$driver_receipt")" == skydriver.management.driver-state-receipt.v1 ]]
 [[ "$(jq -r '.enabled' <<<"$driver_receipt")" == false ]]
 [[ "$(jq -r '.final_revision' <<<"$driver_receipt")" == 2 ]]
 driver_replay=$(curl --silent --show-error --fail-with-body \
@@ -382,7 +382,7 @@ cli_driver_check=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
     --expected-revision 2 \
     --check \
     --format json)
-[[ "$(jq -r '.schema' <<<"$cli_driver_check")" == carrack.management.driver-state-validation.v1 ]]
+[[ "$(jq -r '.schema' <<<"$cli_driver_check")" == skydriver.management.driver-state-validation.v1 ]]
 [[ "$(jq -r '.enabled' <<<"$cli_driver_check")" == true ]]
 cli_driver_receipt=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
 	  "$rust_skydriverctl" driver enable local-main \
@@ -390,7 +390,7 @@ cli_driver_receipt=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
     --expected-revision 2 \
     --idempotency-key enable-local-main-v2 \
     --format json)
-[[ "$(jq -r '.schema' <<<"$cli_driver_receipt")" == carrack.management.driver-state-receipt.v1 ]]
+[[ "$(jq -r '.schema' <<<"$cli_driver_receipt")" == skydriver.management.driver-state-receipt.v1 ]]
 [[ "$(jq -r '.enabled' <<<"$cli_driver_receipt")" == true ]]
 [[ "$(jq -r '.final_revision' <<<"$cli_driver_receipt")" == 3 ]]
 enabled_driver_snapshot=$(curl --silent --show-error --fail-with-body \
@@ -407,7 +407,7 @@ cli_registration_check=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
     --config-file "$aliyun_config" \
     --check \
     --format json)
-[[ "$(jq -r '.schema' <<<"$cli_registration_check")" == carrack.management.driver-registration-validation.v1 ]]
+[[ "$(jq -r '.schema' <<<"$cli_registration_check")" == skydriver.management.driver-registration-validation.v1 ]]
 [[ "$(jq -r '.enabled' <<<"$cli_registration_check")" == false ]]
 [[ "$(jq -r '.requires_credential' <<<"$cli_registration_check")" == true ]]
 [[ "$(jq -r '.config.drive_type' <<<"$cli_registration_check")" == resource ]]
@@ -419,7 +419,7 @@ cli_registration_receipt=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
     --config-file "$aliyun_config" \
     --idempotency-key register-aliyun-main-v1 \
     --format json)
-[[ "$(jq -r '.schema' <<<"$cli_registration_receipt")" == carrack.management.driver-registration-receipt.v1 ]]
+[[ "$(jq -r '.schema' <<<"$cli_registration_receipt")" == skydriver.management.driver-registration-receipt.v1 ]]
 [[ "$(jq -r '.enabled' <<<"$cli_registration_receipt")" == false ]]
 [[ "$(jq -r '.final_revision' <<<"$cli_registration_receipt")" == 1 ]]
 registered_driver_snapshot=$(curl --silent --show-error --fail-with-body \
@@ -444,7 +444,7 @@ cli_credential_check=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
     --expected-revision 1 \
     --check \
     --format json)
-[[ "$(jq -r '.schema' <<<"$cli_credential_check")" == carrack.management.driver-credential-validation.v1 ]]
+[[ "$(jq -r '.schema' <<<"$cli_credential_check")" == skydriver.management.driver-credential-validation.v1 ]]
 [[ "$(jq -r '.credential_revision' <<<"$cli_credential_check")" == 1 ]]
 [[ "$(jq -r '.refresh_token_expires_at' <<<"$cli_credential_check")" == "$refresh_token_expires_at" ]]
 [[ "$cli_credential_check" != *"$protocol_refresh_token"* ]]
@@ -490,9 +490,9 @@ changed_bootstrap_status=$(curl --silent --output /dev/null --write-out '%{http_
 [[ "$changed_bootstrap_status" == 409 ]]
 
 authorization="Authorization: Bearer $token"
-file_root=d60042cf44d28c3a12f278cffde67620f94f1a3e4c82208102da97b96cd5b4d9
-metadata_root=7f8375a6dbb0bbb8aa2a4c5893444ec014588c02e59841088b1064646663bfc7
-manifest_sha=ed1c547d98c2889e33ce3bc6effc09f93db562dbb3e4faaed3b7df50fb967f34
+file_root=70da4b2a9e3eb3ba0a692191079b5910b200ed938bf49dde2b0336962b584d62
+metadata_root=b89f2c1743553b009f2f40adbe25c1db6c3a6e6b6e36d1390585207a2984db37
+manifest_sha=28016b720bc5410d0b17b13b7431b787087e620cd265e09495869b8cfdaabd1b
 manifest_bytes=118
 prepare_request=$(jq -cn \
   --arg directory_id "$root_directory_id" \
@@ -528,7 +528,7 @@ key_grant=$(curl --silent --show-error --fail-with-body \
   -X POST -D "$key_headers" -H "$authorization" \
   "$base_url/api/v2/puts/$intent_id/key-grant")
 grep -iq '^cache-control: no-store, max-age=0' "$key_headers"
-[[ "$(jq -r '.schema' <<<"$key_grant")" == carrack.vfs.directory-key-grant.v1 ]]
+[[ "$(jq -r '.schema' <<<"$key_grant")" == skydriver.vfs.directory-key-grant.v1 ]]
 [[ "$(jq -r '.intent_id' <<<"$key_grant")" == "$intent_id" ]]
 [[ "$(jq -r '.directory_id' <<<"$key_grant")" == "$root_directory_id" ]]
 [[ "$(jq -r '.version_id' <<<"$key_grant")" == "$version_id" ]]
@@ -544,7 +544,7 @@ driver_grant=$(curl --silent --show-error --fail-with-body \
   -X POST -D "$driver_headers" -H "$authorization" \
   "$base_url/api/v2/puts/$intent_id/driver-grant")
 grep -iq '^cache-control: no-store, max-age=0' "$driver_headers"
-[[ "$(jq -r '.schema' <<<"$driver_grant")" == carrack.vfs.driver-grant.v1 ]]
+[[ "$(jq -r '.schema' <<<"$driver_grant")" == skydriver.vfs.driver-grant.v1 ]]
 [[ "$(jq -r '.driver_id' <<<"$driver_grant")" == local-main ]]
 [[ "$(jq -r '.driver_kind' <<<"$driver_grant")" == local-filesystem/v2 ]]
 [[ "$(jq -r '.config.root' <<<"$driver_grant")" == "$local_root" ]]
@@ -569,13 +569,13 @@ vfs_put=(
 )
 
 cli_put=$("${vfs_put[@]}")
-[[ "$(jq -r '.schema' <<<"$cli_put")" == carrack.fs-put.v1 ]]
+[[ "$(jq -r '.schema' <<<"$cli_put")" == skydriver.fs-put.v1 ]]
 [[ "$(jq -r '.receipt.state' <<<"$cli_put")" == committed ]]
 [[ "$(jq -r '.receipt.driver_id' <<<"$cli_put")" == local-main ]]
-[[ "$(jq -r '.crypto_suite' <<<"$cli_put")" == carrack-vfs-aes256gcm-hkdfsha256-v1 ]]
+[[ "$(jq -r '.crypto_suite' <<<"$cli_put")" == skydriver-vfs-aes256gcm-hkdfsha256-v1 ]]
 [[ "$(jq -r '.warnings | length' <<<"$cli_put")" == 0 ]]
 [[ -z "$(find "$cli_staging" -mindepth 1 -print -quit)" ]]
-[[ -z "$(find "$local_root/.carrack/uploads" -type f -print -quit)" ]]
+[[ -z "$(find "$local_root/.skydriver/uploads" -type f -print -quit)" ]]
 
 replayed_cli_put=$("${vfs_put[@]}")
 [[ "$(jq -c '.receipt' <<<"$replayed_cli_put")" == "$(jq -c '.receipt' <<<"$cli_put")" ]]
@@ -594,7 +594,7 @@ if grep --text --fixed-strings --quiet 'Skydriver CLI encrypted complete-object 
   echo "encrypted provider object exposed CLI plaintext" >&2
   exit 1
 fi
-[[ "$(find "$local_root" -path "$local_root/.carrack" -prune -o -type f -print | wc -l)" == 1 ]]
+[[ "$(find "$local_root" -path "$local_root/.skydriver" -prune -o -type f -print | wc -l)" == 1 ]]
 
 cli_download="$state_directory/cli-download.bin"
 cli_download_staging="$state_directory/cli-download-staging"
@@ -609,7 +609,7 @@ cli_get=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" get /cli-release.bin "$
   --transfer-part-bytes 5 \
   --maximum-concurrency 4 \
   --format json)
-[[ "$(jq -r '.schema' <<<"$cli_get")" == carrack.fs-get.v1 ]]
+[[ "$(jq -r '.schema' <<<"$cli_get")" == skydriver.fs-get.v1 ]]
 [[ "$(jq -r '.version_id' <<<"$cli_get")" == "$cli_version_id" ]]
 cmp --silent "$cli_source" "$cli_download"
 [[ -z "$(find "$cli_download_staging" -mindepth 1 -print -quit)" ]]
@@ -620,7 +620,7 @@ first_sync=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" sync / "$sync_destin
   --control-url "$base_url" --state-directory "$sync_state" \
   --transfer-part-bytes 5 --maximum-concurrency 3 --maximum-file-concurrency 4 \
   --format json)
-[[ "$(jq -r '.schema' <<<"$first_sync")" == carrack.fs-sync.v1 ]]
+[[ "$(jq -r '.schema' <<<"$first_sync")" == skydriver.fs-sync.v1 ]]
 [[ "$(jq -r '.downloaded_files' <<<"$first_sync")" == 1 ]]
 cmp --silent "$cli_source" "$sync_destination/cli-release.bin"
 second_sync=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" sync / "$sync_destination" \
@@ -645,7 +645,7 @@ verifier=$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)
     SELECT filesystem.id = '$filesystem_id'
            AND principal.id = '$principal_id'
            AND directory.id = '$root_directory_id'
-           AND directory.crypto_suite = 'carrack-vfs-aes256gcm-hkdfsha256-v1'
+           AND directory.crypto_suite = 'skydriver-vfs-aes256gcm-hkdfsha256-v1'
            AND key_epoch.envelope_algorithm = 'aes-256-gcm/v1'
            AND key_epoch.master_key_version = 'v1'
            AND length(key_epoch.nonce) = 12
@@ -699,7 +699,7 @@ cli_mkdir=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" mkdir /archive \
   --control-url "$base_url" \
   --idempotency-key bootstrap-cli-mkdir-archive-v1 \
   --format json)
-[[ "$(jq -r '.schema' <<<"$cli_mkdir")" == carrack.fs-mkdir.v1 ]]
+[[ "$(jq -r '.schema' <<<"$cli_mkdir")" == skydriver.fs-mkdir.v1 ]]
 archive_directory_id=$(jq -r '.directory_id' <<<"$cli_mkdir")
 
 cli_rename=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" rename \
@@ -707,7 +707,7 @@ cli_rename=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" rename \
   --control-url "$base_url" \
   --idempotency-key bootstrap-cli-rename-v1 \
   --format json)
-[[ "$(jq -r '.schema' <<<"$cli_rename")" == carrack.vfs.rename-receipt.v1 ]]
+[[ "$(jq -r '.schema' <<<"$cli_rename")" == skydriver.vfs.rename-receipt.v1 ]]
 [[ "$(jq -r '.destination_directory_id' <<<"$cli_rename")" == "$archive_directory_id" ]]
 [[ "$(jq -r '.subject_id' <<<"$cli_rename")" == "$(jq -r '.receipt.file_id' <<<"$cli_put")" ]]
 replayed_cli_rename=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" rename \
@@ -753,7 +753,7 @@ cli_remove=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" remove /releases/fin
   --control-url "$base_url" \
   --idempotency-key bootstrap-cli-remove-v1 \
   --format json)
-[[ "$(jq -r '.schema' <<<"$cli_remove")" == carrack.vfs.remove-receipt.v1 ]]
+[[ "$(jq -r '.schema' <<<"$cli_remove")" == skydriver.vfs.remove-receipt.v1 ]]
 [[ "$(jq -r '.kind' <<<"$cli_remove")" == file ]]
 [[ "$(jq -r '.delete_after > .committed_at' <<<"$cli_remove")" == true ]]
 replayed_cli_remove=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" remove /releases/final.bin \
@@ -818,7 +818,7 @@ curl --silent --show-error --fail-with-body \
   "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
 provider_inventory=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
   "$rust_skydriverctl" inventory --control-url "$base_url" --format json)
-[[ "$(jq -r '.schema' <<<"$provider_inventory")" == carrack.management.provider-inventory.v1 ]]
+[[ "$(jq -r '.schema' <<<"$provider_inventory")" == skydriver.management.provider-inventory.v1 ]]
 [[ "$(jq -r '.drivers[] | select(.driver_id == "local-main") | .state' \
   <<<"$provider_inventory")" == unsupported ]]
 [[ "$(jq -r '.drivers[] | select(.driver_id == "local-main") | .last_error_code' \
@@ -912,7 +912,7 @@ jq --exit-status \
   --arg hidden_directory_id "$hidden_directory_id" \
   --arg revision "$checkpoint_revision" \
   --arg root "$checkpoint_root" \
-  '.schema == "carrack.vfs.catalog-checkpoint.v1"
+  '.schema == "skydriver.vfs.catalog-checkpoint.v1"
    and .filesystem_id == $filesystem_id
    and .root_directory_id == $root_directory_id
    and (.revision_id | tostring) == $revision
@@ -982,7 +982,7 @@ curl --silent --show-error --fail-with-body \
   -H "Skydriver-Catalog-Base-Root: $checkpoint_root" \
   -H "Skydriver-Catalog-Base-SHA256: $checkpoint_sha256" \
   "$base_url/api/v2/catalog/checkpoint" >"$delta_body"
-grep -iq '^content-type: application/vnd.carrack.catalog-delta+json' "$delta_headers"
+grep -iq '^content-type: application/vnd.skydriver.catalog-delta+json' "$delta_headers"
 delta_sha256=$(awk '
   tolower($1) == "skydriver-catalog-delta-sha256:" {
     gsub("\\r", "", $2);
@@ -1025,7 +1025,7 @@ jq --exit-status \
   --arg revision "$delta_revision" \
   --arg root "$delta_root" \
   --arg checkpoint_sha256 "$delta_checkpoint_sha256" \
-  '.schema == "carrack.vfs.catalog-delta.v1"
+  '.schema == "skydriver.vfs.catalog-delta.v1"
    and .filesystem_id == $filesystem_id
    and (.base_revision_id | tostring) == $base_revision
    and .base_root_directory_id == $root_directory_id
@@ -1109,7 +1109,7 @@ jq --exit-status \
   --arg forbidden_sibling "$hidden_directory_id" \
   --arg revision "$projected_revision" \
   --arg root "$projected_root" \
-  '.schema == "carrack.vfs.catalog-checkpoint.v1"
+  '.schema == "skydriver.vfs.catalog-checkpoint.v1"
    and .filesystem_id == $filesystem_id
    and .root_directory_id == $root_directory_id
    and (.revision_id | tostring) == $revision

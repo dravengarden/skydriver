@@ -11,7 +11,7 @@ test("preserves Worker state while excluding independently managed routes and sc
         migrations: [{ tag: "v1", new_sqlite_classes: ["WatchHub"] }],
         env: {
             dev: {
-                name: "carrack-dev",
+                name: "skydriver-dev",
                 routes: [{ pattern: "dev.example", custom_domain: true }],
                 triggers: { crons: ["*/15 * * * *"] },
                 durable_objects: {
