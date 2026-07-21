@@ -1,6 +1,6 @@
-// Package driver defines the Carrack VFS V2 complete-object storage contract.
+// Package driver defines the Skydriver VFS V2 complete-object storage contract.
 //
-// A driver stores one immutable Carrack file version as one complete provider
+// A driver stores one immutable Skydriver file version as one complete provider
 // object. Multipart parts, verification blocks, encryption frames, and byte
 // ranges are transfer details and never independently addressable VFS data.
 //

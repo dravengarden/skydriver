@@ -1,8 +1,8 @@
 use std::fmt::Write as _;
 
-use carrack_driver_contract::DriverKind;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+use skydriver_driver_contract::DriverKind;
 use worker::{
     D1Database, D1PreparedStatement, Date, Env, Request, Response, Result, wasm_bindgen::JsValue,
 };
@@ -138,7 +138,7 @@ pub(crate) async fn bootstrap(
         return Response::error("invalid VFS bootstrap request", 400);
     }
 
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let now = current_unix_seconds();
     let Some(driver) = resolve_driver(env, &database, &requested, now).await? else {
         return Response::error("invalid VFS bootstrap driver selection", 400);
@@ -226,7 +226,7 @@ pub(crate) async fn bootstrap(
 /// identity. The bearer remains absent from D1 and is returned only to an
 /// explicitly reauthenticated operator recovery request.
 pub(crate) async fn recover(env: &Env, admin_subject: &str) -> Result<Response> {
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let Some(receipt) = load_receipt(&database).await? else {
         return Response::error("VFS has not been bootstrapped", 404);
     };
@@ -728,7 +728,7 @@ mod tests {
 
     fn request() -> BootstrapRequest {
         BootstrapRequest {
-            filesystem_name: "Carrack".to_owned(),
+            filesystem_name: "Skydriver".to_owned(),
             principal_display_name: "Operator".to_owned(),
             local_driver_id: Some("local-main".to_owned()),
             local_root: Some("/srv/carrack".to_owned()),
@@ -814,7 +814,7 @@ mod tests {
         assert_ne!(first, [0; 32]);
         assert_eq!(
             lowercase_hex(&first).expect("encode digest"),
-            "f9d269ed0033a26536b360960738a6d80e782e870cdc336b61db8cb7c85b9450"
+            "f7d5505dac38b24a0877a6903f18405bbd48bd750fe9be67f0fe8ec392c50c3c"
         );
     }
 }

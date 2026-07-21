@@ -1,11 +1,11 @@
 # Cloudflare operations
 
-Carrack uses a scoped account API token, not an interactive Wrangler browser
+Skydriver uses a scoped account API token, not an interactive Wrangler browser
 session. Copy `.env.example` to the gitignored `.env`, set mode `0600`, and
 provide `CLOUDFLARE_API_TOKEN` plus `CLOUDFLARE_ACCOUNT_ID`. Entering
 `nix develop` exports those values.
 
-The day-to-day token needs only the account permissions required by Carrack:
+The day-to-day token needs only the account permissions required by Skydriver:
 
 - Workers Scripts: Edit
 - D1: Edit
@@ -32,13 +32,13 @@ environment audit.
 
 ## Environment isolation
 
-Carrack has explicit `dev` and `prod` environments. Every remotely usable
+Skydriver has explicit `dev` and `prod` environments. Every remotely usable
 resource is distinct:
 
 | Environment | Worker | Custom domain | D1 | Metadata R2 | Default payload R2 |
 |---|---|---|---|---|---|
-| `dev` | `carrack-control-plane-dev` | `dev.carrack.stormbird.xyz` | `carrack-index-dev` | `carrack-manifests-dev` | `carrack-payload-dev` |
-| `prod` | `carrack-control-plane-prod` | `carrack.stormbird.xyz` | `carrack-index-prod` | `carrack-manifests-prod` | `carrack-payload-prod` |
+| `dev` | `skydriver-control-plane-dev` | `dev.skydriver.stormbird.xyz` | `carrack-index-dev` | `carrack-manifests-dev` | `carrack-payload-dev` |
+| `prod` | `skydriver-control-plane-prod` | `skydriver.stormbird.xyz` | `carrack-index-prod` | `carrack-manifests-prod` | `carrack-payload-prod` |
 
 The default Wrangler configuration is local-only. It uses a non-routable D1
 sentinel, disables `workers.dev`, and must never be deployed. A remote command
@@ -66,10 +66,10 @@ its current operator-configurable hard quota in D1:
 just audit-cloudflare
 ```
 
-`CARRACK_MANIFESTS` carries only immutable control metadata: verification-block
+`SKYDRIVER_MANIFESTS` carries only immutable control metadata: verification-block
 manifests plus full and delta catalog artifacts. It never stores user payload
 bytes.
-`CARRACK_PAYLOAD` gives server-side lifecycle and reconciliation code access to
+`SKYDRIVER_PAYLOAD` gives server-side lifecycle and reconciliation code access to
 the environment's built-in payload bucket. Payload bytes still flow directly
 between SDK clients and storage; the Worker never relays file bodies.
 
@@ -89,19 +89,19 @@ without an explicit environment:
 
 ```bash
 just migrate-dev
-CARRACK_MIGRATE_PROD=1 just migrate-prod
+SKYDRIVER_MIGRATE_PROD=1 just migrate-prod
 ```
 
-The recipes intentionally use Carrack's import-based migration runner instead
+The recipes intentionally use Skydriver's import-based migration runner instead
 of `wrangler d1 migrations apply --remote`. Wrangler's statement splitter
 removes the terminal semicolon from SQLite trigger definitions; D1 then rejects
-the incomplete trigger. The Carrack runner imports one migration and its
+the incomplete trigger. The Skydriver runner imports one migration and its
 `d1_migrations` receipt atomically, and verifies that receipt before advancing.
 
 The operator console requires one exact environment-scoped canonical account,
-`draven@carrack-dev` for development and `draven@carrack-prod` for production,
+`draven@skydriver-dev` for development and `draven@skydriver-prod` for production,
 plus one independent
-`CARRACK_ADMIN_TOKEN` Worker secret per environment. The account is a
+`SKYDRIVER_ADMIN_TOKEN` Worker secret per environment. The account is a
 non-secret login identity, not an additional authentication factor or account
 directory. A successful login exchanges the exact account and credential for a
 random 12-hour HttpOnly browser session. D1 stores only the session's SHA-256
@@ -130,25 +130,25 @@ day.
 Set independent operator and VFS-master secrets for each environment:
 
 ```bash
-pnpm exec wrangler secret put CARRACK_ADMIN_TOKEN \
+pnpm exec wrangler secret put SKYDRIVER_ADMIN_TOKEN \
   --env dev \
   --config control-plane/wrangler.jsonc
-pnpm exec wrangler secret put CARRACK_VFS_MASTER_KEY_V1 \
+pnpm exec wrangler secret put SKYDRIVER_VFS_MASTER_KEY_V1 \
   --env dev \
   --config control-plane/wrangler.jsonc
 
-pnpm exec wrangler secret put CARRACK_ADMIN_TOKEN \
+pnpm exec wrangler secret put SKYDRIVER_ADMIN_TOKEN \
   --env prod \
   --config control-plane/wrangler.jsonc
-pnpm exec wrangler secret put CARRACK_VFS_MASTER_KEY_V1 \
+pnpm exec wrangler secret put SKYDRIVER_VFS_MASTER_KEY_V1 \
   --env prod \
   --config control-plane/wrangler.jsonc
 ```
 
-`CARRACK_ADMIN_TOKEN` must be the unpadded base64url encoding of exactly 32
+`SKYDRIVER_ADMIN_TOKEN` must be the unpadded base64url encoding of exactly 32
 random bytes. It is an operator credential, not a VFS principal or capability
 token, and development and production must never share it.
-`CARRACK_VFS_MASTER_KEY_V1` is also an unpadded base64url encoding of exactly
+`SKYDRIVER_VFS_MASTER_KEY_V1` is also an unpadded base64url encoding of exactly
 32 random bytes, generated independently from the operator credential. It seals V2
 directory keys and derives the recoverable one-shot bootstrap token. Preserve
 the version while either V2 envelopes or the bootstrap receipt depend on it;
@@ -159,13 +159,13 @@ non-generic stdin-only recipe:
 
 ```bash
 just rotate-operator-dev < "$owner_private_operator_credential_file"
-CARRACK_ROTATE_OPERATOR_PROD=1 just rotate-operator-prod \
+SKYDRIVER_ROTATE_OPERATOR_PROD=1 just rotate-operator-prod \
   < "$owner_private_operator_credential_file"
 ```
 
-These recipes are hard-coded to `CARRACK_ADMIN_TOKEN`. An operator account or
+These recipes are hard-coded to `SKYDRIVER_ADMIN_TOKEN`. An operator account or
 password change must never put, delete, regenerate, or otherwise mutate
-`CARRACK_VFS_MASTER_KEY_V1`, any wrapped directory key, or bootstrap recovery
+`SKYDRIVER_VFS_MASTER_KEY_V1`, any wrapped directory key, or bootstrap recovery
 authority. Without a separately designed envelope-rewrapping migration,
 changing that master key makes existing encrypted data unrecoverable.
 
@@ -174,18 +174,18 @@ requires an additional explicit acknowledgement:
 
 ```bash
 just deploy-dev
-CARRACK_DEPLOY_PROD=1 just deploy-prod
+SKYDRIVER_DEPLOY_PROD=1 just deploy-prod
 ```
 
 Durable Object class creation, rename, transfer, and deletion are atomic state
-migrations and cannot be uploaded as an inactive Worker version. Carrack keeps
+migrations and cannot be uploaded as an inactive Worker version. Skydriver keeps
 that immediate, 100%-traffic operation out of routine deployment. After a
 reviewed change to `migrations`, apply it exactly once per environment with the
 explicit migration recipe:
 
 ```bash
 just deploy-do-migrations-dev
-CARRACK_DEPLOY_PROD=1 CARRACK_APPLY_DO_MIGRATIONS_PROD=1 \
+SKYDRIVER_DEPLOY_PROD=1 SKYDRIVER_APPLY_DO_MIGRATIONS_PROD=1 \
   just deploy-do-migrations-prod
 ```
 
@@ -194,12 +194,12 @@ routine deployment, but uses the non-versioned Cloudflare deployment operation
 required to apply the migration atomically. Its private generated Wrangler
 configuration omits routes and Cron triggers so this one-time operation cannot
 rewrite those independently managed resources; the script synchronizes and
-verifies Cron only after the Worker passes deployment. New Carrack Durable
+verifies Cron only after the Worker passes deployment. New Skydriver Durable
 Object namespaces use SQLite storage. After the migration is applied, return to
-`deploy-dev` or `deploy-prod`; never set `CARRACK_APPLY_DO_MIGRATIONS` in a
+`deploy-dev` or `deploy-prod`; never set `SKYDRIVER_APPLY_DO_MIGRATIONS` in a
 routine deployment environment.
 
-The verification gate also compiles `carrack-sdk-core` for
+The verification gate also compiles `skydriver-sdk-core` for
 `wasm32-unknown-unknown`. The deployed Worker exposes the credential-free
 `GET /api/acceptance/wasm-sdk` proof: it computes the canonical file Merkle
 root, encrypts a deterministic payload into authenticated frames, decrypts it,
@@ -213,10 +213,10 @@ encrypted object, verifies concurrent exact-range download and interrupted
 resume, then logically removes the test file:
 
 ```bash
-export CARRACK_CONTROL_URL=https://dev.carrack.stormbird.xyz
-export CARRACK_VFS_TOKEN='<short-lived dev acceptance token>'
-export CARRACK_ALIYUN_DRIVER_ID='<enabled dev Aliyun driver>'
-CARRACK_ALIYUN_LIVE_TEST=1 tests/aliyun-live.sh
+export SKYDRIVER_CONTROL_URL=https://dev.skydriver.stormbird.xyz
+export SKYDRIVER_VFS_TOKEN='<short-lived dev acceptance token>'
+export SKYDRIVER_ALIYUN_DRIVER_ID='<enabled dev Aliyun driver>'
+SKYDRIVER_ALIYUN_LIVE_TEST=1 tests/aliyun-live.sh
 ```
 
 The attenuated token must grant `directory.list`, `content.read`,
@@ -243,9 +243,9 @@ The managed R2 acceptance uses the same safety boundary but defaults to a
 range, resume, hash, and logical-removal paths are exercised:
 
 ```bash
-export CARRACK_CONTROL_URL=https://dev.carrack.stormbird.xyz
-export CARRACK_VFS_TOKEN='<short-lived dev acceptance token>'
-CARRACK_R2_LIVE_TEST=1 tests/r2-live.sh
+export SKYDRIVER_CONTROL_URL=https://dev.skydriver.stormbird.xyz
+export SKYDRIVER_VFS_TOKEN='<short-lived dev acceptance token>'
+SKYDRIVER_R2_LIVE_TEST=1 tests/r2-live.sh
 ```
 
 The R2 token needs the same five actions and must be scoped to `r2-default`.
@@ -255,10 +255,10 @@ driver IDs are explicitly present; neither test needs `driver.manage`,
 
 This live test is opt-in and is not part of `just verify`; the hermetic gate
 checks its shell contract and metric arithmetic only. Set
-`CARRACK_R2_TEST_PART_BYTES` and `CARRACK_R2_TEST_CONCURRENCY` to compare
+`SKYDRIVER_R2_TEST_PART_BYTES` and `SKYDRIVER_R2_TEST_CONCURRENCY` to compare
 bounded R2 pipeline configurations. The R2 acceptance requires at least 100
 MiB, two parts, and concurrency two so its multipart and concurrent-range
-claims remain true. Set `CARRACK_ALIYUN_TEST_BYTES` to the same payload size
+claims remain true. Set `SKYDRIVER_ALIYUN_TEST_BYTES` to the same payload size
 when a cross-driver comparison is worth the slower sequential upload, up to
 the scripts' 1 GiB safety bound. When using a token already scoped to a test
 directory, leave the test directory as `/`: paths are relative to the
@@ -288,12 +288,12 @@ so a missing `driver.use` grant or inactive placement fails without a burst of
 unauthorized requests:
 
 ```bash
-export CARRACK_CONTROL_URL=https://dev.carrack.stormbird.xyz
-export CARRACK_VFS_TOKEN='<dev test-directory token>'
-CARRACK_R2_SMALL_SYNC_LIVE_TEST=1 tests/r2-small-sync-live.sh
+export SKYDRIVER_CONTROL_URL=https://dev.skydriver.stormbird.xyz
+export SKYDRIVER_VFS_TOKEN='<dev test-directory token>'
+SKYDRIVER_R2_SMALL_SYNC_LIVE_TEST=1 tests/r2-small-sync-live.sh
 ```
 
-`CARRACK_R2_SMALL_SYNC_FILES`, `CARRACK_R2_SMALL_SYNC_BYTES`, upload
+`SKYDRIVER_R2_SMALL_SYNC_FILES`, `SKYDRIVER_R2_SMALL_SYNC_BYTES`, upload
 concurrency, and sync concurrency are bounded inputs. The output includes exact
 UTC windows so the run can be correlated with the sampled driver/directory
 analytics. The script is never part of `just verify`: it performs real provider
@@ -316,8 +316,8 @@ with a suitably scoped setup credential.
 
 The stable UI endpoints are:
 
-- `https://dev.carrack.stormbird.xyz`
-- `https://carrack.stormbird.xyz`
+- `https://dev.skydriver.stormbird.xyz`
+- `https://skydriver.stormbird.xyz`
 
 The workers.dev subdomain and version preview URLs are disabled for both
 environments. After deployment, verify that `/api/health` reports the expected
@@ -327,10 +327,10 @@ database.
 
 Deployment and VFS bootstrap are separate operations. Bootstrap is
 intentionally one-shot. Every dev or production Worker materializes one
-disabled, immutable `r2-default` identity from its `CARRACK_PAYLOAD` binding,
+disabled, immutable `r2-default` identity from its `SKYDRIVER_PAYLOAD` binding,
 account S3 endpoint, and environment-specific `carrack-payload-<environment>`
 bucket. Driver creation atomically initializes a 100 GiB physical-byte hard
-quota from `CARRACK_DEFAULT_R2_MAX_PHYSICAL_BYTES`; later UI or `carrackctl`
+quota from `SKYDRIVER_DEFAULT_R2_MAX_PHYSICAL_BYTES`; later UI or `skydriverctl`
 quota changes advance the independent quota revision and are never overwritten
 by environment reconciliation.
 
@@ -339,39 +339,39 @@ deployment credential boundary:
 
 ```bash
 export CLOUDFLARE_TOKEN_FACTORY_API_TOKEN='<short-lived Account API Tokens Write credential>'
-export CARRACK_OPERATOR_CREDENTIAL='<environment operator credential>'
-export CARRACK_OPERATOR_ACCOUNT=draven@carrack-dev
+export SKYDRIVER_OPERATOR_CREDENTIAL='<environment operator credential>'
+export SKYDRIVER_OPERATOR_ACCOUNT=draven@skydriver-dev
 # Required only when this environment already has a bootstrapped VFS.
-export CARRACK_VFS_TOKEN='<environment root or scoped driver.manage token>'
+export SKYDRIVER_VFS_TOKEN='<environment root or scoped driver.manage token>'
 
 just check-r2-dev
-CARRACK_PROVISION_R2=1 just provision-r2-dev
-unset CLOUDFLARE_TOKEN_FACTORY_API_TOKEN CARRACK_OPERATOR_ACCOUNT \
-  CARRACK_OPERATOR_CREDENTIAL CARRACK_VFS_TOKEN
+SKYDRIVER_PROVISION_R2=1 just provision-r2-dev
+unset CLOUDFLARE_TOKEN_FACTORY_API_TOKEN SKYDRIVER_OPERATOR_ACCOUNT \
+  SKYDRIVER_OPERATOR_CREDENTIAL SKYDRIVER_VFS_TOKEN
 ```
 
-Production additionally requires `CARRACK_PROVISION_PROD=1`. The preflight and
-apply commands first inspect the exact Carrack driver and root mount revision.
+Production additionally requires `SKYDRIVER_PROVISION_PROD=1`. The preflight and
+apply commands first inspect the exact Skydriver driver and root mount revision.
 Before VFS bootstrap there is no mount policy, so production can initialize and
 enable `r2-default` without a VFS bearer; a later bootstrap installs it as the
 root default. If no signing credential exists, they find or create the deterministic
 account-owned token `carrack-r2-default-<environment>`, require the exact
 `Workers R2 Storage Bucket Item Write` permission and the single bucket resource,
 derive the S3 secret as SHA-256 of the one-time token value, and write it only to
-a mode-0600 temporary file. They then invoke `carrackctl --check`, apply with an
+a mode-0600 temporary file. They then invoke `skydriverctl --check`, apply with an
 idempotency key, and re-read the effective state. Cloudflare documents the exact
 bucket resource and S3 conversion here:
 <https://developers.cloudflare.com/r2/api/tokens/>.
 
 Creation is fail-closed under races: the tool re-lists the deterministic name
-before touching Carrack and removes its own newly created token if another
+before touching Skydriver and removes its own newly created token if another
 provisioner won. If that token already exists while D1 reports no credential,
 normal apply stops rather than rotating authority behind a concurrent writer.
 After confirming no other provisioner is active, recover the interrupted setup
 explicitly:
 
 ```bash
-CARRACK_PROVISION_R2=1 CARRACK_RECOVER_R2_TOKEN=1 \
+SKYDRIVER_PROVISION_R2=1 SKYDRIVER_RECOVER_R2_TOKEN=1 \
   node control-plane/scripts/provision-default-r2.mjs \
   dev --recover-existing-token
 ```
@@ -383,7 +383,7 @@ the command warns; Linux-like VFS semantics never append a second root driver.
 The console never asks for the environment-owned access key; it shows only
 readiness and permits normal state and quota controls. Additional R2 buckets
 remain operator-registered with `managed:false` and retain the write-only
-credential dialog and `carrackctl driver credential set` flow. The native
+credential dialog and `skydriverctl driver credential set` flow. The native
 `aliyundrive-open/v2` adapter has completed this dev canary with encrypted
 complete-object upload, concurrent exact-range download, interrupted resume,
 hash verification, and logical removal.
@@ -395,7 +395,7 @@ still authorize the wider drive. Store each environment's encrypted credential
 in its own D1 database, use only the dev root for provider experiments, and do
 not register or enable the production root until its own acceptance gate.
 
-An out-of-band OAuth helper may bootstrap an Aliyun refresh token. Carrack
+An out-of-band OAuth helper may bootstrap an Aliyun refresh token. Skydriver
 never links to, launches, or routes payloads through OpenList, but the control
 plane may use the typed `openlist-online/v1` issuer to exchange and renew that
 authority. The control plane derives access tokens internally; both tokens then
@@ -403,7 +403,7 @@ remain in the authenticated encrypted D1 envelope, while filesystem grants
 project only the access token. Cron renews before expiry with a D1 lease and
 fencing token. A permanent rejection becomes `reauth_required`; repeat
 interactive authorization and replace the write-only refresh token through
-`carrackctl`. Never put recovery material in Git.
+`skydriverctl`. Never put recovery material in Git.
 
 ## Garbage collection
 
@@ -417,7 +417,7 @@ backlog. When an expired intent has immutable upload evidence, the same
 transaction idempotently plans a fenced delete task with an additional one-day
 grace. Provider `Stat` and deletion are server-internal and run only through a
 typed hosted-driver adapter after final reachability and fence validation. For
-`r2-default`, object deletion and multipart abort use the `CARRACK_PAYLOAD`
+`r2-default`, object deletion and multipart abort use the `SKYDRIVER_PAYLOAD`
 Worker binding, so physical cleanup remains available after the client signing
 key is rotated. Third-party R2 uses its sealed credential.
 There is no client or operator GC command. A driver without stable identity,
@@ -467,7 +467,7 @@ unused indexes only through a new append-only migration.
 
 The control plane runs one bounded server-owned inventory page for an enabled
 hosted driver and exposes only aggregate status through the management UI and
-`carrackctl inventory`. The environment-owned R2 binding and Aliyun Drive Open
+`skydriverctl inventory`. The environment-owned R2 binding and Aliyun Drive Open
 API adapter are supported. Agent-local filesystems remain explicitly
 unsupported because a Worker cannot safely enumerate their host. Physical
 object deletion is internal, server-owned lifecycle work. The former archive
@@ -486,7 +486,7 @@ pass production fault-injection before Cron enables them.
 A completed inventory is scheduled again after 24 hours. Multi-page scans
 continue one bounded page per Cron pass, while provider failures use durable
 exponential retry capped at roughly six hours. The dashboard and
-`carrackctl inventory` expose the next scan time and failure-attempt count;
+`skydriverctl inventory` expose the next scan time and failure-attempt count;
 clients never schedule or perform inventory work.
 An inventory provider failure is isolated to that driver's scan: after storing
 its error and retry deadline, the same Cron invocation continues metadata
@@ -521,7 +521,7 @@ current high-water mark first, then performs an ascending bounded primary-key
 range query no later than that mark. The response returns `next_after` and
 `has_more`, redacts secret-shaped detail fields exactly like Activity, and
 fails with `409` when a cursor is ahead of the selected environment. The Rust
-`carrackctl watch` command validates ordering and continuation before emitting
+`skydriverctl watch` command validates ordering and continuation before emitting
 the page as JSON.
 
 ## D1 backup and recovery
@@ -529,12 +529,12 @@ the page as JSON.
 D1 Time Travel is a short-window rollback mechanism, not a complete provider
 reconciliation system. Export D1 on a schedule, keep the export outside the
 Cloudflare account, and preserve offline copies of every active VFS master-key
-version. Immutable catalog checkpoints in `CARRACK_MANIFESTS` provide an
+version. Immutable catalog checkpoints in `SKYDRIVER_MANIFESTS` provide an
 additional content-hashed recovery input.
 
 Never restore D1 while mutation traffic is enabled. Set the external
-`CARRACK_MAINTENANCE` secret first and confirm health reports
-`mutations_allowed: false`. Carrack deliberately exposes no generic browser,
+`SKYDRIVER_MAINTENANCE` secret first and confirm health reports
+`mutations_allowed: false`. Skydriver deliberately exposes no generic browser,
 filesystem CLI, or public HTTP "recovery complete" switch: a rollback may
 resurrect revoked tokens or metadata for provider objects deleted after the
 bookmark. Keep the environment fail-closed until a release-specific recovery

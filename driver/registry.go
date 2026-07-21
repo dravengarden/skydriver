@@ -86,7 +86,7 @@ func (registry *Registry) Open(ctx context.Context, instance Instance) (Handle, 
 
 	handle, err := factory(ctx, instance.clone())
 	if err != nil {
-		return Handle{}, fmt.Errorf("open Carrack driver %q: %w", instance.ID, err)
+		return Handle{}, fmt.Errorf("open Skydriver driver %q: %w", instance.ID, err)
 	}
 
 	if err := handle.Validate(); err != nil {

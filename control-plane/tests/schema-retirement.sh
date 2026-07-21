@@ -17,7 +17,7 @@ retirement_migration="$repository_root/control-plane/migrations/0055_retire_arch
 
 # Let Miniflare create the exact local D1 database layout, then prepare the
 # pre-retirement schema directly so this test can fault-inject migration 0055.
-"${wrangler[@]}" execute CARRACK_INDEX \
+"${wrangler[@]}" execute SKYDRIVER_INDEX \
   --local \
   --persist-to "$state_directory" \
   --command "SELECT 1" >/dev/null
@@ -45,7 +45,7 @@ INSERT INTO transfer_jobs (
 SQL
 
 failure_output="$state_directory/expected-failure.log"
-if "${wrangler[@]}" execute CARRACK_INDEX \
+if "${wrangler[@]}" execute SKYDRIVER_INDEX \
   --local \
   --persist-to "$state_directory" \
   --file "$retirement_migration" >"$failure_output" 2>&1; then
@@ -72,7 +72,7 @@ if [[ "$failure_state" != "1|1|0" ]]; then
 fi
 
 sqlite3 -bail "$database_path" "DELETE FROM transfer_jobs;"
-"${wrangler[@]}" execute CARRACK_INDEX \
+"${wrangler[@]}" execute SKYDRIVER_INDEX \
   --local \
   --persist-to "$state_directory" \
   --file "$retirement_migration" >/dev/null

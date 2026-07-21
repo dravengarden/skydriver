@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/dravengarden/carrack/driver"
+	"github.com/dravengarden/skydriver/driver"
 )
 
 func TestDownloadResumesOnlyMissingVerifiedBlocks(t *testing.T) {

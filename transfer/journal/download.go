@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/dravengarden/carrack/driver"
+	"github.com/dravengarden/skydriver/driver"
 )
 
 // DownloadResult identifies one atomically published verified local file.

@@ -1,16 +1,16 @@
 use std::fmt::Write as _;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use carrack_driver_contract::DriverKind;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use skydriver_driver_contract::DriverKind;
 use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 
 use crate::{driver_configuration, operator_sessions, vfs_identifiers};
 
-const ADMIN_TOKEN_BINDING: &str = "CARRACK_ADMIN_TOKEN";
-const DATABASE_BINDING: &str = "CARRACK_INDEX";
+const ADMIN_TOKEN_BINDING: &str = "SKYDRIVER_ADMIN_TOKEN";
+const DATABASE_BINDING: &str = "SKYDRIVER_INDEX";
 const VALIDATION_LIFETIME_SECONDS: u64 = 5 * 60;
 const DRIVER_STATE_KIND: &str = "driver.state";
 const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.driver-state.v1\0";

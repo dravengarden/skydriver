@@ -4,7 +4,7 @@ use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 
 use crate::{environment_defaults, operator_sessions};
 
-const DATABASE_BINDING: &str = "CARRACK_INDEX";
+const DATABASE_BINDING: &str = "SKYDRIVER_INDEX";
 const DEFAULT_EVENT_PAGE_SIZE: u64 = 100;
 const MAXIMUM_EVENT_PAGE_SIZE: u64 = 250;
 const DEFAULT_RESOURCE_PAGE_SIZE: u64 = 25;

@@ -57,25 +57,25 @@ if carrack_live_failure_json failure driver not-opaque stage 1 300 1 1 1 \
 fi
 
 r2_acceptance="$root/tests/r2-live.sh"
-if env CARRACK_R2_LIVE_TEST=1 CARRACK_VFS_TOKEN=redacted \
-  CARRACK_R2_TEST_BYTES=33554432 CARRACK_BIN=/bin/true \
+if env SKYDRIVER_R2_LIVE_TEST=1 SKYDRIVER_VFS_TOKEN=redacted \
+  SKYDRIVER_R2_TEST_BYTES=33554432 SKYDRIVER_BIN=/bin/true \
   "$r2_acceptance" >/dev/null 2>&1; then
   echo "R2 acceptance claimed multipart coverage below its threshold" >&2
   exit 1
 fi
-if env CARRACK_R2_LIVE_TEST=1 CARRACK_VFS_TOKEN=redacted \
-  CARRACK_R2_TEST_BYTES=134217728 CARRACK_R2_TEST_PART_BYTES=134217728 \
-  CARRACK_BIN=/bin/true "$r2_acceptance" >/dev/null 2>&1; then
+if env SKYDRIVER_R2_LIVE_TEST=1 SKYDRIVER_VFS_TOKEN=redacted \
+  SKYDRIVER_R2_TEST_BYTES=134217728 SKYDRIVER_R2_TEST_PART_BYTES=134217728 \
+  SKYDRIVER_BIN=/bin/true "$r2_acceptance" >/dev/null 2>&1; then
   echo "R2 acceptance claimed concurrent ranges with only one part" >&2
   exit 1
 fi
-if env CARRACK_R2_LIVE_TEST=1 CARRACK_VFS_TOKEN=redacted \
-  CARRACK_R2_TEST_CONCURRENCY=1 CARRACK_BIN=/bin/true \
+if env SKYDRIVER_R2_LIVE_TEST=1 SKYDRIVER_VFS_TOKEN=redacted \
+  SKYDRIVER_R2_TEST_CONCURRENCY=1 SKYDRIVER_BIN=/bin/true \
   "$r2_acceptance" >/dev/null 2>&1; then
   echo "R2 acceptance claimed concurrent ranges at concurrency one" >&2
   exit 1
 fi
-if rg -q 'env CARRACK_VFS_TOKEN' "$root/tests/r2-live.sh" "$root/tests/aliyun-live.sh"; then
+if rg -q 'env SKYDRIVER_VFS_TOKEN' "$root/tests/r2-live.sh" "$root/tests/aliyun-live.sh"; then
   echo "live acceptance exposed a VFS token through command arguments" >&2
   exit 1
 fi

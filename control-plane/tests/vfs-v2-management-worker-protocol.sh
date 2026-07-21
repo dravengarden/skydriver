@@ -3,8 +3,8 @@ set -euo pipefail
 
 curl() {
   command curl \
-    --header "Carrack-Protocol-Epoch: 2" \
-    --header "Carrack-SDK-Version: 0.3.6" \
+    --header "Skydriver-Protocol-Epoch: 2" \
+    --header "Skydriver-SDK-Version: 0.3.6" \
     "$@"
 }
 
@@ -13,7 +13,7 @@ state_directory=$(mktemp -d)
 server_log="$state_directory/wrangler.log"
 cookie_jar="$state_directory/cookies.txt"
 local_root="$state_directory/provider"
-port=${CARRACK_VFS_MANAGEMENT_TEST_PORT:-8794}
+port=${SKYDRIVER_VFS_MANAGEMENT_TEST_PORT:-8794}
 server_pid=
 
 cleanup() {
@@ -40,10 +40,10 @@ wrangler=(
   --config "$repository_root/control-plane/wrangler.jsonc"
 )
 
-"${wrangler[@]}" d1 migrations apply CARRACK_INDEX \
+"${wrangler[@]}" d1 migrations apply SKYDRIVER_INDEX \
   --local \
   --persist-to "$state_directory" >/dev/null
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local \
   --persist-to "$state_directory" \
   --command "INSERT INTO vfs_transfer_hourly_analytics (
@@ -56,7 +56,7 @@ wrangler=(
     3600, 'driver-phase-test', 'token-phase-test', 'directory-phase-test', 'download',
     10, 10485760, 10000, 20000, 0, 10, 2000, 3000, 10000, 4000, 10, 3600
   )" >/dev/null
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local \
   --persist-to "$state_directory" \
   --command "INSERT INTO driver_instances (
@@ -68,16 +68,16 @@ wrangler=(
 
 admin_token=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA
 operator_account=draven
-export CARRACK_OPERATOR_ACCOUNT="$operator_account"
+export SKYDRIVER_OPERATOR_ACCOUNT="$operator_account"
 
 setsid "${wrangler[@]}" dev \
   --local \
   --persist-to "$state_directory" \
   --port "$port" \
   --inspector-port 0 \
-  --var CARRACK_VFS_MASTER_KEY_V1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
-  --var CARRACK_OPERATOR_ACCOUNT:"$operator_account" \
-  --var CARRACK_ADMIN_TOKEN:"$admin_token" \
+  --var SKYDRIVER_VFS_MASTER_KEY_V1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
+  --var SKYDRIVER_OPERATOR_ACCOUNT:"$operator_account" \
+  --var SKYDRIVER_ADMIN_TOKEN:"$admin_token" \
   --show-interactive-dev-session=false >"$server_log" 2>&1 &
 server_pid=$!
 
@@ -96,7 +96,7 @@ base_url="http://127.0.0.1:$port"
 json='Content-Type: application/json'
 
 old_admin_sdk=$(command curl --silent --output /dev/null --write-out '%{http_code}' \
-  --header 'Carrack-Protocol-Epoch: 2' --header 'Carrack-SDK-Version: 0.1.0' \
+  --header 'Skydriver-Protocol-Epoch: 2' --header 'Skydriver-SDK-Version: 0.1.0' \
   "$base_url/api/admin/snapshot")
 [[ "$old_admin_sdk" == 426 ]]
 
@@ -149,7 +149,7 @@ curl --silent --show-error --fail-with-body \
 bootstrap_request=$(jq -cn \
   --arg local_root "$local_root" \
   '{
-    filesystem_name: "Carrack management test",
+    filesystem_name: "Skydriver management test",
     principal_display_name: "VFS management operator",
     local_driver_id: "local-main",
     local_root: $local_root,
@@ -537,10 +537,10 @@ grandchild_token=$(jq -r '.token' <<<"$grandchild")
 
 rust_target="$state_directory/rust-target"
 cargo build --quiet --manifest-path "$repository_root/Cargo.toml" \
-  --target-dir "$rust_target" -p carrack-cli --bin carrack --bin carrackctl
-cli_binary="$rust_target/debug/carrack"
-control_binary="$rust_target/debug/carrackctl"
-cli_mkdir=$(env CARRACK_VFS_TOKEN="$root_token" \
+  --target-dir "$rust_target" -p skydriver-cli --bin skydriver --bin skydriverctl
+cli_binary="$rust_target/debug/skydriver"
+control_binary="$rust_target/debug/skydriverctl"
+cli_mkdir=$(env SKYDRIVER_VFS_TOKEN="$root_token" \
   "$cli_binary" mkdir /releases/artifacts \
   --control-url "$base_url" \
   --idempotency-key cli-mkdir-artifacts-v1 \
@@ -548,24 +548,24 @@ cli_mkdir=$(env CARRACK_VFS_TOKEN="$root_token" \
 [[ "$(jq -r '.schema' <<<"$cli_mkdir")" == carrack.fs-mkdir.v1 ]]
 cli_directory_id=$(jq -r '.directory_id' <<<"$cli_mkdir")
 
-rust_list=$(env CARRACK_VFS_TOKEN="$root_token" CARRACK_CONTROL_URL="$base_url" \
+rust_list=$(env SKYDRIVER_VFS_TOKEN="$root_token" SKYDRIVER_CONTROL_URL="$base_url" \
   "$cli_binary" list /)
 [[ "$(jq -r '.schema' <<<"$rust_list")" == carrack.fs-list.v1 ]]
 [[ "$(jq -r '.entries | length' <<<"$rust_list")" == 7 ]]
-rust_mkdir=$(env CARRACK_VFS_TOKEN="$root_token" CARRACK_CONTROL_URL="$base_url" \
+rust_mkdir=$(env SKYDRIVER_VFS_TOKEN="$root_token" SKYDRIVER_CONTROL_URL="$base_url" \
   "$cli_binary" mkdir /rust-native --idempotency-key rust-native-mkdir-v1)
 [[ "$(jq -r '.schema' <<<"$rust_mkdir")" == carrack.fs-mkdir.v1 ]]
 [[ "$(jq -r '.state' <<<"$rust_mkdir")" == committed ]]
-rust_stat=$(env CARRACK_VFS_TOKEN="$root_token" CARRACK_CONTROL_URL="$base_url" \
+rust_stat=$(env SKYDRIVER_VFS_TOKEN="$root_token" SKYDRIVER_CONTROL_URL="$base_url" \
   "$cli_binary" stat /rust-native)
 [[ "$(jq -r '.kind' <<<"$rust_stat")" == directory ]]
 
-cli_acl=$(env CARRACK_VFS_TOKEN="$root_token" \
+cli_acl=$(env SKYDRIVER_VFS_TOKEN="$root_token" \
 	  "$control_binary" vfs acl show /releases/artifacts \
   --control-url "$base_url" --format json)
 [[ "$(jq -r '.schema' <<<"$cli_acl")" == carrack.vfs.acl.v1 ]]
 cli_acl_revision=$(jq -r '.acl_revision' <<<"$cli_acl")
-cli_acl_replaced=$(env CARRACK_VFS_TOKEN="$root_token" \
+cli_acl_replaced=$(env SKYDRIVER_VFS_TOKEN="$root_token" \
 	  "$control_binary" vfs acl replace /releases/artifacts \
   --control-url "$base_url" \
   --principal-id "$principal_id" \
@@ -576,12 +576,12 @@ cli_acl_replaced=$(env CARRACK_VFS_TOKEN="$root_token" \
 [[ "$(jq -r '.kind' <<<"$cli_acl_replaced")" == acl.replace ]]
 [[ "$(jq -c '.policy.actions' <<<"$cli_acl_replaced")" == '["content.read","directory.list"]' ]]
 
-cli_placements=$(env CARRACK_VFS_TOKEN="$root_token" \
+cli_placements=$(env SKYDRIVER_VFS_TOKEN="$root_token" \
 	  "$control_binary" vfs mount show /releases/artifacts \
   --control-url "$base_url" --format json)
 [[ "$(jq -r '.schema' <<<"$cli_placements")" == carrack.vfs.placements.v1 ]]
 cli_placement_revision=$(jq -r '.placement_revision' <<<"$cli_placements")
-cli_placement_replaced=$(env CARRACK_VFS_TOKEN="$root_token" \
+cli_placement_replaced=$(env SKYDRIVER_VFS_TOKEN="$root_token" \
 	  "$control_binary" vfs mount set /releases/artifacts \
   --control-url "$base_url" \
   --driver local-secondary \
@@ -590,24 +590,24 @@ cli_placement_replaced=$(env CARRACK_VFS_TOKEN="$root_token" \
   --format json)
 [[ "$(jq -r '.kind' <<<"$cli_placement_replaced")" == placement.replace ]]
 [[ "$(jq -r '.policy.placements[0].driver_id' <<<"$cli_placement_replaced")" == local-secondary ]]
-cli_mounted=$(env CARRACK_VFS_TOKEN="$root_token" \
+cli_mounted=$(env SKYDRIVER_VFS_TOKEN="$root_token" \
 	  "$control_binary" vfs mount show /releases/artifacts \
   --control-url "$base_url" --format json)
 [[ "$(jq -r '.placements[0].mount_kind' <<<"$cli_mounted")" == mount ]]
-cli_inherited=$(env CARRACK_VFS_TOKEN="$root_token" \
+cli_inherited=$(env SKYDRIVER_VFS_TOKEN="$root_token" \
 	  "$control_binary" vfs mount inherit /releases/artifacts \
   --control-url "$base_url" \
   --expected-revision "$(jq -r '.placement_revision' <<<"$cli_mounted")" \
   --idempotency-key cli-mount-inherit-v1 \
   --format json)
 [[ "$(jq -r '.kind' <<<"$cli_inherited")" == placement.replace ]]
-cli_inherited_policy=$(env CARRACK_VFS_TOKEN="$root_token" \
+cli_inherited_policy=$(env SKYDRIVER_VFS_TOKEN="$root_token" \
 	  "$control_binary" vfs mount show /releases/artifacts \
   --control-url "$base_url" --format json)
 [[ "$(jq -r '.placements[0].driver_id' <<<"$cli_inherited_policy")" == local-main ]]
 [[ "$(jq -r '.placements[0].mount_kind' <<<"$cli_inherited_policy")" == inherited ]]
 
-cli_issue=$(env CARRACK_VFS_TOKEN="$root_token" \
+cli_issue=$(env SKYDRIVER_VFS_TOKEN="$root_token" \
 	  "$control_binary" vfs token issue / \
   --control-url "$base_url" \
   --action directory.list \
@@ -619,11 +619,11 @@ cli_issue=$(env CARRACK_VFS_TOKEN="$root_token" \
 cli_token_id=$(jq -r '.token_id' <<<"$cli_issue")
 cli_token=$(jq -r '.token' <<<"$cli_issue")
 
-cli_page=$(env CARRACK_VFS_TOKEN="$cli_token" \
+cli_page=$(env SKYDRIVER_VFS_TOKEN="$cli_token" \
   "$cli_binary" list / --control-url "$base_url" --format json)
 [[ "$(jq -r '.schema' <<<"$cli_page")" == carrack.fs-list.v1 ]]
 
-cli_revoked=$(env CARRACK_VFS_TOKEN="$root_token" \
+cli_revoked=$(env SKYDRIVER_VFS_TOKEN="$root_token" \
 	  "$control_binary" vfs token revoke "$cli_token_id" \
   --control-url "$base_url" \
   --idempotency-key cli-reader-revoke-v1 \
@@ -665,7 +665,7 @@ self_revoke_status=$(curl --silent --output /dev/null --write-out '%{http_code}'
   "$base_url/api/v2/tokens/$(jq -r '.token_id' <<<"$bootstrapped")/revoke")
 [[ "$self_revoke_status" == 400 ]]
 
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local \
   --persist-to "$state_directory" \
   --command "
@@ -693,7 +693,7 @@ acl_denied_status=$(curl --silent --output /dev/null --write-out '%{http_code}' 
 child_verifier=$(printf '%s' "$child_token" | sha256sum | cut -d' ' -f1)
 
 now=$(date +%s)
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local \
   --persist-to "$state_directory" \
   --command "
@@ -763,7 +763,7 @@ jq -e '
   .next_before == .events[-1].id
 ' <<<"$recent_events" >/dev/null
 
-cli_event_page=$(env CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
+cli_event_page=$(env SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
   "$control_binary" watch --after 0 --limit 2 \
   --control-url "$base_url" --format json)
 jq -e '
@@ -814,7 +814,7 @@ jq -e --arg directory "$created_directory_id" '
   (.directories | length) == 1 and .directories[0].id == $directory
 ' <<<"$exact_directory_option" >/dev/null
 
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local \
   --persist-to "$state_directory" \
   --command "

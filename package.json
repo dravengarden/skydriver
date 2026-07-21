@@ -1,5 +1,5 @@
 {
-  "name": "@carrack/root",
+  "name": "@skydriver/root",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.9.0",

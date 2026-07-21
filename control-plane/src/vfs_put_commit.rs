@@ -223,7 +223,7 @@ pub(crate) async fn stage_block_manifest(
     token: &AuthenticatedVfsToken,
     intent_id: &str,
 ) -> Result<Response> {
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let Some(intent) = load_intent(&database, intent_id, &token.principal_id).await? else {
         return Response::error("VFS put intent was not found", 404);
     };
@@ -256,7 +256,7 @@ pub(crate) async fn stage_block_manifest(
         return Response::error("VFS block manifest does not prove its file root", 409);
     }
 
-    let bucket = env.bucket("CARRACK_MANIFESTS")?;
+    let bucket = env.bucket("SKYDRIVER_MANIFESTS")?;
     let stored = store_immutable_manifest(
         &bucket,
         &intent.block_manifest_r2_key,
@@ -299,7 +299,7 @@ pub(crate) async fn commit(
         return Response::error("invalid VFS put commit", 400);
     }
     let commit_sha256 = commit_identity(&requested)?;
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let Some(intent) = load_intent(&database, intent_id, &token.principal_id).await? else {
         return Response::error("VFS put intent was not found", 404);
     };
@@ -523,7 +523,7 @@ async fn validate_staged_manifest(
     intent: &PutIntentRow,
     expected_version: &str,
 ) -> Result<()> {
-    let bucket = env.bucket("CARRACK_MANIFESTS")?;
+    let bucket = env.bucket("SKYDRIVER_MANIFESTS")?;
     let Some(object) = bucket.get(&intent.block_manifest_r2_key).execute().await? else {
         return Err(worker::Error::RustError(
             "staged VFS block manifest is missing".to_owned(),

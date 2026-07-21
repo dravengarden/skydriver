@@ -80,7 +80,7 @@ pub(crate) async fn claim(
         return Response::error("VFS put-delete lease duration is out of range", 400);
     }
 
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let now = current_unix_seconds();
     if let Some(task) = load_owned_task(&database, token, None, now).await? {
         return claim_response(Some(task));
@@ -149,7 +149,7 @@ pub(crate) async fn revalidate(
         return Response::error("invalid VFS put-delete revalidation", 400);
     }
 
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let now = current_unix_seconds();
     if !authorized(&database, token, task_id).await? {
         return Response::error("VFS put-delete revalidation is not authorized", 403);
@@ -207,7 +207,7 @@ pub(crate) async fn complete(
         return Response::error("invalid VFS put-delete completion", 400);
     }
 
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     if !authorized(&database, token, task_id).await? {
         return Response::error("VFS put-delete completion is not authorized", 403);
     }
@@ -269,7 +269,7 @@ pub(crate) async fn fail(
     {
         return Response::error("invalid VFS put-delete failure", 400);
     }
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     if !authorized(&database, token, task_id).await? {
         return Response::error("VFS put-delete failure is not authorized", 403);
     }

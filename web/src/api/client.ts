@@ -601,8 +601,8 @@ async function requestJson<TSchema extends v.BaseSchema<unknown, unknown, v.Base
     schema: TSchema,
 ): Promise<v.InferOutput<TSchema>> {
     const headers = new Headers(init?.headers);
-    headers.set("Carrack-Protocol-Epoch", "2");
-    headers.set("Carrack-SDK-Version", "0.3.6");
+    headers.set("Skydriver-Protocol-Epoch", "2");
+    headers.set("Skydriver-SDK-Version", "0.3.6");
     const response = await fetch(input, { ...init, headers });
     if (!response.ok) {
         const detail = (await response.text())
@@ -616,8 +616,8 @@ async function requestJson<TSchema extends v.BaseSchema<unknown, unknown, v.Base
             .trim();
         throw new Error(
             detail === ""
-                ? `Carrack API returned ${String(response.status)}`
-                : `Carrack API returned ${String(response.status)}: ${detail}`,
+                ? `Skydriver API returned ${String(response.status)}`
+                : `Skydriver API returned ${String(response.status)}: ${detail}`,
         );
     }
 
@@ -631,7 +631,7 @@ export async function fetchSession(): Promise<Session> {
         return { authenticated: false };
     }
     if (!response.ok) {
-        throw new Error(`Carrack API returned ${String(response.status)}`);
+        throw new Error(`Skydriver API returned ${String(response.status)}`);
     }
 
     const body: unknown = await response.json();

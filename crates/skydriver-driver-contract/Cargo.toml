@@ -1,0 +1,16 @@
+[package]
+name = "skydriver-driver-contract"
+version = "0.3.6"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1.0.149"
+
+[lints]
+workspace = true

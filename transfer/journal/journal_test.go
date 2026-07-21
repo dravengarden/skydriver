@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dravengarden/carrack/driver"
-	"github.com/dravengarden/carrack/driver/localfs"
+	"github.com/dravengarden/skydriver/driver"
+	"github.com/dravengarden/skydriver/driver/localfs"
 )
 
 var (

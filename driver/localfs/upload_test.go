@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/dravengarden/carrack/driver"
+	"github.com/dravengarden/skydriver/driver"
 )
 
 func TestResumableUploadSurvivesRestartAndPublishesOneObject(t *testing.T) {

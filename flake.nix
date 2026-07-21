@@ -1,5 +1,5 @@
 {
-  description = "Carrack data transport and Cloudflare control plane";
+  description = "Skydriver data transport and Cloudflare control plane";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -38,29 +38,29 @@
             craneLib.filterCargoSources path type
             || path == toString ./testdata
             || lib.hasPrefix "${toString ./testdata}/" (toString path);
-          name = "carrack-rust-source";
+          name = "skydriver-rust-source";
         };
         cargoArtifacts = craneLib.buildDepsOnly {
-          pname = "carrack-deps";
+          pname = "skydriver-deps";
           inherit version;
           src = cargoSrc;
           strictDeps = true;
-          cargoExtraArgs = "--locked --package carrack-cli";
+          cargoExtraArgs = "--locked --package skydriver-cli";
           # The repository gate owns Clippy and workspace tests, while the
-          # final package still runs carrack-cli's release tests. This layer
+          # final package still runs skydriver-cli's release tests. This layer
           # only needs linkable dependency artifacts.
-          buildPhaseCargoCommand = "cargoWithProfile build --locked --package carrack-cli";
+          buildPhaseCargoCommand = "cargoWithProfile build --locked --package skydriver-cli";
           doCheck = false;
         };
-        carrack = craneLib.buildPackage {
-          pname = "carrack";
+        skydriver = craneLib.buildPackage {
+          pname = "skydriver";
           inherit version cargoArtifacts;
           src = rustSrc;
           strictDeps = true;
-          cargoExtraArgs = "--locked --package carrack-cli";
+          cargoExtraArgs = "--locked --package skydriver-cli";
           meta = {
             description = "Encrypted complete-object VFS client and operator CLI";
-            mainProgram = "carrack";
+            mainProgram = "skydriver";
           };
         };
         go1265 = pkgs.go.overrideAttrs (
@@ -77,8 +77,8 @@
       in
       {
         packages = {
-          default = carrack;
-          inherit carrack;
+          default = skydriver;
+          inherit skydriver;
         };
 
         devShells.default = pkgs.mkShell {
@@ -109,9 +109,9 @@
               set -a
               . ./.env
               set +a
-              echo "carrack: loaded Cloudflare deployment credentials from .env"
+              echo "skydriver: loaded Cloudflare deployment credentials from .env"
             fi
-            echo "carrack dev shell — $(go version | cut -d' ' -f3) · $(rustc --version | cut -d' ' -f2) · pnpm $(pnpm --version)"
+            echo "skydriver dev shell — $(go version | cut -d' ' -f3) · $(rustc --version | cut -d' ' -f2) · pnpm $(pnpm --version)"
           '';
         };
 

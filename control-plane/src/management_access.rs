@@ -8,8 +8,8 @@ use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 
 use crate::{operator_sessions, vfs_identifiers};
 
-const DATABASE_BINDING: &str = "CARRACK_INDEX";
-const ADMIN_TOKEN_BINDING: &str = "CARRACK_ADMIN_TOKEN";
+const DATABASE_BINDING: &str = "SKYDRIVER_INDEX";
+const ADMIN_TOKEN_BINDING: &str = "SKYDRIVER_ADMIN_TOKEN";
 const VALIDATION_LIFETIME_SECONDS: u64 = 5 * 60;
 const MUTATION_KIND: &str = "access.mutation";
 const CREATION_KIND: &str = "access.create";

@@ -1,13 +1,13 @@
 //! Environment-owned storage identities derived from Worker bindings.
 
-use carrack_driver_contract::DriverKind;
 use serde::Deserialize;
+use skydriver_driver_contract::DriverKind;
 use worker::{D1Database, Env, Result, wasm_bindgen::JsValue};
 
 use crate::r2_signing;
 
 pub(crate) const DEFAULT_R2_DRIVER_ID: &str = "r2-default";
-const DEFAULT_R2_MAX_PHYSICAL_BYTES_BINDING: &str = "CARRACK_DEFAULT_R2_MAX_PHYSICAL_BYTES";
+const DEFAULT_R2_MAX_PHYSICAL_BYTES_BINDING: &str = "SKYDRIVER_DEFAULT_R2_MAX_PHYSICAL_BYTES";
 const MAXIMUM_D1_INTEGER: u64 = 9_007_199_254_740_991;
 const R2_KIND: &str = DriverKind::R2V1.as_str();
 const LOCAL_FILESYSTEM_KIND: &str = DriverKind::LocalFilesystemV2.as_str();
@@ -106,11 +106,11 @@ pub(crate) fn is_managed_r2_config(env: &Env, config: &r2_signing::Config) -> Re
 }
 
 pub(crate) fn configured_r2(env: &Env) -> Result<Option<r2_signing::Config>> {
-    let environment = env.var("CARRACK_ENVIRONMENT")?.to_string();
+    let environment = env.var("SKYDRIVER_ENVIRONMENT")?.to_string();
     if !matches!(environment.as_str(), "dev" | "prod") {
         return Ok(None);
     }
-    let endpoint = env.var("CARRACK_R2_ENDPOINT")?.to_string();
+    let endpoint = env.var("SKYDRIVER_R2_ENDPOINT")?.to_string();
     desired_r2_config_from_values(&environment, &endpoint).map(Some)
 }
 

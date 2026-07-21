@@ -110,7 +110,7 @@ pub(crate) async fn create(
     };
     let request_digest = request_identity(&identity)?;
     let request_sha256 = lowercase_hex(&request_digest)?;
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
 
     if !vfs_access::authorized(&database, token, parent_directory_id, "content.write").await? {
         return Response::error("VFS content-write authority required", 403);

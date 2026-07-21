@@ -2,16 +2,16 @@
 
 use std::{collections::HashMap, fmt::Write as _};
 
-use carrack_sdk_core::{
+use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
+use skydriver_sdk_core::{
     CATALOG_CHECKPOINT_SCHEMA, CatalogCheckpoint, CatalogCheckpointDirectory,
     CatalogCheckpointEntry, CatalogCheckpointEntryKind, MAXIMUM_CATALOG_CHECKPOINT_BYTES,
     MAXIMUM_CATALOG_DELTA_BYTES, MAXIMUM_CATALOG_DIRECTORIES, MAXIMUM_CATALOG_ENTRIES,
     build_catalog_delta, validate_catalog_checkpoint,
 };
 #[cfg(test)]
-use carrack_sdk_core::{DirectoryMerkleEntry, directory_merkle_root};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
+use skydriver_sdk_core::{DirectoryMerkleEntry, directory_merkle_root};
 use worker::{Bucket, Conditional, D1Database, Date, Env, Result, wasm_bindgen::JsValue};
 
 use crate::vfs_identifiers;
@@ -131,8 +131,8 @@ struct StoredObject {
 /// one tracked abandoned R2 object. Historical pending revisions are collapsed
 /// only after a newer complete checkpoint has been verified and published.
 pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
-    let database = env.d1("CARRACK_INDEX")?;
-    let bucket = env.bucket("CARRACK_MANIFESTS")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
+    let bucket = env.bucket("SKYDRIVER_MANIFESTS")?;
     cleanup_one_delta(&database, &bucket, now).await?;
     cleanup_one(&database, &bucket, now).await?;
     if let Some(candidate) = claim_latest(&database, now).await?

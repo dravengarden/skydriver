@@ -3,15 +3,15 @@ set -euo pipefail
 
 curl() {
   command curl \
-    --header "Carrack-Protocol-Epoch: 2" \
-    --header "Carrack-SDK-Version: 0.3.6" \
+    --header "Skydriver-Protocol-Epoch: 2" \
+    --header "Skydriver-SDK-Version: 0.3.6" \
     "$@"
 }
 
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 state_directory=$(mktemp -d)
 server_log="$state_directory/wrangler.log"
-port=${CARRACK_VFS_TEST_PORT:-8792}
+port=${SKYDRIVER_VFS_TEST_PORT:-8792}
 server_pid=
 
 cleanup() {
@@ -35,7 +35,7 @@ wrangler=(
   --config "$repository_root/control-plane/wrangler.jsonc"
 )
 
-"${wrangler[@]}" d1 migrations apply CARRACK_INDEX \
+"${wrangler[@]}" d1 migrations apply SKYDRIVER_INDEX \
   --local \
   --persist-to "$state_directory" >/dev/null
 
@@ -61,7 +61,7 @@ manifest_sha=ed1c547d98c2889e33ce3bc6effc09f93db562dbb3e4faaed3b7df50fb967f34
 manifest_bytes=$((${#manifest_hex} / 2))
 printf '%s' "$manifest_hex" | xxd -r -p >"$state_directory/block-manifest.bin"
 
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local \
   --persist-to "$state_directory" \
   --command "
@@ -145,7 +145,7 @@ setsid "${wrangler[@]}" dev \
   --persist-to "$state_directory" \
   --port "$port" \
   --inspector-port 0 \
-  --var CARRACK_ADMIN_TOKEN:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
+  --var SKYDRIVER_ADMIN_TOKEN:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
   --show-interactive-dev-session=false >"$server_log" 2>&1 &
 server_pid=$!
 
@@ -199,12 +199,12 @@ jq -e '
 ' "$state_directory/upgrade-required.json" >/dev/null
 
 wrong_epoch=$(command curl --silent --output /dev/null --write-out '%{http_code}' \
-  --header 'Carrack-Protocol-Epoch: 1' --header 'Carrack-SDK-Version: 99.0.0' \
+  --header 'Skydriver-Protocol-Epoch: 1' --header 'Skydriver-SDK-Version: 99.0.0' \
   --request POST "$base_url/api/v2/puts/prepare")
 [[ "$wrong_epoch" == 426 ]]
 
 old_sdk=$(command curl --silent --output /dev/null --write-out '%{http_code}' \
-  --header 'Carrack-Protocol-Epoch: 2' --header 'Carrack-SDK-Version: 0.2.0' \
+  --header 'Skydriver-Protocol-Epoch: 2' --header 'Skydriver-SDK-Version: 0.2.0' \
   --request POST "$base_url/api/v2/puts/prepare")
 [[ "$old_sdk" == 426 ]]
 
@@ -346,7 +346,7 @@ second_staged=$(curl --silent --show-error --fail-with-body \
   "$base_url/api/v2/puts/$second_intent/block-manifest")
 second_r2_version=$(jq -r '.r2_version' <<<"$second_staged")
 
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local \
   --persist-to "$state_directory" \
   --command "DELETE FROM vfs_acl_grants
@@ -359,7 +359,7 @@ revoked_commit_status=$(curl --silent --output /dev/null --write-out '%{http_cod
   "$base_url/api/v2/puts/$second_intent/commit")
 [[ "$revoked_commit_status" == 403 ]]
 
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local \
   --persist-to "$state_directory" \
   --command "
@@ -411,7 +411,7 @@ revoked_commit_status=$(curl --silent --output /dev/null --write-out '%{http_cod
     SELECT NOT EXISTS (SELECT 1 FROM pragma_foreign_key_check);
   " >/dev/null
 
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local \
   --persist-to "$state_directory" \
   --command "INSERT INTO vfs_acl_grants (
@@ -463,7 +463,7 @@ race_conflict_status=$(curl --silent --output /dev/null --write-out '%{http_code
   "$base_url/api/v2/puts/$race_intent_b/commit")
 [[ "$race_conflict_status" == 409 ]]
 
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local \
   --persist-to "$state_directory" \
   --command "INSERT INTO vfs_worker_assertions
@@ -478,7 +478,7 @@ race_conflict_status=$(curl --silent --output /dev/null --write-out '%{http_code
              JOIN vfs_put_upload_evidence AS evidence ON evidence.intent_id = intent.id
              WHERE intent.id = '$race_intent_b';" >/dev/null
 
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local \
   --persist-to "$state_directory" \
   --command "
@@ -533,7 +533,7 @@ deferred_reclaim=$(curl --silent --show-error --fail-with-body \
 
 # A client-reported provider failure is not immediately reclaimable. Advance only
 # this task's durable retry deadline so the rest of the fencing protocol can run.
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local \
   --persist-to "$state_directory" \
   --command "UPDATE vfs_put_delete_tasks

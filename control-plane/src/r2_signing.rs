@@ -1,7 +1,7 @@
-pub(crate) use carrack_driver_contract::R2Config as Config;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+pub(crate) use skydriver_driver_contract::R2Config as Config;
 use std::fmt::Write as _;
 use worker::{Date, Fetch, Headers, Method, Request, RequestInit};
 use zeroize::Zeroize as _;

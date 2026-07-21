@@ -1,4 +1,4 @@
-// Package journal implements Carrack VFS V2 complete-object transfer recovery.
+// Package journal implements Skydriver VFS V2 complete-object transfer recovery.
 //
 // A journal pins one replayable source or one immutable driver object, records
 // the exact transfer layout, and publishes immutable progress receipts only

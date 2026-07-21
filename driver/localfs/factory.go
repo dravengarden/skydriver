@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/dravengarden/carrack/driver"
+	"github.com/dravengarden/skydriver/driver"
 )
 
 type configuration struct {

@@ -7,8 +7,10 @@ const MINIMUM_MANAGEMENT_LOGIN_VERSION: &str = "0.3.6";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const COMPATIBILITY_SCHEMA: &str = "carrack.protocol-compatibility.v1";
 const ERROR_SCHEMA: &str = "carrack.protocol-error.v1";
-const PROTOCOL_EPOCH_HEADER: &str = "Carrack-Protocol-Epoch";
-const SDK_VERSION_HEADER: &str = "Carrack-SDK-Version";
+const PROTOCOL_EPOCH_HEADER: &str = "Skydriver-Protocol-Epoch";
+const SDK_VERSION_HEADER: &str = "Skydriver-SDK-Version";
+const LEGACY_PROTOCOL_EPOCH_HEADER: &str = "Carrack-Protocol-Epoch";
+const LEGACY_SDK_VERSION_HEADER: &str = "Carrack-SDK-Version";
 
 #[derive(Serialize)]
 struct CompatibilityResponse {
@@ -39,13 +41,13 @@ pub(crate) fn describe() -> Result<Response> {
         minimum_sdk_version: MINIMUM_SDK_VERSION,
         server_version: SERVER_VERSION,
         enforcement: "required",
-        upgrade_command: "upgrade Carrack with the package manager that installed it",
+        upgrade_command: "upgrade Skydriver with the package manager that installed it",
     })
 }
 
 /// Rejects V2 calls before authentication, metadata mutation, or provider I/O.
 pub(crate) fn enforce(request: &Request) -> Result<Option<Response>> {
-    let epoch = request.headers().get(PROTOCOL_EPOCH_HEADER)?;
+    let epoch = version_header(request, PROTOCOL_EPOCH_HEADER, LEGACY_PROTOCOL_EPOCH_HEADER)?;
     let compatible = epoch.as_deref() == Some("2") && sdk_version_at_least(request, (0, 3, 0))?;
 
     if compatible {
@@ -57,7 +59,7 @@ pub(crate) fn enforce(request: &Request) -> Result<Option<Response>> {
 
 /// Rejects legacy management clients before parsing the account-aware login body.
 pub(crate) fn enforce_management_login(request: &Request) -> Result<Option<Response>> {
-    let epoch = request.headers().get(PROTOCOL_EPOCH_HEADER)?;
+    let epoch = version_header(request, PROTOCOL_EPOCH_HEADER, LEGACY_PROTOCOL_EPOCH_HEADER)?;
     let compatible = epoch.as_deref() == Some("2") && sdk_version_at_least(request, (0, 3, 6))?;
     if compatible {
         return Ok(None);
@@ -72,23 +74,34 @@ fn upgrade_required(minimum_sdk_version: &'static str) -> Result<Option<Response
         .from_json(&UpgradeRequiredResponse {
             schema: ERROR_SCHEMA,
             code: "sdk_upgrade_required",
-            message: "Carrack protocol or SDK version is incompatible",
+            message: "Skydriver protocol or SDK version is incompatible",
             protocol_epoch: PROTOCOL_EPOCH,
             minimum_sdk_version,
             server_version: SERVER_VERSION,
-            upgrade_command: "upgrade Carrack with the package manager that installed it",
+            upgrade_command: "upgrade Skydriver with the package manager that installed it",
         })?;
     Ok(Some(response))
 }
 
 /// Checks one additive feature floor after the epoch-wide compatibility gate.
 pub(crate) fn sdk_version_at_least(request: &Request, minimum: (u64, u64, u64)) -> Result<bool> {
-    Ok(request
-        .headers()
-        .get(SDK_VERSION_HEADER)?
-        .as_deref()
-        .and_then(parse_version)
-        .is_some_and(|candidate| candidate >= minimum))
+    Ok(
+        version_header(request, SDK_VERSION_HEADER, LEGACY_SDK_VERSION_HEADER)?
+            .as_deref()
+            .and_then(parse_version)
+            .is_some_and(|candidate| candidate >= minimum),
+    )
+}
+
+fn version_header(request: &Request, canonical: &str, legacy: &str) -> Result<Option<String>> {
+    let headers = request.headers();
+    let canonical_value = headers.get(canonical)?;
+    let legacy_value = headers.get(legacy)?;
+    match (canonical_value, legacy_value) {
+        (Some(value), Some(old)) if value != old => Ok(None),
+        (Some(value), _) | (_, Some(value)) => Ok(Some(value)),
+        (None, None) => Ok(None),
+    }
 }
 
 fn parse_version(value: &str) -> Option<(u64, u64, u64)> {

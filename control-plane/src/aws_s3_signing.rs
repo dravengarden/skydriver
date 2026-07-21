@@ -3,10 +3,10 @@
 //! The cryptographic canonicalization is shared with the R2 adapter, while
 //! this module owns AWS-only endpoint, owner, and bucket-versioning rules.
 
-pub(crate) use carrack_driver_contract::AwsS3Config as Config;
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
+pub(crate) use skydriver_driver_contract::AwsS3Config as Config;
 use worker::{Date, Fetch, Headers, Method, Request, RequestInit, wasm_bindgen::JsValue};
 
 pub(crate) use crate::r2_signing::Credential;

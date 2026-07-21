@@ -7,14 +7,14 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/dravengarden/carrack/vfs/cryptofile"
-	"github.com/dravengarden/carrack/vfs/merkle"
+	"github.com/dravengarden/skydriver/vfs/cryptofile"
+	"github.com/dravengarden/skydriver/vfs/merkle"
 )
 
 func TestCompleteFileRoundTripAndIdentity(t *testing.T) {
 	t.Parallel()
 
-	payload := []byte("complete Carrack files use independent authenticated frames")
+	payload := []byte("complete Skydriver files use independent authenticated frames")
 	descriptor := testDescriptor(uint64(len(payload)))
 
 	fileCipher, err := cryptofile.New(testKey(), descriptor)

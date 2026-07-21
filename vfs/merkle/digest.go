@@ -16,13 +16,13 @@ const (
 
 var (
 	// ErrInvalidDigest indicates a non-canonical SHA-256 value.
-	ErrInvalidDigest = errors.New("invalid Carrack VFS V2 digest")
+	ErrInvalidDigest = errors.New("invalid Skydriver VFS V2 digest")
 	// ErrInvalidIdentifier indicates a zero or non-canonical 128-bit VFS ID.
-	ErrInvalidIdentifier = errors.New("invalid Carrack VFS V2 identifier")
+	ErrInvalidIdentifier = errors.New("invalid Skydriver VFS V2 identifier")
 	// ErrInvalidFile indicates a contradictory or unsafe file tree request.
-	ErrInvalidFile = errors.New("invalid Carrack VFS V2 file tree")
+	ErrInvalidFile = errors.New("invalid Skydriver VFS V2 file tree")
 	// ErrInvalidDirectory indicates a contradictory or non-canonical directory.
-	ErrInvalidDirectory = errors.New("invalid Carrack VFS V2 directory tree")
+	ErrInvalidDirectory = errors.New("invalid Skydriver VFS V2 directory tree")
 	// ErrIntegrity indicates bytes that disagree with declared length or root.
 	ErrIntegrity = errors.New("carrack VFS V2 Merkle integrity mismatch")
 )

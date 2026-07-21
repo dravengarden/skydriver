@@ -8,17 +8,17 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/dravengarden/carrack/driver"
+	"github.com/dravengarden/skydriver/driver"
 )
 
 const schema = "carrack.transfer-journal/v1"
 
 var (
 	// ErrInvalidStore indicates an unsafe root or uninitialized journal store.
-	ErrInvalidStore = errors.New("invalid Carrack transfer journal store")
+	ErrInvalidStore = errors.New("invalid Skydriver transfer journal store")
 	// ErrInvalidPlan indicates incomplete, contradictory, or unsafe immutable
 	// transfer planning data.
-	ErrInvalidPlan = errors.New("invalid Carrack complete-object transfer plan")
+	ErrInvalidPlan = errors.New("invalid Skydriver complete-object transfer plan")
 	// ErrJournalNotFound indicates that no complete journal has the supplied ID.
 	ErrJournalNotFound = errors.New("carrack transfer journal not found")
 	// ErrJournalConflict indicates an optimistic revision or immutable receipt

@@ -169,14 +169,14 @@ describe("operator session", () => {
         vi.stubGlobal("fetch", fetchMock);
 
         await expect(
-            login({ account: "draven@carrack-dev", password: "operator-secret" }),
+            login({ account: "draven@skydriver-dev", password: "operator-secret" }),
         ).resolves.toEqual({
             authenticated: true,
         });
         const call = fetchMock.mock.calls[0];
         expect(call?.[0]).toBe("/api/auth/login");
         expect(JSON.parse(String(call?.[1]?.body))).toEqual({
-            account: "draven@carrack-dev",
+            account: "draven@skydriver-dev",
             password: "operator-secret",
         });
     });
@@ -271,8 +271,8 @@ describe("driver configuration", () => {
             refresh_issuer: "openlist-online/v1",
         });
         const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
-        expect(headers.get("Carrack-Protocol-Epoch")).toBe("2");
-        expect(headers.get("Carrack-SDK-Version")).toBe("0.3.6");
+        expect(headers.get("Skydriver-Protocol-Epoch")).toBe("2");
+        expect(headers.get("Skydriver-SDK-Version")).toBe("0.3.6");
         expect(JSON.stringify(validation)).not.toContain("refresh-private");
     });
 
@@ -287,7 +287,7 @@ describe("driver configuration", () => {
         );
 
         await expect(validateDriverCredential("aliyun-main", "refresh-private", 1)).rejects.toThrow(
-            "Carrack API returned 400: refresh token was rejected by the provider",
+            "Skydriver API returned 400: refresh token was rejected by the provider",
         );
     });
 });
@@ -296,7 +296,7 @@ describe("parseHealth", () => {
     it("requires an explicit deployment environment", () => {
         expect(
             parseHealth({
-                service: "carrack-control-plane",
+                service: "skydriver-control-plane",
                 environment: "dev",
                 operator_account: "draven",
                 transfer_mode: "direct",
@@ -312,7 +312,7 @@ describe("parseHealth", () => {
     it("rejects health without an environment", () => {
         expect(() =>
             parseHealth({
-                service: "carrack-control-plane",
+                service: "skydriver-control-plane",
                 transfer_mode: "direct",
                 mode: "active",
                 incarnation: "0123456789abcdef0123456789abcdef",

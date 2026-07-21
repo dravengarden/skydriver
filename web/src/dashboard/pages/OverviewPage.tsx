@@ -24,7 +24,7 @@ export function OverviewPage({ management, onNavigate }: OverviewPageProps) {
         return <LoadingState />;
     }
     if (management.isError) {
-        return <ErrorState message="Unable to load the Carrack management snapshot." />;
+        return <ErrorState message="Unable to load the Skydriver management snapshot." />;
     }
 
     const snapshot = management.data;

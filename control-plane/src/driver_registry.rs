@@ -5,7 +5,7 @@
 //! provider authority into the least-privilege object grant declared by the
 //! shared driver contract.
 
-use carrack_driver_contract::{DriverKind, GrantMode};
+use skydriver_driver_contract::{DriverKind, GrantMode};
 use worker::Result;
 
 use crate::{aws_s3_signing, driver_renewal, r2_signing};
@@ -114,7 +114,7 @@ pub(crate) fn project_multipart_grant(
 
 #[cfg(test)]
 mod tests {
-    use carrack_driver_contract::DriverKind;
+    use skydriver_driver_contract::DriverKind;
 
     use super::{
         MultipartGrantRequest, compiled_kind, project_access_grant, project_multipart_grant,

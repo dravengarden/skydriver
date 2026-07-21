@@ -5,41 +5,41 @@ root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=tests/lib/live-metrics.sh
 source "$root/tests/lib/live-metrics.sh"
 
-if [[ ${CARRACK_R2_SMALL_SYNC_LIVE_TEST:-} != 1 ]]; then
-  echo "set CARRACK_R2_SMALL_SYNC_LIVE_TEST=1 to authorize real dev R2 writes" >&2
+if [[ ${SKYDRIVER_R2_SMALL_SYNC_LIVE_TEST:-} != 1 ]]; then
+  echo "set SKYDRIVER_R2_SMALL_SYNC_LIVE_TEST=1 to authorize real dev R2 writes" >&2
   exit 2
 fi
-: "${CARRACK_VFS_TOKEN:?CARRACK_VFS_TOKEN is required}"
+: "${SKYDRIVER_VFS_TOKEN:?SKYDRIVER_VFS_TOKEN is required}"
 
-control_url=${CARRACK_CONTROL_URL:-https://dev.carrack.stormbird.xyz}
-driver_id=${CARRACK_R2_DRIVER_ID:-r2-default}
-parent=${CARRACK_R2_SMALL_SYNC_PARENT:-/}
-file_count=${CARRACK_R2_SMALL_SYNC_FILES:-64}
-file_bytes=${CARRACK_R2_SMALL_SYNC_BYTES:-1048576}
-upload_concurrency=${CARRACK_R2_SMALL_SYNC_UPLOAD_CONCURRENCY:-8}
-sync_concurrency=${CARRACK_R2_SMALL_SYNC_CONCURRENCY:-16}
-carrack_bin=${CARRACK_BIN:-target/release/carrack}
-operation_timeout_seconds=${CARRACK_LIVE_OPERATION_TIMEOUT_SECONDS:-300}
+control_url=${SKYDRIVER_CONTROL_URL:-https://dev.skydriver.stormbird.xyz}
+driver_id=${SKYDRIVER_R2_DRIVER_ID:-r2-default}
+parent=${SKYDRIVER_R2_SMALL_SYNC_PARENT:-/}
+file_count=${SKYDRIVER_R2_SMALL_SYNC_FILES:-64}
+file_bytes=${SKYDRIVER_R2_SMALL_SYNC_BYTES:-1048576}
+upload_concurrency=${SKYDRIVER_R2_SMALL_SYNC_UPLOAD_CONCURRENCY:-8}
+sync_concurrency=${SKYDRIVER_R2_SMALL_SYNC_CONCURRENCY:-16}
+carrack_bin=${SKYDRIVER_BIN:-target/release/carrack}
+operation_timeout_seconds=${SKYDRIVER_LIVE_OPERATION_TIMEOUT_SECONDS:-300}
 
-if [[ $control_url != https://dev.carrack.stormbird.xyz ]]; then
-  echo "small-file sync acceptance is restricted to the Carrack development environment" >&2
+if [[ $control_url != https://dev.skydriver.stormbird.xyz ]]; then
+  echo "small-file sync acceptance is restricted to the Skydriver development environment" >&2
   exit 2
 fi
 if [[ $driver_id != r2-default ]]; then
-  echo "CARRACK_R2_DRIVER_ID must be r2-default" >&2
+  echo "SKYDRIVER_R2_DRIVER_ID must be r2-default" >&2
   exit 2
 fi
 if [[ $parent != /* || $parent == *..* || $parent == *//* ]]; then
-  echo "CARRACK_R2_SMALL_SYNC_PARENT must be a canonical absolute VFS path" >&2
+  echo "SKYDRIVER_R2_SMALL_SYNC_PARENT must be a canonical absolute VFS path" >&2
   exit 2
 fi
-carrack_require_integer_range CARRACK_R2_SMALL_SYNC_FILES "$file_count" 8 1000
-carrack_require_integer_range CARRACK_R2_SMALL_SYNC_BYTES "$file_bytes" 1 16777216
-carrack_require_integer_range CARRACK_R2_SMALL_SYNC_UPLOAD_CONCURRENCY "$upload_concurrency" 1 32
-carrack_require_integer_range CARRACK_R2_SMALL_SYNC_CONCURRENCY "$sync_concurrency" 1 64
-carrack_require_integer_range CARRACK_LIVE_OPERATION_TIMEOUT_SECONDS "$operation_timeout_seconds" 1 3600
+carrack_require_integer_range SKYDRIVER_R2_SMALL_SYNC_FILES "$file_count" 8 1000
+carrack_require_integer_range SKYDRIVER_R2_SMALL_SYNC_BYTES "$file_bytes" 1 16777216
+carrack_require_integer_range SKYDRIVER_R2_SMALL_SYNC_UPLOAD_CONCURRENCY "$upload_concurrency" 1 32
+carrack_require_integer_range SKYDRIVER_R2_SMALL_SYNC_CONCURRENCY "$sync_concurrency" 1 64
+carrack_require_integer_range SKYDRIVER_LIVE_OPERATION_TIMEOUT_SECONDS "$operation_timeout_seconds" 1 3600
 if [[ ! -x $carrack_bin ]]; then
-  echo "Carrack binary is not executable: $carrack_bin" >&2
+  echo "Skydriver binary is not executable: $carrack_bin" >&2
   exit 2
 fi
 

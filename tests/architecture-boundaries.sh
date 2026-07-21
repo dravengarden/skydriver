@@ -8,58 +8,58 @@ dependency_manifests=(Cargo.toml Cargo.lock go.mod go.sum package.json pnpm-lock
 if rg --line-number --ignore-case \
   'github\.com/(OpenListTeam/)?OpenList|api\.oplist\.org|name = "openlist"' \
   "${dependency_manifests[@]}"; then
-  echo "OpenList must not be a Carrack build or runtime dependency" >&2
+  echo "OpenList must not be a Skydriver build or runtime dependency" >&2
   exit 1
 fi
 
 if rg --line-number \
   '"(aliyundrive-open/v2|r2/v1|aws-s3/v1|local-filesystem/v2)"' \
-  crates/carrack-client/src control-plane/src; then
-  echo "driver wire kinds must have one source in carrack-driver-contract" >&2
+  crates/skydriver-client/src control-plane/src; then
+  echo "driver wire kinds must have one source in skydriver-driver-contract" >&2
   exit 1
 fi
 if rg --line-number \
   '^struct (AliyunConfig|AliyunDriveConfig|LocalFilesystemConfig|R2Config|Config)[[:space:]]*\{' \
-  crates/carrack-client/src/aliyun.rs control-plane/src/r2_signing.rs \
+  crates/skydriver-client/src/aliyun.rs control-plane/src/r2_signing.rs \
   control-plane/src/management_driver_registration.rs \
   control-plane/src/vfs_provider_inventory.rs control-plane/src/vfs_server_lifecycle.rs; then
-  echo "serialized driver configuration shapes must live in carrack-driver-contract" >&2
+  echo "serialized driver configuration shapes must live in skydriver-driver-contract" >&2
   exit 1
 fi
-if ! rg -q 'carrack-driver-contract' crates/carrack-client/Cargo.toml \
-  || ! rg -q 'carrack-driver-contract' control-plane/Cargo.toml; then
-  echo "native and control-plane registries must share carrack-driver-contract" >&2
+if ! rg -q 'skydriver-driver-contract' crates/skydriver-client/Cargo.toml \
+  || ! rg -q 'skydriver-driver-contract' control-plane/Cargo.toml; then
+  echo "native and control-plane registries must share skydriver-driver-contract" >&2
   exit 1
 fi
-if rg --line-number 'carrack-driver-contract' crates/carrack-sdk-core/Cargo.toml; then
+if rg --line-number 'skydriver-driver-contract' crates/skydriver-sdk-core/Cargo.toml; then
   echo "portable correctness core must remain independent of driver kinds" >&2
   exit 1
 fi
 if rg --line-number \
   '(^|[[:space:]])(reqwest|tokio|rusqlite|worker|cap-std|fs2|aes-gcm|hkdf|sha2)[[:space:]]*=' \
-  crates/carrack-driver-contract/Cargo.toml; then
+  crates/skydriver-driver-contract/Cargo.toml; then
   echo "driver contract must remain free of I/O, runtime, database, provider, and crypto dependencies" >&2
   exit 1
 fi
 
 if rg --line-number --ignore-case \
   '(^|[[:space:]])(reqwest|tokio|rusqlite|worker|cap-std|fs2)[[:space:]]*=' \
-  crates/carrack-sdk-core/Cargo.toml; then
-  echo "carrack-sdk-core must remain free of I/O, runtime, database, and provider dependencies" >&2
+  crates/skydriver-sdk-core/Cargo.toml; then
+  echo "skydriver-sdk-core must remain free of I/O, runtime, database, and provider dependencies" >&2
   exit 1
 fi
 
 if rg --line-number \
   'carrack\.vfs\.(file\.(leaf|empty|node|root)|directory\.(file-entry|child-entry|empty|node|root)|block-manifest)\.v1' \
-  crates/carrack-client/src control-plane/src web/src; then
-  echo "portable integrity domains must be implemented only by carrack-sdk-core" >&2
+  crates/skydriver-client/src control-plane/src web/src; then
+  echo "portable integrity domains must be implemented only by skydriver-sdk-core" >&2
   exit 1
 fi
 
-if ! rg -q 'carrack_sdk_core' control-plane/src/vfs_merkle.rs \
+if ! rg -q 'skydriver_sdk_core' control-plane/src/vfs_merkle.rs \
   || ! rg -q 'validate_block_manifest' control-plane/src/vfs_merkle.rs \
   || ! rg -q 'directory_merkle_root' control-plane/src/vfs_merkle.rs; then
-  echo "the Worker Merkle adapter must delegate final validation to carrack-sdk-core" >&2
+  echo "the Worker Merkle adapter must delegate final validation to skydriver-sdk-core" >&2
   exit 1
 fi
 
@@ -71,60 +71,60 @@ fi
 
 if rg --line-number \
   'carrack\.vfs\.file-frame\.v1|carrack\.vfs\.file-key\.v1|encrypt_in_place_detached|decrypt_in_place_detached|Hkdf' \
-  crates/carrack-client/src \
+  crates/skydriver-client/src \
   || rg --line-number '^[[:space:]]*(aes-gcm|hkdf)[[:space:]]*=' \
-    crates/carrack-client/Cargo.toml; then
-  echo "native client I/O must delegate version key and frame cryptography to carrack-sdk-core" >&2
+    crates/skydriver-client/Cargo.toml; then
+  echo "native client I/O must delegate version key and frame cryptography to skydriver-sdk-core" >&2
   exit 1
 fi
 
 if rg --line-number 'crate::(crypto|catalog|acceptance)' \
-  crates/carrack-sdk-core/src/integrity.rs \
+  crates/skydriver-sdk-core/src/integrity.rs \
   || rg --line-number 'crate::(integrity|catalog|acceptance)' \
-    crates/carrack-sdk-core/src/crypto.rs \
+    crates/skydriver-sdk-core/src/crypto.rs \
   || rg --line-number 'crate::(integrity|crypto|catalog|acceptance)' \
-    crates/carrack-sdk-core/src/canonical.rs; then
+    crates/skydriver-sdk-core/src/canonical.rs; then
   echo "portable core leaf modules must remain orthogonal" >&2
   exit 1
 fi
 
 core_modules=(acceptance canonical catalog crypto error integrity)
 for core_module in "${core_modules[@]}"; do
-  if ! test -f "crates/carrack-sdk-core/src/$core_module.rs"; then
+  if ! test -f "crates/skydriver-sdk-core/src/$core_module.rs"; then
     echo "required portable core module is missing: $core_module" >&2
     exit 1
   fi
 done
 
 if rg --line-number 'carrack-(sdk-core|client|driver-contract)|reqwest|tokio|rusqlite|fs2|worker' \
-  crates/carrack-metadata-cache/Cargo.toml crates/carrack-metadata-cache/src; then
+  crates/skydriver-metadata-cache/Cargo.toml crates/skydriver-metadata-cache/src; then
   echo "metadata cache primitive must remain independent of VFS semantics and I/O" >&2
   exit 1
 fi
 
-if rg --line-number 'carrack-sdk-core|carrack-control-plane|reqwest' \
-  crates/carrack-cli/Cargo.toml crates/carrack-cli/src; then
-  echo "CLI binaries must remain thin carrack-client consumers" >&2
+if rg --line-number 'skydriver-sdk-core|skydriver-control-plane|reqwest' \
+  crates/skydriver-cli/Cargo.toml crates/skydriver-cli/src; then
+  echo "CLI binaries must remain thin skydriver-client consumers" >&2
   exit 1
 fi
 
 if rg --line-number \
   'FileMerkle|DirectoryMerkle|BlockManifestExpectation|validate_block_manifest|directory_merkle_root' \
-  crates/carrack-cli/src web/src; then
+  crates/skydriver-cli/src web/src; then
   echo "CLI and UI must not implement portable correctness rules" >&2
   exit 1
 fi
 
 if rg --line-number --ignore-case \
   'OpenListTeam|api\.oplist\.org|openlist' \
-  crates/carrack-client/src crates/carrack-cli/src; then
+  crates/skydriver-client/src crates/skydriver-cli/src; then
   echo "native Rust clients must not link to or call OpenList" >&2
   exit 1
 fi
 
 driver_orchestrators=(
-  crates/carrack-client/src/transfer.rs
-  crates/carrack-client/src/download.rs
+  crates/skydriver-client/src/transfer.rs
+  crates/skydriver-client/src/download.rs
 )
 if rg --line-number \
   'aliyundrive-open/v2|r2/v1|aws-s3/v1|local-filesystem/v2|crate::(aliyun|r2|local)::' \
@@ -138,7 +138,7 @@ for driver_orchestrator in "${driver_orchestrators[@]}"; do
     exit 1
   fi
 done
-if rg --line-number 'crate::driver|crate::(aliyun|r2|local)' crates/carrack-sdk-core/src; then
+if rg --line-number 'crate::driver|crate::(aliyun|r2|local)' crates/skydriver-sdk-core/src; then
   echo "portable correctness modules must remain independent of native drivers" >&2
   exit 1
 fi
@@ -204,23 +204,23 @@ if ! rg -q 'provider_identity_mismatch' control-plane/src/vfs_server_lifecycle.r
   echo "hosted lifecycle must exact-Stat provider identity before Delete" >&2
   exit 1
 fi
-if rg -q 'remove_file\(&relative\)' crates/carrack-client/src/local.rs; then
+if rg -q 'remove_file\(&relative\)' crates/skydriver-client/src/local.rs; then
   echo "native adapters must retain ambiguous provider objects for fenced lifecycle" >&2
   exit 1
 fi
 if ! rg -q 'hard_link\(&temporary, &directory, &relative\)' \
-  crates/carrack-client/src/local.rs; then
+  crates/skydriver-client/src/local.rs; then
   echo "local provider publication must be atomic no-replace" >&2
   exit 1
 fi
 if ! rg -q 'presign_no_replace' control-plane/src/r2_signing.rs \
   || ! rg -q 'presign_query_no_replace' control-plane/src/r2_signing.rs \
-  || ! rg -q 'IF_NONE_MATCH' crates/carrack-client/src/r2.rs \
-  || ! rg -q 'PRECONDITION_FAILED' crates/carrack-client/src/r2.rs; then
+  || ! rg -q 'IF_NONE_MATCH' crates/skydriver-client/src/r2.rs \
+  || ! rg -q 'PRECONDITION_FAILED' crates/skydriver-client/src/r2.rs; then
   echo "R2 single and multipart publication must be atomic no-replace" >&2
   exit 1
 fi
-if rg -q 'unwrap_or\(expected_sha256\)' crates/carrack-client/src/r2.rs; then
+if rg -q 'unwrap_or\(expected_sha256\)' crates/skydriver-client/src/r2.rs; then
   echo "R2 provider identity must come from provider readback evidence" >&2
   exit 1
 fi
@@ -272,8 +272,8 @@ if test -z "$download_authorized_line" || test -z "$download_refresh_line" \
   exit 1
 fi
 
-if test -e cmd/carrack/main.go || test -e cmd/carrackctl/main.go; then
-  echo "public Carrack CLIs must be the native Rust binaries" >&2
+if test -e cmd/skydriver/main.go || test -e cmd/skydriverctl/main.go; then
+  echo "public Skydriver CLIs must be the native Rust binaries" >&2
   exit 1
 fi
 
@@ -338,8 +338,8 @@ if ! rg -U -q \
 fi
 
 operator_rotation=control-plane/scripts/rotate-operator-credential.mjs
-if ! rg -q '"CARRACK_ADMIN_TOKEN"' "$operator_rotation" \
-  || rg -q 'CARRACK_VFS_MASTER_KEY|CARRACK_VFS_TOKEN|secretName|secret_name' "$operator_rotation"; then
+if ! rg -q '"SKYDRIVER_ADMIN_TOKEN"' "$operator_rotation" \
+  || rg -q 'SKYDRIVER_VFS_MASTER_KEY|SKYDRIVER_VFS_TOKEN|secretName|secret_name' "$operator_rotation"; then
   echo "operator credential rotation must be a non-generic ADMIN_TOKEN-only command" >&2
   exit 1
 fi

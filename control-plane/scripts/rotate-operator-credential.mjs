@@ -6,8 +6,8 @@ const environmentName = process.argv[2];
 if (environmentName !== "dev" && environmentName !== "prod") {
     throw new Error("usage: rotate-operator-credential.mjs <dev|prod>");
 }
-if (environmentName === "prod" && process.env.CARRACK_ROTATE_OPERATOR_PROD !== "1") {
-    throw new Error("set CARRACK_ROTATE_OPERATOR_PROD=1 to rotate production credentials");
+if (environmentName === "prod" && process.env.SKYDRIVER_ROTATE_OPERATOR_PROD !== "1") {
+    throw new Error("set SKYDRIVER_ROTATE_OPERATOR_PROD=1 to rotate production credentials");
 }
 
 const credential = fs.readFileSync(0, "utf8").trim();
@@ -28,7 +28,7 @@ const result = spawnSync(
         "wrangler",
         "secret",
         "put",
-        "CARRACK_ADMIN_TOKEN",
+        "SKYDRIVER_ADMIN_TOKEN",
         "--env",
         environmentName,
         "--config",

@@ -1,4 +1,4 @@
-// Package cryptofile implements Carrack VFS complete-file encryption.
+// Package cryptofile implements Skydriver VFS complete-file encryption.
 //
 // It is provider-free: verification blocks, multipart parts, ranges, and
 // storage drivers remain outside this package. One immutable file version uses
@@ -18,11 +18,11 @@ import (
 	"io"
 	"math"
 
-	"github.com/dravengarden/carrack/vfs/merkle"
+	"github.com/dravengarden/skydriver/vfs/merkle"
 )
 
 const (
-	// Suite is the first Carrack VFS complete-file encryption format.
+	// Suite is the first Skydriver VFS complete-file encryption format.
 	Suite = "carrack-vfs-aes256gcm-hkdfsha256-v1"
 
 	directoryKeyBytes = 32
@@ -35,15 +35,15 @@ const (
 
 var (
 	// ErrInvalidDescriptor indicates an incomplete or unsafe immutable file context.
-	ErrInvalidDescriptor = errors.New("invalid Carrack VFS crypto descriptor")
+	ErrInvalidDescriptor = errors.New("invalid Skydriver VFS crypto descriptor")
 	// ErrInvalidKey indicates missing directory key material.
-	ErrInvalidKey = errors.New("invalid Carrack VFS directory key")
+	ErrInvalidKey = errors.New("invalid Skydriver VFS directory key")
 	// ErrInvalidFrame indicates a frame with an impossible ordinal or length.
-	ErrInvalidFrame = errors.New("invalid Carrack VFS crypto frame")
+	ErrInvalidFrame = errors.New("invalid Skydriver VFS crypto frame")
 	// ErrAuthentication indicates that an encoded frame failed AES-GCM authentication.
 	ErrAuthentication = errors.New("carrack VFS frame authentication failed")
 	// ErrStreamLength indicates short or trailing transform input.
-	ErrStreamLength = errors.New("invalid Carrack VFS crypto stream length")
+	ErrStreamLength = errors.New("invalid Skydriver VFS crypto stream length")
 )
 
 // DirectoryKey is one authorized 256-bit directory epoch secret.
@@ -95,12 +95,12 @@ func New(directoryKey DirectoryKey, descriptor Descriptor) (*Cipher, error) {
 
 	block, err := aes.NewCipher(fileKey[:])
 	if err != nil {
-		return nil, fmt.Errorf("construct Carrack VFS AES cipher: %w", err)
+		return nil, fmt.Errorf("construct Skydriver VFS AES cipher: %w", err)
 	}
 
 	aead, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, fmt.Errorf("construct Carrack VFS AES-GCM: %w", err)
+		return nil, fmt.Errorf("construct Skydriver VFS AES-GCM: %w", err)
 	}
 
 	if aead.NonceSize() != nonceBytes || aead.Overhead() != int(frameTagBytes) {
@@ -199,7 +199,7 @@ func (fileCipher *Cipher) Seal(
 
 	for ordinal := range fileCipher.frameCount {
 		if err := ctx.Err(); err != nil {
-			return TransformResult{}, fmt.Errorf("seal Carrack VFS file: %w", err)
+			return TransformResult{}, fmt.Errorf("seal Skydriver VFS file: %w", err)
 		}
 
 		plaintextBytes := fileCipher.plaintextFrameBytes(ordinal)
@@ -261,7 +261,7 @@ func (fileCipher *Cipher) Open(
 
 	for ordinal := range fileCipher.frameCount {
 		if err := ctx.Err(); err != nil {
-			return TransformResult{}, fmt.Errorf("open Carrack VFS file: %w", err)
+			return TransformResult{}, fmt.Errorf("open Skydriver VFS file: %w", err)
 		}
 
 		plaintextBytes := fileCipher.plaintextFrameBytes(ordinal)
@@ -314,7 +314,7 @@ func deriveFileKey(directoryKey DirectoryKey, descriptor Descriptor) ([fileKeyBy
 
 	derived, err := hkdf.Key(sha256.New, directoryKey[:], salt, fileKeyInfo, fileKeyBytes)
 	if err != nil {
-		return [fileKeyBytes]byte{}, fmt.Errorf("derive Carrack VFS file key: %w", err)
+		return [fileKeyBytes]byte{}, fmt.Errorf("derive Skydriver VFS file key: %w", err)
 	}
 
 	return [fileKeyBytes]byte(derived), nil

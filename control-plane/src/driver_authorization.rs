@@ -4,8 +4,8 @@
 //! with the credential transaction. This module owns provider credential wire
 //! shapes and the network verification needed before a credential can commit.
 
-use carrack_driver_contract::DriverKind;
 use serde::{Deserialize, Serialize};
+use skydriver_driver_contract::DriverKind;
 
 use crate::{aws_s3_signing, driver_renewal, r2_signing};
 
@@ -155,7 +155,7 @@ pub(crate) async fn authorize(
 
 #[cfg(test)]
 mod tests {
-    use carrack_driver_contract::DriverKind;
+    use skydriver_driver_contract::DriverKind;
 
     use super::{CredentialAuthorization, RefreshAuthorization, validate};
 

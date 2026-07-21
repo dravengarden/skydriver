@@ -1,4 +1,4 @@
-# Carrack VFS Bootstrap V1
+# Skydriver VFS Bootstrap V1
 
 ## Purpose
 
@@ -20,7 +20,7 @@ validates and seals the derived S3 signing key and enables the driver. The
 disabled default mount exists before credentials so the virtual hierarchy has
 one stable backing identity, while namespace and payload mutations remain
 unavailable until the driver is enabled. Operators may later replace the quota through
-the same validated UI or `carrackctl` policy flow; environment reconciliation
+the same validated UI or `skydriverctl` policy flow; environment reconciliation
 never resets an operator revision. The Cloudflare Worker stores only the token
 verifier and authenticated key envelope. It never stores a VFS bearer token or
 plaintext directory key in D1 and never opens the configured local filesystem
@@ -32,14 +32,14 @@ Apply all D1 migrations, configure an operator account, and set the independent
 VFS master secret before calling the endpoint:
 
 ```bash
-pnpm exec wrangler secret put CARRACK_VFS_MASTER_KEY_V1 \
+pnpm exec wrangler secret put SKYDRIVER_VFS_MASTER_KEY_V1 \
   --env <dev-or-prod> \
   --config control-plane/wrangler.jsonc
 ```
 
 The value is the unpadded base64url encoding of exactly 32 random bytes. Keep a
 tested offline recovery copy. It must be generated independently from
-`CARRACK_ADMIN_TOKEN`. No archive-root compatibility secret participates in VFS bootstrap.
+`SKYDRIVER_ADMIN_TOKEN`. No archive-root compatibility secret participates in VFS bootstrap.
 
 The caller first authenticates through `POST /api/auth/login` with the
 environment's operator account and credential and sends the resulting revocable session
@@ -52,7 +52,7 @@ The JSON request is strict and rejects unknown fields:
 
 ```json
 {
-  "filesystem_name": "Carrack VFS",
+  "filesystem_name": "Skydriver VFS",
   "principal_display_name": "VFS operator",
   "crypto_suite": "carrack-vfs-aes256gcm-hkdfsha256-v1",
   "token_lifetime_seconds": 2592000,
@@ -105,13 +105,13 @@ versioned VFS master key and request identity, so no bearer value is stored in
 D1. Any changed request, subject, or idempotency identity after bootstrap
 returns `409` and cannot create a second root.
 
-Retain `CARRACK_VFS_MASTER_KEY_V1` while the key envelopes or bootstrap receipt
+Retain `SKYDRIVER_VFS_MASTER_KEY_V1` while the key envelopes or bootstrap receipt
 depend on it. Rotation requires adding a new versioned binding and rewrapping
 directory epochs; replacing the old value in place would make encrypted data
 and exact bootstrap replay unrecoverable.
 
-`carrackctl authority bootstrap --output-file PATH` is the supported operator
-bootstrap surface. `carrackctl authority recover --output-file PATH` re-derives
+`skydriverctl authority bootstrap --output-file PATH` is the supported operator
+bootstrap surface. `skydriverctl authority recover --output-file PATH` re-derives
 the same unexpired bearer from the immutable receipt after a separate
 configuration reauthentication. Both commands create a new owner-only file;
 they print only a redacted file receipt and never print the bearer. Recovery

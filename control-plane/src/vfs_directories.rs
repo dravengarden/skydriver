@@ -84,7 +84,7 @@ pub(crate) async fn list(
     let Some((limit, cursor)) = query_options(request)? else {
         return Response::error("invalid VFS directory-list query", 400);
     };
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     if !vfs_access::authorized(&database, token, directory_id, "directory.list").await? {
         return Response::error("VFS directory-list authority required", 403);
     }

@@ -1,4 +1,4 @@
-// Package localfs implements the Carrack VFS V2 complete-object contract on a
+// Package localfs implements the Skydriver VFS V2 complete-object contract on a
 // rooted local filesystem.
 //
 // Every published StorageKey names one complete regular file. Resumable upload
@@ -11,5 +11,5 @@
 // arbitrary-order multipart upload with local staging files. SHA-256 is checked
 // while bytes are persisted and again while staged parts are assembled, so no
 // post-publication readback is required. It does not support server-side copy;
-// callers must stream the complete object through Carrack when copy is required.
+// callers must stream the complete object through Skydriver when copy is required.
 package localfs

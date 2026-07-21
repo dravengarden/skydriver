@@ -1,10 +1,10 @@
-# Carrack VFS Management API V1
+# Skydriver VFS Management API V1
 
 ## Status and boundary
 
 This document defines the implemented live VFS directory, token, ACL, and
 placement-management API. The Cloudflare Worker is the transaction authority;
-the canonical Rust `carrack-client`, `carrack`, and `carrackctl` surfaces expose
+the canonical Rust `skydriver-client`, `skydriver`, and `skydriverctl` surfaces expose
 the supported operations. There is no compatibility SDK or second command
 implementation.
 
@@ -16,19 +16,19 @@ The currently implemented management surface is:
 
 | Surface | Worker | Rust client | CLI |
 |---|---:|---:|---:|
-| Revision-consistent directory listing | Yes | `list_path` | `carrack list` |
-| Empty child-directory creation | Yes | `mkdir` | `carrack mkdir` |
-| Attenuated child-token issue | Yes | `issue_token` | `carrackctl vfs token issue` |
-| Same-principal token revocation | Yes | `revoke_token` | `carrackctl vfs token revoke` |
-| Direct ACL inspection and principal replacement | Yes | `acl`, `replace_acl` | `carrackctl vfs acl show`, `carrackctl vfs acl replace` |
-| Mount inspection and replacement | Yes | `mount`, `set_mount`, `inherit_mount` | `carrackctl vfs mount show`, `carrackctl vfs mount set`, `carrackctl vfs mount inherit` |
-| Recursive verified namespace prefetch | Existing directory pages | Filesystem catalog cache | `carrack sync` uses it internally |
-| Principal lifecycle | Yes | `AdminClient::access`, validated access mutation | `carrackctl access principal` |
-| Group lifecycle and membership | Yes | `AdminClient::access`, validated access mutation | `carrackctl access group` |
-| Group ACL replacement | Yes | `replace_group_acl` | `carrackctl vfs acl replace --group-id` |
-| Typed driver registration or credential rotation | Operator API | `AdminClient` | `carrackctl driver register`, `carrackctl driver credential set` |
+| Revision-consistent directory listing | Yes | `list_path` | `skydriver list` |
+| Empty child-directory creation | Yes | `mkdir` | `skydriver mkdir` |
+| Attenuated child-token issue | Yes | `issue_token` | `skydriverctl vfs token issue` |
+| Same-principal token revocation | Yes | `revoke_token` | `skydriverctl vfs token revoke` |
+| Direct ACL inspection and principal replacement | Yes | `acl`, `replace_acl` | `skydriverctl vfs acl show`, `skydriverctl vfs acl replace` |
+| Mount inspection and replacement | Yes | `mount`, `set_mount`, `inherit_mount` | `skydriverctl vfs mount show`, `skydriverctl vfs mount set`, `skydriverctl vfs mount inherit` |
+| Recursive verified namespace prefetch | Existing directory pages | Filesystem catalog cache | `skydriver sync` uses it internally |
+| Principal lifecycle | Yes | `AdminClient::access`, validated access mutation | `skydriverctl access principal` |
+| Group lifecycle and membership | Yes | `AdminClient::access`, validated access mutation | `skydriverctl access group` |
+| Group ACL replacement | Yes | `replace_group_acl` | `skydriverctl vfs acl replace --group-id` |
+| Typed driver registration or credential rotation | Operator API | `AdminClient` | `skydriverctl driver register`, `skydriverctl driver credential set` |
 | Snapshot-pinned metadata reads | No | No | No |
-| Operator Files browser entry pages | Yes | `AdminClient::directory_entries` | `carrackctl directory --revision` |
+| Operator Files browser entry pages | Yes | `AdminClient::directory_entries` | `skydriverctl directory --revision` |
 
 These operator-authorized driver mutations are deliberately outside the VFS
 token routes documented below. The V2 payload implementation currently has
@@ -231,16 +231,16 @@ insert several rows.
 CLI examples:
 
 ```bash
-carrackctl acl show "$directory_id" \
+skydriverctl acl show "$directory_id" \
   --control-url "$control_url" --format json
 
-carrackctl acl replace "$directory_id" "$principal_id" \
+skydriverctl acl replace "$directory_id" "$principal_id" \
   --control-url "$control_url" \
   --role viewer \
   --expected-acl-revision "$acl_revision" \
   --idempotency-key reader-viewer-v1
 
-carrackctl acl replace "$directory_id" "$principal_id" \
+skydriverctl acl replace "$directory_id" "$principal_id" \
   --control-url "$control_url" \
   --clear \
   --expected-acl-revision "$acl_revision" \
@@ -281,16 +281,16 @@ concurrent mutation returns `409`.
 CLI examples:
 
 ```bash
-carrackctl vfs mount show /collection \
+skydriverctl vfs mount show /collection \
   --control-url "$control_url" --format json
 
-carrackctl vfs mount set /collection \
+skydriverctl vfs mount set /collection \
   --control-url "$control_url" \
   --driver local-main \
   --expected-revision "$placement_revision" \
   --idempotency-key placement-primary-backup-v1
 
-carrackctl vfs mount inherit /collection \
+skydriverctl vfs mount inherit /collection \
   --control-url "$control_url" \
   --expected-revision "$placement_revision" \
   --idempotency-key placement-inherit-v1
@@ -309,7 +309,7 @@ property remains a hard error.
 
 ## Race and recovery rules
 
-Carrack does not hold pessimistic locks across management or provider I/O.
+Skydriver does not hold pessimistic locks across management or provider I/O.
 Directory, ACL, and mount mutations use short D1 transactions, exact
 expected revisions where caller reconciliation is required, immutable
 operation IDs, canonical request hashes, and durable receipts.

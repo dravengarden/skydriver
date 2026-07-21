@@ -1,4 +1,4 @@
-# Carrack VFS Authorization V1
+# Skydriver VFS Authorization V1
 
 ## Decision
 
@@ -8,7 +8,7 @@ or policy-language engine. Named roles are UI and API presets expanded into
 fixed action grants when written; changing a preset later cannot silently
 change an existing ACL.
 
-This model keeps the common case small while retaining the properties Carrack
+This model keeps the common case small while retaining the properties Skydriver
 needs: directory boundaries, least-privilege AI tokens, immediate revocation,
 driver restrictions, snapshot pinning, and administrators who do not
 implicitly receive content plaintext.

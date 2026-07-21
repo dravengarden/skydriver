@@ -11,8 +11,8 @@ import {
     Typography,
 } from "@mui/material";
 import { useState, type FormEvent } from "react";
-import { CarrackMark } from "../brand/CarrackLogo";
-import { OceanBackdrop } from "../brand/OceanBackdrop";
+import { SkydriverMark } from "../brand/SkydriverLogo";
+import { SkyBackdrop } from "../brand/SkyBackdrop";
 
 interface LoginPageProps {
     readonly environment: string;
@@ -56,11 +56,11 @@ export function LoginPage({
                 overflow: "hidden",
             }}
         >
-            <OceanBackdrop />
+            <SkyBackdrop />
             <Paper
                 component="form"
                 autoComplete="on"
-                name={`carrack-${environment}-login`}
+                name={`skydriver-${environment}-login`}
                 onSubmit={submit}
                 elevation={0}
                 sx={{
@@ -84,7 +84,7 @@ export function LoginPage({
                             sx={{ alignItems: "center", justifyContent: "space-between" }}
                         >
                             <Stack direction="row" spacing={1.25} sx={{ alignItems: "center" }}>
-                                <CarrackMark width={42} height={42} title="Carrack" />
+                                <SkydriverMark width={42} height={42} title="Skydriver" />
                                 <Box>
                                     <Typography
                                         variant="overline"
@@ -96,7 +96,7 @@ export function LoginPage({
                                             lineHeight: 1.1,
                                         }}
                                     >
-                                        CARRACK
+                                        SKYDRIVER
                                     </Typography>
                                     <Typography
                                         variant="caption"
@@ -130,7 +130,7 @@ export function LoginPage({
 
                     <TextField
                         label="Saved login"
-                        autoComplete={`section-carrack-${environment} username`}
+                        autoComplete={`section-skydriver-${environment} username`}
                         value={savedIdentity}
                         onChange={(event) => {
                             setSavedIdentity(event.target.value);
@@ -147,7 +147,7 @@ export function LoginPage({
                         }
                         slotProps={{
                             htmlInput: {
-                                id: `carrack-${environment}-username`,
+                                id: `skydriver-${environment}-username`,
                                 name: "username",
                                 autoCapitalize: "none",
                                 spellCheck: false,
@@ -158,14 +158,14 @@ export function LoginPage({
                     <TextField
                         label="Operator credential"
                         type="password"
-                        autoComplete={`section-carrack-${environment} current-password`}
+                        autoComplete={`section-skydriver-${environment} current-password`}
                         value={password}
                         onChange={(event) => setPassword(event.target.value)}
                         required
                         fullWidth
                         slotProps={{
                             htmlInput: {
-                                id: `carrack-${environment}-password`,
+                                id: `skydriver-${environment}-password`,
                                 name: "password",
                             },
                         }}

@@ -1,17 +1,17 @@
 # Rust client migration
 
-Carrack's public binaries and canonical client core are Rust. Migration is
+Skydriver's public binaries and canonical client core are Rust. Migration is
 complete: the former Go archive SDK and internal CLI have been removed. The
 remaining Go packages are narrow conformance oracles and do not build a public
-`carrack` or `carrackctl` binary.
+`skydriver` or `skydriverctl` binary.
 
 ## Target boundary
 
-- `carrack` is a filesystem facade: put, get, list, stat, mkdir, remove, rename,
+- `skydriver` is a filesystem facade: put, get, list, stat, mkdir, remove, rename,
   and incremental sync.
-- `carrackctl` is the non-interactive JSON-first management facade used by the
+- `skydriverctl` is the non-interactive JSON-first management facade used by the
   UI, operators, and AI agents.
-- `carrack-client` owns protocol compatibility, local filesystem I/O, byte,
+- `skydriver-client` owns protocol compatibility, local filesystem I/O, byte,
   replayable-reader, bounded-range, and one-shot source normalization,
   verified byte and writer outputs, streaming encryption, hashing, bounded
   transfer execution, automatic resume state, and verification.
@@ -24,7 +24,7 @@ remaining Go packages are narrow conformance oracles and do not build a public
 
 ## Compatibility gate
 
-Every Rust request sends `Carrack-Protocol-Epoch` and `Carrack-SDK-Version`.
+Every Rust request sends `Skydriver-Protocol-Epoch` and `Skydriver-SDK-Version`.
 Before metadata mutation or provider I/O, the client reads
 `GET /api/compatibility`. An incompatible epoch, an SDK below the server
 minimum, a malformed contract, or HTTP 426 fails the command before side
@@ -46,8 +46,8 @@ or applying a partial response.
 
 ## Completed replacement boundary
 
-1. `carrack` provides list, stat, mkdir, put, get, remove, and rename.
-2. `carrackctl` provides the redacted UI snapshot, directory inspection,
+1. `skydriver` provides list, stat, mkdir, put, get, remove, and rename.
+2. `skydriverctl` provides the redacted UI snapshot, directory inspection,
    typed driver/config/credential mutations, token annotation, ACL and
    mount replacement, and attenuated token issue/revoke.
 3. Rust owns the native local and Aliyun complete-object adapters. Neither

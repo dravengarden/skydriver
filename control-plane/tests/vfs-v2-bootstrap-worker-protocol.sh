@@ -3,8 +3,8 @@ set -euo pipefail
 
 curl() {
   command curl \
-    --header "Carrack-Protocol-Epoch: 2" \
-    --header "Carrack-SDK-Version: 0.3.6" \
+    --header "Skydriver-Protocol-Epoch: 2" \
+    --header "Skydriver-SDK-Version: 0.3.6" \
     "$@"
 }
 
@@ -13,7 +13,7 @@ state_directory=$(mktemp -d)
 server_log="$state_directory/wrangler.log"
 cookie_jar="$state_directory/cookies.txt"
 local_root="$state_directory/provider"
-port=${CARRACK_VFS_BOOTSTRAP_TEST_PORT:-8793}
+port=${SKYDRIVER_VFS_BOOTSTRAP_TEST_PORT:-8793}
 server_pid=
 
 cleanup() {
@@ -40,13 +40,13 @@ wrangler=(
   --config "$repository_root/control-plane/wrangler.jsonc"
 )
 
-"${wrangler[@]}" d1 migrations apply CARRACK_INDEX \
+"${wrangler[@]}" d1 migrations apply SKYDRIVER_INDEX \
   --local \
   --persist-to "$state_directory" >/dev/null
 
 admin_token=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA
-operator_account=draven@carrack-local
-export CARRACK_OPERATOR_ACCOUNT="$operator_account"
+operator_account=draven@skydriver-local
+export SKYDRIVER_OPERATOR_ACCOUNT="$operator_account"
 
 setsid "${wrangler[@]}" dev \
   --local \
@@ -54,9 +54,9 @@ setsid "${wrangler[@]}" dev \
   --port "$port" \
   --inspector-port 0 \
   --test-scheduled \
-  --var CARRACK_VFS_MASTER_KEY_V1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
-  --var CARRACK_OPERATOR_ACCOUNT:"$operator_account" \
-  --var CARRACK_ADMIN_TOKEN:"$admin_token" \
+  --var SKYDRIVER_VFS_MASTER_KEY_V1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
+  --var SKYDRIVER_OPERATOR_ACCOUNT:"$operator_account" \
+  --var SKYDRIVER_ADMIN_TOKEN:"$admin_token" \
   --show-interactive-dev-session=false >"$server_log" 2>&1 &
 server_pid=$!
 
@@ -81,13 +81,13 @@ base_url="http://127.0.0.1:$port"
 json='Content-Type: application/json'
 rust_target="$state_directory/rust-target"
 CARGO_TARGET_DIR="$rust_target" cargo build --quiet --manifest-path "$repository_root/Cargo.toml" \
-  --package carrack-cli --bin carrackctl --bin carrack
-rust_carrackctl="$rust_target/debug/carrackctl"
-rust_carrack="$rust_target/debug/carrack"
+  --package skydriver-cli --bin skydriverctl --bin skydriver
+rust_skydriverctl="$rust_target/debug/skydriverctl"
+rust_skydriver="$rust_target/debug/skydriver"
 bootstrap_request=$(jq -cn \
   --arg local_root "$local_root" \
   '{
-    filesystem_name: "Carrack VFS",
+    filesystem_name: "Skydriver VFS",
     principal_display_name: "VFS operator",
     local_driver_id: "local-main",
     local_root: $local_root,
@@ -100,7 +100,7 @@ unauthenticated_status=$(curl --silent --output /dev/null --write-out '%{http_co
 
 legacy_login_status=$(command curl --silent --show-error \
   --output "$state_directory/management-upgrade-required.json" --write-out '%{http_code}' \
-  --header 'Carrack-Protocol-Epoch: 2' --header 'Carrack-SDK-Version: 0.3.5' \
+  --header 'Skydriver-Protocol-Epoch: 2' --header 'Skydriver-SDK-Version: 0.3.5' \
   -H "$json" --data '{"account":"draven","password":"ignored"}' \
   "$base_url/api/auth/login")
 [[ "$legacy_login_status" == 426 ]]
@@ -164,28 +164,28 @@ jq -e --argjson cursor "$(jq '.event_cursor' <<<"$management_snapshot")" \
 [[ "$(jq -r '.tokens[0].id' <<<"$management_snapshot")" == "$token_id" ]]
 [[ "$(jq -r '.tokens[0] | has("token")' <<<"$management_snapshot")" == false ]]
 
-cli_acl=$(CARRACK_VFS_TOKEN="$token" "$rust_carrackctl" vfs acl show / \
+cli_acl=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriverctl" vfs acl show / \
   --control-url "$base_url" --format json)
 [[ "$(jq -r '.schema' <<<"$cli_acl")" == carrack.vfs.acl.v1 ]]
 [[ "$(jq -r '.directory_id' <<<"$cli_acl")" == "$root_directory_id" ]]
-cli_placements=$(CARRACK_VFS_TOKEN="$token" "$rust_carrackctl" vfs placement show / \
+cli_placements=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriverctl" vfs placement show / \
   --control-url "$base_url" --format json)
 [[ "$(jq -r '.schema' <<<"$cli_placements")" == carrack.vfs.placements.v1 ]]
 [[ "$(jq -r '.placements[0].driver_id' <<<"$cli_placements")" == local-main ]]
 child_expiry=$(( $(date +%s) + 3600 ))
-issued_child=$(CARRACK_VFS_TOKEN="$token" "$rust_carrackctl" vfs token issue / \
+issued_child=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriverctl" vfs token issue / \
   --control-url "$base_url" --action directory.list,content.read \
   --expires-at "$child_expiry" --idempotency-key bootstrap-child-token-v1 --format json)
 child_token_id=$(jq -r '.token_id' <<<"$issued_child")
 [[ "$(jq -r '.schema' <<<"$issued_child")" == carrack.vfs.token-issue-receipt.v1 ]]
 [[ "$(jq -r '.token | length' <<<"$issued_child")" == 43 ]]
-revoked_child=$(CARRACK_VFS_TOKEN="$token" "$rust_carrackctl" vfs token revoke "$child_token_id" \
+revoked_child=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriverctl" vfs token revoke "$child_token_id" \
   --control-url "$base_url" --idempotency-key bootstrap-child-token-revoke-v1 --format json)
 [[ "$(jq -r '.schema' <<<"$revoked_child")" == carrack.vfs.token-revoke-receipt.v1 ]]
 [[ "$(jq -r '.state' <<<"$revoked_child")" == revoked ]]
 
-cli_management_snapshot=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
-	  "$rust_carrackctl" snapshot --control-url "$base_url" --format json)
+cli_management_snapshot=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
+	  "$rust_skydriverctl" snapshot --control-url "$base_url" --format json)
 [[ "$(jq -r '.schema' <<<"$cli_management_snapshot")" == carrack.management.snapshot.v2 ]]
 [[ "$(jq -r '.drivers[0].id' <<<"$cli_management_snapshot")" == local-main ]]
 
@@ -195,8 +195,8 @@ management_directory=$(curl --silent --show-error --fail-with-body \
 [[ "$(jq -r '.directory.id' <<<"$management_directory")" == "$root_directory_id" ]]
 [[ "$(jq -r '.placements[0]' <<<"$management_directory")" == local-main ]]
 
-cli_management_directory=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
-	  "$rust_carrackctl" directory "$root_directory_id" \
+cli_management_directory=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
+	  "$rust_skydriverctl" directory "$root_directory_id" \
     --control-url "$base_url" --format json)
 [[ "$(jq -r '.directory.id' <<<"$cli_management_directory")" == "$root_directory_id" ]]
 
@@ -225,8 +225,8 @@ grep -iq '^cache-control: no-store, max-age=0' "$recovery_headers"
 authority_directory="$state_directory/private-authority"
 mkdir -m 700 "$authority_directory"
 authority_file="$authority_directory/root.json"
-authority_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
-  "$rust_carrackctl" authority recover --control-url "$base_url" \
+authority_receipt=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
+  "$rust_skydriverctl" authority recover --control-url "$base_url" \
   --output-file "$authority_file" --format json)
 [[ "$(jq -r '.schema' <<<"$authority_receipt")" == carrack.authority-file-receipt.v1 ]]
 [[ "$(jq -r '.token_id' <<<"$authority_receipt")" == "$token_id" ]]
@@ -234,50 +234,50 @@ authority_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
 [[ "$(stat -c '%a' "$authority_file")" == 600 ]]
 [[ "$(grep --fixed-strings --count -- "$token" <<<"$authority_receipt")" == 0 ]]
 
-access_snapshot=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
-  "$rust_carrackctl" access show --control-url "$base_url" --format json)
+access_snapshot=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
+  "$rust_skydriverctl" access show --control-url "$base_url" --format json)
 [[ "$(jq -r '.schema' <<<"$access_snapshot")" == carrack.management.access.v1 ]]
 [[ "$(jq -r '.principals[0].id' <<<"$access_snapshot")" == "$principal_id" ]]
-service_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
-  "$rust_carrackctl" access principal create --control-url "$base_url" \
+service_receipt=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
+  "$rust_skydriverctl" access principal create --control-url "$base_url" \
   --kind service --display-name 'Acceptance agent' \
   --idempotency-key access-service-create-v1 --format json)
 service_principal_id=$(jq -r '.resource_id' <<<"$service_receipt")
 [[ "$(jq -r '.final_revision' <<<"$service_receipt")" == 1 ]]
-group_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
-  "$rust_carrackctl" access group create "$filesystem_id" --control-url "$base_url" \
+group_receipt=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
+  "$rust_skydriverctl" access group create "$filesystem_id" --control-url "$base_url" \
   --name 'Acceptance publishers' --idempotency-key access-group-create-v1 --format json)
 group_id=$(jq -r '.resource_id' <<<"$group_receipt")
-member_added=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
-  "$rust_carrackctl" access group add-member "$group_id" "$service_principal_id" \
+member_added=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
+  "$rust_skydriverctl" access group add-member "$group_id" "$service_principal_id" \
   --control-url "$base_url" --filesystem-id "$filesystem_id" --expected-revision 1 \
   --idempotency-key access-member-add-v1 --format json)
 [[ "$(jq -r '.final_revision' <<<"$member_added")" == 2 ]]
-group_acl_revision=$(CARRACK_VFS_TOKEN="$token" "$rust_carrackctl" vfs acl show / \
+group_acl_revision=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriverctl" vfs acl show / \
   --control-url "$base_url" --format json | jq -r '.acl_revision')
-group_acl_receipt=$(CARRACK_VFS_TOKEN="$token" "$rust_carrackctl" vfs acl replace / \
+group_acl_receipt=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriverctl" vfs acl replace / \
   --control-url "$base_url" --group-id "$group_id" --action directory.list,content.read \
   --expected-revision "$group_acl_revision" --idempotency-key access-group-acl-v1 --format json)
 [[ "$(jq -r --arg group_id "$group_id" '.policy.group_id == $group_id' \
   <<<"$group_acl_receipt")" == true ]]
-member_removed=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
-  "$rust_carrackctl" access group remove-member "$group_id" "$service_principal_id" \
+member_removed=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
+  "$rust_skydriverctl" access group remove-member "$group_id" "$service_principal_id" \
   --control-url "$base_url" --filesystem-id "$filesystem_id" --expected-revision 2 \
   --idempotency-key access-member-remove-v1 --format json)
 [[ "$(jq -r '.final_revision' <<<"$member_removed")" == 3 ]]
-group_updated=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
-  "$rust_carrackctl" access group update "$group_id" --control-url "$base_url" \
+group_updated=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
+  "$rust_skydriverctl" access group update "$group_id" --control-url "$base_url" \
   --filesystem-id "$filesystem_id" --name 'Acceptance readers' --expected-revision 3 \
   --idempotency-key access-group-update-v1 --format json)
 [[ "$(jq -r '.final_revision' <<<"$group_updated")" == 4 ]]
-principal_disabled=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
-  "$rust_carrackctl" access principal update "$service_principal_id" \
+principal_disabled=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
+  "$rust_skydriverctl" access principal update "$service_principal_id" \
   --control-url "$base_url" --kind service --display-name 'Acceptance agent' \
   --state disabled --expected-revision 1 \
   --idempotency-key access-service-disable-v1 --format json)
 [[ "$(jq -r '.final_revision' <<<"$principal_disabled")" == 2 ]]
-group_deleted=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
-  "$rust_carrackctl" access group delete "$group_id" --control-url "$base_url" \
+group_deleted=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
+  "$rust_skydriverctl" access group delete "$group_id" --control-url "$base_url" \
   --filesystem-id "$filesystem_id" --expected-revision 4 \
   --idempotency-key access-group-delete-v1 --format json)
 [[ "$(jq -r '.operation' <<<"$group_deleted")" == group.delete ]]
@@ -320,8 +320,8 @@ annotated_snapshot=$(curl --silent --show-error --fail-with-body \
   '.tokens[] | select(.id == $token_id) | .metadata_revision' <<<"$annotated_snapshot")" == 2 ]]
 [[ "$(jq -r '.event_cursor' <<<"$annotated_snapshot")" -gt "$(jq -r '.event_cursor' <<<"$management_snapshot")" ]]
 
-cli_annotation_check=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
-	  "$rust_carrackctl" token annotate "$token_id" \
+cli_annotation_check=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
+	  "$rust_skydriverctl" token annotate "$token_id" \
     --control-url "$base_url" \
     --label 'Release automation' \
     --note 'Used by the verified release pipeline.' \
@@ -329,8 +329,8 @@ cli_annotation_check=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
     --check \
     --format json)
 [[ "$(jq -r '.schema' <<<"$cli_annotation_check")" == carrack.management.token-annotation-validation.v1 ]]
-cli_annotation_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
-	  "$rust_carrackctl" token annotate "$token_id" \
+cli_annotation_receipt=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
+	  "$rust_skydriverctl" token annotate "$token_id" \
     --control-url "$base_url" \
     --label 'Release automation' \
     --note 'Used by the verified release pipeline.' \
@@ -376,16 +376,16 @@ disabled_driver_snapshot=$(curl --silent --show-error --fail-with-body \
 [[ "$(jq -r '.drivers[0].enabled' <<<"$disabled_driver_snapshot")" == false ]]
 [[ "$(jq -r '.drivers[0].revision' <<<"$disabled_driver_snapshot")" == 2 ]]
 
-cli_driver_check=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
-	  "$rust_carrackctl" driver enable local-main \
+cli_driver_check=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
+	  "$rust_skydriverctl" driver enable local-main \
     --control-url "$base_url" \
     --expected-revision 2 \
     --check \
     --format json)
 [[ "$(jq -r '.schema' <<<"$cli_driver_check")" == carrack.management.driver-state-validation.v1 ]]
 [[ "$(jq -r '.enabled' <<<"$cli_driver_check")" == true ]]
-cli_driver_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
-	  "$rust_carrackctl" driver enable local-main \
+cli_driver_receipt=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
+	  "$rust_skydriverctl" driver enable local-main \
     --control-url "$base_url" \
     --expected-revision 2 \
     --idempotency-key enable-local-main-v2 \
@@ -400,8 +400,8 @@ enabled_driver_snapshot=$(curl --silent --show-error --fail-with-body \
 
 aliyun_config="$state_directory/aliyun-driver.json"
 jq -cn '{}' >"$aliyun_config"
-cli_registration_check=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
-	  "$rust_carrackctl" driver register aliyun-main \
+cli_registration_check=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
+	  "$rust_skydriverctl" driver register aliyun-main \
     --control-url "$base_url" \
     --kind aliyundrive-open/v2 \
     --config-file "$aliyun_config" \
@@ -412,8 +412,8 @@ cli_registration_check=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
 [[ "$(jq -r '.requires_credential' <<<"$cli_registration_check")" == true ]]
 [[ "$(jq -r '.config.drive_type' <<<"$cli_registration_check")" == resource ]]
 [[ "$(jq -r '.warnings | length >= 2' <<<"$cli_registration_check")" == true ]]
-cli_registration_receipt=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
-	  "$rust_carrackctl" driver register aliyun-main \
+cli_registration_receipt=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
+	  "$rust_skydriverctl" driver register aliyun-main \
     --control-url "$base_url" \
     --kind aliyundrive-open/v2 \
     --config-file "$aliyun_config" \
@@ -437,8 +437,8 @@ jq -cn \
   '{refresh_token: $refresh_token,
     refresh_issuer: "openlist-online/v1"}' >"$aliyun_credential"
 chmod 600 "$aliyun_credential"
-cli_credential_check=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
-	  "$rust_carrackctl" driver credential set aliyun-main \
+cli_credential_check=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
+	  "$rust_skydriverctl" driver credential set aliyun-main \
     --control-url "$base_url" \
     --credential-file "$aliyun_credential" \
     --expected-revision 1 \
@@ -552,11 +552,11 @@ grep -iq '^cache-control: no-store, max-age=0' "$driver_headers"
 
 cli_source="$state_directory/cli-source.bin"
 cli_staging="$state_directory/cli-staging"
-printf '%s' 'Carrack CLI encrypted complete-object payload' >"$cli_source"
+printf '%s' 'Skydriver CLI encrypted complete-object payload' >"$cli_source"
 
 vfs_put=(
-  env CARRACK_VFS_TOKEN="$token"
-  "$rust_carrack" put "$cli_source" /cli-release.bin
+  env SKYDRIVER_VFS_TOKEN="$token"
+  "$rust_skydriver" put "$cli_source" /cli-release.bin
   --control-url "$base_url"
   --preferred-driver-id local-main
   --idempotency-key bootstrap-cli-put-v1
@@ -589,7 +589,7 @@ cli_expected_encoded_bytes=$((cli_plaintext_bytes + ((cli_plaintext_bytes + 7) /
 [[ "$cli_encoded_bytes" == "$cli_expected_encoded_bytes" ]]
 [[ -f "$local_root/$cli_storage_key" ]]
 [[ "$(stat --format '%s' "$local_root/$cli_storage_key")" == "$cli_encoded_bytes" ]]
-if grep --text --fixed-strings --quiet 'Carrack CLI encrypted complete-object payload' \
+if grep --text --fixed-strings --quiet 'Skydriver CLI encrypted complete-object payload' \
   "$local_root/$cli_storage_key"; then
   echo "encrypted provider object exposed CLI plaintext" >&2
   exit 1
@@ -603,7 +603,7 @@ dd if="$local_root/$cli_storage_key" \
   of="$cli_download_staging/parts/$cli_version_id/0000000000000000.part" \
   bs=5 count=1 status=none
 chmod 0444 "$cli_download_staging/parts/$cli_version_id/0000000000000000.part"
-cli_get=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" get /cli-release.bin "$cli_download" \
+cli_get=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" get /cli-release.bin "$cli_download" \
   --control-url "$base_url" \
   --staging-directory "$cli_download_staging" \
   --transfer-part-bytes 5 \
@@ -616,25 +616,25 @@ cmp --silent "$cli_source" "$cli_download"
 
 sync_destination="$state_directory/synchronized"
 sync_state="$state_directory/sync-state"
-first_sync=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" sync / "$sync_destination" \
+first_sync=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" sync / "$sync_destination" \
   --control-url "$base_url" --state-directory "$sync_state" \
   --transfer-part-bytes 5 --maximum-concurrency 3 --maximum-file-concurrency 4 \
   --format json)
 [[ "$(jq -r '.schema' <<<"$first_sync")" == carrack.fs-sync.v1 ]]
 [[ "$(jq -r '.downloaded_files' <<<"$first_sync")" == 1 ]]
 cmp --silent "$cli_source" "$sync_destination/cli-release.bin"
-second_sync=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" sync / "$sync_destination" \
+second_sync=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" sync / "$sync_destination" \
   --control-url "$base_url" --state-directory "$sync_state" --format json)
 [[ "$(jq -r '.reused_files' <<<"$second_sync")" == 1 ]]
 [[ "$(jq -r '.downloaded_files' <<<"$second_sync")" == 0 ]]
 printf 'corrupt' >"$sync_destination/cli-release.bin"
-repaired_sync=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" sync / "$sync_destination" \
+repaired_sync=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" sync / "$sync_destination" \
   --control-url "$base_url" --state-directory "$sync_state" --format json)
 [[ "$(jq -r '.downloaded_files' <<<"$repaired_sync")" == 1 ]]
 cmp --silent "$cli_source" "$sync_destination/cli-release.bin"
 
 verifier=$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local \
   --persist-to "$state_directory" \
   --command "
@@ -695,14 +695,14 @@ verifier=$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)
     SELECT NOT EXISTS (SELECT 1 FROM pragma_foreign_key_check);
   " >/dev/null
 
-cli_mkdir=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" mkdir /archive \
+cli_mkdir=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" mkdir /archive \
   --control-url "$base_url" \
   --idempotency-key bootstrap-cli-mkdir-archive-v1 \
   --format json)
 [[ "$(jq -r '.schema' <<<"$cli_mkdir")" == carrack.fs-mkdir.v1 ]]
 archive_directory_id=$(jq -r '.directory_id' <<<"$cli_mkdir")
 
-cli_rename=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" rename \
+cli_rename=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" rename \
   /cli-release.bin /archive/release.bin \
   --control-url "$base_url" \
   --idempotency-key bootstrap-cli-rename-v1 \
@@ -710,7 +710,7 @@ cli_rename=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" rename \
 [[ "$(jq -r '.schema' <<<"$cli_rename")" == carrack.vfs.rename-receipt.v1 ]]
 [[ "$(jq -r '.destination_directory_id' <<<"$cli_rename")" == "$archive_directory_id" ]]
 [[ "$(jq -r '.subject_id' <<<"$cli_rename")" == "$(jq -r '.receipt.file_id' <<<"$cli_put")" ]]
-replayed_cli_rename=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" rename \
+replayed_cli_rename=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" rename \
   /cli-release.bin /archive/release.bin \
   --control-url "$base_url" \
   --idempotency-key bootstrap-cli-rename-v1 \
@@ -718,72 +718,72 @@ replayed_cli_rename=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" rename \
 [[ "$replayed_cli_rename" == "$cli_rename" ]]
 
 moved_download="$state_directory/moved-download.bin"
-CARRACK_VFS_TOKEN="$token" "$rust_carrack" get /archive/release.bin "$moved_download" \
+SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" get /archive/release.bin "$moved_download" \
   --control-url "$base_url" \
   --staging-directory "$state_directory/moved-download-staging" \
   --format json >/dev/null
 cmp --silent "$cli_source" "$moved_download"
 
-same_directory_rename=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" rename \
+same_directory_rename=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" rename \
   /archive/release.bin /archive/final.bin \
   --control-url "$base_url" \
   --idempotency-key bootstrap-cli-rename-v2 \
   --format json)
 [[ "$(jq -r '.destination_name' <<<"$same_directory_rename")" == final.bin ]]
 
-CARRACK_VFS_TOKEN="$token" "$rust_carrack" mkdir /archive/nested \
+SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" mkdir /archive/nested \
   --control-url "$base_url" \
   --idempotency-key bootstrap-cli-mkdir-nested-v1 \
   --format json >/dev/null
-cycle_status=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" rename \
+cycle_status=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" rename \
   /archive /archive/nested/cycle \
   --control-url "$base_url" \
   --idempotency-key bootstrap-cli-rename-cycle-v1 \
   --format json >/dev/null 2>&1 && echo 0 || echo 1)
 [[ "$cycle_status" == 1 ]]
 
-directory_rename=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" rename /archive /releases \
+directory_rename=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" rename /archive /releases \
   --control-url "$base_url" \
   --idempotency-key bootstrap-cli-rename-directory-v1 \
   --format json)
 [[ "$(jq -r '.kind' <<<"$directory_rename")" == directory ]]
 [[ "$(jq -r '.subject_id' <<<"$directory_rename")" == "$archive_directory_id" ]]
 
-cli_remove=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" remove /releases/final.bin \
+cli_remove=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" remove /releases/final.bin \
   --control-url "$base_url" \
   --idempotency-key bootstrap-cli-remove-v1 \
   --format json)
 [[ "$(jq -r '.schema' <<<"$cli_remove")" == carrack.vfs.remove-receipt.v1 ]]
 [[ "$(jq -r '.kind' <<<"$cli_remove")" == file ]]
 [[ "$(jq -r '.delete_after > .committed_at' <<<"$cli_remove")" == true ]]
-replayed_cli_remove=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" remove /releases/final.bin \
+replayed_cli_remove=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" remove /releases/final.bin \
   --control-url "$base_url" \
   --idempotency-key bootstrap-cli-remove-v1 \
   --format json)
 [[ "$replayed_cli_remove" == "$cli_remove" ]]
 [[ -f "$local_root/$cli_storage_key" ]]
-removed_list=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" list /releases --control-url "$base_url")
+removed_list=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" list /releases --control-url "$base_url")
 [[ "$(jq '[.entries[] | select(.name == "final.bin")] | length' <<<"$removed_list")" == 0 ]]
 
-CARRACK_VFS_TOKEN="$token" "$rust_carrack" remove /releases/nested \
+SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" remove /releases/nested \
   --control-url "$base_url" --idempotency-key bootstrap-cli-remove-nested-v1 >/dev/null
-CARRACK_VFS_TOKEN="$token" "$rust_carrack" remove /releases \
+SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" remove /releases \
   --control-url "$base_url" --idempotency-key bootstrap-cli-remove-releases-v1 >/dev/null
 
 # Keep one authorized subtree and one sibling alive in the materialized head.
 # A subtree token must receive only its complete Merkle closure, never the
 # sibling or the filesystem-root navigation metadata.
-projected_directory=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" mkdir /projected \
+projected_directory=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" mkdir /projected \
   --control-url "$base_url" --idempotency-key bootstrap-projected-root-v1 --format json)
 projected_directory_id=$(jq -r '.directory_id' <<<"$projected_directory")
-projected_nested=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" mkdir /projected/nested \
+projected_nested=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" mkdir /projected/nested \
   --control-url "$base_url" --idempotency-key bootstrap-projected-nested-v1 --format json)
 projected_nested_id=$(jq -r '.directory_id' <<<"$projected_nested")
-hidden_directory=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" mkdir /hidden \
+hidden_directory=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" mkdir /hidden \
   --control-url "$base_url" --idempotency-key bootstrap-hidden-sibling-v1 --format json)
 hidden_directory_id=$(jq -r '.directory_id' <<<"$hidden_directory")
 projected_token_expiry=$(( $(date +%s) + 3600 ))
-projected_token_receipt=$(CARRACK_VFS_TOKEN="$token" "$rust_carrackctl" vfs token issue /projected \
+projected_token_receipt=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriverctl" vfs token issue /projected \
   --control-url "$base_url" --action directory.list,content.read \
   --expires-at "$projected_token_expiry" \
   --idempotency-key bootstrap-projected-token-v1 --format json)
@@ -791,7 +791,7 @@ projected_token=$(jq -r '.token' <<<"$projected_token_receipt")
 [[ "$projected_token" =~ ^[A-Za-z0-9_-]{43}$ ]]
 projected_authorization="Authorization: Bearer $projected_token"
 
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" \
   --command "CREATE TABLE vfs_remove_assertions (
       accepted INTEGER NOT NULL CHECK (accepted = 1)
@@ -808,7 +808,7 @@ projected_authorization="Authorization: Bearer $projected_token"
 # Server-owned lifecycle must claim the tombstone itself. An agent-local
 # provider cannot be reached by Cloudflare, so the safe outcome is a durable
 # blocked task and a retained tombstoned location, never false deletion.
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" \
   --command "UPDATE vfs_locations
              SET delete_after = unixepoch() - 1, revision = revision + 1,
@@ -816,14 +816,14 @@ projected_authorization="Authorization: Bearer $projected_token"
              WHERE id = '$cli_location_id' AND state = 'tombstoned';" >/dev/null
 curl --silent --show-error --fail-with-body \
   "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
-provider_inventory=$(CARRACK_OPERATOR_CREDENTIAL="$admin_token" \
-  "$rust_carrackctl" inventory --control-url "$base_url" --format json)
+provider_inventory=$(SKYDRIVER_OPERATOR_CREDENTIAL="$admin_token" \
+  "$rust_skydriverctl" inventory --control-url "$base_url" --format json)
 [[ "$(jq -r '.schema' <<<"$provider_inventory")" == carrack.management.provider-inventory.v1 ]]
 [[ "$(jq -r '.drivers[] | select(.driver_id == "local-main") | .state' \
   <<<"$provider_inventory")" == unsupported ]]
 [[ "$(jq -r '.drivers[] | select(.driver_id == "local-main") | .last_error_code' \
   <<<"$provider_inventory")" == inventory_runs_on_agent_host ]]
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" \
   --command "CREATE TABLE vfs_catalog_checkpoint_assertions (
       accepted INTEGER NOT NULL CHECK (accepted = 1)
@@ -880,19 +880,19 @@ curl --silent --show-error --fail-with-body \
   -D "$checkpoint_headers" -H "$authorization" \
   "$base_url/api/v2/catalog/checkpoint" >"$checkpoint_body"
 checkpoint_sha256=$(awk '
-  tolower($1) == "carrack-catalog-sha256:" {
+  tolower($1) == "skydriver-catalog-sha256:" {
     gsub("\\r", "", $2);
     print $2
   }
 ' "$checkpoint_headers")
 checkpoint_revision=$(awk '
-  tolower($1) == "carrack-catalog-revision:" {
+  tolower($1) == "skydriver-catalog-revision:" {
     gsub("\\r", "", $2);
     print $2
   }
 ' "$checkpoint_headers")
 checkpoint_root=$(awk '
-  tolower($1) == "carrack-catalog-root:" {
+  tolower($1) == "skydriver-catalog-root:" {
     gsub("\\r", "", $2);
     print $2
   }
@@ -934,17 +934,17 @@ unchanged_status=$(curl --silent --show-error \
 # delta and the client must apply it without weakening full-tree verification.
 delta_sync_destination="$state_directory/delta-sync"
 delta_sync_state="$state_directory/delta-sync-state"
-initial_delta_sync=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" sync / \
+initial_delta_sync=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" sync / \
   "$delta_sync_destination" --control-url "$base_url" \
   --state-directory "$delta_sync_state" --format json)
 [[ "$(jq -r '.directories' <<<"$initial_delta_sync")" == 4 ]]
-delta_directory=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" mkdir /delta \
+delta_directory=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" mkdir /delta \
   --control-url "$base_url" --idempotency-key bootstrap-delta-directory-v1 --format json)
 delta_directory_id=$(jq -r '.directory_id' <<<"$delta_directory")
 curl --silent --show-error --fail-with-body \
   "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
 
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" \
   --command "CREATE TABLE vfs_catalog_delta_assertions (
       accepted INTEGER NOT NULL CHECK (accepted = 1)
@@ -977,32 +977,32 @@ delta_body="$state_directory/catalog-delta.json"
 curl --silent --show-error --fail-with-body \
   -D "$delta_headers" -H "$authorization" \
   -H "If-None-Match: $checkpoint_etag" \
-  -H 'Carrack-Catalog-Accept-Delta: v1' \
-  -H "Carrack-Catalog-Base-Revision: $checkpoint_revision" \
-  -H "Carrack-Catalog-Base-Root: $checkpoint_root" \
-  -H "Carrack-Catalog-Base-SHA256: $checkpoint_sha256" \
+  -H 'Skydriver-Catalog-Accept-Delta: v1' \
+  -H "Skydriver-Catalog-Base-Revision: $checkpoint_revision" \
+  -H "Skydriver-Catalog-Base-Root: $checkpoint_root" \
+  -H "Skydriver-Catalog-Base-SHA256: $checkpoint_sha256" \
   "$base_url/api/v2/catalog/checkpoint" >"$delta_body"
 grep -iq '^content-type: application/vnd.carrack.catalog-delta+json' "$delta_headers"
 delta_sha256=$(awk '
-  tolower($1) == "carrack-catalog-delta-sha256:" {
+  tolower($1) == "skydriver-catalog-delta-sha256:" {
     gsub("\\r", "", $2);
     print $2
   }
 ' "$delta_headers")
 delta_checkpoint_sha256=$(awk '
-  tolower($1) == "carrack-catalog-sha256:" {
+  tolower($1) == "skydriver-catalog-sha256:" {
     gsub("\\r", "", $2);
     print $2
   }
 ' "$delta_headers")
 delta_revision=$(awk '
-  tolower($1) == "carrack-catalog-revision:" {
+  tolower($1) == "skydriver-catalog-revision:" {
     gsub("\\r", "", $2);
     print $2
   }
 ' "$delta_headers")
 delta_root=$(awk '
-  tolower($1) == "carrack-catalog-root:" {
+  tolower($1) == "skydriver-catalog-root:" {
     gsub("\\r", "", $2);
     print $2
   }
@@ -1043,19 +1043,19 @@ jq --exit-status \
 legacy_delta_headers="$state_directory/legacy-delta-headers.txt"
 legacy_delta_body="$state_directory/legacy-delta-checkpoint.json"
 command curl --silent --show-error --fail-with-body \
-  --header "Carrack-Protocol-Epoch: 2" \
-  --header "Carrack-SDK-Version: 0.3.1" \
+  --header "Skydriver-Protocol-Epoch: 2" \
+  --header "Skydriver-SDK-Version: 0.3.1" \
   -D "$legacy_delta_headers" -H "$authorization" \
   -H "If-None-Match: $checkpoint_etag" \
-  -H 'Carrack-Catalog-Accept-Delta: v1' \
-  -H "Carrack-Catalog-Base-Revision: $checkpoint_revision" \
-  -H "Carrack-Catalog-Base-Root: $checkpoint_root" \
-  -H "Carrack-Catalog-Base-SHA256: $checkpoint_sha256" \
+  -H 'Skydriver-Catalog-Accept-Delta: v1' \
+  -H "Skydriver-Catalog-Base-Revision: $checkpoint_revision" \
+  -H "Skydriver-Catalog-Base-Root: $checkpoint_root" \
+  -H "Skydriver-Catalog-Base-SHA256: $checkpoint_sha256" \
   "$base_url/api/v2/catalog/checkpoint" >"$legacy_delta_body"
 grep -iq '^content-type: application/json' "$legacy_delta_headers"
-! grep -iq '^carrack-catalog-delta-sha256:' "$legacy_delta_headers"
+! grep -iq '^skydriver-catalog-delta-sha256:' "$legacy_delta_headers"
 legacy_delta_checkpoint_sha256=$(awk '
-  tolower($1) == "carrack-catalog-sha256:" {
+  tolower($1) == "skydriver-catalog-sha256:" {
     gsub("\\r", "", $2);
     print $2
   }
@@ -1063,7 +1063,7 @@ legacy_delta_checkpoint_sha256=$(awk '
 [[ "$legacy_delta_checkpoint_sha256" == "$delta_checkpoint_sha256" ]]
 [[ "$(sha256sum "$legacy_delta_body" | cut -d' ' -f1)" == "$delta_checkpoint_sha256" ]]
 
-updated_delta_sync=$(CARRACK_VFS_TOKEN="$token" "$rust_carrack" sync / \
+updated_delta_sync=$(SKYDRIVER_VFS_TOKEN="$token" "$rust_skydriver" sync / \
   "$delta_sync_destination" --control-url "$base_url" \
   --state-directory "$delta_sync_state" --format json)
 [[ "$(jq -r '.directories' <<<"$updated_delta_sync")" == 5 ]]
@@ -1075,19 +1075,19 @@ curl --silent --show-error --fail-with-body \
   -D "$projected_headers" -H "$projected_authorization" \
   "$base_url/api/v2/catalog/checkpoint" >"$projected_body"
 projected_sha256=$(awk '
-  tolower($1) == "carrack-catalog-sha256:" {
+  tolower($1) == "skydriver-catalog-sha256:" {
     gsub("\\r", "", $2);
     print $2
   }
 ' "$projected_headers")
 projected_revision=$(awk '
-  tolower($1) == "carrack-catalog-revision:" {
+  tolower($1) == "skydriver-catalog-revision:" {
     gsub("\\r", "", $2);
     print $2
   }
 ' "$projected_headers")
 projected_root=$(awk '
-  tolower($1) == "carrack-catalog-root:" {
+  tolower($1) == "skydriver-catalog-root:" {
     gsub("\\r", "", $2);
     print $2
   }
@@ -1138,7 +1138,7 @@ unchanged_projected_status=$(curl --silent --show-error \
 
 projected_sync_destination="$state_directory/projected-sync"
 projected_sync_state="$state_directory/projected-sync-state"
-projected_sync=$(CARRACK_VFS_TOKEN="$projected_token" "$rust_carrack" sync / \
+projected_sync=$(SKYDRIVER_VFS_TOKEN="$projected_token" "$rust_skydriver" sync / \
   "$projected_sync_destination" --control-url "$base_url" \
   --state-directory "$projected_sync_state" --format json)
 [[ "$(jq -r '.directories' <<<"$projected_sync")" == 2 ]]
@@ -1147,15 +1147,15 @@ projected_sync=$(CARRACK_VFS_TOKEN="$projected_token" "$rust_carrack" sync / \
 legacy_projected_body="$state_directory/legacy-projected-checkpoint"
 legacy_projected_status=$(command curl --silent --show-error \
   --output "$legacy_projected_body" --write-out '%{http_code}' \
-  --header "Carrack-Protocol-Epoch: 2" \
-  --header "Carrack-SDK-Version: 0.3.0" \
+  --header "Skydriver-Protocol-Epoch: 2" \
+  --header "Skydriver-SDK-Version: 0.3.0" \
   -H "$projected_authorization" "$base_url/api/v2/catalog/checkpoint")
 [[ "$legacy_projected_status" == 204 ]]
 [[ ! -s "$legacy_projected_body" ]]
 
 # A newly introduced ACL boundary immediately disables bulk projection. The
 # client must use individually authorized revision-pinned directory pages.
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" \
   --command "UPDATE vfs_directories
              SET acl_inherits = 0, revision = revision + 1,
@@ -1167,12 +1167,12 @@ boundary_status=$(curl --silent --show-error \
   -H "$projected_authorization" "$base_url/api/v2/catalog/checkpoint")
 [[ "$boundary_status" == 204 ]]
 [[ ! -s "$boundary_body" ]]
-boundary_sync_status=$(CARRACK_VFS_TOKEN="$projected_token" "$rust_carrack" sync / \
+boundary_sync_status=$(SKYDRIVER_VFS_TOKEN="$projected_token" "$rust_skydriver" sync / \
   "$projected_sync_destination" --control-url "$base_url" \
   --state-directory "$projected_sync_state" --format json >/dev/null 2>&1 && echo 0 || echo 1)
 [[ "$boundary_sync_status" == 1 ]]
 
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" \
   --command "CREATE TABLE vfs_server_gc_assertions (
       accepted INTEGER NOT NULL CHECK (accepted = 1)
@@ -1186,7 +1186,7 @@ boundary_sync_status=$(CARRACK_VFS_TOKEN="$projected_token" "$rust_carrack" sync
     THEN 1 ELSE 0 END;
     DROP TABLE vfs_server_gc_assertions;" >/dev/null
 
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local \
   --persist-to "$state_directory" \
   --command "DELETE FROM vfs_acl_grants
@@ -1199,7 +1199,7 @@ revoked_grant_status=$(curl --silent --output /dev/null --write-out '%{http_code
 # A malformed newest catalog root exercises the real Worker materializer
 # failure boundary. The immutable revision remains pending with a future retry,
 # appears in Activity, and an immediate second Cron cannot hot-loop it.
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" \
   --command "INSERT INTO vfs_catalog_revisions (
       filesystem_id, parent_revision_id, root_data_root, state, created_at,
@@ -1221,7 +1221,7 @@ curl --silent --show-error --fail-with-body \
   "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
 catalog_retry_state=
 for _ in $(seq 1 50); do
-  catalog_retry_state=$("${wrangler[@]}" d1 execute CARRACK_INDEX \
+  catalog_retry_state=$("${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
     --local --persist-to "$state_directory" --command \
     "SELECT outbox.revision_id, outbox.state, outbox.attempts,
             outbox.last_error_code, outbox.retry_at, outbox.updated_at
@@ -1254,7 +1254,7 @@ jq -e --arg id "$catalog_retry_id" --argjson retry_at "$catalog_retry_at" '
 ' <<<"$catalog_activity" >/dev/null
 curl --silent --show-error --fail-with-body \
   "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
   "SELECT CASE WHEN state = 'pending' AND attempts = 1
                        AND retry_at = $catalog_retry_at

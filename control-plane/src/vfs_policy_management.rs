@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use worker::{D1Database, Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 
-use carrack_sdk_core::VFS_ACTIONS as ACTIONS;
+use skydriver_sdk_core::VFS_ACTIONS as ACTIONS;
 
 use crate::{
     vfs_access, vfs_identifiers::new_uuid_v7_hex, vfs_mounts, vfs_tokens::AuthenticatedVfsToken,
@@ -138,7 +138,7 @@ pub(crate) async fn list_acl(
     if !valid_identifier(directory_id) {
         return Response::error("invalid VFS directory ID", 400);
     }
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     if !vfs_access::authorized(&database, token, directory_id, "acl.manage").await? {
         return Response::error("VFS ACL-management authority required", 403);
     }
@@ -211,7 +211,7 @@ pub(crate) async fn replace_acl(
         &requested.idempotency_key,
     )?;
     let request_sha256 = lowercase_hex(&request_digest)?;
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     if let Some(receipt) =
         load_receipt(&database, token, "acl.replace", &requested.idempotency_key).await?
     {
@@ -318,7 +318,7 @@ pub(crate) async fn list_placements(
     if !valid_identifier(directory_id) {
         return Response::error("invalid VFS directory ID", 400);
     }
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     if !vfs_access::authorized(&database, token, directory_id, "driver.manage").await?
         || token_is_driver_scoped(&database, token).await?
     {
@@ -386,7 +386,7 @@ pub(crate) async fn replace_placements(
         &requested.idempotency_key,
     )?;
     let request_sha256 = lowercase_hex(&request_digest)?;
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     if let Some(receipt) = load_receipt(
         &database,
         token,

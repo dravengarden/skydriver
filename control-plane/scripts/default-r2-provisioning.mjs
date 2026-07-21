@@ -22,10 +22,10 @@ export function environmentProfile(config, environmentName, accountId) {
         throw new Error("CLOUDFLARE_ACCOUNT_ID must be a lowercase 32-character identifier");
     }
     const environment = config.env?.[environmentName];
-    const endpoint = environment?.vars?.CARRACK_R2_ENDPOINT;
-    const operatorAccount = environment?.vars?.CARRACK_OPERATOR_ACCOUNT;
+    const endpoint = environment?.vars?.SKYDRIVER_R2_ENDPOINT;
+    const operatorAccount = environment?.vars?.SKYDRIVER_OPERATOR_ACCOUNT;
     const payloadBindings = environment?.r2_buckets?.filter(
-        ({ binding }) => binding === "CARRACK_PAYLOAD",
+        ({ binding }) => binding === "SKYDRIVER_PAYLOAD",
     );
     const hostname = environment?.routes?.[0]?.pattern;
     if (

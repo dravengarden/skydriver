@@ -1,4 +1,4 @@
-# Carrack VFS Put Protocol V1
+# Skydriver VFS Put Protocol V1
 
 ## Scope
 
@@ -215,15 +215,15 @@ Worker and canonical Rust client. The former Go SDK and legacy CLI have been
 removed. The supported command is:
 
 ```bash
-export CARRACK_VFS_TOKEN='<bootstrap or attenuated token>'
+export SKYDRIVER_VFS_TOKEN='<bootstrap or attenuated token>'
 
-carrack put ./release.tar.zst /releases/release.tar.zst \
+skydriver put ./release.tar.zst /releases/release.tar.zst \
   --idempotency-key release-2026-07-13
 ```
 
 The CLI accepts a canonical local regular file. Applications may use the Rust
 client's byte API for in-memory content. Encoded staging defaults to the
-private Carrack state directory and may be overridden with
+private Skydriver state directory and may be overridden with
 `--staging-directory`.
 
 Resume is automatic and intentionally has no public journal-management

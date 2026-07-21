@@ -13,17 +13,17 @@ const environmentName = process.argv[2];
 if (environmentName !== "dev" && environmentName !== "prod") {
     throw new Error("usage: deploy-worker.mjs <dev|prod>");
 }
-if (environmentName === "prod" && process.env.CARRACK_DEPLOY_PROD !== "1") {
-    throw new Error("set CARRACK_DEPLOY_PROD=1 to deploy production");
+if (environmentName === "prod" && process.env.SKYDRIVER_DEPLOY_PROD !== "1") {
+    throw new Error("set SKYDRIVER_DEPLOY_PROD=1 to deploy production");
 }
-const applyDurableObjectMigrations = process.env.CARRACK_APPLY_DO_MIGRATIONS === "1";
+const applyDurableObjectMigrations = process.env.SKYDRIVER_APPLY_DO_MIGRATIONS === "1";
 if (
     environmentName === "prod" &&
     applyDurableObjectMigrations &&
-    process.env.CARRACK_APPLY_DO_MIGRATIONS_PROD !== "1"
+    process.env.SKYDRIVER_APPLY_DO_MIGRATIONS_PROD !== "1"
 ) {
     throw new Error(
-        "set CARRACK_APPLY_DO_MIGRATIONS_PROD=1 to apply production Durable Object migrations",
+        "set SKYDRIVER_APPLY_DO_MIGRATIONS_PROD=1 to apply production Durable Object migrations",
     );
 }
 const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
@@ -84,7 +84,7 @@ if (applyDurableObjectMigrations) {
             "--tag",
             tag,
             "--message",
-            `Apply Carrack ${environmentName} Durable Object migrations`,
+            `Apply Skydriver ${environmentName} Durable Object migrations`,
             "--keep-vars",
             "--strict",
         ]);
@@ -112,14 +112,14 @@ if (applyDurableObjectMigrations) {
         "--version-tag",
         tag,
         "--message",
-        `Deploy verified Carrack ${environmentName} version`,
+        `Deploy verified Skydriver ${environmentName} version`,
         "--yes",
     ]);
 }
 
 // Sync schedules through the account-scoped API. `wrangler triggers deploy`
 // also reads custom-domain routes and therefore requires the zone-scoped
-// Workers Routes permission that Carrack deliberately excludes from its
+// Workers Routes permission that Skydriver deliberately excludes from its
 // routine deploy token.
 const scheduleResponse = await fetch(
     `https://api.cloudflare.com/client/v4/accounts/${accountId}` +

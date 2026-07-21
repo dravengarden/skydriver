@@ -5,52 +5,52 @@ root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=tests/lib/live-metrics.sh
 source "$root/tests/lib/live-metrics.sh"
 
-if [[ ${CARRACK_R2_LIVE_TEST:-} != 1 ]]; then
-  echo "set CARRACK_R2_LIVE_TEST=1 to authorize real Cloudflare R2 writes" >&2
+if [[ ${SKYDRIVER_R2_LIVE_TEST:-} != 1 ]]; then
+  echo "set SKYDRIVER_R2_LIVE_TEST=1 to authorize real Cloudflare R2 writes" >&2
   exit 2
 fi
-: "${CARRACK_VFS_TOKEN:?CARRACK_VFS_TOKEN is required}"
+: "${SKYDRIVER_VFS_TOKEN:?SKYDRIVER_VFS_TOKEN is required}"
 
-control_url=${CARRACK_CONTROL_URL:-https://dev.carrack.stormbird.xyz}
-driver_id=${CARRACK_R2_DRIVER_ID:-r2-default}
-directory=${CARRACK_R2_TEST_DIRECTORY:-/}
-payload_bytes=${CARRACK_R2_TEST_BYTES:-134217728}
-transfer_part_bytes=${CARRACK_R2_TEST_PART_BYTES:-8388608}
-maximum_concurrency=${CARRACK_R2_TEST_CONCURRENCY:-8}
-carrack_bin=${CARRACK_BIN:-target/release/carrack}
-operation_timeout_seconds=${CARRACK_LIVE_OPERATION_TIMEOUT_SECONDS:-300}
+control_url=${SKYDRIVER_CONTROL_URL:-https://dev.skydriver.stormbird.xyz}
+driver_id=${SKYDRIVER_R2_DRIVER_ID:-r2-default}
+directory=${SKYDRIVER_R2_TEST_DIRECTORY:-/}
+payload_bytes=${SKYDRIVER_R2_TEST_BYTES:-134217728}
+transfer_part_bytes=${SKYDRIVER_R2_TEST_PART_BYTES:-8388608}
+maximum_concurrency=${SKYDRIVER_R2_TEST_CONCURRENCY:-8}
+carrack_bin=${SKYDRIVER_BIN:-target/release/carrack}
+operation_timeout_seconds=${SKYDRIVER_LIVE_OPERATION_TIMEOUT_SECONDS:-300}
 
-if [[ $control_url != https://dev.carrack.stormbird.xyz ]]; then
-  echo "live acceptance is restricted to the Carrack development environment" >&2
+if [[ $control_url != https://dev.skydriver.stormbird.xyz ]]; then
+  echo "live acceptance is restricted to the Skydriver development environment" >&2
   exit 2
 fi
 if [[ $driver_id != r2-default ]]; then
-  echo "CARRACK_R2_DRIVER_ID must be r2-default for the managed-bucket acceptance" >&2
+  echo "SKYDRIVER_R2_DRIVER_ID must be r2-default for the managed-bucket acceptance" >&2
   exit 2
 fi
 if [[ $directory != /* || $directory == *..* || $directory == *//* ]]; then
-  echo "CARRACK_R2_TEST_DIRECTORY must be a canonical absolute VFS path" >&2
+  echo "SKYDRIVER_R2_TEST_DIRECTORY must be a canonical absolute VFS path" >&2
   exit 2
 fi
-if ! carrack_require_integer_range CARRACK_R2_TEST_BYTES "$payload_bytes" 104857600 1073741824; then
+if ! carrack_require_integer_range SKYDRIVER_R2_TEST_BYTES "$payload_bytes" 104857600 1073741824; then
   exit 2
 fi
-if ! carrack_require_integer_range CARRACK_R2_TEST_PART_BYTES "$transfer_part_bytes" 5242880 268435456; then
+if ! carrack_require_integer_range SKYDRIVER_R2_TEST_PART_BYTES "$transfer_part_bytes" 5242880 268435456; then
   exit 2
 fi
 if [[ $transfer_part_bytes -ge $payload_bytes ]]; then
-  echo "CARRACK_R2_TEST_PART_BYTES must leave at least two payload parts" >&2
+  echo "SKYDRIVER_R2_TEST_PART_BYTES must leave at least two payload parts" >&2
   exit 2
 fi
-if ! carrack_require_integer_range CARRACK_R2_TEST_CONCURRENCY "$maximum_concurrency" 2 64; then
+if ! carrack_require_integer_range SKYDRIVER_R2_TEST_CONCURRENCY "$maximum_concurrency" 2 64; then
   exit 2
 fi
 if [[ ! $operation_timeout_seconds =~ ^[1-9][0-9]*$ || $operation_timeout_seconds -gt 3600 ]]; then
-  echo "CARRACK_LIVE_OPERATION_TIMEOUT_SECONDS must be between 1 and 3600" >&2
+  echo "SKYDRIVER_LIVE_OPERATION_TIMEOUT_SECONDS must be between 1 and 3600" >&2
   exit 2
 fi
 if [[ ! -x $carrack_bin ]]; then
-  echo "Carrack binary is not executable: $carrack_bin" >&2
+  echo "Skydriver binary is not executable: $carrack_bin" >&2
   exit 2
 fi
 

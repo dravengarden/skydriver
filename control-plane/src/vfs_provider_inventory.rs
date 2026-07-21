@@ -1,8 +1,8 @@
 use std::fmt::Write as _;
 
-use carrack_driver_contract::{CredentialPosture, DriverKind, InventoryMode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use skydriver_driver_contract::{CredentialPosture, DriverKind, InventoryMode};
 use worker::{D1Database, Env, Request, Response, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
 
@@ -70,7 +70,7 @@ pub(crate) async fn snapshot(request: Request, env: &Env) -> Result<Response> {
     if !operator_sessions::authorized(&request, env).await? {
         return Response::error("authentication required", 401);
     }
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     ensure_rows(&database, now_seconds()).await?;
     let drivers = database
         .prepare(
@@ -107,7 +107,7 @@ pub(crate) async fn refresh(request: Request, env: &Env, driver_id: &str) -> Res
     if !operator_sessions::authorized(&request, env).await? {
         return Response::error("authentication required", 401);
     }
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let now = now_seconds();
     ensure_rows(&database, now).await?;
     let Some(driver) = database
@@ -175,7 +175,7 @@ pub(crate) async fn refresh(request: Request, env: &Env, driver_id: &str) -> Res
     reason = "one bounded provider page, quarantine evidence, and cursor commit stay visible"
 )]
 pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     ensure_rows(&database, now).await?;
     let candidate = database
         .prepare(

@@ -1,7 +1,7 @@
-# Carrack
+# Skydriver
 
-Carrack is a complete-object virtual filesystem. A file remains one complete
-object in exactly the same byte order at its storage driver; Carrack never
+Skydriver is a complete-object virtual filesystem. A file remains one complete
+object in exactly the same byte order at its storage driver; Skydriver never
 splits, packs, merges, or stripes user files. One virtual root has a default
 driver, while an empty child directory may become a non-recursive mount point
 whose complete subtree uses one other driver.
@@ -11,9 +11,9 @@ The canonical implementation has three surfaces:
 - the Rust Cloudflare control plane owns metadata, permissions, key envelopes,
   driver configuration, optimistic publication, read leases, retention, and
   physical garbage collection;
-- the Rust `carrack` binary and `carrack-client` crate expose filesystem-like
+- the Rust `skydriver` binary and `skydriver-client` crate expose filesystem-like
   list, stat, mkdir, put, get, remove, and rename operations; and
-- the Rust `carrackctl` binary exposes every supported UI/operator mutation as
+- the Rust `skydriverctl` binary exposes every supported UI/operator mutation as
   strict JSON-first commands for humans and AI agents.
 
 Payload bytes move directly between the Rust client and the selected driver.
@@ -36,7 +36,7 @@ may be inspected only as provider-behavior reference material.
   active lease and must repeat reachability, identity, driver-revision, grace,
   and fencing checks immediately around provider deletion.
 - Native clients and the Cloudflare Worker share the filesystem-independent
-  `carrack-sdk-core`. The verification gate compiles it for
+  `skydriver-sdk-core`. The verification gate compiles it for
   `wasm32-unknown-unknown` and executes its Merkle and authenticated-encryption
   round trip inside the Worker runtime.
 
@@ -46,19 +46,19 @@ Both endpoint and bearer come from environment variables so secrets do not
 enter argv:
 
 ```bash
-export CARRACK_CONTROL_URL=https://dev.carrack.stormbird.xyz
-export CARRACK_VFS_TOKEN='...'
+export SKYDRIVER_CONTROL_URL=https://dev.skydriver.stormbird.xyz
+export SKYDRIVER_VFS_TOKEN='...'
 
-carrack list /
-carrack mkdir /releases --idempotency-key release-dir-v1
-carrack put ./app.tar.zst /releases/app.tar.zst \
+skydriver list /
+skydriver mkdir /releases --idempotency-key release-dir-v1
+skydriver put ./app.tar.zst /releases/app.tar.zst \
   --idempotency-key app-2026-07-14
-carrack get /releases/app.tar.zst ./app.tar.zst
-carrack sync /releases ./local-releases \
+skydriver get /releases/app.tar.zst ./app.tar.zst
+skydriver sync /releases ./local-releases \
   --maximum-concurrency 4 --maximum-file-concurrency 4
-carrack rename /releases/app.tar.zst /releases/latest.tar.zst \
+skydriver rename /releases/app.tar.zst /releases/latest.tar.zst \
   --idempotency-key latest-2026-07-14
-carrack remove /releases/latest.tar.zst \
+skydriver remove /releases/latest.tar.zst \
   --idempotency-key remove-latest-2026-07-14
 ```
 
@@ -83,22 +83,22 @@ are internal. Transfer bounds tune the pipeline; they do not alter identity.
 
 ## Management CLI for agents
 
-`CARRACK_OPERATOR_ACCOUNT` identifies the non-secret operator account and
-`CARRACK_OPERATOR_CREDENTIAL` authorizes redacted UI-equivalent environment
-management. `CARRACK_VFS_TOKEN` separately authorizes scoped ACL, mount,
+`SKYDRIVER_OPERATOR_ACCOUNT` identifies the non-secret operator account and
+`SKYDRIVER_OPERATOR_CREDENTIAL` authorizes redacted UI-equivalent environment
+management. `SKYDRIVER_VFS_TOKEN` separately authorizes scoped ACL, mount,
 and child-token operations.
 
 ```bash
-carrackctl snapshot
-carrackctl metrics global all
-carrackctl metrics driver aliyun-main
-carrackctl watch --after 0 --limit 100
-carrackctl directory <directory-id>
-carrackctl driver register aliyun-main \
+skydriverctl snapshot
+skydriverctl metrics global all
+skydriverctl metrics driver aliyun-main
+skydriverctl watch --after 0 --limit 100
+skydriverctl directory <directory-id>
+skydriverctl driver register aliyun-main \
   --kind aliyundrive-open/v2 --config-file ./aliyun-config.json --check
-carrackctl vfs acl show /releases
-carrackctl vfs mount show /releases
-carrackctl vfs token issue /releases \
+skydriverctl vfs acl show /releases
+skydriverctl vfs mount show /releases
+skydriverctl vfs token issue /releases \
   --action directory.list,content.read \
   --expires-at <unix-seconds> --idempotency-key release-reader-v1
 ```
@@ -111,9 +111,9 @@ control plane. The environment-owned `r2-default` credential is a stricter
 exception: the UI never accepts it, and the environment provisioner alone
 moves its exact-bucket Cloudflare authority through that write-only CLI path.
 
-See [.agents/skills/carrack-admin/SKILL.md](.agents/skills/carrack-admin/SKILL.md)
+See [.agents/skills/skydriver-admin/SKILL.md](.agents/skills/skydriver-admin/SKILL.md)
 for the AI operating procedure and
-[.agents/skills/carrack-admin/references/commands.md](.agents/skills/carrack-admin/references/commands.md)
+[.agents/skills/skydriver-admin/references/commands.md](.agents/skills/skydriver-admin/references/commands.md)
 for the complete command contract.
 
 ## Drivers
@@ -137,10 +137,13 @@ verification.
 
 | Environment | UI/API | D1 | R2 |
 |---|---|---|---|
-| development | `https://dev.carrack.stormbird.xyz` | `carrack-index-dev` | `carrack-manifests-dev` + `carrack-payload-dev` |
-| production | `https://carrack.stormbird.xyz` | `carrack-index-prod` | `carrack-manifests-prod` + `carrack-payload-prod` |
+| development | `https://dev.skydriver.stormbird.xyz` | `carrack-index-dev` | `carrack-manifests-dev` + `carrack-payload-dev` |
+| production | `https://skydriver.stormbird.xyz` | `carrack-index-prod` | `carrack-manifests-prod` + `carrack-payload-prod` |
 
-Both custom domains disable `workers.dev`. Environment resource identifiers,
+The D1 and R2 names in this table are retained legacy physical resources. Their
+stable IDs and contents are reused by Skydriver; renaming them in place would
+not improve isolation and could orphan encrypted data. Both custom domains
+disable `workers.dev`. Environment resource identifiers,
 deployment checks, and operator bootstrap are documented in
 [docs/cloudflare.md](docs/cloudflare.md).
 

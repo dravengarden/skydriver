@@ -6,7 +6,7 @@ import (
 )
 
 // ErrRequiredCapability indicates that correctness policy forbids degradation.
-var ErrRequiredCapability = errors.New("required Carrack driver capability unavailable")
+var ErrRequiredCapability = errors.New("required Skydriver driver capability unavailable")
 
 // Feature identifies one optional transfer acceleration evaluated before I/O.
 type Feature string

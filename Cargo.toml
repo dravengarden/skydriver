@@ -1,11 +1,11 @@
 [workspace]
 members = [
   "control-plane",
-  "crates/carrack-client",
-  "crates/carrack-cli",
-  "crates/carrack-driver-contract",
-  "crates/carrack-metadata-cache",
-  "crates/carrack-sdk-core",
+  "crates/skydriver-client",
+  "crates/skydriver-cli",
+  "crates/skydriver-driver-contract",
+  "crates/skydriver-metadata-cache",
+  "crates/skydriver-sdk-core",
 ]
 resolver = "3"
 
@@ -28,7 +28,7 @@ pedantic = { level = "warn", priority = -1 }
 dbg_macro = "deny"
 todo = "deny"
 unimplemented = "deny"
-# Carrack is an internal application workspace, not a crates.io release.
+# Skydriver is an internal application workspace, not a crates.io release.
 cargo_common_metadata = { level = "allow", priority = 1 }
 # The native, Worker, and test stacks intentionally bridge compatible versions.
 multiple_crate_versions = { level = "allow", priority = 1 }

@@ -16,16 +16,16 @@ use crate::{
     vfs_tokens::AuthenticatedVfsToken,
 };
 
-const WATCH_BINDING: &str = "CARRACK_CATALOG_WATCH";
+const WATCH_BINDING: &str = "SKYDRIVER_CATALOG_WATCH";
 const WATCH_PATH: &str = "/api/v2/catalog/watch";
 const PUBLISHED_PATH: &str = "/internal/catalog-published";
 const TOKEN_TAG: &str = "token:";
 const PRINCIPAL_TAG: &str = "principal:";
 const ROOT_TAG: &str = "root:";
-const FILESYSTEM_HEADER: &str = "Carrack-Watch-Filesystem";
-const TOKEN_HEADER: &str = "Carrack-Watch-Token";
-const PRINCIPAL_HEADER: &str = "Carrack-Watch-Principal";
-const ROOT_HEADER: &str = "Carrack-Watch-Root";
+const FILESYSTEM_HEADER: &str = "Skydriver-Watch-Filesystem";
+const TOKEN_HEADER: &str = "Skydriver-Watch-Token";
+const PRINCIPAL_HEADER: &str = "Skydriver-Watch-Principal";
+const ROOT_HEADER: &str = "Skydriver-Watch-Root";
 
 #[derive(Serialize)]
 struct CatalogWatchEvent<'a> {

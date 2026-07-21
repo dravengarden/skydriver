@@ -3,8 +3,8 @@
 //! Filesystem clients receive only short-lived access credentials. Refresh
 //! authority stays encrypted in D1 and is rotated by a fenced Cron worker.
 
-use carrack_driver_contract::DriverKind;
 use serde::Deserialize;
+use skydriver_driver_contract::DriverKind;
 use worker::{D1Database, Env, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
 
@@ -45,7 +45,7 @@ struct RefreshCommitRow {
 /// Runs a bounded proactive renewal pass. Provider failures are persisted as
 /// non-secret state and do not prevent unrelated metadata maintenance.
 pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     for _ in 0..MAXIMUM_REFRESHES_PER_RUN {
         if !refresh_one(env, &database, now, None).await? {
             break;
@@ -62,7 +62,7 @@ pub(crate) async fn ensure_fresh(env: &Env, driver_id: &str, expires_at: u64) ->
     if expires_at > now + MINIMUM_GRANT_LIFETIME_SECONDS {
         return Ok(true);
     }
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let _ = refresh_one(env, &database, now, Some(driver_id)).await?;
     let current = database
         .prepare(

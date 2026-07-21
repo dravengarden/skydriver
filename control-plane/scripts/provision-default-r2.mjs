@@ -30,19 +30,19 @@ if (
 }
 const check = options.includes("--check");
 const recoverExistingToken = options.includes("--recover-existing-token");
-if (!check && process.env.CARRACK_PROVISION_R2 !== "1") {
-    throw new Error("set CARRACK_PROVISION_R2=1 to authorize environment R2 provisioning");
+if (!check && process.env.SKYDRIVER_PROVISION_R2 !== "1") {
+    throw new Error("set SKYDRIVER_PROVISION_R2=1 to authorize environment R2 provisioning");
 }
-if (!check && environmentName === "prod" && process.env.CARRACK_PROVISION_PROD !== "1") {
-    throw new Error("set CARRACK_PROVISION_PROD=1 to authorize production provisioning");
+if (!check && environmentName === "prod" && process.env.SKYDRIVER_PROVISION_PROD !== "1") {
+    throw new Error("set SKYDRIVER_PROVISION_PROD=1 to authorize production provisioning");
 }
-if (!check && recoverExistingToken && process.env.CARRACK_RECOVER_R2_TOKEN !== "1") {
-    throw new Error("set CARRACK_RECOVER_R2_TOKEN=1 to authorize an existing-token recovery");
+if (!check && recoverExistingToken && process.env.SKYDRIVER_RECOVER_R2_TOKEN !== "1") {
+    throw new Error("set SKYDRIVER_RECOVER_R2_TOKEN=1 to authorize an existing-token recovery");
 }
 
 const requiredEnvironment = [
     "CLOUDFLARE_ACCOUNT_ID",
-    "CARRACK_OPERATOR_CREDENTIAL",
+    "SKYDRIVER_OPERATOR_CREDENTIAL",
 ];
 for (const name of requiredEnvironment) {
     if (!process.env[name]) throw new Error(`${name} is required`);
@@ -53,34 +53,34 @@ const config = JSON.parse(
     fs.readFileSync(path.join(repositoryRoot, "control-plane/wrangler.jsonc"), "utf8"),
 );
 const profile = environmentProfile(config, environmentName, process.env.CLOUDFLARE_ACCOUNT_ID);
-if (process.env.CARRACK_CONTROL_URL && process.env.CARRACK_CONTROL_URL !== profile.controlUrl) {
-    throw new Error("CARRACK_CONTROL_URL does not match the selected environment");
+if (process.env.SKYDRIVER_CONTROL_URL && process.env.SKYDRIVER_CONTROL_URL !== profile.controlUrl) {
+    throw new Error("SKYDRIVER_CONTROL_URL does not match the selected environment");
 }
-const carrackctl = path.resolve(
+const skydriverctl = path.resolve(
     repositoryRoot,
-    process.env.CARRACKCTL_BIN ?? "target/debug/carrackctl",
+    process.env.SKYDRIVERCTL_BIN ?? "target/debug/skydriverctl",
 );
-fs.accessSync(carrackctl, fs.constants.X_OK);
+fs.accessSync(skydriverctl, fs.constants.X_OK);
 
-function runCarrackctl(arguments_) {
+function runSkydriverctl(arguments_) {
     const childEnvironment = {
         ...process.env,
-        CARRACK_CONTROL_URL: profile.controlUrl,
-        CARRACK_OPERATOR_ACCOUNT: profile.operatorAccount,
+        SKYDRIVER_CONTROL_URL: profile.controlUrl,
+        SKYDRIVER_OPERATOR_ACCOUNT: profile.operatorAccount,
     };
     delete childEnvironment.CLOUDFLARE_TOKEN_FACTORY_API_TOKEN;
     delete childEnvironment.CLOUDFLARE_API_TOKEN;
     if (arguments_[0] === "vfs") {
-        delete childEnvironment.CARRACK_OPERATOR_ACCOUNT;
-        delete childEnvironment.CARRACK_OPERATOR_CREDENTIAL;
+        delete childEnvironment.SKYDRIVER_OPERATOR_ACCOUNT;
+        delete childEnvironment.SKYDRIVER_OPERATOR_CREDENTIAL;
     } else if (arguments_[0] === "compatibility") {
-        delete childEnvironment.CARRACK_OPERATOR_ACCOUNT;
-        delete childEnvironment.CARRACK_OPERATOR_CREDENTIAL;
-        delete childEnvironment.CARRACK_VFS_TOKEN;
+        delete childEnvironment.SKYDRIVER_OPERATOR_ACCOUNT;
+        delete childEnvironment.SKYDRIVER_OPERATOR_CREDENTIAL;
+        delete childEnvironment.SKYDRIVER_VFS_TOKEN;
     } else {
-        delete childEnvironment.CARRACK_VFS_TOKEN;
+        delete childEnvironment.SKYDRIVER_VFS_TOKEN;
     }
-    const result = spawnSync(carrackctl, arguments_, {
+    const result = spawnSync(skydriverctl, arguments_, {
         cwd: repositoryRoot,
         encoding: "utf8",
         env: childEnvironment,
@@ -89,22 +89,22 @@ function runCarrackctl(arguments_) {
     if (result.status !== 0) {
         const detail = result.stderr.trim();
         throw new Error(
-            `carrackctl ${arguments_.slice(0, 3).join(" ")} failed${detail ? `: ${detail}` : ""}`,
+            `skydriverctl ${arguments_.slice(0, 3).join(" ")} failed${detail ? `: ${detail}` : ""}`,
         );
     }
     try {
         return JSON.parse(result.stdout);
     } catch {
-        throw new Error("carrackctl returned invalid JSON");
+        throw new Error("skydriverctl returned invalid JSON");
     }
 }
 
 function snapshot() {
-    return runCarrackctl(["snapshot", "--control-url", profile.controlUrl, "--format", "json"]);
+    return runSkydriverctl(["snapshot", "--control-url", profile.controlUrl, "--format", "json"]);
 }
 
 function rootPlacements() {
-    return runCarrackctl([
+    return runSkydriverctl([
         "vfs",
         "mount",
         "show",
@@ -179,13 +179,13 @@ async function inspectTokenFactory() {
     return { action: "recover", existing: detail.result, policy };
 }
 
-runCarrackctl(["compatibility", "--control-url", profile.controlUrl, "--format", "json"]);
+runSkydriverctl(["compatibility", "--control-url", profile.controlUrl, "--format", "json"]);
 let management = snapshot();
 let driver = management.drivers.find(({ id }) => id === DEFAULT_R2_DRIVER_ID);
 assertManagedDriver(driver, profile);
 const hasVfs = hasBootstrappedVfs(management.filesystems);
-if (hasVfs && !process.env.CARRACK_VFS_TOKEN) {
-    throw new Error("CARRACK_VFS_TOKEN is required after VFS bootstrap");
+if (hasVfs && !process.env.SKYDRIVER_VFS_TOKEN) {
+    throw new Error("SKYDRIVER_VFS_TOKEN is required after VFS bootstrap");
 }
 let placementPolicy = hasVfs ? rootPlacements() : null;
 let placementPlan = hasVfs
@@ -217,7 +217,7 @@ if (check) {
 
 if (tokenPlan?.action === "recover" && !recoverExistingToken) {
     throw new Error(
-        "a scoped environment token already exists while Carrack has no credential; " +
+        "a scoped environment token already exists while Skydriver has no credential; " +
             "run --check, exclude parallel provisioners, then use --recover-existing-token",
     );
 }
@@ -280,14 +280,14 @@ if (!driver.credential_present) {
             "--expected-revision",
             String(driver.revision),
         ];
-        const validation = runCarrackctl([...baseArguments, "--check", "--format", "json"]);
+        const validation = runSkydriverctl([...baseArguments, "--check", "--format", "json"]);
         if (
             validation.driver_id !== DEFAULT_R2_DRIVER_ID ||
             validation.expected_revision !== driver.revision
         ) {
             throw new Error("r2-default credential validation did not match the inspected state");
         }
-        runCarrackctl([
+        runSkydriverctl([
             ...baseArguments,
             "--idempotency-key",
             stableKey(
@@ -318,7 +318,7 @@ if (!driver.enabled) {
         "--expected-revision",
         String(driver.revision),
     ];
-    const validation = runCarrackctl([...baseArguments, "--check", "--format", "json"]);
+    const validation = runSkydriverctl([...baseArguments, "--check", "--format", "json"]);
     if (
         validation.driver_id !== DEFAULT_R2_DRIVER_ID ||
         validation.expected_revision !== driver.revision ||
@@ -326,7 +326,7 @@ if (!driver.enabled) {
     ) {
         throw new Error("r2-default enable validation did not match the inspected state");
     }
-    runCarrackctl([
+    runSkydriverctl([
         ...baseArguments,
         "--idempotency-key",
         `environment-r2-${environmentName}-enable-r${String(driver.revision)}`,
@@ -348,7 +348,7 @@ if (
     placementPlan.action === "add-to-empty-root"
 ) {
     const [{ driverId }] = placementPlan.placements;
-    runCarrackctl([
+    runSkydriverctl([
         "vfs",
         "mount",
         "set",

@@ -1,12 +1,12 @@
 //! Authenticated delivery of complete, server-materialized VFS catalog views.
 
-use carrack_sdk_core::{
+use serde::Deserialize;
+use sha2::{Digest as _, Sha256};
+use skydriver_sdk_core::{
     CatalogCheckpoint, MAXIMUM_CATALOG_CHECKPOINT_BYTES, MAXIMUM_CATALOG_DELTA_BYTES,
     catalog_checkpoint_etag, catalog_checkpoint_view_etag, project_catalog_checkpoint,
     validate_catalog_checkpoint,
 };
-use serde::Deserialize;
-use sha2::{Digest as _, Sha256};
 use worker::{Bucket, D1Database, Env, Request, Response, Result, wasm_bindgen::JsValue};
 
 use crate::{protocol_compatibility, vfs_tokens::AuthenticatedVfsToken};
@@ -66,7 +66,7 @@ pub(crate) async fn watch_authorization(
     env: &Env,
     token: &AuthenticatedVfsToken,
 ) -> Result<Option<CatalogWatchAuthorization>> {
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let Some(delivery) = eligible_checkpoint(&database, token).await? else {
         return Ok(None);
     };
@@ -91,7 +91,7 @@ pub(crate) async fn checkpoint(
     env: &Env,
     token: &AuthenticatedVfsToken,
 ) -> Result<Response> {
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let Some(delivery) = eligible_checkpoint(&database, token).await? else {
         return fallback();
     };
@@ -107,7 +107,7 @@ pub(crate) async fn checkpoint(
         return not_modified(&delivery, &etag);
     }
 
-    let bucket = env.bucket("CARRACK_MANIFESTS")?;
+    let bucket = env.bucket("SKYDRIVER_MANIFESTS")?;
     if let Some(delta) = requested_delta(request, &delivery)? {
         return deliver_delta(&bucket, &delivery, &etag, &delta).await;
     }
@@ -384,7 +384,7 @@ fn requested_delta<'a>(
         || !protocol_compatibility::sdk_version_at_least(request, (0, 3, 2))?
         || request
             .headers()
-            .get("Carrack-Catalog-Accept-Delta")?
+            .get("Skydriver-Catalog-Accept-Delta")?
             .as_deref()
             != Some("v1")
     {
@@ -438,17 +438,17 @@ fn requested_delta<'a>(
     if request.headers().get("If-None-Match")?.as_deref() != Some(expected_base_etag.as_str())
         || request
             .headers()
-            .get("Carrack-Catalog-Base-Revision")?
+            .get("Skydriver-Catalog-Base-Revision")?
             .as_deref()
             != Some(base_revision.as_str())
         || request
             .headers()
-            .get("Carrack-Catalog-Base-Root")?
+            .get("Skydriver-Catalog-Base-Root")?
             .as_deref()
             != Some(base_root_data_root)
         || request
             .headers()
-            .get("Carrack-Catalog-Base-SHA256")?
+            .get("Skydriver-Catalog-Base-SHA256")?
             .as_deref()
             != Some(base_checkpoint_sha256)
     {
@@ -491,10 +491,10 @@ async fn deliver_delta(
         .set("Content-Length", &delta.bytes.to_string())?;
     response
         .headers_mut()
-        .set("Carrack-Catalog-SHA256", &delivery.sha256)?;
+        .set("Skydriver-Catalog-SHA256", &delivery.sha256)?;
     response
         .headers_mut()
-        .set("Carrack-Catalog-Delta-SHA256", delta.sha256)?;
+        .set("Skydriver-Catalog-Delta-SHA256", delta.sha256)?;
     set_view_headers(&mut response, delivery, etag)?;
     response
         .headers_mut()
@@ -531,7 +531,7 @@ fn set_body_headers(
         .set("Content-Length", &bytes.to_string())?;
     response
         .headers_mut()
-        .set("Carrack-Catalog-SHA256", sha256)?;
+        .set("Skydriver-Catalog-SHA256", sha256)?;
     set_view_headers(response, delivery, etag)?;
     response
         .headers_mut()
@@ -542,12 +542,12 @@ fn set_body_headers(
 fn set_view_headers(response: &mut Response, delivery: &DeliveryRow, etag: &str) -> Result<()> {
     response.headers_mut().set("ETag", etag)?;
     response.headers_mut().set(
-        "Carrack-Catalog-Revision",
+        "Skydriver-Catalog-Revision",
         &delivery.revision_id.to_string(),
     )?;
     response
         .headers_mut()
-        .set("Carrack-Catalog-Root", &delivery.root_data_root)?;
+        .set("Skydriver-Catalog-Root", &delivery.root_data_root)?;
     response
         .headers_mut()
         .set("Cache-Control", "private, no-store, max-age=0")?;

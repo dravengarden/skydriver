@@ -1,7 +1,7 @@
 //! Bounded, server-owned lifecycle for unreachable complete provider objects.
 
-use carrack_driver_contract::{DriverKind, LifecycleMode};
 use serde::Deserialize;
+use skydriver_driver_contract::{DriverKind, LifecycleMode};
 use worker::{D1Database, Env, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
 
@@ -53,7 +53,7 @@ struct R2CleanupTask {
 /// invocations: every provider delete is preceded by a D1 lease and a final
 /// identity, reachability, driver-revision, and direct-read-lease fence.
 pub(crate) async fn run(env: &Env, now: u64) -> Result<()> {
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     mark_unreachable(&database, now).await?;
     create_tasks(&database, now).await?;
     delete_one(env, &database, now).await?;

@@ -19,11 +19,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dravengarden/carrack/driver"
+	"github.com/dravengarden/skydriver/driver"
 )
 
 const (
-	partMagic              = "CARRACK-V2-PART\n"
+	partMagic              = "SKYDRIVER-V2-PART\n"
 	maximumPartHeaderBytes = uint32(4096)
 )
 
@@ -51,7 +51,7 @@ type completionRecord struct {
 // BeginUpload durably fixes one final StorageKey, exact encoded length, and
 // complete SHA-256 before payload transfer. The returned random session ID is
 // the only client-visible resume token and contains no plaintext storage key.
-// Sessions have no local provider TTL; Carrack GC may abort abandoned sessions
+// Sessions have no local provider TTL; Skydriver GC may abort abandoned sessions
 // according to control-plane policy.
 func (client *Client) BeginUpload(
 	ctx context.Context,

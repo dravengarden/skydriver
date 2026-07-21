@@ -1,28 +1,28 @@
-# Carrack requirements
+# Skydriver requirements
 
 This document is the normative product and correctness baseline. The key words
 **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 
 ## Product boundary
 
-- Carrack MUST remain business-neutral. Source adapters, dataset catalogs,
+- Skydriver MUST remain business-neutral. Source adapters, dataset catalogs,
   schedules, parsers, and consumer semantics belong to callers.
-- Carrack MUST have exactly two product components: a Rust Cloudflare control
+- Skydriver MUST have exactly two product components: a Rust Cloudflare control
   plane and a canonical Rust client core.
-- `carrack` MUST expose filesystem-like byte and local-file operations.
-  `carrackctl` MUST expose every supported operator UI mutation through the
+- `skydriver` MUST expose filesystem-like byte and local-file operations.
+  `skydriverctl` MUST expose every supported operator UI mutation through the
   same server validation contract.
 - Payload bytes MUST flow directly between clients and drivers. The Worker
   MUST NOT relay a file body.
 - GC tasks, refresh tokens, driver parent credentials, key envelopes, provider
   locators, and fencing tokens MUST remain hidden from ordinary filesystem
   callers.
-- Carrack MUST NOT split, pack, bundle, merge, compact, or stripe user files.
+- Skydriver MUST NOT split, pack, bundle, merge, compact, or stripe user files.
   One input file MUST remain one complete provider object at every location.
 
 ## Stable correctness core
 
-- `carrack-sdk-core` MUST be the portable, provider-free correctness kernel
+- `skydriver-sdk-core` MUST be the portable, provider-free correctness kernel
   shared by native clients and Worker WASM. It MUST NOT depend on filesystems,
   sockets, async runtimes, databases, Cloudflare APIs, drivers, CLI, or UI.
 - Core responsibilities MUST remain in orthogonal modules: canonical wire
@@ -31,8 +31,8 @@ This document is the normative product and correctness baseline. The key words
   or reach into another module's private algorithm.
 - Integrity domains, Merkle construction, block-manifest encoding and
   validation, key derivation, frame authentication, and catalog closure MUST
-  have exactly one Rust product implementation in `carrack-sdk-core`.
-- `carrack-client` and the Worker MAY adapt owned transport or database values
+  have exactly one Rust product implementation in `skydriver-sdk-core`.
+- `skydriver-client` and the Worker MAY adapt owned transport or database values
   into core value objects, but MUST delegate the final canonical validation to
   the core. CLI and UI validation is advisory UX only; server and core
   validation remain authoritative.
@@ -69,7 +69,7 @@ This document is the normative product and correctness baseline. The key words
   second mount point. Mount configuration MUST remain independent of provider
   directory trees and provider object names.
 - Mount creation, replacement, or removal MUST require an empty target
-  directory and an exact mount revision. Carrack MUST NOT silently migrate,
+  directory and an exact mount revision. Skydriver MUST NOT silently migrate,
   copy, re-encrypt, or strand existing file locations when storage policy
   changes.
 - A metadata-only rename or move whose source and destination resolve to
@@ -178,9 +178,9 @@ This document is the normative product and correctness baseline. The key words
   failures, and fail closed as reauthorization-required after permanent
   rejection.
 - OpenList MAY be reviewed as provider-behavior reference material and MAY be
-  used interactively as an OAuth issuer. Carrack MUST NOT link to, launch,
+  used interactively as an OAuth issuer. Skydriver MUST NOT link to, launch,
   supervise, or route payloads through OpenList.
-- Carrack MUST NOT embed a proxy daemon. A component MAY use an external HTTP,
+- Skydriver MUST NOT embed a proxy daemon. A component MAY use an external HTTP,
   HTTPS, SOCKS5, or SOCKS5H proxy through its native network stack.
 
 ## Concurrency and publication
@@ -206,14 +206,14 @@ This document is the normative product and correctness baseline. The key words
 - The server MUST reevaluate current inherited allow-only ACLs on every request.
   A token MUST NOT preserve an ACL grant that was later removed.
 - A child token MUST NOT outlive or exceed any ancestor authority.
-- Named roles MAY be UI presets expanded to fixed actions. Carrack MUST NOT
+- Named roles MAY be UI presets expanded to fixed actions. Skydriver MUST NOT
   require a general RBAC or policy-language engine.
 - Operator configuration authority MUST remain separate from VFS plaintext
   authority. The bootstrap all-actions VFS token is recovery authority, not an
   everyday agent credential.
 - The UI MUST be read-only by default. Reauthentication MAY open only a
   short-lived mutation session and MUST NOT grant file-content access.
-- Every UI mutation MUST have an equivalent `carrackctl` operation with stable
+- Every UI mutation MUST have an equivalent `skydriverctl` operation with stable
   JSON, local validation, server normalization, expected revision, idempotency,
   and durable audit receipt.
 - Secret input MUST use stdin, an owner-private file, browser paste, or an
@@ -303,8 +303,8 @@ This document is the normative product and correctness baseline. The key words
 - Development and production MUST use distinct Workers, custom routes, D1
   databases, R2 buckets, secrets, credentials, bootstrap authorities, and
   provider roots.
-- Production MUST use `carrack.stormbird.xyz`; development MUST use
-  `dev.carrack.stormbird.xyz`. Both MUST disable workers.dev and preview URLs.
+- Production MUST use `skydriver.stormbird.xyz`; development MUST use
+  `dev.skydriver.stormbird.xyz`. Both MUST disable workers.dev and preview URLs.
 - Deployment tooling MUST reject overlapping dev/prod resource identifiers and
   MUST run environment-specific acceptance before promotion.
 - Public health and every operator surface MUST identify the active

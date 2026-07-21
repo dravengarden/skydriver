@@ -27,14 +27,14 @@ The initial configuration is deliberately small:
 }
 ```
 
-- Carrack derives the HTTPS virtual-hosted regional endpoint. It does not
+- Skydriver derives the HTTPS virtual-hosted regional endpoint. It does not
   accept an operator-supplied origin, redirect target, or addressing style.
 - The first version accepts DNS-label bucket names without dots. This avoids
   TLS and endpoint ambiguity; a later version may safely widen the grammar.
 - `expected_bucket_owner` is required and signed into every provider request.
   Deleting and later recreating a bucket under another account therefore
-  cannot silently rebind an existing Carrack driver.
-- `prefix` is empty or a bounded relative key prefix ending in `/`. Carrack
+  cannot silently rebind an existing Skydriver driver.
+- `prefix` is empty or a bounded relative key prefix ending in `/`. Skydriver
   continues to generate opaque, provider-neutral storage keys beneath it.
 
 Only long-lived IAM access-key ID and secret-access-key pairs are accepted in
@@ -50,7 +50,7 @@ the encrypted credential can commit or the driver can be enabled:
 1. `GetBucketLocation` agrees with the configured region and the signed
    expected owner.
 2. `GetBucketVersioning` reports no enabled or suspended versioning state.
-3. A Carrack-owned random canary key can be created with `If-None-Match: *`,
+3. A Skydriver-owned random canary key can be created with `If-None-Match: *`,
    read back with exact length and range semantics, and removed with
    `If-Match: <etag>`.
 4. Multipart initiate, part upload, conditional completion, readback, and
@@ -61,11 +61,11 @@ Versioned and versioning-suspended buckets are rejected by v1. Supporting
 them correctly requires carrying the exact `versionId` through publication,
 download grants, inventory, conditional deletion, and orphan cleanup. Merely
 deleting the current key would leave unreachable historical bytes and would
-not satisfy Carrack's server-owned lifecycle contract.
+not satisfy Skydriver's server-owned lifecycle contract.
 
-Carrack rechecks the unversioned-bucket authority before issuing payload
+Skydriver rechecks the unversioned-bucket authority before issuing payload
 grants, inventory pages, and physical object deletion. Changing bucket
-versioning or replacing IAM/bucket policy outside Carrack is an uncoordinated
+versioning or replacing IAM/bucket policy outside Skydriver is an uncoordinated
 administrative mutation: subsequent operations fail closed until the original
 v1 prerequisites are restored. An administrator can still race a short-lived
 grant after issuance; deployments requiring a closed administrative boundary
@@ -74,7 +74,7 @@ AWS role.
 
 The recommended bucket or IAM policy also rejects `PutObject` and
 `CompleteMultipartUpload` without `If-None-Match`, and rejects `DeleteObject`
-without `If-Match`. Carrack still signs and checks these conditions itself;
+without `If-Match`. Skydriver still signs and checks these conditions itself;
 the policy protects against an accidentally over-broad credential used by
 another tool.
 
@@ -85,12 +85,12 @@ key collision and may be adopted only after independent complete readback
 proves exact encoded length and SHA-256. A 409 is retryable from a fresh
 multipart upload and is never reported as publication success.
 
-S3 ETags are opaque provider evidence, not content hashes. Carrack returns
+S3 ETags are opaque provider evidence, not content hashes. Skydriver returns
 success only after reading the complete object through the issued GET grant and
 verifying encoded length and SHA-256. The committed location stores the exact
 key, size, ETag, driver ID, and driver revision.
 
-Delayed physical deletion first revalidates all Carrack reachability and lease
+Delayed physical deletion first revalidates all Skydriver reachability and lease
 fences, then sends one conditional `DeleteObject` with the committed ETag in
 `If-Match`. A 412 or 409 is an identity race and must not delete a replacement;
 the lifecycle task is retried or blocked for reconciliation. HEAD followed by
@@ -136,7 +136,7 @@ in one verified release:
 - native Rust upload/download dispatch using the common signed-object
   pipeline;
 - bounded inventory, conditional Stat/Delete, and multipart cleanup adapters;
-- management UI and `carrackctl` validation/apply flows;
+- management UI and `skydriverctl` validation/apply flows;
 - malformed range, short/long body, collision adoption, conditional-delete
   race, owner mismatch, versioning rejection, credential rotation, inventory
   cursor, interruption, and complete-readback tests; and

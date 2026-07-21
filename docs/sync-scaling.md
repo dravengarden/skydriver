@@ -2,10 +2,10 @@
 
 ## Supported shape
 
-Carrack synchronizes complete files. It is designed for thousands to tens of
+Skydriver synchronizes complete files. It is designed for thousands to tens of
 thousands of medium or large objects and remains correct for much larger
 namespaces. Callers such as Seaway own dataset partitioning and should not use
-Carrack as a small-object compaction or query engine.
+Skydriver as a small-object compaction or query engine.
 
 The planner is linear in reachable entries. File and new-state plans use
 private disk spools. Previous state uses a token/source-scoped SQLite primary
@@ -24,12 +24,12 @@ not a filesystem capacity failure.
 
 ## Warm local verification
 
-An unchanged catalog version transfers no provider payload, but Carrack reads
+An unchanged catalog version transfers no provider payload, but Skydriver reads
 the local file to recompute its exact plaintext root. Size, mtime, inode, and a
 user-writable content-addressed hardlink are insufficient correctness proofs.
 
 For a namespace rename, a matching immutable version may be copied from its
-old local path instead of downloaded. Carrack verifies the old path, copies it
+old local path instead of downloaded. Skydriver verifies the old path, copies it
 without creating a shared inode, then verifies the complete staging file again
 before atomic publication. Any lookup, copy, or proof failure retains the
 provider download path, so this acceleration cannot publish unverified bytes.
@@ -59,7 +59,7 @@ authenticated revision-pinned network path.
 An optional future fs-verity backend may skip that read only when it can bind a
 previously recorded measurement to a kernel-enforced immutable inode. Missing
 support, a measurement mismatch, unsupported filesystems, or any adapter error
-must fall back to the ordinary Carrack Merkle pass. The current implementation
+must fall back to the ordinary Skydriver Merkle pass. The current implementation
 does not trust the available third-party ioctl wrapper because it documents
 architecture-dependent constants as unverified; correctness takes precedence
 over this optimization.
@@ -95,7 +95,7 @@ inherited ACL, credential freshness, lease, and audit decisions. It would
 enlarge the secret response and failure domain while saving only multiplexed
 request framing.
 
-Carrack therefore keeps the simple single-version authority protocol until
+Skydriver therefore keeps the simple single-version authority protocol until
 measurements show control-plane framing, rather than provider payload or the
 required per-version decisions, is material. A future batch is acceptable only
 if it preserves an independent result per version, caps request count and

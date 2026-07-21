@@ -3,8 +3,8 @@ set -euo pipefail
 
 curl() {
   command curl \
-    --header "Carrack-Protocol-Epoch: 2" \
-    --header "Carrack-SDK-Version: 0.3.6" \
+    --header "Skydriver-Protocol-Epoch: 2" \
+    --header "Skydriver-SDK-Version: 0.3.6" \
     "$@"
 }
 
@@ -12,7 +12,7 @@ repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 state_directory=$(mktemp -d)
 server_log="$state_directory/wrangler.log"
 cookie_jar="$state_directory/cookies.txt"
-port=${CARRACK_ENVIRONMENT_DEFAULTS_TEST_PORT:-8795}
+port=${SKYDRIVER_ENVIRONMENT_DEFAULTS_TEST_PORT:-8795}
 server_pid=
 
 cleanup() {
@@ -37,10 +37,10 @@ wrangler=(
   --config "$repository_root/control-plane/wrangler.jsonc"
 )
 
-"${wrangler[@]}" d1 migrations apply CARRACK_INDEX \
+"${wrangler[@]}" d1 migrations apply SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" >/dev/null
 
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
   "INSERT INTO driver_instances (
        id, kind, config_json, credential_ref, enabled, revision,
@@ -60,12 +60,12 @@ setsid "${wrangler[@]}" dev \
   --port "$port" \
   --inspector-port 0 \
   --test-scheduled \
-  --var CARRACK_ENVIRONMENT:dev \
-  --var CARRACK_OPERATOR_ACCOUNT:"$operator_account" \
-  --var CARRACK_DEFAULT_R2_MAX_PHYSICAL_BYTES:107374182400 \
-  --var CARRACK_R2_ENDPOINT:"$r2_endpoint" \
-  --var CARRACK_VFS_MASTER_KEY_V1:"$admin_token" \
-  --var CARRACK_ADMIN_TOKEN:"$admin_token" \
+  --var SKYDRIVER_ENVIRONMENT:dev \
+  --var SKYDRIVER_OPERATOR_ACCOUNT:"$operator_account" \
+  --var SKYDRIVER_DEFAULT_R2_MAX_PHYSICAL_BYTES:107374182400 \
+  --var SKYDRIVER_R2_ENDPOINT:"$r2_endpoint" \
+  --var SKYDRIVER_VFS_MASTER_KEY_V1:"$admin_token" \
+  --var SKYDRIVER_ADMIN_TOKEN:"$admin_token" \
   --show-interactive-dev-session=false >"$server_log" 2>&1 &
 server_pid=$!
 
@@ -153,7 +153,7 @@ managed_registration_status=$(curl --silent --output /dev/null --write-out '%{ht
 [[ "$managed_registration_status" == 400 ]]
 
 bootstrap_request='{
-  "filesystem_name":"Carrack VFS",
+  "filesystem_name":"Skydriver VFS",
   "principal_display_name":"VFS operator",
   "idempotency_key":"environment-bootstrap-v2"
 }'
@@ -180,7 +180,7 @@ printf 'unowned-provider-object\n' >"$unknown_source"
 "${wrangler[@]}" r2 object put \
   carrack-payload-local/inventory-fault-injection/unknown \
   --local --persist-to "$state_directory" --file "$unknown_source" >/dev/null
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
   "UPDATE driver_instances SET enabled = 1, revision = revision + 1,
        updated_at = unixepoch() WHERE id = 'r2-default';" >/dev/null
@@ -234,7 +234,7 @@ deleted_etag=$(md5sum "$deleted_source" | cut -d ' ' -f 1)
 "${wrangler[@]}" r2 object put \
   carrack-payload-local/lifecycle-fault-injection/deleted \
   --local --persist-to "$state_directory" --file "$deleted_source" >/dev/null
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
   "INSERT INTO vfs_files (id, filesystem_id, created_at, updated_at)
    VALUES ('a1111111111111111111111111111111', '$filesystem_id', unixepoch(), unixepoch());
@@ -318,7 +318,7 @@ deleted_etag=$(md5sum "$deleted_source" | cut -d ' ' -f 1)
 
 curl --silent --show-error --fail-with-body \
   "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
   "SELECT CASE WHEN state = 'blocked' AND last_error_code = 'revalidation_failed'
      THEN 1 ELSE 0 END AS accepted
@@ -332,7 +332,7 @@ cmp "$blocked_source" "$blocked_readback"
 
 curl --silent --show-error --fail-with-body \
   "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
   "SELECT CASE WHEN location.state = 'deleted' AND task.state = 'deleted'
      THEN 1 ELSE 0 END AS accepted
@@ -360,7 +360,7 @@ leased_sha=$(sha256sum "$leased_source" | cut -d ' ' -f 1)
 "${wrangler[@]}" r2 object put \
   carrack-payload-local/lifecycle-fault-injection/leased \
   --local --persist-to "$state_directory" --file "$leased_source" >/dev/null
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
   "INSERT INTO vfs_files (id, filesystem_id, created_at, updated_at)
    VALUES ('a3333333333333333333333333333333', '$filesystem_id', unixepoch(), unixepoch());
@@ -403,7 +403,7 @@ leased_sha=$(sha256sum "$leased_source" | cut -d ' ' -f 1)
    );" >/dev/null
 curl --silent --show-error --fail-with-body \
   "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
-leased_fence=$("${wrangler[@]}" d1 execute CARRACK_INDEX \
+leased_fence=$("${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
   "SELECT CASE WHEN location.state = 'tombstoned'
                        AND task.state = 'blocked'
@@ -417,7 +417,7 @@ leased_fence=$("${wrangler[@]}" d1 execute CARRACK_INDEX \
    WHERE location.id = 'c3333333333333333333333333333333';" --json)
 if ! jq -e '.[0].results == [{"accepted":1}]' <<<"$leased_fence" >/dev/null; then
   jq . <<<"$leased_fence" >&2
-  "${wrangler[@]}" d1 execute CARRACK_INDEX \
+  "${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
     --local --persist-to "$state_directory" --command \
     "SELECT location.state AS location_state, task.state AS task_state,
             task.last_error_code, task.delete_after, unixepoch() AS now,
@@ -438,7 +438,7 @@ cmp "$leased_source" "$leased_readback"
 # must still commit the D1 location and task state.
 missing_bytes=29
 missing_sha=4444444444444444444444444444444444444444444444444444444444444444
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
   "INSERT INTO vfs_files (id, filesystem_id, created_at, updated_at)
    VALUES ('a4444444444444444444444444444444', '$filesystem_id', unixepoch(), unixepoch());
@@ -474,7 +474,7 @@ missing_sha=4444444444444444444444444444444444444444444444444444444444444444
    WHERE id = 'c4444444444444444444444444444444';" >/dev/null
 curl --silent --show-error --fail-with-body \
   "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
   "SELECT CASE WHEN location.state = 'deleted' AND task.state = 'deleted'
                        AND task.attempt_count = 1
@@ -486,7 +486,7 @@ curl --silent --show-error --fail-with-body \
   jq -e '.[0].results == [{"accepted":1}]' >/dev/null
 
 # An exact Stat mismatch permanently blocks deletion and retains provider bytes.
-# The provider object may have been replaced outside Carrack; guessing from its
+# The provider object may have been replaced outside Skydriver; guessing from its
 # key or treating ETag as a content hash would violate complete-object identity.
 retry_source="$state_directory/lifecycle-identity-mismatch"
 retry_readback="$state_directory/lifecycle-identity-mismatch-readback"
@@ -496,7 +496,7 @@ retry_sha=$(sha256sum "$retry_source" | cut -d ' ' -f 1)
 "${wrangler[@]}" r2 object put \
   carrack-payload-local/lifecycle-fault-injection/identity-mismatch \
   --local --persist-to "$state_directory" --file "$retry_source" >/dev/null
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
   "INSERT INTO vfs_files (id, filesystem_id, created_at, updated_at)
    VALUES ('a5555555555555555555555555555555', '$filesystem_id', unixepoch(), unixepoch());
@@ -532,7 +532,7 @@ retry_sha=$(sha256sum "$retry_source" | cut -d ' ' -f 1)
    WHERE id = 'c5555555555555555555555555555555';" >/dev/null
 curl --silent --show-error --fail-with-body \
   "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
-retry_state=$("${wrangler[@]}" d1 execute CARRACK_INDEX \
+retry_state=$("${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
   "SELECT state, attempt_count, last_error_code, retry_at, updated_at
    FROM vfs_location_delete_tasks
@@ -551,7 +551,7 @@ jq -e '
 ' <<<"$activity" >/dev/null
 curl --silent --show-error --fail-with-body \
   "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
   "SELECT CASE WHEN state = 'blocked' AND attempt_count = 1
                        AND last_error_code = 'provider_identity_mismatch'
@@ -567,7 +567,7 @@ cmp "$retry_source" "$retry_readback"
 # Abandoned complete uploads and unfinished R2 multipart uploads share the
 # hosted lifecycle but retain independent fences. A complete object without
 # usable identity is blocked, while an exact multipart abort remains retryable.
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
   "INSERT INTO driver_instances (
        id, kind, config_json, enabled, revision, created_at, updated_at
@@ -640,7 +640,7 @@ cmp "$retry_source" "$retry_readback"
    );" >/dev/null
 curl --silent --show-error --fail-with-body \
   "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
-cleanup_retry_state=$("${wrangler[@]}" d1 execute CARRACK_INDEX \
+cleanup_retry_state=$("${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
   "SELECT 'put' AS kind, state, attempt_count, last_error_code, retry_at,
           server_blocked_at, updated_at
@@ -679,7 +679,7 @@ jq -e --argjson r2_retry_at "$r2_retry_at" '
 ' <<<"$cleanup_activity" >/dev/null
 curl --silent --show-error --fail-with-body \
   "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
   "SELECT CASE WHEN
        (SELECT attempt_count = 1 AND retry_at IS NULL
@@ -695,7 +695,7 @@ curl --silent --show-error --fail-with-body \
 
 # Provider listing failures retain a visible error and a future retry instead
 # of spending one Aliyun request on every Cron pass.
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
   "INSERT INTO driver_instances (
        id, kind, config_json, enabled, revision, created_at, updated_at
@@ -713,7 +713,7 @@ curl --silent --show-error --fail-with-body \
    );" >/dev/null
 curl --silent --show-error --fail-with-body \
   "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
-inventory_retry_state=$("${wrangler[@]}" d1 execute CARRACK_INDEX \
+inventory_retry_state=$("${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
   "SELECT state, attempt_count, last_error_code, next_scan_at, updated_at
    FROM vfs_provider_inventory_state
@@ -723,7 +723,7 @@ jq -e '
   .state == "error" and .attempt_count == 1 and
   .last_error_code == "provider_list_failed" and .next_scan_at > .updated_at
 ' <<<"$inventory_retry_state" >/dev/null
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
   "SELECT CASE WHEN NOT EXISTS (
        SELECT 1 FROM operator_auth_rate_limits
@@ -734,7 +734,7 @@ inventory_retry_at=$(jq -r '.[0].results[0].next_scan_at' \
   <<<"$inventory_retry_state")
 curl --silent --show-error --fail-with-body \
   "$base_url/cdn-cgi/handler/scheduled?cron=*+*+*+*+*" >/dev/null
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
   "SELECT CASE WHEN state = 'error' AND attempt_count = 1
                        AND next_scan_at = $inventory_retry_at
@@ -743,7 +743,7 @@ curl --silent --show-error --fail-with-body \
    WHERE driver_id = 'aliyun-inventory-fault';" --json |
   jq -e '.[0].results == [{"accepted":1}]' >/dev/null
 
-"${wrangler[@]}" d1 execute CARRACK_INDEX \
+"${wrangler[@]}" d1 execute SKYDRIVER_INDEX \
   --local --persist-to "$state_directory" --command \
   "CREATE TABLE environment_default_assertions (
        accepted INTEGER NOT NULL CHECK (accepted = 1)

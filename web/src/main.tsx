@@ -5,7 +5,7 @@ import { App } from "./App";
 
 const rootElement = document.getElementById("root");
 if (rootElement === null) {
-    throw new Error("Carrack root element is missing");
+    throw new Error("Skydriver root element is missing");
 }
 
 const queryClient = new QueryClient();

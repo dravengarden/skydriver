@@ -1,10 +1,10 @@
-//! Worker adapter for the portable Carrack integrity core.
+//! Worker adapter for the portable Skydriver integrity core.
 //!
 //! This module owns only the database-friendly, owned directory-entry shape.
 //! Canonical parsing, validation, sorting, and Merkle computation belong to
-//! `carrack-sdk-core`, which is shared with native clients and Worker WASM.
+//! `skydriver-sdk-core`, which is shared with native clients and Worker WASM.
 
-use carrack_sdk_core::{
+use skydriver_sdk_core::{
     BlockManifestExpectation, DirectoryMerkleEntry, Error, decode_lower_hex, directory_merkle_root,
 };
 
@@ -68,7 +68,7 @@ pub(crate) fn validate_block_manifest(
     expected_blocks: u64,
     expected_root: Hash,
 ) -> Result<(), Error> {
-    carrack_sdk_core::validate_block_manifest(
+    skydriver_sdk_core::validate_block_manifest(
         encoded,
         BlockManifestExpectation {
             size_bytes: expected_size_bytes,

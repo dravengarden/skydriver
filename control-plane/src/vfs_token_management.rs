@@ -6,7 +6,7 @@ use worker::{
     D1Database, D1PreparedStatement, Date, Env, Request, Response, Result, wasm_bindgen::JsValue,
 };
 
-use carrack_sdk_core::VFS_ACTIONS as ACTIONS;
+use skydriver_sdk_core::VFS_ACTIONS as ACTIONS;
 
 use crate::{
     vfs_access,
@@ -139,7 +139,7 @@ pub(crate) async fn issue(
     };
     let request_digest = request_identity(b"carrack.vfs.token-issue.v1\0", &identity)?;
     let request_sha256 = lowercase_hex(&request_digest)?;
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
 
     if !vfs_access::authorized(
         &database,
@@ -496,7 +496,7 @@ pub(crate) async fn revoke(
     };
     let request_digest = request_identity(b"carrack.vfs.token-revoke.v1\0", &identity)?;
     let request_sha256 = lowercase_hex(&request_digest)?;
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
 
     let Some(target) = load_target_token(&database, target_token_id).await? else {
         return Response::error("VFS token not found", 404);

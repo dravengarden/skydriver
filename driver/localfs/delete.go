@@ -8,7 +8,7 @@ import (
 	"os"
 	"path"
 
-	"github.com/dravengarden/carrack/driver"
+	"github.com/dravengarden/skydriver/driver"
 )
 
 // Delete idempotently removes only the exact pinned immutable object. The

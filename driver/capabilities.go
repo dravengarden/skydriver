@@ -6,11 +6,11 @@ import (
 )
 
 // ErrInvalidCapabilities indicates an incomplete or contradictory declaration.
-var ErrInvalidCapabilities = errors.New("invalid Carrack driver capabilities")
+var ErrInvalidCapabilities = errors.New("invalid Skydriver driver capabilities")
 
 // SupportMode states how one opened driver instance implements a capability.
 // Opened instances must resolve server-dependent behavior through probing and
-// report one of these effective modes before Carrack plans payload I/O.
+// report one of these effective modes before Skydriver plans payload I/O.
 type SupportMode string
 
 const (
@@ -113,7 +113,7 @@ type IntegrityCapabilities struct {
 	// Algorithms lists the exact provider-verified algorithms when strong
 	// checksum support is available.
 	Algorithms []ChecksumAlgorithm `json:"algorithms,omitempty"`
-	// RequiresReadback is true when Carrack must read the completed object in
+	// RequiresReadback is true when Skydriver must read the completed object in
 	// full to preserve publication correctness.
 	RequiresReadback bool `json:"requires_readback"`
 }
@@ -132,7 +132,7 @@ type Capabilities struct {
 	Integrity IntegrityCapabilities `json:"integrity"`
 
 	// MaximumObjectBytes is the hard complete-object limit. Zero means that the
-	// provider exposes no smaller limit than Carrack's protocol limit.
+	// provider exposes no smaller limit than Skydriver's protocol limit.
 	MaximumObjectBytes uint64 `json:"maximum_object_bytes,omitempty"`
 	// PreferredPartBytes is a transfer tuning hint and never changes file or
 	// object identity. Zero means that the planner selects a safe default.

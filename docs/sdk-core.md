@@ -1,19 +1,19 @@
-# Carrack portable correctness core
+# Skydriver portable correctness core
 
 ## Stability contract
 
-`carrack-sdk-core` is the smallest Rust layer allowed to define Carrack wire
+`skydriver-sdk-core` is the smallest Rust layer allowed to define Skydriver wire
 identity and cryptographic correctness. It is compiled for native targets and
 `wasm32-unknown-unknown`. It has no filesystem, network, async runtime,
 database, provider, CLI, UI, or Cloudflare dependency.
 
 Outer layers adapt values and orchestrate effects:
 
-- `carrack-client` owns local files, direct provider I/O, concurrency,
+- `skydriver-client` owns local files, direct provider I/O, concurrency,
   recovery journals, and atomic publication;
 - the Worker owns authorization, D1 transactions, R2 metadata, leases, and
   server lifecycle;
-- `carrack` and `carrackctl` expose client operations and stable diagnostics;
+- `skydriver` and `skydriverctl` expose client operations and stable diagnostics;
 - the web UI renders server state and submits validated mutation drafts.
 
 None of those layers may establish final content, crypto, or catalog validity
@@ -35,7 +35,7 @@ directory roots. `acceptance` owns no protocol rule and exists only to prove
 that the same public implementation runs under Worker WASM.
 
 Disposable metadata-cache encryption is deliberately outside this crate in
-`carrack-metadata-cache`. That orthogonal primitive knows only authority scope,
+`skydriver-metadata-cache`. That orthogonal primitive knows only authority scope,
 logical record context, byte bounds, and authenticated encryption; it owns no
 VFS or Merkle semantics and cannot establish protocol correctness.
 
@@ -56,7 +56,7 @@ The normal gate includes a 100,000-entry ordered-directory test. The explicit
 million-entry scale acceptance is run with:
 
 ```bash
-nix develop -c cargo test -p carrack-sdk-core \
+nix develop -c cargo test -p skydriver-sdk-core \
   integrity::tests::streaming_directory_accepts_one_million_entries_with_logarithmic_state \
   --release -- --ignored --exact
 ```

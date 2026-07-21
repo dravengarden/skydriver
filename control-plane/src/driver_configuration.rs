@@ -4,8 +4,8 @@
 //! belong here. Every management path uses this module so registration,
 //! credential replacement, and enablement cannot interpret config differently.
 
-use carrack_driver_contract::{AliyunDriveConfig, DriverKind, LocalFilesystemConfig};
 use serde_json::Value;
+use skydriver_driver_contract::{AliyunDriveConfig, DriverKind, LocalFilesystemConfig};
 use worker::Result;
 
 use crate::{aws_s3_signing, r2_signing};
@@ -71,8 +71,8 @@ pub(crate) fn valid_stored(kind: &str, config_json: &str, credential_present: bo
         return false;
     };
     let posture_matches = match kind.credential_posture() {
-        carrack_driver_contract::CredentialPosture::Required => credential_present,
-        carrack_driver_contract::CredentialPosture::Forbidden => !credential_present,
+        skydriver_driver_contract::CredentialPosture::Required => credential_present,
+        skydriver_driver_contract::CredentialPosture::Forbidden => !credential_present,
     };
     posture_matches
         && serde_json::from_str::<Value>(config_json)
@@ -120,8 +120,8 @@ fn json_error(error: &serde_json::Error) -> worker::Error {
 
 #[cfg(test)]
 mod tests {
-    use carrack_driver_contract::DriverKind;
     use serde_json::json;
+    use skydriver_driver_contract::DriverKind;
 
     use super::{normalize, valid_stored};
 

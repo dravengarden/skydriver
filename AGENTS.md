@@ -1,21 +1,21 @@
-# AGENTS.md — Carrack
+# AGENTS.md — Skydriver
 
-Carrack is a business-neutral, content-addressed data transport and encrypted
+Skydriver is a business-neutral, content-addressed data transport and encrypted
 archive system. It must not contain exchange adapters, dataset catalogs,
 ingestion schedules, trading semantics, or other consumer-specific behavior.
 
 ## Architecture
 
-- `crates/carrack-sdk-core/`: stable, portable correctness kernel split into
+- `crates/skydriver-sdk-core/`: stable, portable correctness kernel split into
   orthogonal canonical, integrity, crypto, catalog, and acceptance modules.
-- `crates/carrack-driver-contract/`: I/O-free shared driver-kind, configuration,
+- `crates/skydriver-driver-contract/`: I/O-free shared driver-kind, configuration,
   capability, grant, inventory, and lifecycle contract used by both native
   client and control plane registries.
-- `crates/carrack-client/`: native I/O, recovery, and publication orchestration
-  that delegates wire correctness to `carrack-sdk-core`; `driver.rs` is the
+- `crates/skydriver-client/`: native I/O, recovery, and publication orchestration
+  that delegates wire correctness to `skydriver-sdk-core`; `driver.rs` is the
   only provider registry and `aliyun.rs`, `r2.rs`, and `local.rs` are isolated
   complete-object adapters.
-- `crates/carrack-cli/`: thin `carrack`/`carrackctl` SDK consumers; business or
+- `crates/skydriver-cli/`: thin `skydriver`/`skydriverctl` SDK consumers; business or
   protocol rules do not belong here.
 - `driver/`, `transfer/journal/`, `vfs/`: narrow Go conformance oracles for the
   complete-object contract, recovery journal, and shared binary vectors. They
@@ -25,7 +25,7 @@ ingestion schedules, trading semantics, or other consumer-specific behavior.
 - `web/`: strict TypeScript SPA using React, TanStack, and MUI.
 - `docs/vfs-*.md`: language-neutral wire contracts and correctness invariants.
 
-V2 supports direct transfer only. Data bytes flow between a Carrack agent and
+V2 supports direct transfer only. Data bytes flow between a Skydriver agent and
 storage providers. The Worker is a control plane and must never relay object or
 block payloads.
 
@@ -35,12 +35,17 @@ agent processes are SDK consumers, not a third architectural component.
 ## Rules
 
 - All code, comments, commit messages, and docs are English.
-- Carrack is the canonical product, repository, CLI, SDK, client, and protocol
-  name. Consumer projects depend on Carrack; Carrack never depends on them.
+- Skydriver is the canonical product, repository, CLI, SDK, client, and protocol
+  name. Consumer projects depend on Skydriver; Skydriver never depends on them.
+- Persisted `carrack.*` schemas, cryptographic domain separators, local-state
+  formats, and existing Cloudflare resource names are immutable legacy wire or
+  storage identities. New product surfaces must say Skydriver, while changing
+  those compatibility identities requires an explicit versioned migration that
+  proves old ciphertext, receipts, catalogs, and recovery state remain usable.
 - Go uses the Columbus maximum-strictness golangci-lint profile.
 - TypeScript is strict: no `any`, no unchecked boundary casts.
 - Merkle domains, block-manifest rules, encryption derivation, and catalog
-  closure logic belong only in the matching `carrack-sdk-core` module. Worker,
+  closure logic belong only in the matching `skydriver-sdk-core` module. Worker,
   client, CLI, and UI may adapt values and improve diagnostics but must not
   duplicate those algorithms.
 - Transfer and download orchestration MUST enter providers only through
@@ -48,7 +53,7 @@ agent processes are SDK consumers, not a third architectural component.
   adapter calls belong behind that boundary; adding a driver must not modify
   portable core modules or teach orchestration provider names.
 - Versioned driver-kind strings and static capability posture belong only in
-  `carrack-driver-contract`; client and Worker modules must use its exhaustive
+  `skydriver-driver-contract`; client and Worker modules must use its exhaustive
   enum instead of duplicating provider-kind string dispatch.
 - Worker registration, credential replacement, and enablement MUST share pure
   config normalization and credential-posture checks through
@@ -90,7 +95,7 @@ agent processes are SDK consumers, not a third architectural component.
   directory keys. VFS master keys stay in Cloudflare secrets or Secrets Store
   and have tested offline recovery copies.
 - Changing an operator account or password MUST NEVER rotate, replace, delete,
-  or regenerate `CARRACK_VFS_MASTER_KEY_V1`, wrapped directory keys, bootstrap
+  or regenerate `SKYDRIVER_VFS_MASTER_KEY_V1`, wrapped directory keys, bootstrap
   authority, or VFS recovery material. Use only the dedicated operator
   credential rotation command. VFS master-key migration is a separate
   recovery operation and is forbidden without an explicit reviewed request
@@ -106,7 +111,7 @@ agent processes are SDK consumers, not a third architectural component.
   for the inner loop and `just cache-stats` when evaluating compiler-cache
   behavior. Use `just build-cached` only for explicit clean-build experiments;
   do not infer cross-target or cross-worktree reuse without measuring it.
-- Use `.agents/skills/carrack-admin` for Carrack management inspection and
+- Use `.agents/skills/skydriver-admin` for Skydriver management inspection and
   supported VFS policy changes. Agents must not bypass its CLI validation with
   direct D1 writes or reconstructed management HTTP requests.
 - Treat `docs/requirements.md` as the normative product and correctness

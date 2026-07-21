@@ -1,17 +1,17 @@
 use std::fmt::Write as _;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use carrack_driver_contract::{CredentialPosture, DriverKind};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use skydriver_driver_contract::{CredentialPosture, DriverKind};
 use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 
 use crate::{driver_configuration, operator_sessions, vfs_identifiers};
 
-const ADMIN_TOKEN_BINDING: &str = "CARRACK_ADMIN_TOKEN";
-const DATABASE_BINDING: &str = "CARRACK_INDEX";
+const ADMIN_TOKEN_BINDING: &str = "SKYDRIVER_ADMIN_TOKEN";
+const DATABASE_BINDING: &str = "SKYDRIVER_INDEX";
 const VALIDATION_LIFETIME_SECONDS: u64 = 5 * 60;
 const REGISTRATION_KIND: &str = "driver.register";
 const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.driver-registration.v1\0";
@@ -260,7 +260,7 @@ fn normalize_registration(requested: RegistrationRequest) -> Result<Registration
     }
 
     let kind = DriverKind::parse(&requested.kind).ok_or_else(|| {
-        worker::Error::RustError("driver kind is not compiled by this Carrack release".to_owned())
+        worker::Error::RustError("driver kind is not compiled by this Skydriver release".to_owned())
     })?;
     let config = driver_configuration::normalize(kind, requested.config)?;
 
@@ -272,7 +272,7 @@ fn normalize_registration(requested: RegistrationRequest) -> Result<Registration
 
 fn valid_environment_registration(request: &RegistrationRequest, _env: &Env) -> Result<bool> {
     let kind = DriverKind::parse(&request.kind).ok_or_else(|| {
-        worker::Error::RustError("driver kind is not compiled by this Carrack release".to_owned())
+        worker::Error::RustError("driver kind is not compiled by this Skydriver release".to_owned())
     })?;
     driver_configuration::operator_registration_allowed(kind, &request.config)
 }
@@ -290,7 +290,7 @@ fn registration_warnings(kind: &str) -> Vec<String> {
         Some(DriverKind::AwsS3V1) => vec![
             "The driver is registered disabled and requires a write-only AWS IAM access-key credential before enablement."
                 .to_owned(),
-            "Carrack accepts only an official regional AWS S3 endpoint, signs the expected bucket owner into every request, and rejects versioned or versioning-suspended buckets."
+            "Skydriver accepts only an official regional AWS S3 endpoint, signs the expected bucket owner into every request, and rejects versioned or versioning-suspended buckets."
                 .to_owned(),
             "Payload bytes transfer directly between clients and S3 through short-lived object-scoped SigV4 URLs; publication and deletion are conditional and complete readback verifies encoded SHA-256."
                 .to_owned(),

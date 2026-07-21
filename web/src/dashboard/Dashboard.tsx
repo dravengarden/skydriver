@@ -41,7 +41,7 @@ import {
     fetchManagementEventCursor,
     fetchManagementSnapshot,
 } from "../api/client";
-import { CarrackMark } from "../brand/CarrackLogo";
+import { SkydriverMark } from "../brand/SkydriverLogo";
 import { OverviewPage } from "./pages/OverviewPage";
 
 interface DashboardProps {
@@ -221,7 +221,7 @@ export function Dashboard({ environment, onLogout }: DashboardProps) {
                             minWidth: { xs: 0, sm: 210 },
                         }}
                     >
-                        <CarrackMark width={32} height={32} title="Carrack" />
+                        <SkydriverMark width={32} height={32} title="Skydriver" />
                         <Box>
                             <Typography
                                 sx={{
@@ -230,7 +230,7 @@ export function Dashboard({ environment, onLogout }: DashboardProps) {
                                     lineHeight: 1,
                                 }}
                             >
-                                CARRACK
+                                SKYDRIVER
                             </Typography>
                             <Typography
                                 color="text.secondary"
@@ -458,7 +458,7 @@ export function Dashboard({ environment, onLogout }: DashboardProps) {
                 open={changeNoticeOpen}
                 autoHideDuration={6_000}
                 onClose={() => setChangeNoticeOpen(false)}
-                message="Carrack state changed. The latest server state is now loaded."
+                message="Skydriver state changed. The latest server state is now loaded."
             />
         </Box>
     );

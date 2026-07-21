@@ -15,32 +15,32 @@ test("orchestrates validated enablement and empty-root placement without forward
         const config = JSON.parse(
             fs.readFileSync(path.join(repositoryRoot, "control-plane/wrangler.jsonc"), "utf8"),
         );
-        const endpoint = config.env.dev.vars.CARRACK_R2_ENDPOINT;
-        const expectedOperatorAccount = config.env.dev.vars.CARRACK_OPERATOR_ACCOUNT;
+        const endpoint = config.env.dev.vars.SKYDRIVER_R2_ENDPOINT;
+        const expectedOperatorAccount = config.env.dev.vars.SKYDRIVER_OPERATOR_ACCOUNT;
         const accountId = new URL(endpoint).hostname.split(".")[0];
         const stateFile = path.join(stateDirectory, "state.json");
         const logFile = path.join(stateDirectory, "calls.jsonl");
-        const fakeCarrackctl = path.join(stateDirectory, "carrackctl");
+        const fakeSkydriverctl = path.join(stateDirectory, "skydriverctl");
         fs.writeFileSync(
             stateFile,
             JSON.stringify({ enabled: false, revision: 1, placementRevision: 1, placements: [] }),
             { mode: 0o600 },
         );
         fs.writeFileSync(
-            fakeCarrackctl,
+            fakeSkydriverctl,
             `#!/usr/bin/env node
 import fs from "node:fs";
-const stateFile = process.env.FAKE_CARRACK_STATE;
-const logFile = process.env.FAKE_CARRACK_LOG;
+const stateFile = process.env.FAKE_SKYDRIVER_STATE;
+const logFile = process.env.FAKE_SKYDRIVER_LOG;
 const args = process.argv.slice(2);
 const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
 fs.appendFileSync(logFile, JSON.stringify({
   command: args.slice(0, 4),
   factory: Boolean(process.env.CLOUDFLARE_TOKEN_FACTORY_API_TOKEN),
   deploy: Boolean(process.env.CLOUDFLARE_API_TOKEN),
-  operator: Boolean(process.env.CARRACK_OPERATOR_CREDENTIAL),
-  operatorAccount: process.env.CARRACK_OPERATOR_ACCOUNT ?? null,
-  vfs: Boolean(process.env.CARRACK_VFS_TOKEN),
+  operator: Boolean(process.env.SKYDRIVER_OPERATOR_CREDENTIAL),
+  operatorAccount: process.env.SKYDRIVER_OPERATOR_ACCOUNT ?? null,
+  vfs: Boolean(process.env.SKYDRIVER_VFS_TOKEN),
 }) + "\\n");
 const value = (name) => args[args.indexOf(name) + 1];
 if (args[0] === "compatibility") {
@@ -92,7 +92,7 @@ if (args[0] === "compatibility") {
   fs.writeFileSync(stateFile, JSON.stringify(state), { mode: 0o600 });
   console.log(JSON.stringify({ final_revision: state.placementRevision }));
 } else {
-  console.error("unexpected fake carrackctl command", args);
+  console.error("unexpected fake skydriverctl command", args);
   process.exit(2);
 }
 `,
@@ -104,15 +104,15 @@ if (args[0] === "compatibility") {
             encoding: "utf8",
             env: {
                 ...process.env,
-                CARRACKCTL_BIN: fakeCarrackctl,
-                CARRACK_PROVISION_R2: "1",
+                SKYDRIVERCTL_BIN: fakeSkydriverctl,
+                SKYDRIVER_PROVISION_R2: "1",
                 CLOUDFLARE_ACCOUNT_ID: accountId,
                 CLOUDFLARE_API_TOKEN: "routine-deploy-token",
                 CLOUDFLARE_TOKEN_FACTORY_API_TOKEN: "token-factory",
-                CARRACK_OPERATOR_CREDENTIAL: "operator",
-                CARRACK_VFS_TOKEN: "vfs",
-                FAKE_CARRACK_STATE: stateFile,
-                FAKE_CARRACK_LOG: logFile,
+                SKYDRIVER_OPERATOR_CREDENTIAL: "operator",
+                SKYDRIVER_VFS_TOKEN: "vfs",
+                FAKE_SKYDRIVER_STATE: stateFile,
+                FAKE_SKYDRIVER_LOG: logFile,
                 FAKE_R2_ENDPOINT: endpoint,
             },
         });

@@ -56,7 +56,7 @@ pub(crate) fn schedule(
     let env = env.clone();
     context.wait_until(async move {
         let result = async {
-            let database = env.d1("CARRACK_INDEX")?;
+            let database = env.d1("SKYDRIVER_INDEX")?;
             record(
                 &database,
                 &TransferIdentity {
@@ -74,7 +74,7 @@ pub(crate) fn schedule(
         }
         .await;
         if let Err(error) = result {
-            worker::console_error!("Carrack transfer telemetry was dropped: {error:?}");
+            worker::console_error!("Skydriver transfer telemetry was dropped: {error:?}");
         }
     });
 }
@@ -375,7 +375,7 @@ pub(crate) async fn management(
     let since = now.saturating_sub(window_days * 86_400);
     let sql = legacy_metrics_sql(scope_kind);
     let rows = env
-        .d1("CARRACK_INDEX")?
+        .d1("SKYDRIVER_INDEX")?
         .prepare(&sql)
         .bind(&[
             JsValue::from_str(scope_kind),
@@ -459,7 +459,7 @@ pub(crate) async fn analytics(request: &Request, env: &Env) -> Result<Response> 
     };
     let (sql, bindings) = analytics_statement(&query, &resolved);
     let mut rows = env
-        .d1("CARRACK_INDEX")?
+        .d1("SKYDRIVER_INDEX")?
         .prepare(&sql)
         .bind(&bindings)?
         .all()

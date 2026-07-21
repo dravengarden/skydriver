@@ -7,8 +7,8 @@ const environmentName = process.argv[2];
 if (environmentName !== "dev" && environmentName !== "prod") {
     throw new Error("usage: apply-migrations.mjs <dev|prod>");
 }
-if (environmentName === "prod" && process.env.CARRACK_MIGRATE_PROD !== "1") {
-    throw new Error("set CARRACK_MIGRATE_PROD=1 to migrate production");
+if (environmentName === "prod" && process.env.SKYDRIVER_MIGRATE_PROD !== "1") {
+    throw new Error("set SKYDRIVER_MIGRATE_PROD=1 to migrate production");
 }
 
 const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
@@ -90,7 +90,7 @@ for (const name of migrationFiles) {
                 "wrangler",
                 "d1",
                 "execute",
-                "CARRACK_INDEX",
+                "SKYDRIVER_INDEX",
                 "--remote",
                 "--env",
                 environmentName,

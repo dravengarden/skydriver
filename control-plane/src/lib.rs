@@ -1,7 +1,7 @@
-//! Carrack's Cloudflare control plane.
+//! Skydriver's Cloudflare control plane.
 //!
 //! The Worker serves metadata and the web console. Payload bytes always move
-//! directly between Carrack agents and storage providers.
+//! directly between Skydriver agents and storage providers.
 
 mod aws_s3_signing;
 mod driver_authorization;
@@ -771,7 +771,7 @@ pub async fn main(request: Request, env: Env, context: Context) -> Result<Respon
 }
 
 fn wasm_sdk_acceptance() -> Result<Response> {
-    let proof = carrack_sdk_core::wasm_acceptance_proof(b"abc")
+    let proof = skydriver_sdk_core::wasm_acceptance_proof(b"abc")
         .map_err(|error| worker::Error::RustError(error.to_string()))?;
     Response::from_json(&proof)
 }
@@ -780,7 +780,7 @@ fn wasm_sdk_acceptance() -> Result<Response> {
 #[event(scheduled)]
 pub async fn scheduled(_event: ScheduledEvent, env: Env, _context: ScheduleContext) {
     if let Err(error) = maintenance::run(&env).await {
-        worker::console_error!("Carrack scheduled metadata maintenance failed: {error:?}");
+        worker::console_error!("Skydriver scheduled metadata maintenance failed: {error:?}");
     }
 }
 
@@ -808,11 +808,11 @@ fn security_headers(mut response: Response) -> Result<Response> {
 async fn health(env: &Env) -> Result<Response> {
     let state = load_control_state(env).await?;
     let external_maintenance = external_maintenance(env);
-    let environment = env.var("CARRACK_ENVIRONMENT")?.to_string();
-    let operator_account = env.var("CARRACK_OPERATOR_ACCOUNT")?.to_string();
+    let environment = env.var("SKYDRIVER_ENVIRONMENT")?.to_string();
+    let operator_account = env.var("SKYDRIVER_OPERATOR_ACCOUNT")?.to_string();
 
     Response::from_json(&HealthResponse {
-        service: "carrack-control-plane",
+        service: "skydriver-control-plane",
         environment,
         operator_account,
         transfer_mode: "direct",
@@ -825,7 +825,7 @@ async fn health(env: &Env) -> Result<Response> {
 }
 
 async fn load_control_state(env: &Env) -> Result<ControlStateRow> {
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let result = database
         .prepare(
             "SELECT incarnation, mode, revision, recovered_at \
@@ -839,10 +839,10 @@ async fn load_control_state(env: &Env) -> Result<ControlStateRow> {
 
 fn external_maintenance(env: &Env) -> bool {
     let configured = env
-        .var("CARRACK_MAINTENANCE")
+        .var("SKYDRIVER_MAINTENANCE")
         .map(|value| value.to_string())
         .or_else(|_| {
-            env.secret("CARRACK_MAINTENANCE")
+            env.secret("SKYDRIVER_MAINTENANCE")
                 .map(|value| value.to_string())
         });
 

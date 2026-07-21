@@ -4,9 +4,9 @@
 //! commits remain in `vfs_provider_inventory`. This module only performs one
 //! bounded provider listing step using already-authorized authority.
 
-use carrack_driver_contract::{AliyunDriveConfig, DriverKind, R2Config};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use skydriver_driver_contract::{AliyunDriveConfig, DriverKind, R2Config};
 use worker::{Env, Fetch, Headers, Method, Request, RequestInit, Result, wasm_bindgen::JsValue};
 
 use crate::{aws_s3_signing, driver_renewal::AliyunCredential, environment_defaults, r2_signing};
@@ -151,7 +151,7 @@ async fn list_r2_page(env: &Env, config_json: &str, cursor: Option<&str>) -> Res
             "invalid R2 inventory configuration".to_owned(),
         ));
     }
-    let bucket = env.bucket("CARRACK_PAYLOAD")?;
+    let bucket = env.bucket("SKYDRIVER_PAYLOAD")?;
     let mut list = bucket.list().limit(PAGE_SIZE).prefix(config.prefix.clone());
     if let Some(cursor) = cursor {
         list = list.cursor(cursor);
@@ -327,13 +327,13 @@ async fn aliyun_post<T: for<'de> Deserialize<'de>>(
 
 #[cfg(test)]
 mod tests {
-    use carrack_driver_contract::DriverKind;
+    use skydriver_driver_contract::DriverKind;
 
     #[test]
     fn agent_host_driver_cannot_enter_hosted_inventory() {
         assert_eq!(
             DriverKind::LocalFilesystemV2.inventory_mode(),
-            carrack_driver_contract::InventoryMode::AgentHost
+            skydriver_driver_contract::InventoryMode::AgentHost
         );
     }
 }

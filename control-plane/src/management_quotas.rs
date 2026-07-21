@@ -102,7 +102,7 @@ pub(crate) async fn validate(
     if desired.expected_revision == 0 || !valid_limits(scope, &desired.limits) {
         return Response::error("quota policy is invalid", 400);
     }
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let Some(current) = load_policy(&database, scope, resource_id).await? else {
         return Response::error("quota resource was not found", 404);
     };
@@ -170,7 +170,7 @@ pub(crate) async fn apply(
     }
     let kind = format!("{scope}.quota");
     let request_hash = request_hash(scope, resource_id, &desired)?;
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     if let Some(stored) = load_receipt(&database, &kind, &requested.idempotency_key).await? {
         if stored.resource_id != resource_id
             || stored.request_sha256 != request_hash
@@ -393,7 +393,7 @@ fn digest(
     expires_at: u64,
 ) -> Result<String> {
     let mut mac =
-        HmacSha256::new_from_slice(env.secret("CARRACK_ADMIN_TOKEN")?.to_string().as_bytes())
+        HmacSha256::new_from_slice(env.secret("SKYDRIVER_ADMIN_TOKEN")?.to_string().as_bytes())
             .map_err(|error| worker::Error::RustError(error.to_string()))?;
     update_identity(&mut mac, scope, id, desired)?;
     mac.update(&expires_at.to_be_bytes());

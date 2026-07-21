@@ -43,7 +43,7 @@ pub(crate) async fn authenticate(
         return Ok(None);
     };
     let verifier = token_verifier(&token);
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let authenticated = database
         .prepare(
             "WITH RECURSIVE token_chain(

@@ -152,7 +152,7 @@ pub(crate) async fn plan(
     if !valid_identifier(version_id) {
         return Response::error("invalid VFS version ID", 400);
     }
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let Some(mut row) = load(&database, version_id).await? else {
         return Response::error("published VFS version was not found", 404);
     };
@@ -307,7 +307,7 @@ pub(crate) async fn complete(
         return Response::error("invalid VFS read lease ID", 400);
     }
     let now = Date::now().as_millis() / 1_000;
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let encoded = request.bytes().await.unwrap_or_default();
     let requested = if encoded.is_empty() {
         CompletionRequest::default()
@@ -416,7 +416,7 @@ pub(crate) async fn complete_batch(
         return Response::error("duplicate VFS read lease ID", 400);
     }
 
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let placeholders = (1..=requested.completions.len())
         .map(|index| format!("?{index}"))
         .collect::<Vec<_>>()

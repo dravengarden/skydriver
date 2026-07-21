@@ -1,6 +1,6 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use carrack_driver_contract::{DriverKind, GrantMode};
 use serde::{Deserialize, Serialize};
+use skydriver_driver_contract::{DriverKind, GrantMode};
 use worker::{D1Database, Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
 
@@ -118,7 +118,7 @@ pub(crate) async fn grant_put_key(
     token: &AuthenticatedVfsToken,
     intent_id: &str,
 ) -> Result<Response> {
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let Some(context) = load_context(&database, intent_id).await? else {
         return Response::error("VFS put intent was not found", 404);
     };
@@ -182,7 +182,7 @@ pub(crate) async fn grant_put_driver(
     token: &AuthenticatedVfsToken,
     intent_id: &str,
 ) -> Result<Response> {
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let Some(mut context) = load_context(&database, intent_id).await? else {
         return Response::error("VFS put intent was not found", 404);
     };
@@ -274,7 +274,7 @@ pub(crate) async fn grant_put_r2_multipart(
     intent_id: &str,
 ) -> Result<Response> {
     let requested = request.json::<R2MultipartGrantRequest>().await?;
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let Some(context) = load_context(&database, intent_id).await? else {
         return Response::error("VFS put intent was not found", 404);
     };
@@ -377,7 +377,7 @@ pub(crate) async fn grant_put_delete_driver(
     token: &AuthenticatedVfsToken,
     task_id: &str,
 ) -> Result<Response> {
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     if !vfs_put_deletion::authorized(&database, token, task_id).await? {
         return Response::error("VFS put-delete driver grant is not authorized", 403);
     }

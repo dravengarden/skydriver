@@ -7,8 +7,8 @@ if (accountId === undefined || apiToken === undefined) {
 }
 
 const config = JSON.parse(fs.readFileSync("control-plane/wrangler.jsonc", "utf8"));
-const requiredSecrets = ["CARRACK_ADMIN_TOKEN", "CARRACK_VFS_MASTER_KEY_V1"];
-const forbiddenSecrets = ["CARRACK_ROOT_KEY_V1", "CARRACK_SESSION_KEY"];
+const requiredSecrets = ["SKYDRIVER_ADMIN_TOKEN", "SKYDRIVER_VFS_MASTER_KEY_V1"];
+const forbiddenSecrets = ["SKYDRIVER_ROOT_KEY_V1", "SKYDRIVER_SESSION_KEY"];
 
 async function api(path, init = {}) {
     const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`, {
@@ -45,9 +45,9 @@ function singleBinding(environment, key, binding) {
 const expected = Object.fromEntries(
     ["dev", "prod"].map((name) => {
         const environment = config.env[name];
-        const database = singleBinding(environment, "d1_databases", "CARRACK_INDEX");
-        const bucket = singleBinding(environment, "r2_buckets", "CARRACK_MANIFESTS");
-        const payload = singleBinding(environment, "r2_buckets", "CARRACK_PAYLOAD");
+        const database = singleBinding(environment, "d1_databases", "SKYDRIVER_INDEX");
+        const bucket = singleBinding(environment, "r2_buckets", "SKYDRIVER_MANIFESTS");
+        const payload = singleBinding(environment, "r2_buckets", "SKYDRIVER_PAYLOAD");
         return [
             name,
             {
@@ -58,7 +58,7 @@ const expected = Object.fromEntries(
                 bucketName: bucket.bucket_name,
                 payloadBucketName: payload.bucket_name,
                 hostname: environment.routes?.[0]?.pattern,
-                operatorAccount: environment.vars?.CARRACK_OPERATOR_ACCOUNT,
+                operatorAccount: environment.vars?.SKYDRIVER_OPERATOR_ACCOUNT,
             },
         ];
     }),
@@ -113,7 +113,7 @@ for (const { id: script } of scripts) {
                 type === "r2_bucket" && bucketName === environment.payloadBucketName,
         );
         if ((ownsDatabase || ownsBucket || ownsPayloadBucket) && script !== environment.worker) {
-            throw new Error(`${script} overlaps ${environment.name} Carrack resources`);
+            throw new Error(`${script} overlaps ${environment.name} Skydriver resources`);
         }
     }
 }
@@ -137,13 +137,13 @@ for (const environment of Object.values(expected)) {
     }
 
     const marker = settings.bindings.find(
-        ({ type, name }) => type === "plain_text" && name === "CARRACK_ENVIRONMENT",
+        ({ type, name }) => type === "plain_text" && name === "SKYDRIVER_ENVIRONMENT",
     );
     if (marker?.text !== environment.name) {
         throw new Error(`${environment.name} Worker has the wrong environment marker`);
     }
     const operatorAccount = settings.bindings.find(
-        ({ type, name }) => type === "plain_text" && name === "CARRACK_OPERATOR_ACCOUNT",
+        ({ type, name }) => type === "plain_text" && name === "SKYDRIVER_OPERATOR_ACCOUNT",
     );
     if (operatorAccount?.text !== environment.operatorAccount) {
         throw new Error(`${environment.name} Worker has the wrong operator account`);

@@ -59,7 +59,7 @@ async function probe(profile, deploymentTag, attempt, fetchImplementation) {
         "application/json",
     );
     const health = await healthResponse.json();
-    if (health?.service !== "carrack-control-plane" || health.environment !== profile.environment) {
+    if (health?.service !== "skydriver-control-plane" || health.environment !== profile.environment) {
         throw new Error("health endpoint reported the wrong deployment identity");
     }
     const wasmResponse = await checkedResponse(

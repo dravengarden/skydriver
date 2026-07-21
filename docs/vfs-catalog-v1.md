@@ -1,4 +1,4 @@
-# Carrack VFS Local Catalog V1
+# Skydriver VFS Local Catalog V1
 
 ## Status and purpose
 
@@ -20,7 +20,7 @@ planning" never means offline authorization.
 ## Why the catalog is a Merkle DAG
 
 Every VFS directory already has a canonical `data_root`. A parent entry commits
-to both a child directory ID and its `data_root`. Carrack therefore uses the
+to both a child directory ID and its `data_root`. Skydriver therefore uses the
 pair `(directory_id, data_root)` as one immutable local catalog-node key rather
 than introducing a second directory hash.
 
@@ -41,7 +41,7 @@ the correctness protocol.
 
 ## Synchronization protocol
 
-The Rust `carrack sync` implementation performs these steps:
+The Rust `skydriver sync` implementation performs these steps:
 
 1. Read the first live page of the requested root directory with the current
    VFS bearer token. After an authorized checkpoint, delta, or reauthorized
@@ -136,10 +136,10 @@ next synchronization reconstructs it from authenticated metadata.
 The canonical CLI surface is:
 
 ```bash
-export CARRACK_CONTROL_URL='https://dev.carrack.stormbird.xyz'
-export CARRACK_VFS_TOKEN='<attenuated bearer>'
+export SKYDRIVER_CONTROL_URL='https://dev.skydriver.stormbird.xyz'
+export SKYDRIVER_VFS_TOKEN='<attenuated bearer>'
 
-carrack sync /releases ./local-releases \
+skydriver sync /releases ./local-releases \
   --maximum-concurrency 4 \
   --maximum-file-concurrency 4
 ```
@@ -166,7 +166,7 @@ hours, and Activity exposes the attempt, error, and next deadline. A concurrent
 newer head is a normal supersession rather than a provider failure, so it is
 released without a retry schedule and later resolved by the collapse proof.
 
-The canonical JSON checkpoint is written to `CARRACK_MANIFESTS` under its
+The canonical JSON checkpoint is written to `SKYDRIVER_MANIFESTS` under its
 SHA-256 with an R2 create-only condition. D1 records the planned artifact before
 the R2 side effect, then publishes `vfs_catalog_heads` only after the immutable
 object exists with the exact bytes, SHA-256, R2 version, and size. A concurrent
@@ -240,7 +240,7 @@ misinterpreting the new view-specific entity tag.
 
 Rust SDK `0.3.2` adds an explicitly negotiated full-root delta. During
 materialization, when the previous and target complete checkpoints are both at
-most 8 MiB, Carrack compares their authenticated directory content addresses.
+most 8 MiB, Skydriver compares their authenticated directory content addresses.
 It stores a delta only when the canonical body is strictly smaller than the
 complete target. The delta commits the exact base and target revision, root,
 and checkpoint SHA-256 and contains only target directory nodes whose

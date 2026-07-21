@@ -12,7 +12,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/dravengarden/carrack/driver"
+	"github.com/dravengarden/skydriver/driver"
 )
 
 func TestOpenDeclaresExactCapabilities(t *testing.T) {

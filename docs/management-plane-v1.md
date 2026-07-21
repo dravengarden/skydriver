@@ -1,11 +1,11 @@
-# Carrack Management Plane V1
+# Skydriver Management Plane V1
 
 ## Purpose
 
 The management plane gives humans and agents one complete, auditable view of
-Carrack without putting payload bytes, plaintext directory keys, bearer
+Skydriver without putting payload bytes, plaintext directory keys, bearer
 secrets, or provider credentials in the browser or Worker responses. The Web
-UI and `carrackctl` are two clients of the same server-side read models,
+UI and `skydriverctl` are two clients of the same server-side read models,
 validation rules, optimistic revisions, and mutation receipts.
 
 The management plane is not a second authorization system. VFS tokens continue
@@ -19,7 +19,7 @@ The authenticated UI has six stable destinations:
 
 | Destination | Primary question |
 |---|---|
-| Overview | Is Carrack healthy, safe, and moving data? |
+| Overview | Is Skydriver healthy, safe, and moving data? |
 | Files | What collections and complete files exist in the VFS? |
 | Drivers | Where is data stored and what can each driver do? |
 | Access | Which principals and tokens can perform which actions? |
@@ -91,7 +91,7 @@ server validation.
 Aliyun credential validation also requires a canonical three-segment access
 token with a positive, unexpired JWT `exp` claim. The expiry is persisted next
 to the encrypted envelope and returned only as non-secret metadata. Provider
-authorization remains authoritative when Carrack first uses the credential;
+authorization remains authoritative when Skydriver first uses the credential;
 the control plane never treats the unverified JWT claim as proof of access.
 
 ## Configuration resources
@@ -114,8 +114,8 @@ details, logs, or later reads.
 
 ## Operator credential and VFS root token
 
-Carrack does not require a permanent everyday root bearer token.
-`CARRACK_ADMIN_TOKEN` is the environment's break-glass operator credential. It
+Skydriver does not require a permanent everyday root bearer token.
+`SKYDRIVER_ADMIN_TOKEN` is the environment's break-glass operator credential. It
 authenticates short-lived browser or CLI management sessions and must remain in
 the host secret store, never in arguments, Git, shell history, or agent output.
 
@@ -123,33 +123,33 @@ The bootstrap VFS token remains a recovery and authority anchor because VFS
 attenuation is rooted in its immutable parent chain. Normal automation must
 use short-lived child tokens with exact directory, action, driver, and expiry
 scope. The bootstrap bearer should be kept offline after provisioning. A Hawk
-agent that needs configuration authority uses `carrackctl`; an agent that
+agent that needs configuration authority uses `skydriverctl`; an agent that
 needs file access receives a separate attenuated VFS token. Combining these
 credentials is an explicit exceptional workflow.
 
 ## Agent-safe CLI
 
-`carrackctl` is non-interactive and JSON-first. Every command accepts
+`skydriverctl` is non-interactive and JSON-first. Every command accepts
 `--control-url`; the non-secret login identity is read from
-`CARRACK_OPERATOR_ACCOUNT`, and credentials are read from
-`CARRACK_OPERATOR_CREDENTIAL` or a private file descriptor, never a
+`SKYDRIVER_OPERATOR_ACCOUNT`, and credentials are read from
+`SKYDRIVER_OPERATOR_CREDENTIAL` or a private file descriptor, never a
 command-line flag. The implemented operator commands are:
 
 ```text
-carrackctl snapshot
-carrackctl metrics global all
-carrackctl metrics driver <driver-id>
-carrackctl metrics token <token-id>
-carrackctl metrics directory <directory-id>
-carrackctl watch
-carrackctl directory <directory-id>
-carrackctl token annotate <token-id>
-carrackctl driver register <driver-id>
-carrackctl driver credential set <driver-id>
-carrackctl driver enable <driver-id>
-carrackctl driver disable <driver-id>
-carrackctl quota set directory <directory-id>
-carrackctl quota set driver <driver-id>
+skydriverctl snapshot
+skydriverctl metrics global all
+skydriverctl metrics driver <driver-id>
+skydriverctl metrics token <token-id>
+skydriverctl metrics directory <directory-id>
+skydriverctl watch
+skydriverctl directory <directory-id>
+skydriverctl token annotate <token-id>
+skydriverctl driver register <driver-id>
+skydriverctl driver credential set <driver-id>
+skydriverctl driver enable <driver-id>
+skydriverctl driver disable <driver-id>
+skydriverctl quota set directory <directory-id>
+skydriverctl quota set driver <driver-id>
 ```
 
 Mutation commands accept explicit desired-state flags. Server validation
@@ -172,7 +172,7 @@ D1 stores one rollup per UTC day, direction, and global/driver/token/directory
 scope for 400 days. The day-first primary key serves bounded retirement. One
 secondary scope/day index serves UI and CLI history queries; separate narrow
 retirement indexes cover idempotency receipts and high-volume download audit
-events. The UI requests only its visible 30-day window; `carrackctl` requests
+events. The UI requests only its visible 30-day window; `skydriverctl` requests
 the retained 400-day history. Query-plan tests reject regressions to full scans. No transfer part,
 plaintext path, bearer, provider credential, or file key enters telemetry.
 
@@ -239,7 +239,7 @@ string `code` and numeric `exit_status` carry the same stable classification:
 | `19` | `permanent_loss` | Reconcile replicas and report durable loss; blind retry cannot repair it. |
 
 Status `0` remains the only success status. No other nonzero value is part of
-the Carrack CLI contract.
+the Skydriver CLI contract.
 
 ## Change observation
 
@@ -251,7 +251,7 @@ cursor advances outside the current browser mutation, TanStack Query
 invalidates only affected resources and shows a snackbar naming the source and
 resource when available.
 
-`carrackctl watch --after <cursor> --limit <1..250>` uses the same cursor and
+`skydriverctl watch --after <cursor> --limit <1..250>` uses the same cursor and
 returns one ascending, bounded JSON event page. The page pins the current
 server high-water mark and reports `next_after` plus `has_more`; agents consume
 all pages, then persist only the last successfully processed cursor. A cursor
@@ -262,7 +262,7 @@ changing event identity.
 
 ## Races and failure handling
 
-Carrack uses optimistic concurrency for management state. It does not hold a
+Skydriver uses optimistic concurrency for management state. It does not hold a
 lock while a human reviews a draft or an agent plans a change. Validation does
 not reserve state. Apply succeeds only if every observed resource revision is
 still current; otherwise it returns `409` with no partial mutation.
@@ -276,7 +276,7 @@ artifacts after their grace periods.
 
 ## Skill contract
 
-The repository-owned Carrack management skill must teach agents to:
+The repository-owned Skydriver management skill must teach agents to:
 
 - inspect current state before proposing a change;
 - keep configuration and content credentials separate;

@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 
-const ADMIN_TOKEN_BINDING: &str = "CARRACK_ADMIN_TOKEN";
-const OPERATOR_ACCOUNT_BINDING: &str = "CARRACK_OPERATOR_ACCOUNT";
-const DATABASE_BINDING: &str = "CARRACK_INDEX";
+const ADMIN_TOKEN_BINDING: &str = "SKYDRIVER_ADMIN_TOKEN";
+const OPERATOR_ACCOUNT_BINDING: &str = "SKYDRIVER_OPERATOR_ACCOUNT";
+const DATABASE_BINDING: &str = "SKYDRIVER_INDEX";
 const SESSION_COOKIE: &str = "carrack_session";
 const SESSION_LIFETIME_SECONDS: u64 = 12 * 60 * 60;
 const CONFIGURATION_SESSION_COOKIE: &str = "carrack_configuration";
@@ -81,13 +81,13 @@ pub(crate) async fn login(request: &mut Request, env: &Env) -> Result<Response> 
     let configured_account = env.var(OPERATOR_ACCOUNT_BINDING)?.to_string();
     if !canonical_account(&configured_account) {
         return Err(worker::Error::RustError(
-            "CARRACK_OPERATOR_ACCOUNT must be a canonical account name".to_owned(),
+            "SKYDRIVER_OPERATOR_ACCOUNT must be a canonical account name".to_owned(),
         ));
     }
     let configured = env.secret(ADMIN_TOKEN_BINDING)?.to_string();
     if !canonical_token(&configured) {
         return Err(worker::Error::RustError(
-            "CARRACK_ADMIN_TOKEN must encode exactly 32 bytes".to_owned(),
+            "SKYDRIVER_ADMIN_TOKEN must encode exactly 32 bytes".to_owned(),
         ));
     }
     let candidate = if credentials.password.len() <= MAXIMUM_CREDENTIAL_BYTES {
@@ -189,7 +189,7 @@ pub(crate) async fn enable_configuration(request: &mut Request, env: &Env) -> Re
     };
     if !canonical_token(&configured) {
         return Err(worker::Error::RustError(
-            "CARRACK_ADMIN_TOKEN must encode exactly 32 bytes".to_owned(),
+            "SKYDRIVER_ADMIN_TOKEN must encode exactly 32 bytes".to_owned(),
         ));
     }
     let database = env.d1(DATABASE_BINDING)?;
@@ -533,7 +533,7 @@ fn cookie_value<'a>(header: &'a str, name: &str) -> Option<&'a str> {
 }
 
 fn secure_cookie(env: &Env) -> bool {
-    env.var("CARRACK_ENVIRONMENT")
+    env.var("SKYDRIVER_ENVIRONMENT")
         .map_or(true, |value| value.to_string() != "local")
 }
 
@@ -583,21 +583,24 @@ mod tests {
     fn accepts_only_canonical_operator_accounts() {
         assert!(canonical_account("draven"));
         assert!(canonical_account("operator.dev-1"));
-        assert!(canonical_account("draven@carrack-dev"));
+        assert!(canonical_account("draven@skydriver-dev"));
         assert!(!canonical_account(""));
         assert!(!canonical_account("Draven"));
         assert!(!canonical_account("-operator"));
-        assert!(!canonical_account("draven@@carrack-dev"));
+        assert!(!canonical_account("draven@@skydriver-dev"));
         assert!(!canonical_account("draven@-carrack-dev"));
     }
 
     #[test]
     fn accepts_only_the_exact_configured_account() {
-        assert!(account_matches("draven@carrack-dev", "draven@carrack-dev"));
-        assert!(!account_matches("draven", "draven@carrack-dev"));
+        assert!(account_matches(
+            "draven@skydriver-dev",
+            "draven@skydriver-dev"
+        ));
+        assert!(!account_matches("draven", "draven@skydriver-dev"));
         assert!(!account_matches(
-            "draven@carrack-prod",
-            "draven@carrack-dev"
+            "draven@skydriver-prod",
+            "draven@skydriver-dev"
         ));
     }
 

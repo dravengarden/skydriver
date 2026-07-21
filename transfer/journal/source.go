@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-// SourceMetadata is cheap replay identity captured before and after Carrack
+// SourceMetadata is cheap replay identity captured before and after Skydriver
 // hashes a source. Version must change whenever the implementation knows bytes
 // may have changed; SHA-256 verification remains authoritative.
 type SourceMetadata struct {
@@ -25,14 +25,14 @@ type SourceMetadata struct {
 
 // ReplayableSource provides exact ranges from stable caller-owned bytes.
 // Implementations must allow independent concurrent ranges. One-shot streams
-// must first be spooled to a protected file by a higher-level Carrack API.
+// must first be spooled to a protected file by a higher-level Skydriver API.
 type ReplayableSource interface {
 	Metadata(ctx context.Context) (SourceMetadata, error)
 	OpenRange(ctx context.Context, offset, length uint64) (io.ReadCloser, error)
 }
 
 // FileSource is a replayable regular local file. The path must be canonical and
-// absolute; the final path component may not be a symlink. Carrack rehashes the
+// absolute; the final path component may not be a symlink. Skydriver rehashes the
 // complete source during preparation and every resumed execution.
 type FileSource struct {
 	filePath string

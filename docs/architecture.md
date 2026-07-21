@@ -1,18 +1,18 @@
-# Carrack architecture
+# Skydriver architecture
 
 ## Status
 
-Carrack is a complete-object virtual filesystem. This document is the compact
+Skydriver is a complete-object virtual filesystem. This document is the compact
 architecture map; [requirements.md](requirements.md) is normative and
 [vfs-v2.md](vfs-v2.md) records the detailed implemented protocol.
 
-The former archive architecture is gone. Carrack does not split, pack, bundle,
+The former archive architecture is gone. Skydriver does not split, pack, bundle,
 merge, compact, or stripe user files. Multipart parts, encryption frames,
 verification blocks, and HTTP ranges are private transfer units only.
 
 ## Product boundary
 
-Carrack has two product components:
+Skydriver has two product components:
 
 1. A Rust control plane on Cloudflare Workers, D1, and R2, with a React
    operator UI.
@@ -20,12 +20,12 @@ Carrack has two product components:
    applications, and WASM acceptance tests.
 
 The CLI binaries are SDK consumers, not additional components. External
-sources remain caller-owned: callers give Carrack bytes, streams, or local
+sources remain caller-owned: callers give Skydriver bytes, streams, or local
 files and receive bytes or local files.
 
 ### Correctness-kernel boundary
 
-`carrack-sdk-core` is the small, portable correctness kernel used by both the
+`skydriver-sdk-core` is the small, portable correctness kernel used by both the
 native client and Worker WASM. Its modules are deliberately one-directional:
 
 - `canonical` parses context-free canonical wire values;
@@ -36,7 +36,7 @@ native client and Worker WASM. Its modules are deliberately one-directional:
   protocol rule.
 
 The kernel performs no I/O and knows no provider, database, HTTP route, CLI,
-or UI. `carrack-client` owns local/provider I/O, recovery, pipelines, and
+or UI. `skydriver-client` owns local/provider I/O, recovery, pipelines, and
 publication. The Worker owns authorization and D1/R2 transaction orchestration.
 Both convert boundary data into kernel value objects and accept its result;
 neither reimplements the algorithm. CLI and UI are consumers whose local
@@ -154,7 +154,7 @@ checksum, identity, Stat, abort, Delete, proxy, and size-limit capabilities.
 Unsupported capabilities produce a warning and a correctness-preserving
 fallback; they never weaken verification.
 
-`carrack-driver-contract` is the single I/O-free source for compiled driver
+`skydriver-driver-contract` is the single I/O-free source for compiled driver
 kinds and their data-path, credential, grant, inventory, and lifecycle posture.
 Both the native SDK and Worker depend on it; the portable correctness kernel
 does not. This makes a new kind an explicit exhaustive change on both sides
@@ -186,7 +186,7 @@ deletion must provide stable identity, exact Stat, and idempotent Delete.
 
 ## Concurrency and lifecycle
 
-Carrack uses optimistic revisions, immutable identifiers, idempotency keys, and
+Skydriver uses optimistic revisions, immutable identifiers, idempotency keys, and
 short transactions. Network I/O never holds a D1 transaction or distributed
 pessimistic lock. A stale revision fails before publication and can be safely
 replanned.
@@ -211,7 +211,7 @@ are UI presets expanded to fixed actions, not a general policy language.
 The non-secret operator account and its credential are separate from VFS data
 authority. Together they open a
 short-lived configuration mutation session and never grants plaintext access.
-The UI is read-only until reauthentication. `carrackctl` exposes the same
+The UI is read-only until reauthentication. `skydriverctl` exposes the same
 validated configuration surface for humans and AI agents, with local checks,
 server normalization, expected revisions, idempotency, and durable receipts.
 

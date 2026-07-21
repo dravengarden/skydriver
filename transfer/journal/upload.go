@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/dravengarden/carrack/driver"
+	"github.com/dravengarden/skydriver/driver"
 )
 
 // RunUpload claims or resumes a prepared upload. It rehashes the complete

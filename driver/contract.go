@@ -10,13 +10,13 @@ import (
 )
 
 // ErrInvalidDriver indicates a missing identity or interface disagreement.
-var ErrInvalidDriver = errors.New("invalid Carrack V2 driver")
+var ErrInvalidDriver = errors.New("invalid Skydriver V2 driver")
 
 // Kind is a versioned compiled driver implementation identifier.
 type Kind string
 
 // Locator identifies one complete immutable object inside an opened driver
-// instance. StorageKey is the opaque Carrack-assigned name. NativeID and
+// instance. StorageKey is the opaque Skydriver-assigned name. NativeID and
 // Version retain provider identities needed to reject a changed object.
 type Locator struct {
 	StorageKey string `json:"storage_key"`
@@ -135,7 +135,7 @@ type Deleter interface {
 	Delete(ctx context.Context, object Object) error
 }
 
-// Inventory lists bounded pages beneath the driver's reserved Carrack root.
+// Inventory lists bounded pages beneath the driver's reserved Skydriver root.
 // Results must be normalized to a strict, stable StorageKey order.
 type Inventory interface {
 	List(ctx context.Context, cursor string, limit uint32) ([]Object, string, error)

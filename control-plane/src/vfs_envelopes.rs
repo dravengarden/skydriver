@@ -316,7 +316,7 @@ fn load_master_key(env: &Env, version: &str) -> Result<[u8; MASTER_KEY_BYTES]> {
         )));
     }
 
-    let secret_name = "CARRACK_VFS_MASTER_KEY_V1";
+    let secret_name = "SKYDRIVER_VFS_MASTER_KEY_V1";
     let mut encoded = env.secret(secret_name)?.to_string();
     let decoded = URL_SAFE_NO_PAD.decode(encoded.as_bytes());
     encoded.zeroize();

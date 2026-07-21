@@ -4,9 +4,9 @@
 //! envelope opening remain in `vfs_server_lifecycle`. This module performs
 //! only an already-fenced provider delete or incomplete-upload cleanup.
 
-use carrack_driver_contract::{AliyunDriveConfig, DriverKind, R2Config};
 use serde::Deserialize;
 use serde_json::json;
+use skydriver_driver_contract::{AliyunDriveConfig, DriverKind, R2Config};
 use worker::{Env, Fetch, Headers, Method, Request, RequestInit, Result, wasm_bindgen::JsValue};
 use zeroize::Zeroize as _;
 
@@ -166,7 +166,7 @@ pub(crate) async fn cleanup_multipart_upload(
     let key = r2_signing::object_key(&config, storage_key)
         .ok_or_else(|| worker::Error::RustError("invalid R2 cleanup storage key".to_owned()))?;
     if environment_defaults::is_managed_r2_config(env, &config)? {
-        let bucket = env.bucket("CARRACK_PAYLOAD")?;
+        let bucket = env.bucket("SKYDRIVER_PAYLOAD")?;
         if let Some(upload_id) = upload_id {
             let upload = bucket.resume_multipart_upload(&key, upload_id)?;
             if let Err(error) = upload.abort().await {
@@ -271,7 +271,7 @@ async fn delete_r2(
         .map_err(|_| DeleteFailure::Blocked("configuration_invalid"))?
     {
         let bucket = env
-            .bucket("CARRACK_PAYLOAD")
+            .bucket("SKYDRIVER_PAYLOAD")
             .map_err(|_| DeleteFailure::Retry("provider_binding_unavailable"))?;
         let object = bucket
             .head(&key)

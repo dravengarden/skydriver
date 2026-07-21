@@ -114,7 +114,7 @@ pub(crate) async fn prepare(
         return Response::error("invalid VFS put preparation", 400);
     }
 
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let request_sha256 = request_identity(&requested)?;
     let existing = load_intent(
         &database,

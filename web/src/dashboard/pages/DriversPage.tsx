@@ -602,8 +602,8 @@ export function DriversPage({
                                             {formatBytes(inventoryStatus?.quarantined_bytes ?? 0)}
                                         </Typography>
                                         <Typography color="text.secondary" variant="body2">
-                                            Unknown objects are evidence only; Carrack never adopts
-                                            or deletes them automatically.
+                                            Unknown objects are evidence only; Skydriver never
+                                            adopts or deletes them automatically.
                                         </Typography>
                                         {driver.enabled &&
                                             (driver.kind === "r2/v1" ||
@@ -1017,8 +1017,9 @@ export function DriversPage({
                 </DialogTitle>
                 <DialogContent>
                     <Alert severity="warning" sx={{ mb: 2 }}>
-                        Carrack validates this credential with the provider and stores it encrypted.
-                        Filesystem clients receive only short-lived, object-scoped grants.
+                        Skydriver validates this credential with the provider and stores it
+                        encrypted. Filesystem clients receive only short-lived, object-scoped
+                        grants.
                     </Alert>
                     <Typography sx={{ fontWeight: 800 }}>{credentialTarget?.id}</Typography>
                     <Typography color="text.secondary" variant="body2" sx={{ mb: 2 }}>

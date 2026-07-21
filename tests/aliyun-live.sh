@@ -5,37 +5,37 @@ root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=tests/lib/live-metrics.sh
 source "$root/tests/lib/live-metrics.sh"
 
-if [[ ${CARRACK_ALIYUN_LIVE_TEST:-} != 1 ]]; then
-  echo "set CARRACK_ALIYUN_LIVE_TEST=1 to authorize real Aliyun Drive writes" >&2
+if [[ ${SKYDRIVER_ALIYUN_LIVE_TEST:-} != 1 ]]; then
+  echo "set SKYDRIVER_ALIYUN_LIVE_TEST=1 to authorize real Aliyun Drive writes" >&2
   exit 2
 fi
-: "${CARRACK_VFS_TOKEN:?CARRACK_VFS_TOKEN is required}"
-: "${CARRACK_ALIYUN_DRIVER_ID:?CARRACK_ALIYUN_DRIVER_ID is required}"
+: "${SKYDRIVER_VFS_TOKEN:?SKYDRIVER_VFS_TOKEN is required}"
+: "${SKYDRIVER_ALIYUN_DRIVER_ID:?SKYDRIVER_ALIYUN_DRIVER_ID is required}"
 
-control_url=${CARRACK_CONTROL_URL:-https://dev.carrack.stormbird.xyz}
-directory=${CARRACK_ALIYUN_TEST_DIRECTORY:-/}
-payload_bytes=${CARRACK_ALIYUN_TEST_BYTES:-33554432}
-carrack_bin=${CARRACK_BIN:-target/release/carrack}
-operation_timeout_seconds=${CARRACK_LIVE_OPERATION_TIMEOUT_SECONDS:-300}
+control_url=${SKYDRIVER_CONTROL_URL:-https://dev.skydriver.stormbird.xyz}
+directory=${SKYDRIVER_ALIYUN_TEST_DIRECTORY:-/}
+payload_bytes=${SKYDRIVER_ALIYUN_TEST_BYTES:-33554432}
+carrack_bin=${SKYDRIVER_BIN:-target/release/carrack}
+operation_timeout_seconds=${SKYDRIVER_LIVE_OPERATION_TIMEOUT_SECONDS:-300}
 
-if [[ $control_url != https://dev.carrack.stormbird.xyz ]]; then
-  echo "live acceptance is restricted to the Carrack development environment" >&2
+if [[ $control_url != https://dev.skydriver.stormbird.xyz ]]; then
+  echo "live acceptance is restricted to the Skydriver development environment" >&2
   exit 2
 fi
 if [[ $directory != /* || $directory == *..* || $directory == *//* ]]; then
-  echo "CARRACK_ALIYUN_TEST_DIRECTORY must be a canonical absolute VFS path" >&2
+  echo "SKYDRIVER_ALIYUN_TEST_DIRECTORY must be a canonical absolute VFS path" >&2
   exit 2
 fi
 if [[ ! $payload_bytes =~ ^[1-9][0-9]*$ || $payload_bytes -gt 1073741824 ]]; then
-  echo "CARRACK_ALIYUN_TEST_BYTES must be between 1 and 1073741824" >&2
+  echo "SKYDRIVER_ALIYUN_TEST_BYTES must be between 1 and 1073741824" >&2
   exit 2
 fi
 if [[ ! $operation_timeout_seconds =~ ^[1-9][0-9]*$ || $operation_timeout_seconds -gt 3600 ]]; then
-  echo "CARRACK_LIVE_OPERATION_TIMEOUT_SECONDS must be between 1 and 3600" >&2
+  echo "SKYDRIVER_LIVE_OPERATION_TIMEOUT_SECONDS must be between 1 and 3600" >&2
   exit 2
 fi
 if [[ ! -x $carrack_bin ]]; then
-  echo "Carrack binary is not executable: $carrack_bin" >&2
+  echo "Skydriver binary is not executable: $carrack_bin" >&2
   exit 2
 fi
 
@@ -52,7 +52,7 @@ carrack_command() {
     finished_ns=$(carrack_now_ns)
     elapsed_ms=$(carrack_elapsed_ms "$started_ns" "$finished_ns")
     carrack_live_failure_json \
-      carrack.aliyun-live-acceptance-failure.v2 "$CARRACK_ALIYUN_DRIVER_ID" \
+      carrack.aliyun-live-acceptance-failure.v2 "$SKYDRIVER_ALIYUN_DRIVER_ID" \
       "$run_id" "$stage" "$status" "$operation_timeout_seconds" \
       "$payload_bytes" 4194304 4 "$started_at" "$finished_at" \
       "$elapsed_ms" >&2
@@ -99,7 +99,7 @@ upload_started_at=$(carrack_now_utc)
 put_result=$(carrack_command upload put \
   "$source_file" "$destination" \
   --control-url "$control_url" \
-  --preferred-driver-id "$CARRACK_ALIYUN_DRIVER_ID" \
+  --preferred-driver-id "$SKYDRIVER_ALIYUN_DRIVER_ID" \
   --idempotency-key "aliyun-live-put-$identifier" \
   --staging-directory "$state/upload-staging" \
   --transfer-part-bytes 4194304 \
@@ -107,7 +107,7 @@ put_result=$(carrack_command upload put \
   --format json)
 upload_finished_ns=$(carrack_now_ns)
 upload_finished_at=$(carrack_now_utc)
-jq -e --arg driver "$CARRACK_ALIYUN_DRIVER_ID" '
+jq -e --arg driver "$SKYDRIVER_ALIYUN_DRIVER_ID" '
   .schema == "carrack.fs-put.v1" and
   .receipt.state == "committed" and
   .receipt.driver_id == $driver and
@@ -181,7 +181,7 @@ run_finished_at=$(carrack_now_utc)
 
 jq -n \
   --arg schema carrack.aliyun-live-acceptance.v2 \
-  --arg driver_id "$CARRACK_ALIYUN_DRIVER_ID" \
+  --arg driver_id "$SKYDRIVER_ALIYUN_DRIVER_ID" \
   --arg run_id "$run_id" \
   --arg run_started_at "$run_started_at" \
   --arg run_finished_at "$run_finished_at" \

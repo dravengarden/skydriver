@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "carrack-control-plane-local",
+  "name": "skydriver-control-plane-local",
   "main": "build/worker/shim.mjs",
   "compatibility_date": "2026-07-02",
   "workers_dev": false,
@@ -15,13 +15,13 @@
     "run_worker_first": ["/api/*"]
   },
   "vars": {
-    "CARRACK_ENVIRONMENT": "local",
-    "CARRACK_OPERATOR_ACCOUNT": "draven"
+    "SKYDRIVER_ENVIRONMENT": "local",
+    "SKYDRIVER_OPERATOR_ACCOUNT": "draven"
   },
   "durable_objects": {
     "bindings": [
       {
-        "name": "CARRACK_CATALOG_WATCH",
+        "name": "SKYDRIVER_CATALOG_WATCH",
         "class_name": "CatalogWatchHub"
       }
     ]
@@ -34,7 +34,7 @@
   ],
   "d1_databases": [
     {
-      "binding": "CARRACK_INDEX",
+      "binding": "SKYDRIVER_INDEX",
       "database_name": "carrack-index-local",
       "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "migrations"
@@ -42,17 +42,17 @@
   ],
   "r2_buckets": [
     {
-      "binding": "CARRACK_MANIFESTS",
+      "binding": "SKYDRIVER_MANIFESTS",
       "bucket_name": "carrack-manifests-local"
     },
     {
-      "binding": "CARRACK_PAYLOAD",
+      "binding": "SKYDRIVER_PAYLOAD",
       "bucket_name": "carrack-payload-local"
     }
   ],
   "env": {
     "dev": {
-      "name": "carrack-control-plane-dev",
+      "name": "skydriver-control-plane-dev",
       "workers_dev": false,
       "preview_urls": false,
       "triggers": {
@@ -60,27 +60,27 @@
       },
       "routes": [
         {
-          "pattern": "dev.carrack.stormbird.xyz",
+          "pattern": "dev.skydriver.stormbird.xyz",
           "custom_domain": true
         }
       ],
       "vars": {
-        "CARRACK_ENVIRONMENT": "dev",
-        "CARRACK_OPERATOR_ACCOUNT": "draven@carrack-dev",
-        "CARRACK_DEFAULT_R2_MAX_PHYSICAL_BYTES": "107374182400",
-        "CARRACK_R2_ENDPOINT": "https://cf92459eee422bed7c7a8337316e8b15.r2.cloudflarestorage.com"
+        "SKYDRIVER_ENVIRONMENT": "dev",
+        "SKYDRIVER_OPERATOR_ACCOUNT": "draven@skydriver-dev",
+        "SKYDRIVER_DEFAULT_R2_MAX_PHYSICAL_BYTES": "107374182400",
+        "SKYDRIVER_R2_ENDPOINT": "https://cf92459eee422bed7c7a8337316e8b15.r2.cloudflarestorage.com"
       },
       "durable_objects": {
         "bindings": [
           {
-            "name": "CARRACK_CATALOG_WATCH",
+            "name": "SKYDRIVER_CATALOG_WATCH",
             "class_name": "CatalogWatchHub"
           }
         ]
       },
       "d1_databases": [
         {
-          "binding": "CARRACK_INDEX",
+          "binding": "SKYDRIVER_INDEX",
           "database_name": "carrack-index-dev",
           "database_id": "cd94d428-62d7-4ac7-a634-3d3fe78055da",
           "migrations_dir": "migrations"
@@ -88,17 +88,17 @@
       ],
       "r2_buckets": [
         {
-          "binding": "CARRACK_MANIFESTS",
+          "binding": "SKYDRIVER_MANIFESTS",
           "bucket_name": "carrack-manifests-dev"
         },
         {
-          "binding": "CARRACK_PAYLOAD",
+          "binding": "SKYDRIVER_PAYLOAD",
           "bucket_name": "carrack-payload-dev"
         }
       ]
     },
     "prod": {
-      "name": "carrack-control-plane-prod",
+      "name": "skydriver-control-plane-prod",
       "workers_dev": false,
       "preview_urls": false,
       "triggers": {
@@ -106,27 +106,27 @@
       },
       "routes": [
         {
-          "pattern": "carrack.stormbird.xyz",
+          "pattern": "skydriver.stormbird.xyz",
           "custom_domain": true
         }
       ],
       "vars": {
-        "CARRACK_ENVIRONMENT": "prod",
-        "CARRACK_OPERATOR_ACCOUNT": "draven@carrack-prod",
-        "CARRACK_DEFAULT_R2_MAX_PHYSICAL_BYTES": "107374182400",
-        "CARRACK_R2_ENDPOINT": "https://cf92459eee422bed7c7a8337316e8b15.r2.cloudflarestorage.com"
+        "SKYDRIVER_ENVIRONMENT": "prod",
+        "SKYDRIVER_OPERATOR_ACCOUNT": "draven@skydriver-prod",
+        "SKYDRIVER_DEFAULT_R2_MAX_PHYSICAL_BYTES": "107374182400",
+        "SKYDRIVER_R2_ENDPOINT": "https://cf92459eee422bed7c7a8337316e8b15.r2.cloudflarestorage.com"
       },
       "durable_objects": {
         "bindings": [
           {
-            "name": "CARRACK_CATALOG_WATCH",
+            "name": "SKYDRIVER_CATALOG_WATCH",
             "class_name": "CatalogWatchHub"
           }
         ]
       },
       "d1_databases": [
         {
-          "binding": "CARRACK_INDEX",
+          "binding": "SKYDRIVER_INDEX",
           "database_name": "carrack-index-prod",
           "database_id": "6d75fefd-d0dc-4412-aa71-fae3aa847dec",
           "migrations_dir": "migrations"
@@ -134,11 +134,11 @@
       ],
       "r2_buckets": [
         {
-          "binding": "CARRACK_MANIFESTS",
+          "binding": "SKYDRIVER_MANIFESTS",
           "bucket_name": "carrack-manifests-prod"
         },
         {
-          "binding": "CARRACK_PAYLOAD",
+          "binding": "SKYDRIVER_PAYLOAD",
           "bucket_name": "carrack-payload-prod"
         }
       ]

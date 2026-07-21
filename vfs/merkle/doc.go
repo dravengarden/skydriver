@@ -1,4 +1,4 @@
-// Package merkle defines the canonical Carrack VFS V2 file and directory
+// Package merkle defines the canonical Skydriver VFS V2 file and directory
 // integrity roots shared by Go clients and the Rust control plane.
 //
 // Every digest is SHA-256 over an ASCII domain string terminated by NUL,

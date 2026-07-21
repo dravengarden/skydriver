@@ -11,7 +11,7 @@ import (
 	"io/fs"
 	"os"
 
-	"github.com/dravengarden/carrack/driver"
+	"github.com/dravengarden/skydriver/driver"
 )
 
 // Stat hashes one complete regular file and returns its content-derived pinned
@@ -79,7 +79,7 @@ func (client *Client) Open(ctx context.Context, object driver.Object) (io.ReadCl
 // OpenRange returns exactly length bytes from a pinned complete object. Local
 // range I/O is native, but the driver hashes the complete file before the range
 // and again at range EOF because a byte range alone cannot prove whole-object
-// identity. Callers needing cheaper repeated ranges should use Carrack's signed
+// identity. Callers needing cheaper repeated ranges should use Skydriver's signed
 // verification-block metadata while retaining final whole-file verification.
 func (client *Client) OpenRange(
 	ctx context.Context,

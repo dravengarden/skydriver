@@ -7,12 +7,12 @@ import (
 	"io/fs"
 	"os"
 
-	"github.com/dravengarden/carrack/driver"
+	"github.com/dravengarden/skydriver/driver"
 )
 
 // AbortUpload seals the journal as aborted after asking the matching driver to
 // discard active staging. Once the durable completion manifest enters the
-// verifying state, completion is the only safe recovery: Carrack replays it
+// verifying state, completion is the only safe recovery: Skydriver replays it
 // instead of risking an aborted journal for an object whose success response
 // was lost. It never deletes an already completed object; a terminal complete
 // journal is an idempotent success.
@@ -110,7 +110,7 @@ func (engine *Engine) AbortUpload(
 
 // AbortDownload removes only the protected staging file and marks the journal
 // aborted. If verified bytes were already published before a lost journal
-// update, Carrack completes the journal instead. It never removes or modifies
+// update, Skydriver completes the journal instead. It never removes or modifies
 // the final destination path.
 func (engine *Engine) AbortDownload(journalID string) error {
 	if err := engine.validate(); err != nil {

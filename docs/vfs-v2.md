@@ -1,4 +1,4 @@
-# Carrack VFS V2
+# Skydriver VFS V2
 
 ## Status
 
@@ -48,17 +48,17 @@ complete-object filesystem contract.
 
 ## Product boundary
 
-Carrack maintains a virtual filesystem with two product components:
+Skydriver maintains a virtual filesystem with two product components:
 
 1. A Rust control plane on Cloudflare with a React 19 operator UI and typed
    hosted-driver lifecycle adapters.
 2. A canonical Rust client core used by the filesystem and management CLIs.
 
 The CLI and SDK operate only between bytes or a local filesystem and the
-Carrack VFS. External sources such as an unrelated S3 bucket, database, HTTP
+Skydriver VFS. External sources such as an unrelated S3 bucket, database, HTTP
 service, or generated stream remain caller-owned. A caller may expose such a
 source as bytes, a replayable reader, or a range source without adding source
-semantics to Carrack.
+semantics to Skydriver.
 
 Payload bytes flow directly between the Rust client and a provider endpoint
 described by a bounded server plan. The control plane never relays VFS file
@@ -67,9 +67,9 @@ abort, credential refresh, and Delete.
 
 ## Core invariants
 
-1. One immutable Carrack file version is stored as one complete provider
+1. One immutable Skydriver file version is stored as one complete provider
    object at every location.
-2. Carrack never stripes one file across drivers and never exposes a partial
+2. Skydriver never stripes one file across drivers and never exposes a partial
    object at its final provider locator.
 3. Provider multipart parts, encryption frames, verification blocks, and HTTP
    ranges are transport units, not independently addressable VFS data.
@@ -143,7 +143,7 @@ point. Provider paths remain unrelated to the virtual hierarchy. A file
 version may retain several complete historical or replicated locations, but
 new publication uses exactly the effective driver of its directory.
 
-Mount changes are empty-directory operations. Carrack does not silently move
+Mount changes are empty-directory operations. Skydriver does not silently move
 or re-encrypt existing bytes when storage policy changes. Metadata-only rename
 across different effective drivers fails with a cross-filesystem conflict;
 callers that want a migration must explicitly copy, verify, publish, and then
@@ -159,7 +159,7 @@ the channel with one expected-version compare-and-swap.
 ## Provider representation
 
 Virtual paths never become provider paths. A provider may use one reserved
-Carrack root and randomly sharded opaque object names, for example:
+Skydriver root and randomly sharded opaque object names, for example:
 
 ```text
 objects/v2/7f/7FW3VJQX8G1M9Z...
@@ -180,7 +180,7 @@ invalidate the final object.
 
 ### File Merkle tree
 
-Carrack divides a file into fixed-size verification blocks solely for hashing,
+Skydriver divides a file into fixed-size verification blocks solely for hashing,
 parallel transfer, and recovery. The final block uses its exact length. A
 domain-separated SHA-256 Merkle construction commits to the block ordinal,
 exact length, and bytes. `vfs-merkle-v1.md` defines the canonical binary format,
@@ -337,7 +337,7 @@ continues mutating the caller's writer after the future returns.
 The canonical Rust client exposes the high-level filesystem methods and owns
 prepare, transfer, and commit internally. Callers may schedule independent file
 operations and supply bytes, local files, replayable readers, bounded range
-sources, or explicitly bounded one-shot readers, but they cannot bypass Carrack
+sources, or explicitly bounded one-shot readers, but they cannot bypass Skydriver
 hashing, encryption, provider verification, or conditional publication. Every
 source normalizes into that same path rather than creating a second transfer
 implementation. No compatibility SDK implements a second product path.
@@ -454,7 +454,7 @@ prepared-plan window overlaps metadata latency with payload work.
 
 ## Driver contract and degradation
 
-The high-level Carrack API is identical for every driver. The driver SPI uses
+The high-level Skydriver API is identical for every driver. The driver SPI uses
 small required interfaces plus optional range, resumable, multipart, checksum,
 inventory, copy, and delete interfaces. Capabilities state whether a behavior
 is native, safely emulated, or unavailable and document exact concurrency,
@@ -625,7 +625,7 @@ tasks become durably server-blocked and remain tombstoned; use S3, R2, or
 Aliyun when automatic physical cleanup is required.
 
 Ordinary VFS payload bytes still bypass the Worker. For `r2-default`, clients
-use short-lived SigV4 URLs while the control plane uses the `CARRACK_PAYLOAD`
+use short-lived SigV4 URLs while the control plane uses the `SKYDRIVER_PAYLOAD`
 binding only for fenced physical deletion and multipart abort. Control metadata
 continues to use its separate binding and object namespace.
 

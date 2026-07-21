@@ -1,6 +1,6 @@
 # Transfer performance observations
 
-This document is an append-only record of real Carrack transfer observations.
+This document is an append-only record of real Skydriver transfer observations.
 It is not a throughput guarantee, provider benchmark, billing record, or basis
 for weakening integrity checks. Add a dated subsection for future runs instead
 of replacing earlier results.
@@ -15,7 +15,7 @@ failed acceptance even when earlier transfer stages emitted sampled telemetry.
 ### Measurement context
 
 - Client host: `hawk`, through its then-current network path.
-- Control plane: `https://dev.carrack.stormbird.xyz`.
+- Control plane: `https://dev.skydriver.stormbird.xyz`.
 - Client version: `0.3.6`; baseline code revision `69ae9ad`.
 - Source: incompressible random bytes generated from `/dev/urandom`.
 - Encryption: `carrack-vfs-aes256gcm-hkdfsha256-v1`.
@@ -105,7 +105,7 @@ The following read-only correlation was performed after the runs against
 hawk's retained VictoriaMetrics and VictoriaLogs data. The windows are wider
 than the individual stage boundaries because the first acceptance harness did
 not persist exact start timestamps for every stage. Network values are whole
-host `lan0` rates, not Carrack process accounting.
+host `lan0` rates, not Skydriver process accounting.
 
 | Correlation window (CST) | CPU mean / max | Memory used mean / max | Busiest disk mean / max | `lan0` receive mean / max | `lan0` transmit mean / max |
 |---|---:|---:|---:|---:|---:|

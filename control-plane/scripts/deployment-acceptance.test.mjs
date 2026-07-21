@@ -23,7 +23,7 @@ function fixture() {
 const config = {
     env: {
         dev: {
-            routes: [{ pattern: "dev.carrack.example", custom_domain: true }],
+            routes: [{ pattern: "dev.skydriver.example", custom_domain: true }],
         },
     },
 };
@@ -32,7 +32,7 @@ test("derives one exact custom-domain profile and verified UI asset", () => {
     const directory = fixture();
     try {
         const profile = deploymentAcceptanceProfile(config, "dev", directory);
-        assert.equal(profile.controlUrl, "https://dev.carrack.example");
+        assert.equal(profile.controlUrl, "https://dev.skydriver.example");
         assert.equal(profile.scriptPath, "/assets/index-test.js");
         assert.match(profile.scriptSha256, /^[0-9a-f]{64}$/);
         assert.throws(
@@ -73,7 +73,7 @@ test("retries edge propagation and accepts only the exact environment and UI bui
                 return new Response("not propagated", { status: 404 });
             }
             if (url.pathname === "/api/health") {
-                return Response.json({ service: "carrack-control-plane", environment: "dev" });
+                return Response.json({ service: "skydriver-control-plane", environment: "dev" });
             }
             if (url.pathname === "/api/acceptance/wasm-sdk") {
                 return Response.json({
@@ -113,7 +113,7 @@ test("fails closed when the deployed UI bytes do not match", async () => {
         const fetchImplementation = async (input) => {
             const { pathname } = new URL(input);
             if (pathname === "/api/health") {
-                return Response.json({ service: "carrack-control-plane", environment: "dev" });
+                return Response.json({ service: "skydriver-control-plane", environment: "dev" });
             }
             if (pathname === "/api/acceptance/wasm-sdk") {
                 return Response.json({
@@ -149,7 +149,7 @@ test("fails closed when the custom domain resolves to another environment", asyn
         await assert.rejects(
             waitForDeploymentAcceptance(profile, "dev-wrong-environment", {
                 fetchImplementation: async () =>
-                    Response.json({ service: "carrack-control-plane", environment: "prod" }),
+                    Response.json({ service: "skydriver-control-plane", environment: "prod" }),
                 sleep: async () => {},
                 maximumAttempts: 1,
             }),

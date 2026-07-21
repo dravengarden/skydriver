@@ -23,7 +23,7 @@ export function SettingsPage({
             <Alert severity={enabled ? "warning" : "info"} sx={{ mb: 2 }}>
                 {enabled
                     ? `Configuration changes are enabled until ${formatDate(configuration.expires_at)}.`
-                    : "Carrack is read-only in this browser. Viewing metadata never enables mutations."}
+                    : "Skydriver is read-only in this browser. Viewing metadata never enables mutations."}
             </Alert>
             <Paper variant="outlined" sx={{ p: 3 }}>
                 <Stack

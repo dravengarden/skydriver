@@ -142,7 +142,7 @@ pub(crate) async fn remove(
         return Response::error("invalid VFS remove request", 400);
     }
     let request_sha256 = request_digest(directory_id, &requested)?;
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     if !vfs_access::authorized(&database, token, directory_id, "entry.delete").await? {
         return Response::error("VFS entry-delete authority required", 403);
     }
@@ -241,7 +241,7 @@ pub(crate) async fn rename(
         return Response::error("invalid VFS rename request", 400);
     }
     let request_sha256 = rename_request_digest(source_directory_id, &requested)?;
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     if !vfs_access::authorized(&database, token, source_directory_id, "entry.delete").await?
         || !vfs_access::authorized(
             &database,
@@ -354,7 +354,7 @@ pub(crate) async fn remove_receipt(
     if !valid_idempotency_key(&query.idempotency_key) {
         return Response::error("invalid VFS remove receipt query", 400);
     }
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let Some(receipt) = load_receipt(&database, &token.id, &query.idempotency_key).await? else {
         return Response::error("VFS remove receipt was not found", 404);
     };
@@ -373,7 +373,7 @@ pub(crate) async fn rename_receipt(
     if !valid_idempotency_key(&query.idempotency_key) {
         return Response::error("invalid VFS rename receipt query", 400);
     }
-    let database = env.d1("CARRACK_INDEX")?;
+    let database = env.d1("SKYDRIVER_INDEX")?;
     let Some(receipt) = load_rename_receipt(&database, &token.id, &query.idempotency_key).await?
     else {
         return Response::error("VFS rename receipt was not found", 404);

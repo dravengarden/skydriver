@@ -17,11 +17,11 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/dravengarden/carrack/driver"
+	"github.com/dravengarden/skydriver/driver"
 )
 
 const (
-	// Kind identifies the first Carrack VFS V2 rooted-filesystem contract.
+	// Kind identifies the first Skydriver VFS V2 rooted-filesystem contract.
 	Kind driver.Kind = "local-filesystem/v2"
 
 	safeConcurrency      = uint32(16)
@@ -51,17 +51,17 @@ const (
 var (
 	// ErrInvalidConfiguration indicates an unusable local filesystem root or
 	// missing driver identity.
-	ErrInvalidConfiguration = errors.New("invalid Carrack V2 local filesystem configuration")
+	ErrInvalidConfiguration = errors.New("invalid Skydriver V2 local filesystem configuration")
 	// ErrInvalidObject indicates an unsafe key, unsupported filesystem entry, or
 	// malformed pinned object identity.
-	ErrInvalidObject = errors.New("invalid Carrack V2 local filesystem object")
+	ErrInvalidObject = errors.New("invalid Skydriver V2 local filesystem object")
 	// ErrInvalidRange indicates an empty, overflowing, or out-of-bounds range.
-	ErrInvalidRange = errors.New("invalid Carrack V2 local filesystem range")
+	ErrInvalidRange = errors.New("invalid Skydriver V2 local filesystem range")
 	// ErrIntegrity indicates bytes or immutable identity differ from a declared
 	// SHA-256 digest, length, or provider version.
 	ErrIntegrity = errors.New("carrack V2 local filesystem integrity mismatch")
 	// ErrInvalidUpload indicates a malformed or contradictory upload request.
-	ErrInvalidUpload = errors.New("invalid Carrack V2 local filesystem upload")
+	ErrInvalidUpload = errors.New("invalid Skydriver V2 local filesystem upload")
 	// ErrUploadNotFound indicates that no active or completed durable session has
 	// the supplied opaque session identity.
 	ErrUploadNotFound = errors.New("carrack V2 local filesystem upload not found")
@@ -75,7 +75,7 @@ var (
 	errInventoryPageFull = errors.New("local filesystem inventory page is full")
 )
 
-// Client stores complete immutable Carrack objects beneath one rooted local
+// Client stores complete immutable Skydriver objects beneath one rooted local
 // directory. The root is reopened for every operation, so a Client is safe for
 // concurrent use and does not retain filesystem descriptors or credentials.
 type Client struct {

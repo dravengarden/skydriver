@@ -1,15 +1,15 @@
 # Native driver SPI
 
 This document defines the stable internal boundary for horizontally extending
-Carrack storage drivers. [requirements.md](requirements.md) remains normative.
+Skydriver storage drivers. [requirements.md](requirements.md) remains normative.
 
 ## Boundary
 
-`carrack-driver-contract` is an I/O-free shared model containing every
+`skydriver-driver-contract` is an I/O-free shared model containing every
 compiled versioned kind, its native data-path capabilities, credential posture,
 grant mode, inventory location, lifecycle location, and strict serialized
 configuration shape. It contains no provider implementation or policy-bound
-environment validation. Both `carrack-client` and the Worker use its exhaustive
+environment validation. Both `skydriver-client` and the Worker use its exhaustive
 enum and config types, so their interpretation of a kind cannot silently drift.
 
 The Worker adds a pure `driver_configuration` policy layer over those shared
@@ -38,7 +38,7 @@ formats, identity continuity checks, network exchange, and least-authority
 grant projection. Adding a refreshable driver does not add provider branches to
 the durable state machine.
 
-`carrack-client` exposes one compiled `DriverRegistry` to native transfer
+`skydriver-client` exposes one compiled `DriverRegistry` to native transfer
 orchestration. The registry accepts a versioned driver kind, JSON grant
 envelopes, and one uniform immutable upload or download request. It rejects an
 unknown kind before provider I/O. Server-controlled values never select a
@@ -128,7 +128,7 @@ compiled, configured, and tested for SOCKS operation.
 A new driver change is complete only when it:
 
 1. adds the exact versioned kind and complete posture to
-   `carrack-driver-contract`;
+   `skydriver-driver-contract`;
 2. adds a native adapter with private typed configuration and grant types and
    registers it in `driver.rs`;
 3. implements the uniform upload and download requests without changing their
@@ -138,7 +138,7 @@ A new driver change is complete only when it:
    and corrupt ciphertext without parsing display text;
 6. adds positive, negative, corruption, interruption, concurrency, and
    capability-fallback tests appropriate to the adapter;
-7. leaves `carrack-sdk-core`, `transfer.rs`, and `download.rs` free of provider
+7. leaves `skydriver-sdk-core`, `transfer.rs`, and `download.rs` free of provider
    identifiers and provider-module calls;
 8. implements and tests the matching Worker registration, grant, inventory,
    renewal, Stat, Delete, and GC branches where its declared posture requires

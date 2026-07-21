@@ -14,12 +14,12 @@ wrangler=(
   --config "$repository_root/control-plane/wrangler.jsonc"
 )
 
-"${wrangler[@]}" migrations apply CARRACK_INDEX \
+"${wrangler[@]}" migrations apply SKYDRIVER_INDEX \
   --local \
   --persist-to "$state_directory" >/dev/null
 
 execute() {
-  "${wrangler[@]}" execute CARRACK_INDEX \
+  "${wrangler[@]}" execute SKYDRIVER_INDEX \
     --local \
     --persist-to "$state_directory" \
     --command "$1" >/dev/null

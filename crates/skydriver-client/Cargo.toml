@@ -1,0 +1,40 @@
+[package]
+name = "skydriver-client"
+version = "0.3.6"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+skydriver-driver-contract = { path = "../skydriver-driver-contract" }
+skydriver-metadata-cache = { path = "../skydriver-metadata-cache" }
+skydriver-sdk-core = { path = "../skydriver-sdk-core" }
+base64 = "0.22.1"
+cap-std = "3.4.5"
+hex = "0.4.3"
+futures-util = "0.3.31"
+fs2 = "0.4.3"
+getrandom = "0.4.3"
+hmac = "0.12.1"
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+rustix = { version = "1.1.4", features = ["fs", "process"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+sha2 = "0.10.9"
+thiserror = "2.0.17"
+unicode-normalization = "0.1.25"
+url = "2.5.7"
+zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
+tokio = { version = "1.48.0", features = ["fs", "io-util", "macros", "rt", "sync"] }
+tokio-tungstenite = { version = "0.24.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+tokio-util = { version = "0.7.17", features = ["io"] }
+
+[dev-dependencies]
+httpmock = "0.8.2"
+tempfile = "3.23.0"
+tokio = { version = "1.48.0", features = ["macros", "net", "rt-multi-thread"] }
+
+[lints]
+workspace = true

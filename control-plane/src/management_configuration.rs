@@ -8,8 +8,8 @@ use worker::{Date, Env, Request, Response, Result, wasm_bindgen::JsValue};
 
 use crate::{operator_sessions, vfs_identifiers};
 
-const ADMIN_TOKEN_BINDING: &str = "CARRACK_ADMIN_TOKEN";
-const DATABASE_BINDING: &str = "CARRACK_INDEX";
+const ADMIN_TOKEN_BINDING: &str = "SKYDRIVER_ADMIN_TOKEN";
+const DATABASE_BINDING: &str = "SKYDRIVER_INDEX";
 const VALIDATION_LIFETIME_SECONDS: u64 = 5 * 60;
 const ANNOTATION_KIND: &str = "token.annotation";
 const VALIDATION_DOMAIN: &[u8] = b"carrack.management.validation.token-annotation.v1\0";

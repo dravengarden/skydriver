@@ -37,7 +37,7 @@ function requireSingleBinding(environment, key, binding) {
 
 function requireCatalogWatchBinding(environment) {
     const values = environment.durable_objects?.bindings?.filter(
-        (value) => value.name === "CARRACK_CATALOG_WATCH",
+        (value) => value.name === "SKYDRIVER_CATALOG_WATCH",
     );
     if (
         !Array.isArray(values) ||
@@ -48,22 +48,22 @@ function requireCatalogWatchBinding(environment) {
     }
 }
 
-if (config.name !== "carrack-control-plane-local") {
+if (config.name !== "skydriver-control-plane-local") {
     fail("the default Worker must remain local-only");
 }
 if (config.workers_dev !== false || config.preview_urls !== false) {
     fail("the default Worker must not expose public URLs");
 }
-if (config.vars?.CARRACK_OPERATOR_ACCOUNT !== "draven") {
+if (config.vars?.SKYDRIVER_OPERATOR_ACCOUNT !== "draven") {
     fail("the local Worker must define the canonical operator account");
 }
 
-const localDatabase = requireSingleBinding(config, "d1_databases", "CARRACK_INDEX");
+const localDatabase = requireSingleBinding(config, "d1_databases", "SKYDRIVER_INDEX");
 if (localDatabase.database_id !== "00000000-0000-0000-0000-000000000000") {
     fail("the default Worker must use the non-routable local D1 sentinel");
 }
-requireSingleBinding(config, "r2_buckets", "CARRACK_MANIFESTS");
-requireSingleBinding(config, "r2_buckets", "CARRACK_PAYLOAD");
+requireSingleBinding(config, "r2_buckets", "SKYDRIVER_MANIFESTS");
+requireSingleBinding(config, "r2_buckets", "SKYDRIVER_PAYLOAD");
 requireCatalogWatchBinding(config);
 if (
     !Array.isArray(config.migrations) ||
@@ -78,20 +78,20 @@ if (
 
 const expected = {
     dev: {
-        worker: "carrack-control-plane-dev",
+        worker: "skydriver-control-plane-dev",
         database: "carrack-index-dev",
         bucket: "carrack-manifests-dev",
         payload: "carrack-payload-dev",
-        hostname: "dev.carrack.stormbird.xyz",
-        operatorAccount: "draven@carrack-dev",
+        hostname: "dev.skydriver.stormbird.xyz",
+        operatorAccount: "draven@skydriver-dev",
     },
     prod: {
-        worker: "carrack-control-plane-prod",
+        worker: "skydriver-control-plane-prod",
         database: "carrack-index-prod",
         bucket: "carrack-manifests-prod",
         payload: "carrack-payload-prod",
-        hostname: "carrack.stormbird.xyz",
-        operatorAccount: "draven@carrack-prod",
+        hostname: "skydriver.stormbird.xyz",
+        operatorAccount: "draven@skydriver-prod",
     },
 };
 const expectedR2Endpoint =
@@ -122,22 +122,22 @@ for (const [name, wanted] of Object.entries(expected)) {
     ) {
         fail(`${name} must expose exactly the ${wanted.hostname} custom domain`);
     }
-    if (environment.vars?.CARRACK_ENVIRONMENT !== name) {
-        fail(`${name} must identify itself through CARRACK_ENVIRONMENT`);
+    if (environment.vars?.SKYDRIVER_ENVIRONMENT !== name) {
+        fail(`${name} must identify itself through SKYDRIVER_ENVIRONMENT`);
     }
-    if (environment.vars?.CARRACK_OPERATOR_ACCOUNT !== wanted.operatorAccount) {
+    if (environment.vars?.SKYDRIVER_OPERATOR_ACCOUNT !== wanted.operatorAccount) {
         fail(`${name} must require the environment-scoped operator account`);
     }
-    if (environment.vars?.CARRACK_R2_ENDPOINT !== expectedR2Endpoint) {
+    if (environment.vars?.SKYDRIVER_R2_ENDPOINT !== expectedR2Endpoint) {
         fail(`${name} must pin the account R2 S3 endpoint used for direct grants`);
     }
-    if (environment.vars?.CARRACK_DEFAULT_R2_MAX_PHYSICAL_BYTES !== "107374182400") {
+    if (environment.vars?.SKYDRIVER_DEFAULT_R2_MAX_PHYSICAL_BYTES !== "107374182400") {
         fail(`${name} must initialize r2-default with a 100 GiB hard quota`);
     }
 
-    const database = requireSingleBinding(environment, "d1_databases", "CARRACK_INDEX");
-    const bucket = requireSingleBinding(environment, "r2_buckets", "CARRACK_MANIFESTS");
-    const payload = requireSingleBinding(environment, "r2_buckets", "CARRACK_PAYLOAD");
+    const database = requireSingleBinding(environment, "d1_databases", "SKYDRIVER_INDEX");
+    const bucket = requireSingleBinding(environment, "r2_buckets", "SKYDRIVER_MANIFESTS");
+    const payload = requireSingleBinding(environment, "r2_buckets", "SKYDRIVER_PAYLOAD");
     requireCatalogWatchBinding(environment);
     if (database.database_name !== wanted.database) {
         fail(`${name} D1 must be named ${wanted.database}`);

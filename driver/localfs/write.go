@@ -11,7 +11,7 @@ import (
 	"os"
 	"path"
 
-	"github.com/dravengarden/carrack/driver"
+	"github.com/dravengarden/skydriver/driver"
 )
 
 // Put validates and atomically publishes one complete immutable regular file.

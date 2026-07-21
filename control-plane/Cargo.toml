@@ -1,5 +1,5 @@
 [package]
-name = "carrack-control-plane"
+name = "skydriver-control-plane"
 version = "0.3.6"
 edition.workspace = true
 license.workspace = true
@@ -12,8 +12,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 aes-gcm = { version = "0.10.3", default-features = false, features = ["aes", "alloc"] }
 base64 = "0.22.1"
-carrack-driver-contract = { path = "../crates/carrack-driver-contract" }
-carrack-sdk-core = { path = "../crates/carrack-sdk-core" }
+skydriver-driver-contract = { path = "../crates/skydriver-driver-contract" }
+skydriver-sdk-core = { path = "../crates/skydriver-sdk-core" }
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
 hex = "0.4.3"
 hmac = "0.12.1"
