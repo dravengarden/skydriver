@@ -33,9 +33,36 @@ export function LoginPage({
     const [savedIdentity, setSavedIdentity] = useState(operatorAccount);
     const [identityError, setIdentityError] = useState(false);
     const [password, setPassword] = useState("");
-    const [cardeaState, setCardeaState] = useState<"idle" | "starting" | "waiting" | "error">(
-        "idle",
-    );
+    const [cardeaState, setCardeaState] = useState<
+        "idle" | "starting" | "waiting" | "expired" | "denied" | "cancelled" | "error"
+    >("idle");
+    const [cardeaExpiresAt, setCardeaExpiresAt] = useState<number | null>(null);
+    const [clock, setClock] = useState(() => Date.now());
+
+    const remainingApprovalSeconds =
+        cardeaExpiresAt === null ? null : Math.max(0, Math.ceil((cardeaExpiresAt - clock) / 1_000));
+    const remainingApprovalLabel =
+        remainingApprovalSeconds === null
+            ? null
+            : `${Math.floor(remainingApprovalSeconds / 60)}:${String(remainingApprovalSeconds % 60).padStart(2, "0")}`;
+
+    useEffect(() => {
+        if (cardeaState !== "waiting" || cardeaExpiresAt === null) return;
+        const updateClock = () => {
+            const now = Date.now();
+            setClock(now);
+            if (now >= cardeaExpiresAt) setCardeaState("expired");
+        };
+        updateClock();
+        const interval = globalThis.setInterval(updateClock, 1_000);
+        globalThis.addEventListener("focus", updateClock);
+        document.addEventListener("visibilitychange", updateClock);
+        return () => {
+            globalThis.clearInterval(interval);
+            globalThis.removeEventListener("focus", updateClock);
+            document.removeEventListener("visibilitychange", updateClock);
+        };
+    }, [cardeaExpiresAt, cardeaState]);
 
     useEffect(() => {
         if (cardeaState !== "waiting") return;
@@ -51,9 +78,19 @@ export function LoginPage({
                 const result = (await response.json()) as {
                     authenticated?: boolean;
                     status?: string;
+                    expires_at?: number;
                 };
+                if (typeof result.expires_at === "number") {
+                    setCardeaExpiresAt(result.expires_at * 1_000);
+                }
                 if (result.authenticated === true) {
                     globalThis.location.reload();
+                } else if (result.status === "expired") {
+                    setCardeaState("expired");
+                } else if (result.status === "denied") {
+                    setCardeaState("denied");
+                } else if (result.status === "cancelled") {
+                    setCardeaState("cancelled");
                 } else if (result.status !== "pending") {
                     setCardeaState("error");
                 }
@@ -71,6 +108,7 @@ export function LoginPage({
 
     async function beginCardeaLogin() {
         setCardeaState("starting");
+        setCardeaExpiresAt(null);
         try {
             const response = await fetch("/api/auth/cardea/start", {
                 method: "POST",
@@ -78,6 +116,12 @@ export function LoginPage({
                 headers: { Accept: "application/json" },
             });
             if (!response.ok) throw new Error("approval start unavailable");
+            const result = (await response.json()) as { expires_at?: number };
+            if (typeof result.expires_at !== "number" || !Number.isFinite(result.expires_at)) {
+                throw new Error("approval expiry unavailable");
+            }
+            setClock(Date.now());
+            setCardeaExpiresAt(result.expires_at * 1_000);
             setCardeaState("waiting");
         } catch {
             setCardeaState("error");
@@ -187,6 +231,21 @@ export function LoginPage({
                             Authentication was rejected. Try again.
                         </Alert>
                     ) : null}
+                    {cardeaState === "expired" ? (
+                        <Alert severity="warning" sx={{ borderRadius: 2.5 }}>
+                            This approval expired after 5 minutes. Request a new Cardea approval.
+                        </Alert>
+                    ) : null}
+                    {cardeaState === "denied" ? (
+                        <Alert severity="error" sx={{ borderRadius: 2.5 }}>
+                            The Cardea approval was denied. Request a new approval when ready.
+                        </Alert>
+                    ) : null}
+                    {cardeaState === "cancelled" ? (
+                        <Alert severity="warning" sx={{ borderRadius: 2.5 }}>
+                            The Cardea approval was cancelled. Request a new approval to continue.
+                        </Alert>
+                    ) : null}
 
                     {cardeaEnabled ? null : (
                         <TextField
@@ -271,7 +330,11 @@ export function LoginPage({
                         >
                             {cardeaState === "waiting"
                                 ? "Waiting for Cardea approval…"
-                                : "Request Cardea approval"}
+                                : cardeaState === "expired" ||
+                                    cardeaState === "denied" ||
+                                    cardeaState === "cancelled"
+                                  ? "Request new Cardea approval"
+                                  : "Request Cardea approval"}
                         </Button>
                     ) : (
                         <Button
@@ -297,6 +360,18 @@ export function LoginPage({
                             Enter control plane
                         </Button>
                     )}
+                    {cardeaEnabled &&
+                    cardeaState === "waiting" &&
+                    remainingApprovalLabel !== null ? (
+                        <Typography
+                            role="status"
+                            aria-live="polite"
+                            variant="body2"
+                            sx={{ color: "#536d7b", textAlign: "center", fontWeight: 700 }}
+                        >
+                            Approval expires in {remainingApprovalLabel}
+                        </Typography>
+                    ) : null}
                     <Typography
                         variant="caption"
                         sx={{ color: "#68808c", textAlign: "center", letterSpacing: "0.02em" }}

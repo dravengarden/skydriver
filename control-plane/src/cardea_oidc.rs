@@ -133,7 +133,7 @@ pub(crate) async fn approval_status(request: &Request, env: &Env) -> Result<Resp
     };
     let transaction = decode_approval_cookie(&encoded, env)?;
     let now = now_seconds();
-    if transaction.issued_at > now || now - transaction.issued_at > STATE_LIFETIME_SECONDS {
+    if transaction.issued_at > now || now - transaction.issued_at >= STATE_LIFETIME_SECONDS {
         return terminal_status("expired");
     }
     let access_token = client_access_token(env, now).await?;
