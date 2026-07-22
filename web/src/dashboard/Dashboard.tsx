@@ -203,7 +203,7 @@ export function Dashboard({ environment, onLogout }: DashboardProps) {
     })();
 
     return (
-        <Box component="main" sx={{ minHeight: "100dvh", bgcolor: "#f6f8fb" }}>
+        <Box component="main" sx={{ minHeight: "100dvh", bgcolor: "background.default" }}>
             <AppBar position="sticky" color="inherit" elevation={0}>
                 <Toolbar
                     sx={{

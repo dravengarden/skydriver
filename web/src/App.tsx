@@ -9,9 +9,12 @@ const Dashboard = lazy(() =>
 );
 
 const theme = createTheme({
-    colorSchemes: { dark: true },
     cssVariables: true,
-    palette: { primary: { main: "#3b82f6" } },
+    palette: {
+        mode: "light",
+        primary: { main: "#3b82f6" },
+        background: { default: "#f6f8fb" },
+    },
     shape: { borderRadius: 12 },
     typography: {
         fontFamily:
@@ -59,7 +62,7 @@ export function App() {
                             minHeight: "100dvh",
                             display: "grid",
                             placeItems: "center",
-                            bgcolor: "#f6f8fb",
+                            bgcolor: "background.default",
                         }}
                     >
                         <CircularProgress size={30} />
@@ -83,7 +86,7 @@ export function App() {
     }
 
     return (
-        <ThemeProvider theme={theme} defaultMode="dark">
+        <ThemeProvider theme={theme}>
             <CssBaseline />
             {content}
         </ThemeProvider>
