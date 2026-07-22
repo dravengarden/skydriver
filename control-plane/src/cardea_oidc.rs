@@ -43,6 +43,7 @@ struct TokenResponse {
     access_token: String,
     token_type: String,
     expires_in: u64,
+    scope: String,
     id_token: String,
 }
 
@@ -176,7 +177,11 @@ async fn callback_inner(request: &Request, env: &Env) -> Result<String> {
         ));
     }
     let token: TokenResponse = token_response.json().await?;
-    if token.token_type != "Bearer" || token.expires_in != 300 || token.access_token.len() > 512 {
+    if token.token_type != "Bearer"
+        || token.expires_in != 300
+        || token.scope != "openid"
+        || token.access_token.len() > 512
+    {
         return Err(worker::Error::RustError(
             "Cardea token response invalid".to_owned(),
         ));
@@ -298,4 +303,35 @@ fn require_development(env: &Env) -> Result<()> {
 }
 fn now_seconds() -> u64 {
     Date::now().as_millis() / 1_000
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TokenResponse;
+
+    #[test]
+    fn accepts_the_current_cardea_token_response_contract() {
+        let response: TokenResponse = serde_json::from_value(serde_json::json!({
+            "access_token": "token",
+            "token_type": "Bearer",
+            "expires_in": 300,
+            "scope": "openid",
+            "id_token": "header.payload.signature"
+        }))
+        .expect("Cardea token response should deserialize");
+
+        assert_eq!(response.scope, "openid");
+    }
+
+    #[test]
+    fn rejects_a_cardea_token_response_without_scope() {
+        let response = serde_json::from_value::<TokenResponse>(serde_json::json!({
+            "access_token": "token",
+            "token_type": "Bearer",
+            "expires_in": 300,
+            "id_token": "header.payload.signature"
+        }));
+
+        assert!(response.is_err());
+    }
 }
