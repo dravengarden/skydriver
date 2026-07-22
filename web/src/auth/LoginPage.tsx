@@ -10,7 +10,7 @@ import {
     TextField,
     Typography,
 } from "@mui/material";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { SkydriverMark } from "../brand/SkydriverLogo";
 import { SkyBackdrop } from "../brand/SkyBackdrop";
 
@@ -33,6 +33,56 @@ export function LoginPage({
     const [savedIdentity, setSavedIdentity] = useState(operatorAccount);
     const [identityError, setIdentityError] = useState(false);
     const [password, setPassword] = useState("");
+    const [cardeaState, setCardeaState] = useState<"idle" | "starting" | "waiting" | "error">(
+        "idle",
+    );
+
+    useEffect(() => {
+        if (cardeaState !== "waiting") return;
+        let active = true;
+        const poll = async () => {
+            try {
+                const response = await fetch("/api/auth/cardea/status", {
+                    credentials: "same-origin",
+                    headers: { Accept: "application/json" },
+                });
+                if (!active) return;
+                if (!response.ok) throw new Error("approval status unavailable");
+                const result = (await response.json()) as {
+                    authenticated?: boolean;
+                    status?: string;
+                };
+                if (result.authenticated === true) {
+                    globalThis.location.reload();
+                } else if (result.status !== "pending") {
+                    setCardeaState("error");
+                }
+            } catch {
+                if (active) setCardeaState("error");
+            }
+        };
+        void poll();
+        const interval = globalThis.setInterval(() => void poll(), 2_000);
+        return () => {
+            active = false;
+            globalThis.clearInterval(interval);
+        };
+    }, [cardeaState]);
+
+    async function beginCardeaLogin() {
+        setCardeaState("starting");
+        try {
+            const response = await fetch("/api/auth/cardea/start", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: { Accept: "application/json" },
+            });
+            if (!response.ok) throw new Error("approval start unavailable");
+            setCardeaState("waiting");
+        } catch {
+            setCardeaState("error");
+        }
+    }
 
     function submit(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
@@ -66,19 +116,21 @@ export function LoginPage({
                 elevation={0}
                 sx={{
                     width: "100%",
-                    maxWidth: 430,
-                    p: { xs: 3, sm: 4.5 },
+                    maxWidth: 448,
+                    p: { xs: 3, sm: 4 },
                     position: "relative",
                     zIndex: 1,
                     overflow: "hidden",
                     color: "#071522",
-                    bgcolor: "rgba(250, 252, 253, 0.94)",
-                    border: "1px solid rgba(219, 242, 248, 0.68)",
-                    boxShadow: "0 30px 90px rgba(0, 7, 16, 0.46)",
-                    backdropFilter: "blur(18px) saturate(118%)",
+                    bgcolor: "rgba(247, 251, 251, 0.9)",
+                    border: "1px solid rgba(224, 243, 245, 0.7)",
+                    borderRadius: 4,
+                    boxShadow:
+                        "0 36px 90px rgba(4, 20, 39, 0.32), 0 8px 28px rgba(4, 20, 39, 0.18)",
+                    backdropFilter: "blur(24px) saturate(108%)",
                 }}
             >
-                <Stack spacing={3}>
+                <Stack spacing={2.75}>
                     <Box>
                         <Stack
                             direction="row"
@@ -116,19 +168,24 @@ export function LoginPage({
                         </Stack>
                         <Typography
                             variant="h4"
-                            sx={{ mt: 3, fontWeight: 850, letterSpacing: "-0.035em" }}
+                            sx={{ mt: 3.5, fontWeight: 850, letterSpacing: "-0.04em" }}
                         >
                             Control plane
                         </Typography>
-                        <Typography sx={{ mt: 0.75, color: "#536d7b" }}>
+                        <Typography sx={{ mt: 0.75, color: "#536d7b", lineHeight: 1.55 }}>
                             {cardeaEnabled
                                 ? "Use Cardea to prove your identity. Skydriver keeps its own authorization and session."
                                 : "Enter this environment's operator account and credential."}
                         </Typography>
                     </Box>
 
-                    {error || globalThis.location?.search.includes("authentication=failed") ? (
-                        <Alert severity="error">Authentication was rejected. Try again.</Alert>
+                    {error || cardeaState === "error" ? (
+                        <Alert
+                            severity="error"
+                            sx={{ border: "1px solid rgba(198, 65, 65, 0.12)", borderRadius: 2.5 }}
+                        >
+                            Authentication was rejected. Try again.
+                        </Alert>
                     ) : null}
 
                     {cardeaEnabled ? null : (
@@ -187,12 +244,34 @@ export function LoginPage({
                     )}
                     {cardeaEnabled ? (
                         <Button
-                            href="/api/auth/cardea/start"
+                            type="button"
+                            onClick={() => void beginCardeaLogin()}
+                            disabled={cardeaState === "starting" || cardeaState === "waiting"}
                             variant="contained"
                             size="large"
-                            startIcon={<LockOutlinedIcon />}
+                            startIcon={
+                                cardeaState === "starting" || cardeaState === "waiting" ? (
+                                    <CircularProgress size={18} color="inherit" />
+                                ) : (
+                                    <LockOutlinedIcon />
+                                )
+                            }
+                            sx={{
+                                minHeight: 50,
+                                borderRadius: 2.5,
+                                fontWeight: 800,
+                                letterSpacing: "0.015em",
+                                background: "linear-gradient(105deg, #176d9b, #2d70d6)",
+                                boxShadow: "0 10px 24px rgba(26, 91, 152, 0.22)",
+                                "&:hover": {
+                                    background: "linear-gradient(105deg, #145f88, #2864bf)",
+                                    boxShadow: "0 12px 28px rgba(26, 91, 152, 0.3)",
+                                },
+                            }}
                         >
-                            Continue with Cardea
+                            {cardeaState === "waiting"
+                                ? "Waiting for Cardea approval…"
+                                : "Request Cardea approval"}
                         </Button>
                     ) : (
                         <Button

@@ -117,11 +117,11 @@ pub async fn main(request: Request, env: Env, context: Context) -> Result<Respon
         .post_async("/api/auth/login", |mut request, context| async move {
             operator_sessions::login(&mut request, &context.env).await
         })
-        .get("/api/auth/cardea/start", |_, context| {
-            cardea_oidc::start(&context.env)
+        .post_async("/api/auth/cardea/start", |_, context| async move {
+            cardea_oidc::begin_approval(&context.env).await
         })
-        .get_async("/api/auth/cardea/callback", |request, context| async move {
-            cardea_oidc::callback(&request, &context.env).await
+        .get_async("/api/auth/cardea/status", |request, context| async move {
+            cardea_oidc::approval_status(&request, &context.env).await
         })
         .get_async("/api/auth/session", |request, context| async move {
             operator_sessions::status(&request, &context.env).await

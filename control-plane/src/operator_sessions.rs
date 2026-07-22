@@ -161,10 +161,6 @@ pub(crate) async fn create_browser_session(request: &Request, env: &Env) -> Resu
     )
 }
 
-pub(crate) fn browser_session_cookie(response: &Response) -> Result<Option<String>> {
-    response.headers().get("Set-Cookie")
-}
-
 pub(crate) async fn status(request: &Request, env: &Env) -> Result<Response> {
     if !authorized(request, env).await? {
         return Response::error("unauthorized", 401);

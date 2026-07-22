@@ -3,7 +3,7 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use worker::{
-    Date, Env, Fetch, Headers, Method, Request, RequestInit, Response, Result, Url,
+    Date, Env, Fetch, Headers, Method, Request, RequestInit, Response, Result,
     wasm_bindgen::JsValue,
 };
 
@@ -14,152 +14,168 @@ const CLIENT_ID: &str = "skydriver-dev";
 const REDIRECT_URI: &str = "https://dev.skydriver.stormbird.xyz/api/auth/cardea/callback";
 const CLIENT_KEY_ID_BINDING: &str = "CARDEA_CLIENT_KEY_ID";
 const CLIENT_PRIVATE_KEY_BINDING: &str = "CARDEA_CLIENT_PRIVATE_KEY";
-const ID_TOKEN_KEY_ID_BINDING: &str = "CARDEA_ID_TOKEN_KEY_ID";
-const ID_TOKEN_PUBLIC_KEY_BINDING: &str = "CARDEA_ID_TOKEN_PUBLIC_KEY";
 const STATE_KEY_BINDING: &str = "CARDEA_STATE_KEY";
 const STATE_COOKIE: &str = "skydriver_cardea_oidc";
 const STATE_LIFETIME_SECONDS: u64 = 5 * 60;
+const LOGIN_ACTION: &str = "session.create";
+const LOGIN_RESOURCE: &str = "https://dev.skydriver.stormbird.xyz";
 
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct StateCookie {
+struct ApprovalLoginCookie {
+    approval_id: String,
     state: String,
-    nonce: String,
-    verifier: String,
     issued_at: u64,
 }
 
 #[derive(Deserialize)]
-struct CallbackQuery {
-    code: String,
-    state: String,
+#[serde(deny_unknown_fields)]
+struct ClientTokenResponse {
+    access_token: String,
+    token_type: String,
+    expires_in: u64,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct TokenResponse {
-    access_token: String,
-    token_type: String,
-    expires_in: u64,
-    scope: String,
-    id_token: String,
+struct ApprovalResponse {
+    schema: String,
+    approval_id: String,
+    client_id: String,
+    action: String,
+    resource: String,
+    status: String,
+    created_at: u64,
+    expires_at: u64,
+    decided_at: Option<u64>,
+    user_url: String,
+    exchange_code: Option<String>,
 }
 
-pub(crate) fn start(env: &Env) -> Result<Response> {
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApprovalExchangeResponse {
+    schema: String,
+    approval_id: String,
+    client_id: String,
+    subject_id: String,
+    action: String,
+    resource: String,
+    state: String,
+    decided_at: u64,
+    consumed_at: u64,
+}
+
+pub(crate) async fn begin_approval(env: &Env) -> Result<Response> {
     require_development(env)?;
     let now = now_seconds();
     let state = random_value()?;
-    let nonce = random_value()?;
-    let verifier = random_value()?;
-    let challenge = cardea_oidc_client::pkce_challenge(&verifier)
-        .ok_or_else(|| worker::Error::RustError("Cardea PKCE generation failed".to_owned()))?;
-    let cookie = encode_state(
-        &StateCookie {
-            state: state.clone(),
-            nonce: nonce.clone(),
-            verifier,
+    let idempotency_key = random_value()?;
+    let access_token = client_access_token(env, now).await?;
+    let body = serde_json::json!({
+        "schema": "dravengarden.cardea.create-approval-request/v1",
+        "idempotency_key": idempotency_key,
+        "action": LOGIN_ACTION,
+        "resource": LOGIN_RESOURCE,
+        "display": {
+            "title": "Sign in to Skydriver",
+            "summary": "Approve this request to sign in to the Skydriver development control plane.",
+            "facts": [
+                { "label": "Application", "value": "Skydriver" },
+                { "label": "Environment", "value": "Development" }
+            ]
+        },
+        "authentication_strength": "recent_password",
+        "return_uri": REDIRECT_URI,
+        "state": state,
+        "expires_in": STATE_LIFETIME_SECONDS
+    });
+    let mut approval = cardea_json_request(
+        Method::Post,
+        "/v1/approval-requests",
+        &access_token,
+        Some(&body),
+    )
+    .await?;
+    if !matches!(approval.status_code(), 200 | 201) {
+        return Response::error("Cardea approval unavailable", 503);
+    }
+    let approval: ApprovalResponse = approval.json().await?;
+    if !valid_pending_approval(&approval, &state, now) {
+        return Response::error("Cardea approval invalid", 503);
+    }
+    let cookie = encode_approval_cookie(
+        &ApprovalLoginCookie {
+            approval_id: approval.approval_id,
+            state,
             issued_at: now,
         },
         env,
     )?;
-    let mut authorization = Url::parse(&format!("{ISSUER}/oauth2/authorize"))?;
-    authorization
-        .query_pairs_mut()
-        .append_pair("client_id", CLIENT_ID)
-        .append_pair("redirect_uri", REDIRECT_URI)
-        .append_pair("response_type", "code")
-        .append_pair("scope", "openid")
-        .append_pair("state", &state)
-        .append_pair("nonce", &nonce)
-        .append_pair("code_challenge", &challenge)
-        .append_pair("code_challenge_method", "S256");
-    let mut response = Response::empty()?.with_status(302);
-    response
-        .headers_mut()
-        .set("Location", authorization.as_str())?;
+    let mut response = Response::from_json(&serde_json::json!({
+        "status": "pending",
+        "expires_at": approval.expires_at
+    }))?;
     response.headers_mut().set("Cache-Control", "no-store")?;
-    response
-        .headers_mut()
-        .set("Set-Cookie", &state_cookie(&cookie, STATE_LIFETIME_SECONDS))?;
+    response.headers_mut().set(
+        "Set-Cookie",
+        &approval_cookie(&cookie, STATE_LIFETIME_SECONDS),
+    )?;
     Ok(response)
 }
 
-pub(crate) async fn callback(request: &Request, env: &Env) -> Result<Response> {
+pub(crate) async fn approval_status(request: &Request, env: &Env) -> Result<Response> {
     require_development(env)?;
-    let result = callback_inner(request, env).await;
-    match result {
-        Ok(session_cookie) => {
-            let mut response = Response::empty()?.with_status(303);
-            response.headers_mut().set("Location", "/")?;
-            response.headers_mut().set("Cache-Control", "no-store")?;
-            response
-                .headers_mut()
-                .append("Set-Cookie", &clear_state_cookie())?;
-            response
-                .headers_mut()
-                .append("Set-Cookie", &session_cookie)?;
-            Ok(response)
-        }
-        Err(error) => {
-            worker::console_error!("Cardea callback rejected: {error}");
-            let mut response = Response::empty()?.with_status(303);
-            response
-                .headers_mut()
-                .set("Location", "/?authentication=failed")?;
-            response.headers_mut().set("Cache-Control", "no-store")?;
-            response
-                .headers_mut()
-                .set("Set-Cookie", &clear_state_cookie())?;
-            Ok(response)
-        }
+    let Some(encoded) = cookie_value(request, STATE_COOKIE)? else {
+        return Response::error("approval login missing", 401);
+    };
+    let transaction = decode_approval_cookie(&encoded, env)?;
+    let now = now_seconds();
+    if transaction.issued_at > now || now - transaction.issued_at > STATE_LIFETIME_SECONDS {
+        return terminal_status("expired");
+    }
+    let access_token = client_access_token(env, now).await?;
+    let path = format!("/v1/approval-requests/{}", transaction.approval_id);
+    let mut response = cardea_json_request(Method::Get, &path, &access_token, None).await?;
+    if response.status_code() != 200 {
+        return Response::error("Cardea approval unavailable", 503);
+    }
+    let approval: ApprovalResponse = response.json().await?;
+    if !valid_owned_approval(&approval, &transaction) {
+        return Response::error("Cardea approval invalid", 503);
+    }
+    match approval.status.as_str() {
+        "pending" => Response::from_json(&serde_json::json!({
+            "status": "pending",
+            "expires_at": approval.expires_at
+        })),
+        "approved" => complete_approval(request, env, &access_token, &transaction, approval).await,
+        "denied" | "cancelled" | "expired" => terminal_status(&approval.status),
+        _ => Response::error("Cardea approval invalid", 503),
     }
 }
 
-async fn callback_inner(request: &Request, env: &Env) -> Result<String> {
-    let query: CallbackQuery =
-        serde_urlencoded::from_str(request.url()?.query().unwrap_or_default())
-            .map_err(|_| worker::Error::RustError("invalid Cardea callback query".to_owned()))?;
-    if query.code.len() > 512 || query.state.len() != 43 {
-        return Err(worker::Error::RustError(
-            "invalid Cardea callback values".to_owned(),
-        ));
-    }
-    let encoded = cookie_value(request, STATE_COOKIE)?
-        .ok_or_else(|| worker::Error::RustError("Cardea state cookie missing".to_owned()))?;
-    let state = decode_state(&encoded, env)?;
-    let now = now_seconds();
-    if state.state != query.state
-        || state.issued_at > now
-        || now - state.issued_at > STATE_LIFETIME_SECONDS
-    {
-        return Err(worker::Error::RustError("Cardea state mismatch".to_owned()));
-    }
-    let assertion_id = random_value()?;
-    let private_key = secret_bytes(env, CLIENT_PRIVATE_KEY_BINDING)?;
-    let key_id = env.var(CLIENT_KEY_ID_BINDING)?.to_string();
+async fn client_access_token(env: &Env, now: u64) -> Result<String> {
     let token_endpoint = format!("{ISSUER}/oauth2/token");
     let assertion = cardea_oidc_client::client_assertion(
-        &private_key,
-        &key_id,
+        &secret_bytes(env, CLIENT_PRIVATE_KEY_BINDING)?,
+        &env.var(CLIENT_KEY_ID_BINDING)?.to_string(),
         CLIENT_ID,
         &token_endpoint,
-        &assertion_id,
+        &random_value()?,
         now,
     )
     .ok_or_else(|| worker::Error::RustError("Cardea assertion generation failed".to_owned()))?;
     let body = serde_urlencoded::to_string([
-        ("grant_type", "authorization_code"),
+        ("grant_type", "client_credentials"),
         ("client_id", CLIENT_ID),
         (
             "client_assertion_type",
             "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
         ),
         ("client_assertion", assertion.as_str()),
-        ("code", query.code.as_str()),
-        ("redirect_uri", REDIRECT_URI),
-        ("code_verifier", state.verifier.as_str()),
     ])
     .map_err(|_| worker::Error::RustError("Cardea token request encoding failed".to_owned()))?;
     let headers = Headers::new();
@@ -169,51 +185,123 @@ async fn callback_inner(request: &Request, env: &Env) -> Result<String> {
     init.with_method(Method::Post)
         .with_headers(headers)
         .with_body(Some(JsValue::from_str(&body)));
-    let token_request = Request::new_with_init(&token_endpoint, &init)?;
-    let mut token_response = Fetch::Request(token_request).send().await?;
-    if token_response.status_code() != 200 {
+    let mut response = Fetch::Request(Request::new_with_init(&token_endpoint, &init)?)
+        .send()
+        .await?;
+    if response.status_code() != 200 {
         return Err(worker::Error::RustError(
-            "Cardea token exchange rejected".to_owned(),
+            "Cardea client authentication rejected".to_owned(),
         ));
     }
-    let token: TokenResponse = token_response.json().await?;
-    if token.token_type != "Bearer"
-        || token.expires_in != 300
-        || token.scope != "openid"
-        || token.access_token.len() > 512
-    {
+    let token: ClientTokenResponse = response.json().await?;
+    if token.token_type != "Bearer" || token.expires_in != 300 || token.access_token.len() > 512 {
         return Err(worker::Error::RustError(
-            "Cardea token response invalid".to_owned(),
+            "Cardea client token invalid".to_owned(),
         ));
     }
-    let public_key = variable_bytes(env, ID_TOKEN_PUBLIC_KEY_BINDING)?;
-    let signing_key_id = env.var(ID_TOKEN_KEY_ID_BINDING)?.to_string();
-    let identity = cardea_oidc_client::verify_id_token(
-        &token.id_token,
-        &public_key,
-        &signing_key_id,
-        ISSUER,
-        CLIENT_ID,
-        &state.nonce,
-        now,
-    )
-    .ok_or_else(|| worker::Error::RustError("Cardea ID token rejected".to_owned()))?;
-    if identity.subject != "draven" {
-        return Err(worker::Error::RustError(
-            "Cardea subject rejected".to_owned(),
-        ));
-    }
-    let session_response = session::create_browser_session(request, env).await?;
-    session::browser_session_cookie(&session_response)?
-        .ok_or_else(|| worker::Error::RustError("Skydriver session cookie missing".to_owned()))
+    Ok(token.access_token)
 }
 
-fn encode_state(state: &StateCookie, env: &Env) -> Result<String> {
+async fn cardea_json_request(
+    method: Method,
+    path: &str,
+    access_token: &str,
+    body: Option<&serde_json::Value>,
+) -> Result<Response> {
+    let headers = Headers::new();
+    headers.set("Accept", "application/json")?;
+    headers.set("Authorization", &format!("Bearer {access_token}"))?;
+    if body.is_some() {
+        headers.set("Content-Type", "application/json")?;
+    }
+    let mut init = RequestInit::new();
+    init.with_method(method).with_headers(headers);
+    if let Some(body) = body {
+        init.with_body(Some(JsValue::from_str(&serde_json::to_string(body)?)));
+    }
+    Fetch::Request(Request::new_with_init(&format!("{ISSUER}{path}"), &init)?)
+        .send()
+        .await
+}
+
+fn valid_pending_approval(approval: &ApprovalResponse, state: &str, now: u64) -> bool {
+    approval.schema == "dravengarden.cardea.approval-request/v1"
+        && approval.client_id == CLIENT_ID
+        && approval.action == LOGIN_ACTION
+        && approval.resource == LOGIN_RESOURCE
+        && approval.status == "pending"
+        && approval.approval_id.len() == 43
+        && approval.created_at <= now
+        && approval.expires_at > now
+        && approval.decided_at.is_none()
+        && approval.exchange_code.is_none()
+        && approval.user_url.starts_with("/approve/")
+        && state.len() == 43
+}
+
+fn valid_owned_approval(approval: &ApprovalResponse, transaction: &ApprovalLoginCookie) -> bool {
+    approval.schema == "dravengarden.cardea.approval-request/v1"
+        && approval.approval_id == transaction.approval_id
+        && approval.client_id == CLIENT_ID
+        && approval.action == LOGIN_ACTION
+        && approval.resource == LOGIN_RESOURCE
+}
+
+async fn complete_approval(
+    request: &Request,
+    env: &Env,
+    access_token: &str,
+    transaction: &ApprovalLoginCookie,
+    approval: ApprovalResponse,
+) -> Result<Response> {
+    let Some(code) = approval.exchange_code else {
+        return Response::error("Cardea approval invalid", 503);
+    };
+    let body = serde_json::json!({ "code": code, "redirect_uri": REDIRECT_URI });
+    let mut response = cardea_json_request(
+        Method::Post,
+        "/v1/approval-exchanges",
+        access_token,
+        Some(&body),
+    )
+    .await?;
+    if response.status_code() != 200 {
+        return Response::error("Cardea approval exchange rejected", 503);
+    }
+    let exchange: ApprovalExchangeResponse = response.json().await?;
+    if exchange.schema != "dravengarden.cardea.approval-exchange/v1"
+        || exchange.approval_id != transaction.approval_id
+        || exchange.client_id != CLIENT_ID
+        || exchange.subject_id != "draven"
+        || exchange.action != LOGIN_ACTION
+        || exchange.resource != LOGIN_RESOURCE
+        || exchange.state != transaction.state
+        || exchange.decided_at < transaction.issued_at
+        || exchange.consumed_at < exchange.decided_at
+    {
+        return Response::error("Cardea approval exchange invalid", 503);
+    }
+    let mut session = session::create_browser_session(request, env).await?;
+    session
+        .headers_mut()
+        .append("Set-Cookie", &clear_approval_cookie())?;
+    Ok(session)
+}
+
+fn terminal_status(status: &str) -> Result<Response> {
+    let mut response = Response::from_json(&serde_json::json!({ "status": status }))?;
+    response
+        .headers_mut()
+        .append("Set-Cookie", &clear_approval_cookie())?;
+    Ok(response)
+}
+
+fn encode_approval_cookie(state: &ApprovalLoginCookie, env: &Env) -> Result<String> {
     let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(state)?);
     let key = secret_bytes(env, STATE_KEY_BINDING)?;
     let mut mac = HmacSha256::new_from_slice(&key)
         .map_err(|_| worker::Error::RustError("Cardea state key invalid".to_owned()))?;
-    mac.update(b"skydriver.cardea.state.v1\0");
+    mac.update(b"skydriver.cardea.approval-login.v1\0");
     mac.update(payload.as_bytes());
     Ok(format!(
         "{payload}.{}",
@@ -221,26 +309,36 @@ fn encode_state(state: &StateCookie, env: &Env) -> Result<String> {
     ))
 }
 
-fn decode_state(value: &str, env: &Env) -> Result<StateCookie> {
+fn decode_approval_cookie(value: &str, env: &Env) -> Result<ApprovalLoginCookie> {
     let (payload, signature) = value
         .split_once('.')
-        .ok_or_else(|| worker::Error::RustError("Cardea state shape invalid".to_owned()))?;
+        .ok_or_else(|| worker::Error::RustError("Cardea approval cookie invalid".to_owned()))?;
     let key = secret_bytes(env, STATE_KEY_BINDING)?;
     let mut mac = HmacSha256::new_from_slice(&key)
         .map_err(|_| worker::Error::RustError("Cardea state key invalid".to_owned()))?;
-    mac.update(b"skydriver.cardea.state.v1\0");
+    mac.update(b"skydriver.cardea.approval-login.v1\0");
     mac.update(payload.as_bytes());
     let signature = URL_SAFE_NO_PAD
         .decode(signature)
-        .map_err(|_| worker::Error::RustError("Cardea state signature invalid".to_owned()))?;
+        .map_err(|_| worker::Error::RustError("Cardea approval cookie invalid".to_owned()))?;
     mac.verify_slice(&signature)
-        .map_err(|_| worker::Error::RustError("Cardea state signature invalid".to_owned()))?;
+        .map_err(|_| worker::Error::RustError("Cardea approval cookie invalid".to_owned()))?;
     serde_json::from_slice(
         &URL_SAFE_NO_PAD
             .decode(payload)
-            .map_err(|_| worker::Error::RustError("Cardea state payload invalid".to_owned()))?,
+            .map_err(|_| worker::Error::RustError("Cardea approval cookie invalid".to_owned()))?,
     )
     .map_err(Into::into)
+}
+
+fn approval_cookie(value: &str, maximum_age: u64) -> String {
+    format!(
+        "{STATE_COOKIE}={value}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={maximum_age}"
+    )
+}
+
+fn clear_approval_cookie() -> String {
+    approval_cookie("", 0)
 }
 
 fn random_value() -> Result<String> {
@@ -252,10 +350,6 @@ fn random_value() -> Result<String> {
 
 fn secret_bytes(env: &Env, binding: &str) -> Result<[u8; 32]> {
     decode_bytes(&env.secret(binding)?.to_string(), binding)
-}
-
-fn variable_bytes(env: &Env, binding: &str) -> Result<[u8; 32]> {
-    decode_bytes(&env.var(binding)?.to_string(), binding)
 }
 
 fn decode_bytes(value: &str, binding: &str) -> Result<[u8; 32]> {
@@ -284,15 +378,6 @@ fn cookie_value(request: &Request, name: &str) -> Result<Option<String>> {
     Ok(values.first().map(|value| (*value).to_owned()))
 }
 
-fn state_cookie(value: &str, maximum_age: u64) -> String {
-    format!(
-        "{STATE_COOKIE}={value}; HttpOnly; Secure; SameSite=Lax; Path=/api/auth/cardea/callback; Max-Age={maximum_age}"
-    )
-}
-
-fn clear_state_cookie() -> String {
-    state_cookie("", 0)
-}
 fn require_development(env: &Env) -> Result<()> {
     if env.var("SKYDRIVER_ENVIRONMENT")?.to_string() != "dev" {
         return Err(worker::Error::RustError(
@@ -303,35 +388,4 @@ fn require_development(env: &Env) -> Result<()> {
 }
 fn now_seconds() -> u64 {
     Date::now().as_millis() / 1_000
-}
-
-#[cfg(test)]
-mod tests {
-    use super::TokenResponse;
-
-    #[test]
-    fn accepts_the_current_cardea_token_response_contract() {
-        let response: TokenResponse = serde_json::from_value(serde_json::json!({
-            "access_token": "token",
-            "token_type": "Bearer",
-            "expires_in": 300,
-            "scope": "openid",
-            "id_token": "header.payload.signature"
-        }))
-        .expect("Cardea token response should deserialize");
-
-        assert_eq!(response.scope, "openid");
-    }
-
-    #[test]
-    fn rejects_a_cardea_token_response_without_scope() {
-        let response = serde_json::from_value::<TokenResponse>(serde_json::json!({
-            "access_token": "token",
-            "token_type": "Bearer",
-            "expires_in": 300,
-            "id_token": "header.payload.signature"
-        }));
-
-        assert!(response.is_err());
-    }
 }
