@@ -32,6 +32,9 @@ highlight = "all"
 # different runtimes. Their internal bridges stay subject to every non-ban
 # cargo-deny check.
 skip-tree = [
+  # Cardea's Ed25519 verifier uses the RustCrypto 0.11 digest generation while
+  # Skydriver preserves its existing 0.10 content-hash implementation.
+  { name = "ed25519-dalek", version = "=3.0.0" },
   { name = "worker" },
   { name = "httpmock" },
   { name = "tokio-tungstenite" },
@@ -41,4 +44,4 @@ skip-tree = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+allow-git = ["ssh://git@github.com/dravengarden/cardea.git"]

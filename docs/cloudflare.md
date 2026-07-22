@@ -98,16 +98,21 @@ removes the terminal semicolon from SQLite trigger definitions; D1 then rejects
 the incomplete trigger. The Skydriver runner imports one migration and its
 `d1_migrations` receipt atomically, and verifies that receipt before advancing.
 
-The operator console requires one exact environment-scoped canonical account,
-`draven@skydriver-dev` for development and `draven@skydriver-prod` for production,
-plus one independent
-`SKYDRIVER_ADMIN_TOKEN` Worker secret per environment. The account is a
-non-secret login identity, not an additional authentication factor or account
-directory. A successful login exchanges the exact account and credential for a
-random 12-hour HttpOnly browser session. D1 stores only the session's SHA-256
-verifier; logout deletes it. A 15-minute metadata-hygiene Cron Trigger also
-deletes expired operator and configuration sessions, so cleanup does not depend
-on a later login.
+The development operator console uses the single Cardea issuer at
+`https://cardea.stormbird.xyz`. Its `skydriver-dev` OIDC client uses
+Authorization Code Flow with PKCE and private-key client authentication. After
+strictly validating the audience-bound ID token, Skydriver exchanges that
+identity proof for its own random 12-hour HttpOnly browser session. Cardea does
+not own Skydriver authorization, sessions, VFS tokens, or configuration access.
+
+Production and local development retain the exact environment-scoped canonical
+account and operator-credential login. Every environment still has an
+independent `SKYDRIVER_ADMIN_TOKEN`: it is the CLI and break-glass credential,
+and the development browser must re-enter it to obtain the separate 15-minute
+configuration session. D1 stores only keyed or SHA-256 session verifiers;
+logout deletes the browser session. A 15-minute metadata-hygiene Cron Trigger
+also deletes expired operator and configuration sessions, so cleanup does not
+depend on a later login.
 
 The unauthenticated health response exposes the non-secret account so the UI
 and password manager use the exact same environment-scoped identity. The
@@ -142,6 +147,19 @@ pnpm exec wrangler secret put SKYDRIVER_ADMIN_TOKEN \
   --config control-plane/wrangler.jsonc
 pnpm exec wrangler secret put SKYDRIVER_VFS_MASTER_KEY_V1 \
   --env prod \
+  --config control-plane/wrangler.jsonc
+```
+
+Provision the development-only Cardea client seed and a separate random
+32-byte state-cookie authentication key through stdin. Both values are
+unpadded base64url encodings of exactly 32 bytes:
+
+```bash
+pnpm exec wrangler secret put CARDEA_CLIENT_PRIVATE_KEY \
+  --env dev \
+  --config control-plane/wrangler.jsonc
+pnpm exec wrangler secret put CARDEA_STATE_KEY \
+  --env dev \
   --config control-plane/wrangler.jsonc
 ```
 

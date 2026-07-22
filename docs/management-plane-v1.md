@@ -116,8 +116,11 @@ details, logs, or later reads.
 
 Skydriver does not require a permanent everyday root bearer token.
 `SKYDRIVER_ADMIN_TOKEN` is the environment's break-glass operator credential. It
-authenticates short-lived browser or CLI management sessions and must remain in
-the host secret store, never in arguments, Git, shell history, or agent output.
+authenticates CLI management sessions and the 15-minute browser configuration
+step-up, and must remain in the host secret store, never in arguments, Git,
+shell history, or agent output. The development browser uses Cardea only to
+establish its revocable Skydriver session; Cardea never replaces this product-
+owned authorization or configuration step-up.
 
 The bootstrap VFS token remains a recovery and authority anchor because VFS
 attenuation is rooted in its immutable parent chain. Normal automation must

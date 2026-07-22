@@ -117,6 +117,13 @@ pub(crate) async fn login(request: &mut Request, env: &Env) -> Result<Response> 
         return invalid_credentials_response();
     }
 
+    create_browser_session(request, env).await
+}
+
+pub(crate) async fn create_browser_session(request: &Request, env: &Env) -> Result<Response> {
+    let database = env.d1(DATABASE_BINDING)?;
+    let now = now_seconds();
+    let ip = client_ip(request)?;
     let token = random_token()?;
     let verifier = token_verifier(&token).ok_or_else(|| {
         worker::Error::RustError("generated an invalid operator session token".to_owned())
@@ -152,6 +159,10 @@ pub(crate) async fn login(request: &mut Request, env: &Env) -> Result<Response> 
             secure_cookie(env),
         )),
     )
+}
+
+pub(crate) fn browser_session_cookie(response: &Response) -> Result<Option<String>> {
+    response.headers().get("Set-Cookie")
 }
 
 pub(crate) async fn status(request: &Request, env: &Env) -> Result<Response> {
