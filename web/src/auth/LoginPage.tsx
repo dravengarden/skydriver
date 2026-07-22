@@ -223,12 +223,20 @@ export function LoginPage({
                         </Typography>
                     </Box>
 
-                    {error || cardeaState === "error" ? (
+                    {error ? (
                         <Alert
                             severity="error"
                             sx={{ border: "1px solid rgba(198, 65, 65, 0.12)", borderRadius: 2.5 }}
                         >
                             Authentication was rejected. Try again.
+                        </Alert>
+                    ) : null}
+                    {cardeaState === "error" ? (
+                        <Alert
+                            severity="error"
+                            sx={{ border: "1px solid rgba(198, 65, 65, 0.12)", borderRadius: 2.5 }}
+                        >
+                            Cardea could not create or check the approval request. Try again.
                         </Alert>
                     ) : null}
                     {cardeaState === "expired" ? (

@@ -70,10 +70,10 @@ struct ApprovalExchangeResponse {
 
 pub(crate) async fn begin_approval(env: &Env) -> Result<Response> {
     require_development(env)?;
-    let now = now_seconds();
+    let request_started_at = now_seconds();
     let state = random_value()?;
     let idempotency_key = random_value()?;
-    let access_token = client_access_token(env, now).await?;
+    let access_token = client_access_token(env, request_started_at).await?;
     let body = serde_json::json!({
         "schema": "dravengarden.cardea.create-approval-request/v1",
         "idempotency_key": idempotency_key,
@@ -103,14 +103,15 @@ pub(crate) async fn begin_approval(env: &Env) -> Result<Response> {
         return Response::error("Cardea approval unavailable", 503);
     }
     let approval: ApprovalResponse = approval.json().await?;
-    if !valid_pending_approval(&approval, &state, now) {
+    let response_received_at = now_seconds();
+    if !valid_pending_approval(&approval, &state, request_started_at, response_received_at) {
         return Response::error("Cardea approval invalid", 503);
     }
     let cookie = encode_approval_cookie(
         &ApprovalLoginCookie {
             approval_id: approval.approval_id,
             state,
-            issued_at: now,
+            issued_at: request_started_at,
         },
         env,
     )?;
@@ -224,15 +225,21 @@ async fn cardea_json_request(
         .await
 }
 
-fn valid_pending_approval(approval: &ApprovalResponse, state: &str, now: u64) -> bool {
+fn valid_pending_approval(
+    approval: &ApprovalResponse,
+    state: &str,
+    request_started_at: u64,
+    response_received_at: u64,
+) -> bool {
     approval.schema == "dravengarden.cardea.approval-request/v1"
         && approval.client_id == CLIENT_ID
         && approval.action == LOGIN_ACTION
         && approval.resource == LOGIN_RESOURCE
         && approval.status == "pending"
         && approval.approval_id.len() == 43
-        && approval.created_at <= now
-        && approval.expires_at > now
+        && approval.created_at >= request_started_at
+        && approval.created_at <= response_received_at
+        && approval.expires_at > response_received_at
         && approval.decided_at.is_none()
         && approval.exchange_code.is_none()
         && approval.user_url.starts_with("/approve/")
@@ -388,4 +395,54 @@ fn require_development(env: &Env) -> Result<()> {
 }
 fn now_seconds() -> u64 {
     Date::now().as_millis() / 1_000
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pending_approval(created_at: u64, expires_at: u64) -> ApprovalResponse {
+        ApprovalResponse {
+            schema: "dravengarden.cardea.approval-request/v1".to_owned(),
+            approval_id: "a".repeat(43),
+            client_id: CLIENT_ID.to_owned(),
+            action: LOGIN_ACTION.to_owned(),
+            resource: LOGIN_RESOURCE.to_owned(),
+            status: "pending".to_owned(),
+            created_at,
+            expires_at,
+            decided_at: None,
+            user_url: format!("/approve/{}", "a".repeat(43)),
+            exchange_code: None,
+        }
+    }
+
+    #[test]
+    fn pending_approval_accepts_network_delay_across_seconds() {
+        let approval = pending_approval(1_002, 1_302);
+        assert!(valid_pending_approval(
+            &approval,
+            &"s".repeat(43),
+            1_000,
+            1_004,
+        ));
+    }
+
+    #[test]
+    fn pending_approval_rejects_creation_outside_request_window() {
+        let before_request = pending_approval(999, 1_299);
+        let after_response = pending_approval(1_005, 1_305);
+        assert!(!valid_pending_approval(
+            &before_request,
+            &"s".repeat(43),
+            1_000,
+            1_004,
+        ));
+        assert!(!valid_pending_approval(
+            &after_response,
+            &"s".repeat(43),
+            1_000,
+            1_004,
+        ));
+    }
 }
