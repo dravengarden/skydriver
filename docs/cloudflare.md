@@ -5,6 +5,20 @@ session. Copy `.env.example` to the gitignored `.env`, set mode `0600`, and
 provide `CLOUDFLARE_API_TOKEN` plus `CLOUDFLARE_ACCOUNT_ID`. Entering
 `nix develop` exports those values.
 
+Keep Skydriver's routine deployment credential in this repository's `.env`.
+Do not source or copy a complete `.env` from another project: such files can
+contain unrelated R2, SSH, or product credentials and can give a deployment
+broader authority than intended. When recovering an existing credential, copy
+only the two variables above, preserve the source project, and verify the local
+file without printing either value:
+
+```bash
+chmod 600 .env
+git check-ignore .env
+nix develop -c bash -c \
+  'test -n "$CLOUDFLARE_API_TOKEN" && test -n "$CLOUDFLARE_ACCOUNT_ID"'
+```
+
 The day-to-day token needs only the account permissions required by Skydriver:
 
 - Workers Scripts: Edit
