@@ -3,10 +3,8 @@ import {
     Alert,
     Box,
     Button,
-    Checkbox,
     Chip,
     CircularProgress,
-    FormControlLabel,
     Paper,
     Stack,
     TextField,
@@ -15,6 +13,8 @@ import {
 import { useEffect, useState, type FormEvent } from "react";
 import { SkydriverMark } from "../brand/SkydriverLogo";
 import { SkyBackdrop } from "../brand/SkyBackdrop";
+import { CardeaLoginForm } from "./CardeaLoginForm";
+import type { CardeaLoginSubmitDetail } from "@dravengarden/cardea-consumer-ui";
 
 interface LoginPageProps {
     readonly environment: string;
@@ -24,23 +24,7 @@ interface LoginPageProps {
     readonly onLogin: (account: string, password: string) => void;
 }
 
-const CARDEA_DEVICE_ID_KEY = "skydriver.cardea.device-id.v1";
-const CARDEA_EMAIL_KEY = "skydriver.cardea.email.v1";
 const ERROR_RETRY_SECONDS = 60;
-
-function cardeaDeviceID(): string {
-    const existing = localStorage.getItem(CARDEA_DEVICE_ID_KEY);
-    if (existing !== null && /^browser-[0-9a-f-]{36}$/u.test(existing)) {
-        return existing;
-    }
-    const created = `browser-${crypto.randomUUID()}`;
-    localStorage.setItem(CARDEA_DEVICE_ID_KEY, created);
-    return created;
-}
-
-function savedCardeaEmail(): string {
-    return localStorage.getItem(CARDEA_EMAIL_KEY) ?? "";
-}
 
 export function LoginPage({
     environment,
@@ -57,8 +41,6 @@ export function LoginPage({
         "idle" | "starting" | "waiting" | "expired" | "denied" | "cancelled" | "error"
     >("idle");
     const [cardeaExpiresAt, setCardeaExpiresAt] = useState<number | null>(null);
-    const [cardeaEmail, setCardeaEmail] = useState(savedCardeaEmail);
-    const [rememberCardeaEmail, setRememberCardeaEmail] = useState(true);
     const [cardeaRetryAt, setCardeaRetryAt] = useState<number | null>(null);
     const [clock, setClock] = useState(() => Date.now());
 
@@ -148,20 +130,9 @@ export function LoginPage({
         };
     }, [cardeaState]);
 
-    async function beginCardeaLogin() {
-        const normalizedEmail = cardeaEmail.trim().toLowerCase();
-        if (
-            cardeaState === "starting" ||
-            cardeaState === "waiting" ||
-            retrySeconds > 0 ||
-            normalizedEmail === ""
-        ) {
+    async function beginCardeaLogin(detail: CardeaLoginSubmitDetail) {
+        if (cardeaState === "starting" || cardeaState === "waiting" || retrySeconds > 0) {
             return;
-        }
-        if (rememberCardeaEmail) {
-            localStorage.setItem(CARDEA_EMAIL_KEY, normalizedEmail);
-        } else {
-            localStorage.removeItem(CARDEA_EMAIL_KEY);
         }
         setCardeaState("starting");
         setCardeaExpiresAt(null);
@@ -170,7 +141,7 @@ export function LoginPage({
                 method: "POST",
                 credentials: "same-origin",
                 headers: { Accept: "application/json", "Content-Type": "application/json" },
-                body: JSON.stringify({ email: normalizedEmail, deviceId: cardeaDeviceID() }),
+                body: JSON.stringify({ email: detail.email, deviceId: detail.deviceId }),
             });
             if (!response.ok) {
                 const retryAfter = Number.parseInt(response.headers.get("Retry-After") ?? "", 10);
@@ -196,18 +167,6 @@ export function LoginPage({
             setCardeaState("error");
         }
     }
-
-    useEffect(() => {
-        if (!cardeaEnabled) return;
-        const beginWithKeyboard = (event: KeyboardEvent) => {
-            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                event.preventDefault();
-                void beginCardeaLogin();
-            }
-        };
-        globalThis.addEventListener("keydown", beginWithKeyboard);
-        return () => globalThis.removeEventListener("keydown", beginWithKeyboard);
-    });
 
     function submit(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
@@ -313,30 +272,6 @@ export function LoginPage({
                             Authentication was rejected. Try again.
                         </Alert>
                     ) : null}
-                    {cardeaState === "error" ? (
-                        <Alert
-                            severity="error"
-                            sx={{ border: "1px solid rgba(198, 65, 65, 0.12)", borderRadius: 2.5 }}
-                        >
-                            The verification email could not be sent. Try again after the cooldown.
-                        </Alert>
-                    ) : null}
-                    {cardeaState === "expired" ? (
-                        <Alert severity="warning" sx={{ borderRadius: 2.5 }}>
-                            This approval expired after 5 minutes. Request a new Cardea approval.
-                        </Alert>
-                    ) : null}
-                    {cardeaState === "denied" ? (
-                        <Alert severity="error" sx={{ borderRadius: 2.5 }}>
-                            The Cardea approval was denied. Request a new approval when ready.
-                        </Alert>
-                    ) : null}
-                    {cardeaState === "cancelled" ? (
-                        <Alert severity="warning" sx={{ borderRadius: 2.5 }}>
-                            The Cardea approval was cancelled. Request a new approval to continue.
-                        </Alert>
-                    ) : null}
-
                     {cardeaEnabled ? null : (
                         <TextField
                             label="Saved login"
@@ -392,83 +327,12 @@ export function LoginPage({
                         />
                     )}
                     {cardeaEnabled ? (
-                        <TextField
-                            label="Email address"
-                            type="email"
-                            value={cardeaEmail}
-                            onChange={(event) => setCardeaEmail(event.target.value)}
-                            autoComplete="email"
-                            required
-                            fullWidth
-                            autoFocus
-                            slotProps={{
-                                htmlInput: {
-                                    inputMode: "email",
-                                    autoCapitalize: "none",
-                                    spellCheck: false,
-                                },
-                            }}
+                        <CardeaLoginForm
+                            state={cardeaState}
+                            retrySeconds={retrySeconds}
+                            remainingLabel={remainingApprovalLabel}
+                            onSubmit={(detail) => void beginCardeaLogin(detail)}
                         />
-                    ) : null}
-                    {cardeaEnabled ? (
-                        <FormControlLabel
-                            control={
-                                <Checkbox
-                                    checked={rememberCardeaEmail}
-                                    onChange={(event) => {
-                                        setRememberCardeaEmail(event.target.checked);
-                                        if (!event.target.checked) {
-                                            localStorage.removeItem(CARDEA_EMAIL_KEY);
-                                        }
-                                    }}
-                                />
-                            }
-                            label="Remember email on this browser"
-                        />
-                    ) : null}
-                    {cardeaEnabled ? (
-                        <Button
-                            type="button"
-                            onClick={() => void beginCardeaLogin()}
-                            aria-keyshortcuts="Meta+Enter Control+Enter"
-                            disabled={
-                                cardeaState === "starting" ||
-                                cardeaState === "waiting" ||
-                                retrySeconds > 0 ||
-                                cardeaEmail.trim() === ""
-                            }
-                            variant="contained"
-                            size="large"
-                            startIcon={
-                                cardeaState === "starting" || cardeaState === "waiting" ? (
-                                    <CircularProgress size={18} color="inherit" />
-                                ) : (
-                                    <LockOutlinedIcon />
-                                )
-                            }
-                            sx={{
-                                minHeight: 50,
-                                borderRadius: 2.5,
-                                fontWeight: 800,
-                                letterSpacing: "0.015em",
-                                background: "linear-gradient(105deg, #176d9b, #2d70d6)",
-                                boxShadow: "0 10px 24px rgba(26, 91, 152, 0.22)",
-                                "&:hover": {
-                                    background: "linear-gradient(105deg, #145f88, #2864bf)",
-                                    boxShadow: "0 12px 28px rgba(26, 91, 152, 0.3)",
-                                },
-                            }}
-                        >
-                            {cardeaState === "waiting"
-                                ? "Verification email sent · waiting for Cardea…"
-                                : retrySeconds > 0
-                                  ? `Try again in ${retrySeconds}s`
-                                  : cardeaState === "expired" ||
-                                      cardeaState === "denied" ||
-                                      cardeaState === "cancelled"
-                                    ? "Send a new verification email"
-                                    : "Send verification email"}
-                        </Button>
                     ) : (
                         <Button
                             type="submit"
@@ -493,29 +357,6 @@ export function LoginPage({
                             Enter control plane
                         </Button>
                     )}
-                    {cardeaEnabled && cardeaState !== "starting" && cardeaState !== "waiting" ? (
-                        <Typography
-                            variant="caption"
-                            color="text.secondary"
-                            sx={{ mt: -1.75, textAlign: "right" }}
-                        >
-                            Press <Box component="kbd">⌘ Enter</Box> or{" "}
-                            <Box component="kbd">Ctrl Enter</Box> to send
-                        </Typography>
-                    ) : null}
-                    {cardeaEnabled &&
-                    cardeaState === "waiting" &&
-                    remainingApprovalLabel !== null ? (
-                        <Typography
-                            role="status"
-                            aria-live="polite"
-                            variant="body2"
-                            sx={{ color: "#536d7b", textAlign: "center", fontWeight: 700 }}
-                        >
-                            Verification email sent. Open it, then approve in Cardea · expires in{" "}
-                            {remainingApprovalLabel}
-                        </Typography>
-                    ) : null}
                     <Typography
                         variant="caption"
                         sx={{ color: "#68808c", textAlign: "center", letterSpacing: "0.02em" }}
