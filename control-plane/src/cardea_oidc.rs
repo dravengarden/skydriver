@@ -22,6 +22,9 @@ const STATE_LIFETIME_SECONDS: u64 = 5 * 60;
 const LOGIN_ACTION: &str = "session.create";
 const LOGIN_RESOURCE: &str = "https://dev.skydriver.stormbird.xyz";
 const ERROR_RETRY_SECONDS: u64 = 60;
+const SESSION_POLICY_SCHEMA: &str = "dravengarden.cardea.consumer-session-policy/v1";
+const MINIMUM_SESSION_LIFETIME_SECONDS: u64 = 5 * 60;
+const MAXIMUM_SESSION_LIFETIME_SECONDS: u64 = 30 * 24 * 60 * 60;
 const STATUS_LONG_POLL_ATTEMPTS: usize = 20;
 const STATUS_LONG_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -71,6 +74,14 @@ struct ApprovalExchangeResponse {
     state: String,
     decided_at: u64,
     consumed_at: u64,
+    session_policy: SessionPolicy,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionPolicy {
+    schema: String,
+    lifetime_seconds: u64,
 }
 
 #[derive(Deserialize)]
@@ -323,7 +334,11 @@ async fn complete_approval(
     let Some(code) = approval.exchange_code else {
         return Response::error("Cardea approval invalid", 503);
     };
-    let body = serde_json::json!({ "code": code, "redirect_uri": REDIRECT_URI });
+    let body = serde_json::json!({
+        "code": code,
+        "redirect_uri": REDIRECT_URI,
+        "session_policy": SESSION_POLICY_SCHEMA,
+    });
     let mut response = cardea_json_request(
         Method::Post,
         "/v1/approval-exchanges",
@@ -344,10 +359,18 @@ async fn complete_approval(
         || exchange.state != transaction.state
         || exchange.decided_at < transaction.issued_at
         || exchange.consumed_at < exchange.decided_at
+        || exchange.session_policy.schema != SESSION_POLICY_SCHEMA
+        || !(MINIMUM_SESSION_LIFETIME_SECONDS..=MAXIMUM_SESSION_LIFETIME_SECONDS)
+            .contains(&exchange.session_policy.lifetime_seconds)
     {
         return Response::error("Cardea approval exchange invalid", 503);
     }
-    let mut session = session::create_browser_session(request, env).await?;
+    let mut session = session::create_browser_session_with_lifetime(
+        request,
+        env,
+        exchange.session_policy.lifetime_seconds,
+    )
+    .await?;
     session
         .headers_mut()
         .append("Set-Cookie", &clear_approval_cookie())?;

@@ -121,6 +121,14 @@ pub(crate) async fn login(request: &mut Request, env: &Env) -> Result<Response> 
 }
 
 pub(crate) async fn create_browser_session(request: &Request, env: &Env) -> Result<Response> {
+    create_browser_session_with_lifetime(request, env, SESSION_LIFETIME_SECONDS).await
+}
+
+pub(crate) async fn create_browser_session_with_lifetime(
+    request: &Request,
+    env: &Env,
+    lifetime_seconds: u64,
+) -> Result<Response> {
     let database = env.d1(DATABASE_BINDING)?;
     let now = now_seconds();
     let ip = client_ip(request)?;
@@ -128,7 +136,7 @@ pub(crate) async fn create_browser_session(request: &Request, env: &Env) -> Resu
     let verifier = token_verifier(&token).ok_or_else(|| {
         worker::Error::RustError("generated an invalid operator session token".to_owned())
     })?;
-    let expires_at = now + SESSION_LIFETIME_SECONDS;
+    let expires_at = now + lifetime_seconds;
     let user_agent = request.headers().get("User-Agent")?.unwrap_or_default();
     database
         .batch(vec![
@@ -155,7 +163,7 @@ pub(crate) async fn create_browser_session(request: &Request, env: &Env) -> Resu
         true,
         Some(&session_cookie(
             &token,
-            SESSION_LIFETIME_SECONDS,
+            lifetime_seconds,
             secure_cookie(env),
         )),
     )
