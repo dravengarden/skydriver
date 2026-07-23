@@ -113,6 +113,9 @@ export function LoginPage({
     }, [cardeaState]);
 
     async function beginCardeaLogin() {
+        if (email.trim() === "" || cardeaState === "starting" || cardeaState === "waiting") {
+            return;
+        }
         setCardeaState("starting");
         setCardeaExpiresAt(null);
         try {
@@ -324,6 +327,12 @@ export function LoginPage({
                             autoComplete="email"
                             value={email}
                             onChange={(event) => setEmail(event.target.value)}
+                            onKeyDown={(event) => {
+                                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                                    event.preventDefault();
+                                    void beginCardeaLogin();
+                                }
+                            }}
                             disabled={cardeaState === "starting" || cardeaState === "waiting"}
                             required
                             fullWidth
@@ -333,6 +342,7 @@ export function LoginPage({
                         <Button
                             type="button"
                             onClick={() => void beginCardeaLogin()}
+                            aria-keyshortcuts="Meta+Enter Control+Enter"
                             disabled={
                                 email.trim() === "" ||
                                 cardeaState === "starting" ||
@@ -392,6 +402,16 @@ export function LoginPage({
                             Enter control plane
                         </Button>
                     )}
+                    {cardeaEnabled && cardeaState !== "starting" && cardeaState !== "waiting" ? (
+                        <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            sx={{ mt: -1.75, textAlign: "right" }}
+                        >
+                            Press <Box component="kbd">⌘ Enter</Box> or{" "}
+                            <Box component="kbd">Ctrl Enter</Box> to send
+                        </Typography>
+                    ) : null}
                     {cardeaEnabled &&
                     cardeaState === "waiting" &&
                     remainingApprovalLabel !== null ? (
