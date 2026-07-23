@@ -22,6 +22,18 @@ interface LoginPageProps {
     readonly onLogin: (account: string, password: string) => void;
 }
 
+const CARDEA_DEVICE_ID_KEY = "skydriver.cardea.device-id.v1";
+
+function cardeaDeviceID(): string {
+    const existing = localStorage.getItem(CARDEA_DEVICE_ID_KEY);
+    if (existing !== null && /^browser-[0-9a-f-]{36}$/u.test(existing)) {
+        return existing;
+    }
+    const created = `browser-${crypto.randomUUID()}`;
+    localStorage.setItem(CARDEA_DEVICE_ID_KEY, created);
+    return created;
+}
+
 export function LoginPage({
     environment,
     operatorAccount,
@@ -121,7 +133,8 @@ export function LoginPage({
             const response = await fetch("/api/auth/cardea/start", {
                 method: "POST",
                 credentials: "same-origin",
-                headers: { Accept: "application/json" },
+                headers: { Accept: "application/json", "Content-Type": "application/json" },
+                body: JSON.stringify({ deviceId: cardeaDeviceID() }),
             });
             if (!response.ok) throw new Error("approval start unavailable");
             const result = (await response.json()) as { expires_at?: number };

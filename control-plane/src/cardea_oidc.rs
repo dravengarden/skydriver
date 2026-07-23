@@ -72,21 +72,48 @@ struct ApprovalExchangeResponse {
     consumed_at: u64,
 }
 
-pub(crate) async fn begin_approval(_request: &mut Request, env: &Env) -> Result<Response> {
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ApprovalStartRequest {
+    device_id: String,
+}
+
+pub(crate) async fn begin_approval(request: &mut Request, env: &Env) -> Result<Response> {
     require_development(env)?;
+    let device_id = if request
+        .headers()
+        .get("Content-Type")?
+        .is_some_and(|value| value.starts_with("application/json"))
+    {
+        Some(request.json::<ApprovalStartRequest>().await?.device_id)
+    } else {
+        None
+    };
+    let cf = request.cf();
+    let observed = cardea_oidc_client::ObservedRequestContext {
+        source_ip: request.headers().get("CF-Connecting-IP")?,
+        country: cf.and_then(worker::Cf::country),
+        region: cf.and_then(worker::Cf::region),
+        city: cf.and_then(worker::Cf::city),
+        edge_request_id: request.headers().get("CF-Ray")?,
+        edge_colo: cf.map(worker::Cf::colo),
+        continuity_device_id: device_id,
+    };
     let request_started_at = now_seconds();
     let state = random_value()?;
     let idempotency_key = random_value()?;
     let access_token = client_access_token(env, request_started_at).await?;
-    let mut request_body = cardea_oidc_client::email_login_approval_request(
+    let mut request_body = cardea_oidc_client::email_login_approval_request_with_context(
         &idempotency_key,
-        "Skydriver",
+        "SkyDriver",
         "Development",
         LOGIN_RESOURCE,
         REDIRECT_URI,
         &state,
         LOGIN_EMAIL,
         STATE_LIFETIME_SECONDS,
+        &observed,
+        None,
     )
     .ok_or_else(|| worker::Error::RustError("invalid Cardea approval request".into()))?;
     request_body
