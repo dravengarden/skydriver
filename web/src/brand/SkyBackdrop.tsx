@@ -1,18 +1,17 @@
 import { Box, useMediaQuery } from "@mui/material";
 
 const beaconLanes = [
-    { x: 118, delay: "-3s", duration: "17s", opacity: 0.72 },
-    { x: 286, delay: "-11s", duration: "23s", opacity: 0.48 },
-    { x: 512, delay: "-7s", duration: "19s", opacity: 0.62 },
-    { x: 780, delay: "-15s", duration: "25s", opacity: 0.42 },
-    { x: 1018, delay: "-5s", duration: "21s", opacity: 0.58 },
-    { x: 1306, delay: "-13s", duration: "27s", opacity: 0.4 },
+    { x: 118, delay: "-3s", duration: "23s", opacity: 0.34 },
+    { x: 330, delay: "-11s", duration: "29s", opacity: 0.24 },
+    { x: 610, delay: "-7s", duration: "26s", opacity: 0.3 },
+    { x: 980, delay: "-15s", duration: "31s", opacity: 0.22 },
+    { x: 1320, delay: "-5s", duration: "28s", opacity: 0.28 },
 ] as const;
 
 const cloudBanks = [
-    { y: 602, scale: 1.2, opacity: 0.76, duration: "58s", direction: 1 },
-    { y: 708, scale: 1.55, opacity: 0.9, duration: "76s", direction: -1 },
-    { y: 820, scale: 2.1, opacity: 0.98, duration: "94s", direction: 1 },
+    { y: 650, scale: 1.25, opacity: 0.34, duration: "72s", direction: 1 },
+    { y: 770, scale: 1.7, opacity: 0.48, duration: "92s", direction: -1 },
+    { y: 875, scale: 2.2, opacity: 0.68, duration: "112s", direction: 1 },
 ] as const;
 
 function CloudBank({
@@ -35,8 +34,8 @@ function CloudBank({
             <path
                 d="M22 92c50-21 96-21 139 0 57-31 116-31 177 0 61-24 123-20 187 11"
                 fill="none"
-                stroke="rgba(255,255,255,0.76)"
-                strokeWidth="3"
+                stroke="rgba(255,255,255,0.42)"
+                strokeWidth="2"
                 strokeLinecap="round"
             />
             {reducedMotion ? null : (
@@ -103,7 +102,7 @@ export function SkyBackdrop() {
                 position: "absolute",
                 inset: 0,
                 overflow: "hidden",
-                bgcolor: "#142b70",
+                bgcolor: "#102857",
                 pointerEvents: "none",
             }}
         >
@@ -114,23 +113,27 @@ export function SkyBackdrop() {
                 style={{ display: "block", width: "100%", height: "100%" }}
             >
                 <defs>
-                    <linearGradient id="skydriver-sky-field" x1="0" y1="0" x2="0.95" y2="1">
-                        <stop stopColor="#172866" />
-                        <stop offset="0.38" stopColor="#225db2" />
-                        <stop offset="0.7" stopColor="#50b9df" />
-                        <stop offset="1" stopColor="#c5eef5" />
+                    <linearGradient id="skydriver-sky-field" x1="0" y1="0" x2="1" y2="1">
+                        <stop stopColor="#102657" />
+                        <stop offset="0.4" stopColor="#194d83" />
+                        <stop offset="0.72" stopColor="#2588aa" />
+                        <stop offset="1" stopColor="#6ab8c8" />
                     </linearGradient>
                     <radialGradient
                         id="skydriver-dawn"
-                        cx="1180"
-                        cy="110"
-                        r="680"
+                        cx="1320"
+                        cy="60"
+                        r="760"
                         gradientUnits="userSpaceOnUse"
                     >
-                        <stop stopColor="#fff8cf" stopOpacity="0.96" />
-                        <stop offset="0.16" stopColor="#ffd67f" stopOpacity="0.44" />
-                        <stop offset="0.52" stopColor="#bcecff" stopOpacity="0.1" />
-                        <stop offset="1" stopColor="#82d6ef" stopOpacity="0" />
+                        <stop stopColor="#d8eef0" stopOpacity="0.34" />
+                        <stop offset="0.24" stopColor="#a9d7dd" stopOpacity="0.2" />
+                        <stop offset="0.64" stopColor="#6eb5c7" stopOpacity="0.06" />
+                        <stop offset="1" stopColor="#6eb5c7" stopOpacity="0" />
+                    </radialGradient>
+                    <radialGradient id="skydriver-vignette" cx="50%" cy="48%" r="76%">
+                        <stop offset="0.42" stopColor="#07152d" stopOpacity="0" />
+                        <stop offset="1" stopColor="#07152d" stopOpacity="0.34" />
                     </radialGradient>
                     <linearGradient id="skydriver-lane" x1="0" y1="1" x2="0" y2="0">
                         <stop stopColor="#bff8ff" stopOpacity="0" />
@@ -138,13 +141,10 @@ export function SkyBackdrop() {
                         <stop offset="1" stopColor="#ffffff" stopOpacity="0.16" />
                     </linearGradient>
                     <linearGradient id="skydriver-cloud-bank" x1="0" y1="0" x2="0" y2="1">
-                        <stop stopColor="#ffffff" />
-                        <stop offset="0.5" stopColor="#dff5fb" />
-                        <stop offset="1" stopColor="#9dd8e9" />
+                        <stop stopColor="#e8f7f8" />
+                        <stop offset="0.52" stopColor="#c7e8ec" />
+                        <stop offset="1" stopColor="#70adbc" />
                     </linearGradient>
-                    <filter id="skydriver-haze" x="-30%" y="-40%" width="160%" height="180%">
-                        <feGaussianBlur stdDeviation="18" />
-                    </filter>
                     <filter id="skydriver-grain" x="0" y="0" width="100%" height="100%">
                         <feTurbulence
                             type="fractalNoise"
@@ -162,37 +162,28 @@ export function SkyBackdrop() {
 
                 <rect width="1600" height="900" fill="url(#skydriver-sky-field)" />
                 <rect width="1600" height="900" fill="url(#skydriver-dawn)" />
-                <circle cx="1180" cy="112" r="54" fill="#fff9d7" opacity="0.94" />
-                <circle
-                    cx="1180"
-                    cy="112"
-                    r="118"
-                    fill="#ffe8a2"
-                    opacity="0.2"
-                    filter="url(#skydriver-haze)"
-                />
 
-                <g fill="none" stroke="rgba(220,249,255,0.34)" strokeLinecap="round">
-                    <path d="M-80 520C250 300 520 315 795 470s528 132 920-132" strokeWidth="2.2" />
-                    <path d="M-65 585C275 390 525 405 808 535s536 106 860-75" strokeWidth="1.3" />
+                <g fill="none" stroke="rgba(215,244,248,0.2)" strokeLinecap="round">
+                    <path d="M-80 520C250 300 520 315 795 470s528 132 920-132" strokeWidth="1.6" />
+                    <path d="M-65 585C275 390 525 405 808 535s536 106 860-75" strokeWidth="1" />
                 </g>
 
                 {beaconLanes.map((beacon) => (
                     <DataBeacon key={beacon.x} {...beacon} reducedMotion={reducedMotion} />
                 ))}
 
-                <g transform="translate(850 292)" opacity="0.82">
+                <g transform="translate(890 300)" opacity="0.34">
                     <path
                         d="M0 41c5-26 26-44 52-44 7 0 14 1 20 4 14-26 41-43 72-43 43 0 78 32 82 74 27 3 48 26 48 54H22C10 76 2 60 0 41Z"
-                        fill="rgba(241,252,255,0.28)"
-                        stroke="rgba(238,253,255,0.5)"
+                        fill="rgba(221,244,247,0.12)"
+                        stroke="rgba(222,247,249,0.38)"
                         strokeWidth="2"
                     />
-                    <path d="M135 70V1m0 0-17 22m17-22 17 22" stroke="#effdff" strokeWidth="4" />
+                    <path d="M135 70V1m0 0-17 22m17-22 17 22" stroke="#e5f7f8" strokeWidth="3" />
                     <path
                         d="M92 72h86M105 84h60M118 96h34"
-                        stroke="#d5f8ff"
-                        strokeWidth="4"
+                        stroke="#d5eef1"
+                        strokeWidth="3"
                         strokeLinecap="round"
                     />
                 </g>
@@ -201,7 +192,8 @@ export function SkyBackdrop() {
                     <CloudBank key={cloud.y} {...cloud} reducedMotion={reducedMotion} />
                 ))}
 
-                <rect width="1600" height="900" filter="url(#skydriver-grain)" opacity="0.65" />
+                <rect width="1600" height="900" fill="url(#skydriver-vignette)" />
+                <rect width="1600" height="900" filter="url(#skydriver-grain)" opacity="0.42" />
             </svg>
         </Box>
     );
