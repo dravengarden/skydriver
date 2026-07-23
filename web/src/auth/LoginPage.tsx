@@ -33,7 +33,6 @@ export function LoginPage({
     const [savedIdentity, setSavedIdentity] = useState(operatorAccount);
     const [identityError, setIdentityError] = useState(false);
     const [password, setPassword] = useState("");
-    const [email, setEmail] = useState("");
     const [cardeaState, setCardeaState] = useState<
         "idle" | "starting" | "waiting" | "expired" | "denied" | "cancelled" | "error"
     >("idle");
@@ -113,7 +112,7 @@ export function LoginPage({
     }, [cardeaState]);
 
     async function beginCardeaLogin() {
-        if (email.trim() === "" || cardeaState === "starting" || cardeaState === "waiting") {
+        if (cardeaState === "starting" || cardeaState === "waiting") {
             return;
         }
         setCardeaState("starting");
@@ -122,8 +121,7 @@ export function LoginPage({
             const response = await fetch("/api/auth/cardea/start", {
                 method: "POST",
                 credentials: "same-origin",
-                headers: { Accept: "application/json", "Content-Type": "application/json" },
-                body: JSON.stringify({ email }),
+                headers: { Accept: "application/json" },
             });
             if (!response.ok) throw new Error("approval start unavailable");
             const result = (await response.json()) as { expires_at?: number };
@@ -137,6 +135,18 @@ export function LoginPage({
             setCardeaState("error");
         }
     }
+
+    useEffect(() => {
+        if (!cardeaEnabled) return;
+        const beginWithKeyboard = (event: KeyboardEvent) => {
+            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                event.preventDefault();
+                void beginCardeaLogin();
+            }
+        };
+        globalThis.addEventListener("keydown", beginWithKeyboard);
+        return () => globalThis.removeEventListener("keydown", beginWithKeyboard);
+    });
 
     function submit(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
@@ -321,33 +331,11 @@ export function LoginPage({
                         />
                     )}
                     {cardeaEnabled ? (
-                        <TextField
-                            label="Gmail address"
-                            type="email"
-                            autoComplete="email"
-                            value={email}
-                            onChange={(event) => setEmail(event.target.value)}
-                            onKeyDown={(event) => {
-                                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                                    event.preventDefault();
-                                    void beginCardeaLogin();
-                                }
-                            }}
-                            disabled={cardeaState === "starting" || cardeaState === "waiting"}
-                            required
-                            fullWidth
-                        />
-                    ) : null}
-                    {cardeaEnabled ? (
                         <Button
                             type="button"
                             onClick={() => void beginCardeaLogin()}
                             aria-keyshortcuts="Meta+Enter Control+Enter"
-                            disabled={
-                                email.trim() === "" ||
-                                cardeaState === "starting" ||
-                                cardeaState === "waiting"
-                            }
+                            disabled={cardeaState === "starting" || cardeaState === "waiting"}
                             variant="contained"
                             size="large"
                             startIcon={
@@ -371,12 +359,12 @@ export function LoginPage({
                             }}
                         >
                             {cardeaState === "waiting"
-                                ? "Waiting for email and Cardea approval…"
+                                ? "Verification email sent · waiting for Cardea…"
                                 : cardeaState === "expired" ||
                                     cardeaState === "denied" ||
                                     cardeaState === "cancelled"
-                                  ? "Send a new confirmation link"
-                                  : "Send confirmation link"}
+                                  ? "Send a new verification email"
+                                  : "Send verification email"}
                         </Button>
                     ) : (
                         <Button
@@ -421,7 +409,7 @@ export function LoginPage({
                             variant="body2"
                             sx={{ color: "#536d7b", textAlign: "center", fontWeight: 700 }}
                         >
-                            Check your email, then approve in Cardea · expires in{" "}
+                            Verification email sent. Open it, then approve in Cardea · expires in{" "}
                             {remainingApprovalLabel}
                         </Typography>
                     ) : null}

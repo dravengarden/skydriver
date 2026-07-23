@@ -20,6 +20,7 @@ const STATE_COOKIE: &str = "skydriver_cardea_oidc";
 const STATE_LIFETIME_SECONDS: u64 = 5 * 60;
 const LOGIN_ACTION: &str = "session.create";
 const LOGIN_RESOURCE: &str = "https://dev.skydriver.stormbird.xyz";
+const LOGIN_EMAIL: &str = "dravengarden@gmail.com";
 const STATUS_LONG_POLL_ATTEMPTS: usize = 20;
 const STATUS_LONG_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -71,32 +72,27 @@ struct ApprovalExchangeResponse {
     consumed_at: u64,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BeginApprovalRequest {
-    email: String,
-}
-
-pub(crate) async fn begin_approval(request: &mut Request, env: &Env) -> Result<Response> {
+pub(crate) async fn begin_approval(_request: &mut Request, env: &Env) -> Result<Response> {
     require_development(env)?;
-    let Ok(command) = request.json::<BeginApprovalRequest>().await else {
-        return Response::error("invalid email", 400);
-    };
     let request_started_at = now_seconds();
     let state = random_value()?;
     let idempotency_key = random_value()?;
     let access_token = client_access_token(env, request_started_at).await?;
-    let request_body = cardea_oidc_client::email_login_approval_request(
+    let mut request_body = cardea_oidc_client::email_login_approval_request(
         &idempotency_key,
         "Skydriver",
         "Development",
         LOGIN_RESOURCE,
         REDIRECT_URI,
         &state,
-        &command.email,
+        LOGIN_EMAIL,
         STATE_LIFETIME_SECONDS,
     )
     .ok_or_else(|| worker::Error::RustError("invalid Cardea approval request".into()))?;
+    request_body
+        .display
+        .facts
+        .retain(|fact| fact.label != "Email");
     let body = serde_json::to_value(request_body)?;
     let mut approval = cardea_json_request(
         Method::Post,
