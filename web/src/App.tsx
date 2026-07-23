@@ -51,7 +51,26 @@ export function App() {
     });
 
     let content;
-    if (session.data?.authenticated) {
+    if (health.isPending || session.isPending) {
+        content = (
+            <Box
+                role="status"
+                aria-label="Loading control plane"
+                sx={{ minHeight: "100dvh", display: "grid", placeItems: "center" }}
+            >
+                <CircularProgress size={30} />
+            </Box>
+        );
+    } else if (health.isError || session.isError) {
+        content = (
+            <Box
+                role="alert"
+                sx={{ minHeight: "100dvh", display: "grid", placeItems: "center", px: 3 }}
+            >
+                Control plane status is unavailable. Try refreshing the page.
+            </Box>
+        );
+    } else if (session.data?.authenticated) {
         content = (
             <Suspense
                 fallback={
