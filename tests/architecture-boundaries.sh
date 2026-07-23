@@ -4,6 +4,11 @@ set -euo pipefail
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repository_root"
 
+if ! rg -q 'data-cardea-consumer-ui="v1"' web/src/auth/LoginPage.tsx; then
+  echo "Cardea-enabled browser login must declare cardea-consumer-ui/v1" >&2
+  exit 1
+fi
+
 legacy_brand='car''rack'
 if rg --line-number --ignore-case "$legacy_brand" --hidden \
   --glob '!.git/**' --glob '!target/**' --glob '!node_modules/**' . \

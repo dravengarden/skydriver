@@ -67,11 +67,15 @@ export function LoginPage({
     useEffect(() => {
         if (cardeaState !== "waiting") return;
         let active = true;
+        let controller: AbortController | null = null;
         const poll = async () => {
+            const requestController = new AbortController();
+            controller = requestController;
             try {
                 const response = await fetch("/api/auth/cardea/status", {
                     credentials: "same-origin",
                     headers: { Accept: "application/json" },
+                    signal: requestController.signal,
                 });
                 if (!active) return;
                 if (!response.ok) throw new Error("approval status unavailable");
@@ -93,16 +97,17 @@ export function LoginPage({
                     setCardeaState("cancelled");
                 } else if (result.status !== "pending") {
                     setCardeaState("error");
+                } else {
+                    void poll();
                 }
             } catch {
-                if (active) setCardeaState("error");
+                if (active && !requestController.signal.aborted) setCardeaState("error");
             }
         };
         void poll();
-        const interval = globalThis.setInterval(() => void poll(), 2_000);
         return () => {
             active = false;
-            globalThis.clearInterval(interval);
+            controller?.abort();
         };
     }, [cardeaState]);
 
@@ -153,6 +158,7 @@ export function LoginPage({
         >
             <SkyBackdrop />
             <Paper
+                data-cardea-consumer-ui="v1"
                 component="form"
                 autoComplete="on"
                 name={`skydriver-${environment}-login`}

@@ -2,8 +2,9 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use std::time::Duration;
 use worker::{
-    Date, Env, Fetch, Headers, Method, Request, RequestInit, Response, Result,
+    Date, Delay, Env, Fetch, Headers, Method, Request, RequestInit, Response, Result,
     wasm_bindgen::JsValue,
 };
 
@@ -19,6 +20,8 @@ const STATE_COOKIE: &str = "skydriver_cardea_oidc";
 const STATE_LIFETIME_SECONDS: u64 = 5 * 60;
 const LOGIN_ACTION: &str = "session.create";
 const LOGIN_RESOURCE: &str = "https://dev.skydriver.stormbird.xyz";
+const STATUS_LONG_POLL_ATTEMPTS: usize = 20;
+const STATUS_LONG_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -68,30 +71,30 @@ struct ApprovalExchangeResponse {
     consumed_at: u64,
 }
 
-pub(crate) async fn begin_approval(env: &Env) -> Result<Response> {
+pub(crate) async fn begin_approval(request: &Request, env: &Env) -> Result<Response> {
     require_development(env)?;
     let request_started_at = now_seconds();
     let state = random_value()?;
     let idempotency_key = random_value()?;
     let access_token = client_access_token(env, request_started_at).await?;
-    let body = serde_json::json!({
-        "schema": "dravengarden.cardea.create-approval-request/v1",
-        "idempotency_key": idempotency_key,
-        "action": LOGIN_ACTION,
-        "resource": LOGIN_RESOURCE,
-        "display": {
-            "title": "Sign in to Skydriver",
-            "summary": "Approve this request to sign in to the Skydriver development control plane.",
-            "facts": [
-                { "label": "Application", "value": "Skydriver" },
-                { "label": "Environment", "value": "Development" }
-            ]
-        },
-        "authentication_strength": "recent_password",
-        "return_uri": REDIRECT_URI,
-        "state": state,
-        "expires_in": STATE_LIFETIME_SECONDS
-    });
+    let observed = cardea_oidc_client::ObservedRequestContext {
+        source_ip: request.headers().get("CF-Connecting-IP")?,
+        country: request.headers().get("CF-IPCountry")?,
+        edge_request_id: request.headers().get("CF-Ray")?,
+    };
+    let request_body = cardea_oidc_client::login_approval_request(
+        &idempotency_key,
+        "Skydriver",
+        "Development",
+        LOGIN_RESOURCE,
+        REDIRECT_URI,
+        &state,
+        STATE_LIFETIME_SECONDS,
+        &observed,
+        None,
+    )
+    .ok_or_else(|| worker::Error::RustError("invalid Cardea approval request".into()))?;
+    let body = serde_json::to_value(request_body)?;
     let mut approval = cardea_json_request(
         Method::Post,
         "/v1/approval-requests",
@@ -139,23 +142,34 @@ pub(crate) async fn approval_status(request: &Request, env: &Env) -> Result<Resp
     }
     let access_token = client_access_token(env, now).await?;
     let path = format!("/v1/approval-requests/{}", transaction.approval_id);
-    let mut response = cardea_json_request(Method::Get, &path, &access_token, None).await?;
-    if response.status_code() != 200 {
-        return Response::error("Cardea approval unavailable", 503);
+    for attempt in 0..STATUS_LONG_POLL_ATTEMPTS {
+        let mut response = cardea_json_request(Method::Get, &path, &access_token, None).await?;
+        if response.status_code() != 200 {
+            return Response::error("Cardea approval unavailable", 503);
+        }
+        let approval: ApprovalResponse = response.json().await?;
+        if !valid_owned_approval(&approval, &transaction) {
+            return Response::error("Cardea approval invalid", 503);
+        }
+        match approval.status.as_str() {
+            "pending" if attempt + 1 < STATUS_LONG_POLL_ATTEMPTS => {
+                Delay::from(STATUS_LONG_POLL_INTERVAL).await;
+            }
+            "pending" => {
+                return Response::from_json(&serde_json::json!({
+                    "status": "pending",
+                    "expires_at": approval.expires_at
+                }));
+            }
+            "approved" => {
+                return complete_approval(request, env, &access_token, &transaction, approval)
+                    .await;
+            }
+            "denied" | "cancelled" | "expired" => return terminal_status(&approval.status),
+            _ => return Response::error("Cardea approval invalid", 503),
+        }
     }
-    let approval: ApprovalResponse = response.json().await?;
-    if !valid_owned_approval(&approval, &transaction) {
-        return Response::error("Cardea approval invalid", 503);
-    }
-    match approval.status.as_str() {
-        "pending" => Response::from_json(&serde_json::json!({
-            "status": "pending",
-            "expires_at": approval.expires_at
-        })),
-        "approved" => complete_approval(request, env, &access_token, &transaction, approval).await,
-        "denied" | "cancelled" | "expired" => terminal_status(&approval.status),
-        _ => Response::error("Cardea approval invalid", 503),
-    }
+    Response::error("Cardea approval unavailable", 503)
 }
 
 async fn client_access_token(env: &Env, now: u64) -> Result<String> {

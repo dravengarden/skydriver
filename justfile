@@ -71,6 +71,14 @@ performance-acceptance:
 test-fast:
     cargo nextest run --workspace --all-features --locked
 
+# Fast deterministic inner loop; excludes Worker protocol scripts and dry-run deploy builds.
+verify-fast: toolchain-check check-format
+    cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+    cargo nextest run --workspace --all-features --locked
+    pnpm --filter @skydriver/web check
+    pnpm --filter @skydriver/web test
+    bash tests/architecture-boundaries.sh
+
 build-cached:
     RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo build --workspace --all-features --locked
 
