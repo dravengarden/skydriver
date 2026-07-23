@@ -3,8 +3,10 @@ import {
     Alert,
     Box,
     Button,
+    Checkbox,
     Chip,
     CircularProgress,
+    FormControlLabel,
     Paper,
     Stack,
     TextField,
@@ -23,6 +25,8 @@ interface LoginPageProps {
 }
 
 const CARDEA_DEVICE_ID_KEY = "skydriver.cardea.device-id.v1";
+const CARDEA_EMAIL_KEY = "skydriver.cardea.email.v1";
+const ERROR_RETRY_SECONDS = 60;
 
 function cardeaDeviceID(): string {
     const existing = localStorage.getItem(CARDEA_DEVICE_ID_KEY);
@@ -32,6 +36,10 @@ function cardeaDeviceID(): string {
     const created = `browser-${crypto.randomUUID()}`;
     localStorage.setItem(CARDEA_DEVICE_ID_KEY, created);
     return created;
+}
+
+function savedCardeaEmail(): string {
+    return localStorage.getItem(CARDEA_EMAIL_KEY) ?? "";
 }
 
 export function LoginPage({
@@ -49,6 +57,9 @@ export function LoginPage({
         "idle" | "starting" | "waiting" | "expired" | "denied" | "cancelled" | "error"
     >("idle");
     const [cardeaExpiresAt, setCardeaExpiresAt] = useState<number | null>(null);
+    const [cardeaEmail, setCardeaEmail] = useState(savedCardeaEmail);
+    const [rememberCardeaEmail, setRememberCardeaEmail] = useState(true);
+    const [cardeaRetryAt, setCardeaRetryAt] = useState<number | null>(null);
     const [clock, setClock] = useState(() => Date.now());
 
     const remainingApprovalSeconds =
@@ -57,6 +68,8 @@ export function LoginPage({
         remainingApprovalSeconds === null
             ? null
             : `${Math.floor(remainingApprovalSeconds / 60)}:${String(remainingApprovalSeconds % 60).padStart(2, "0")}`;
+    const retrySeconds =
+        cardeaRetryAt === null ? 0 : Math.max(0, Math.ceil((cardeaRetryAt - clock) / 1_000));
 
     useEffect(() => {
         if (cardeaState !== "waiting" || cardeaExpiresAt === null) return;
@@ -75,6 +88,14 @@ export function LoginPage({
             document.removeEventListener("visibilitychange", updateClock);
         };
     }, [cardeaExpiresAt, cardeaState]);
+
+    useEffect(() => {
+        if (cardeaRetryAt === null) return;
+        const updateClock = () => setClock(Date.now());
+        updateClock();
+        const interval = globalThis.setInterval(updateClock, 1_000);
+        return () => globalThis.clearInterval(interval);
+    }, [cardeaRetryAt]);
 
     useEffect(() => {
         if (cardeaState !== "waiting") return;
@@ -108,12 +129,16 @@ export function LoginPage({
                 } else if (result.status === "cancelled") {
                     setCardeaState("cancelled");
                 } else if (result.status !== "pending") {
+                    setCardeaRetryAt(Date.now() + ERROR_RETRY_SECONDS * 1_000);
                     setCardeaState("error");
                 } else {
                     void poll();
                 }
             } catch {
-                if (active && !requestController.signal.aborted) setCardeaState("error");
+                if (active && !requestController.signal.aborted) {
+                    setCardeaRetryAt(Date.now() + ERROR_RETRY_SECONDS * 1_000);
+                    setCardeaState("error");
+                }
             }
         };
         void poll();
@@ -124,8 +149,19 @@ export function LoginPage({
     }, [cardeaState]);
 
     async function beginCardeaLogin() {
-        if (cardeaState === "starting" || cardeaState === "waiting") {
+        const normalizedEmail = cardeaEmail.trim().toLowerCase();
+        if (
+            cardeaState === "starting" ||
+            cardeaState === "waiting" ||
+            retrySeconds > 0 ||
+            normalizedEmail === ""
+        ) {
             return;
+        }
+        if (rememberCardeaEmail) {
+            localStorage.setItem(CARDEA_EMAIL_KEY, normalizedEmail);
+        } else {
+            localStorage.removeItem(CARDEA_EMAIL_KEY);
         }
         setCardeaState("starting");
         setCardeaExpiresAt(null);
@@ -134,17 +170,29 @@ export function LoginPage({
                 method: "POST",
                 credentials: "same-origin",
                 headers: { Accept: "application/json", "Content-Type": "application/json" },
-                body: JSON.stringify({ deviceId: cardeaDeviceID() }),
+                body: JSON.stringify({ email: normalizedEmail, deviceId: cardeaDeviceID() }),
             });
-            if (!response.ok) throw new Error("approval start unavailable");
+            if (!response.ok) {
+                const retryAfter = Number.parseInt(response.headers.get("Retry-After") ?? "", 10);
+                setCardeaRetryAt(
+                    Date.now() +
+                        (Number.isFinite(retryAfter) && retryAfter > 0
+                            ? retryAfter
+                            : ERROR_RETRY_SECONDS) *
+                            1_000,
+                );
+                throw new Error("approval start unavailable");
+            }
             const result = (await response.json()) as { expires_at?: number };
             if (typeof result.expires_at !== "number" || !Number.isFinite(result.expires_at)) {
                 throw new Error("approval expiry unavailable");
             }
             setClock(Date.now());
+            setCardeaRetryAt(null);
             setCardeaExpiresAt(result.expires_at * 1_000);
             setCardeaState("waiting");
         } catch {
+            setCardeaRetryAt((current) => current ?? Date.now() + ERROR_RETRY_SECONDS * 1_000);
             setCardeaState("error");
         }
     }
@@ -270,7 +318,7 @@ export function LoginPage({
                             severity="error"
                             sx={{ border: "1px solid rgba(198, 65, 65, 0.12)", borderRadius: 2.5 }}
                         >
-                            Cardea could not create or check the approval request. Try again.
+                            The verification email could not be sent. Try again after the cooldown.
                         </Alert>
                     ) : null}
                     {cardeaState === "expired" ? (
@@ -344,11 +392,51 @@ export function LoginPage({
                         />
                     )}
                     {cardeaEnabled ? (
+                        <TextField
+                            label="Email address"
+                            type="email"
+                            value={cardeaEmail}
+                            onChange={(event) => setCardeaEmail(event.target.value)}
+                            autoComplete="email"
+                            required
+                            fullWidth
+                            autoFocus
+                            slotProps={{
+                                htmlInput: {
+                                    inputMode: "email",
+                                    autoCapitalize: "none",
+                                    spellCheck: false,
+                                },
+                            }}
+                        />
+                    ) : null}
+                    {cardeaEnabled ? (
+                        <FormControlLabel
+                            control={
+                                <Checkbox
+                                    checked={rememberCardeaEmail}
+                                    onChange={(event) => {
+                                        setRememberCardeaEmail(event.target.checked);
+                                        if (!event.target.checked) {
+                                            localStorage.removeItem(CARDEA_EMAIL_KEY);
+                                        }
+                                    }}
+                                />
+                            }
+                            label="Remember email on this browser"
+                        />
+                    ) : null}
+                    {cardeaEnabled ? (
                         <Button
                             type="button"
                             onClick={() => void beginCardeaLogin()}
                             aria-keyshortcuts="Meta+Enter Control+Enter"
-                            disabled={cardeaState === "starting" || cardeaState === "waiting"}
+                            disabled={
+                                cardeaState === "starting" ||
+                                cardeaState === "waiting" ||
+                                retrySeconds > 0 ||
+                                cardeaEmail.trim() === ""
+                            }
                             variant="contained"
                             size="large"
                             startIcon={
@@ -373,11 +461,13 @@ export function LoginPage({
                         >
                             {cardeaState === "waiting"
                                 ? "Verification email sent · waiting for Cardea…"
-                                : cardeaState === "expired" ||
-                                    cardeaState === "denied" ||
-                                    cardeaState === "cancelled"
-                                  ? "Send a new verification email"
-                                  : "Send verification email"}
+                                : retrySeconds > 0
+                                  ? `Try again in ${retrySeconds}s`
+                                  : cardeaState === "expired" ||
+                                      cardeaState === "denied" ||
+                                      cardeaState === "cancelled"
+                                    ? "Send a new verification email"
+                                    : "Send verification email"}
                         </Button>
                     ) : (
                         <Button

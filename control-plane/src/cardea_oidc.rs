@@ -16,11 +16,12 @@ const REDIRECT_URI: &str = "https://dev.skydriver.stormbird.xyz/api/auth/cardea/
 const CLIENT_KEY_ID_BINDING: &str = "CARDEA_CLIENT_KEY_ID";
 const CLIENT_PRIVATE_KEY_BINDING: &str = "CARDEA_CLIENT_PRIVATE_KEY";
 const STATE_KEY_BINDING: &str = "CARDEA_STATE_KEY";
+const EMAIL_RATE_LIMIT_BINDING: &str = "SKYDRIVER_CARDEA_EMAIL_RATE_LIMITER";
 const STATE_COOKIE: &str = "skydriver_cardea_oidc";
 const STATE_LIFETIME_SECONDS: u64 = 5 * 60;
 const LOGIN_ACTION: &str = "session.create";
 const LOGIN_RESOURCE: &str = "https://dev.skydriver.stormbird.xyz";
-const LOGIN_EMAIL: &str = "dravengarden@gmail.com";
+const ERROR_RETRY_SECONDS: u64 = 60;
 const STATUS_LONG_POLL_ATTEMPTS: usize = 20;
 const STATUS_LONG_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -75,47 +76,56 @@ struct ApprovalExchangeResponse {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ApprovalStartRequest {
+    email: String,
     device_id: String,
 }
 
 pub(crate) async fn begin_approval(request: &mut Request, env: &Env) -> Result<Response> {
     require_development(env)?;
-    let device_id = if request
+    let source_ip = request
         .headers()
-        .get("Content-Type")?
-        .is_some_and(|value| value.starts_with("application/json"))
-    {
-        Some(request.json::<ApprovalStartRequest>().await?.device_id)
-    } else {
-        None
+        .get("CF-Connecting-IP")?
+        .unwrap_or_else(|| "unknown".to_owned());
+    let outcome = env
+        .rate_limiter(EMAIL_RATE_LIMIT_BINDING)?
+        .limit(format!("cardea-email:{source_ip}"))
+        .await?;
+    if !outcome.success {
+        return approval_start_error(429);
+    }
+    let Ok(start) = request.json::<ApprovalStartRequest>().await else {
+        return approval_start_error(400);
     };
     let cf = request.cf();
     let observed = cardea_oidc_client::ObservedRequestContext {
-        source_ip: request.headers().get("CF-Connecting-IP")?,
+        source_ip: Some(source_ip),
         country: cf.and_then(worker::Cf::country),
         region: cf.and_then(worker::Cf::region),
         city: cf.and_then(worker::Cf::city),
         edge_request_id: request.headers().get("CF-Ray")?,
         edge_colo: cf.map(worker::Cf::colo),
-        continuity_device_id: device_id,
+        continuity_device_id: Some(start.device_id),
     };
     let request_started_at = now_seconds();
     let state = random_value()?;
     let idempotency_key = random_value()?;
     let access_token = client_access_token(env, request_started_at).await?;
-    let mut request_body = cardea_oidc_client::email_login_approval_request_with_context(
+    let request_body = cardea_oidc_client::email_login_approval_request_with_context(
         &idempotency_key,
         "SkyDriver",
         "Development",
         LOGIN_RESOURCE,
         REDIRECT_URI,
         &state,
-        LOGIN_EMAIL,
+        &start.email,
         STATE_LIFETIME_SECONDS,
         &observed,
         None,
     )
-    .ok_or_else(|| worker::Error::RustError("invalid Cardea approval request".into()))?;
+    .ok_or_else(|| worker::Error::RustError("invalid Cardea approval request".into()));
+    let Ok(mut request_body) = request_body else {
+        return approval_start_error(400);
+    };
     request_body
         .display
         .facts
@@ -129,7 +139,7 @@ pub(crate) async fn begin_approval(request: &mut Request, env: &Env) -> Result<R
     )
     .await?;
     if !matches!(approval.status_code(), 200 | 201) {
-        return Response::error("Cardea approval unavailable", 503);
+        return approval_start_error(503);
     }
     let approval: ApprovalResponse = approval.json().await?;
     let response_received_at = now_seconds();
@@ -153,6 +163,15 @@ pub(crate) async fn begin_approval(request: &mut Request, env: &Env) -> Result<R
         "Set-Cookie",
         &approval_cookie(&cookie, STATE_LIFETIME_SECONDS),
     )?;
+    Ok(response)
+}
+
+fn approval_start_error(status: u16) -> Result<Response> {
+    let mut response = Response::error("Verification email unavailable", status)?;
+    response.headers_mut().set("Cache-Control", "no-store")?;
+    response
+        .headers_mut()
+        .set("Retry-After", &ERROR_RETRY_SECONDS.to_string())?;
     Ok(response)
 }
 
