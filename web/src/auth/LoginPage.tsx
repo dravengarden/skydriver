@@ -33,6 +33,7 @@ export function LoginPage({
     const [savedIdentity, setSavedIdentity] = useState(operatorAccount);
     const [identityError, setIdentityError] = useState(false);
     const [password, setPassword] = useState("");
+    const [email, setEmail] = useState("");
     const [cardeaState, setCardeaState] = useState<
         "idle" | "starting" | "waiting" | "expired" | "denied" | "cancelled" | "error"
     >("idle");
@@ -118,7 +119,8 @@ export function LoginPage({
             const response = await fetch("/api/auth/cardea/start", {
                 method: "POST",
                 credentials: "same-origin",
-                headers: { Accept: "application/json" },
+                headers: { Accept: "application/json", "Content-Type": "application/json" },
+                body: JSON.stringify({ email }),
             });
             if (!response.ok) throw new Error("approval start unavailable");
             const result = (await response.json()) as { expires_at?: number };
@@ -316,10 +318,26 @@ export function LoginPage({
                         />
                     )}
                     {cardeaEnabled ? (
+                        <TextField
+                            label="Gmail address"
+                            type="email"
+                            autoComplete="email"
+                            value={email}
+                            onChange={(event) => setEmail(event.target.value)}
+                            disabled={cardeaState === "starting" || cardeaState === "waiting"}
+                            required
+                            fullWidth
+                        />
+                    ) : null}
+                    {cardeaEnabled ? (
                         <Button
                             type="button"
                             onClick={() => void beginCardeaLogin()}
-                            disabled={cardeaState === "starting" || cardeaState === "waiting"}
+                            disabled={
+                                email.trim() === "" ||
+                                cardeaState === "starting" ||
+                                cardeaState === "waiting"
+                            }
                             variant="contained"
                             size="large"
                             startIcon={
@@ -343,12 +361,12 @@ export function LoginPage({
                             }}
                         >
                             {cardeaState === "waiting"
-                                ? "Waiting for Cardea approval…"
+                                ? "Waiting for email and Cardea approval…"
                                 : cardeaState === "expired" ||
                                     cardeaState === "denied" ||
                                     cardeaState === "cancelled"
-                                  ? "Request new Cardea approval"
-                                  : "Request Cardea approval"}
+                                  ? "Send a new confirmation link"
+                                  : "Send confirmation link"}
                         </Button>
                     ) : (
                         <Button
@@ -383,7 +401,8 @@ export function LoginPage({
                             variant="body2"
                             sx={{ color: "#536d7b", textAlign: "center", fontWeight: 700 }}
                         >
-                            Approval expires in {remainingApprovalLabel}
+                            Check your email, then approve in Cardea · expires in{" "}
+                            {remainingApprovalLabel}
                         </Typography>
                     ) : null}
                     <Typography

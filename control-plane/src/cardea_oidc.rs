@@ -71,27 +71,30 @@ struct ApprovalExchangeResponse {
     consumed_at: u64,
 }
 
-pub(crate) async fn begin_approval(request: &Request, env: &Env) -> Result<Response> {
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BeginApprovalRequest {
+    email: String,
+}
+
+pub(crate) async fn begin_approval(request: &mut Request, env: &Env) -> Result<Response> {
     require_development(env)?;
+    let Ok(command) = request.json::<BeginApprovalRequest>().await else {
+        return Response::error("invalid email", 400);
+    };
     let request_started_at = now_seconds();
     let state = random_value()?;
     let idempotency_key = random_value()?;
     let access_token = client_access_token(env, request_started_at).await?;
-    let observed = cardea_oidc_client::ObservedRequestContext {
-        source_ip: request.headers().get("CF-Connecting-IP")?,
-        country: request.headers().get("CF-IPCountry")?,
-        edge_request_id: request.headers().get("CF-Ray")?,
-    };
-    let request_body = cardea_oidc_client::login_approval_request(
+    let request_body = cardea_oidc_client::email_login_approval_request(
         &idempotency_key,
         "Skydriver",
         "Development",
         LOGIN_RESOURCE,
         REDIRECT_URI,
         &state,
+        &command.email,
         STATE_LIFETIME_SECONDS,
-        &observed,
-        None,
     )
     .ok_or_else(|| worker::Error::RustError("invalid Cardea approval request".into()))?;
     let body = serde_json::to_value(request_body)?;

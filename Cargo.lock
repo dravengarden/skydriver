@@ -240,7 +240,7 @@ dependencies = [
 [[package]]
 name = "cardea-oidc-client"
 version = "0.1.0"
-source = "git+ssh://git@github.com/dravengarden/cardea.git?rev=b39b986bbc3433e463fe33966944fbbb41e68ba4#b39b986bbc3433e463fe33966944fbbb41e68ba4"
+source = "git+ssh://git@github.com/dravengarden/cardea.git?rev=31c658da0285700a17c567fa4f7e23630bed3cca#31c658da0285700a17c567fa4f7e23630bed3cca"
 dependencies = [
  "base64",
  "ed25519-dalek",
