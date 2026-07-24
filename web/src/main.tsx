@@ -17,3 +17,9 @@ createRoot(rootElement).render(
         </QueryClientProvider>
     </StrictMode>,
 );
+
+if ("serviceWorker" in navigator) {
+    globalThis.addEventListener("load", () => {
+        void navigator.serviceWorker.register("/service-worker.js").catch(() => undefined);
+    });
+}
