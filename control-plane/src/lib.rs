@@ -802,6 +802,7 @@ fn security_headers(mut response: Response) -> Result<Response> {
     headers.set(
         "Content-Security-Policy",
         "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; \
+         frame-src https://cardea.stormbird.xyz; \
          form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
          img-src 'self' data:; font-src 'self' data:; connect-src 'self'",
     )?;
@@ -811,7 +812,8 @@ fn security_headers(mut response: Response) -> Result<Response> {
     headers.set("Referrer-Policy", "no-referrer")?;
     headers.set(
         "Permissions-Policy",
-        "camera=(), geolocation=(), microphone=(), payment=(), usb=()",
+        "camera=(), geolocation=(), microphone=(), payment=(), usb=(), \
+         publickey-credentials-get=(self \"https://cardea.stormbird.xyz\")",
     )?;
     headers.set("Cross-Origin-Opener-Policy", "same-origin")?;
     headers.set("Cross-Origin-Resource-Policy", "same-origin")?;
