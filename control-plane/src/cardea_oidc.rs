@@ -11,8 +11,6 @@ use worker::{
 use super::operator_sessions as session;
 
 const ISSUER: &str = "https://cardea.stormbird.xyz";
-const CLIENT_ID: &str = "skydriver-dev";
-const REDIRECT_URI: &str = "https://dev.skydriver.stormbird.xyz/api/auth/cardea/callback";
 const CLIENT_KEY_ID_BINDING: &str = "CARDEA_CLIENT_KEY_ID";
 const CLIENT_PRIVATE_KEY_BINDING: &str = "CARDEA_CLIENT_PRIVATE_KEY";
 const STATE_KEY_BINDING: &str = "CARDEA_STATE_KEY";
@@ -20,7 +18,6 @@ const EMAIL_RATE_LIMIT_BINDING: &str = "SKYDRIVER_CARDEA_EMAIL_RATE_LIMITER";
 const STATE_COOKIE: &str = "skydriver_cardea_oidc";
 const STATE_LIFETIME_SECONDS: u64 = 5 * 60;
 const LOGIN_ACTION: &str = "session.create";
-const LOGIN_RESOURCE: &str = "https://dev.skydriver.stormbird.xyz";
 const ERROR_RETRY_SECONDS: u64 = 60;
 const SESSION_POLICY_SCHEMA: &str = "dravengarden.cardea.consumer-session-policy/v1";
 const MINIMUM_SESSION_LIFETIME_SECONDS: u64 = 5 * 60;
@@ -29,6 +26,14 @@ const STATUS_LONG_POLL_ATTEMPTS: usize = 20;
 const STATUS_LONG_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 type HmacSha256 = Hmac<Sha256>;
+
+#[derive(Clone, Copy)]
+struct Configuration {
+    client_id: &'static str,
+    display_environment: &'static str,
+    resource: &'static str,
+    redirect_uri: &'static str,
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -92,7 +97,7 @@ struct ApprovalStartRequest {
 }
 
 pub(crate) async fn begin_approval(request: &mut Request, env: &Env) -> Result<Response> {
-    require_development(env)?;
+    let configuration = configuration(env)?;
     let source_ip = request
         .headers()
         .get("CF-Connecting-IP")?
@@ -120,13 +125,13 @@ pub(crate) async fn begin_approval(request: &mut Request, env: &Env) -> Result<R
     let request_started_at = now_seconds();
     let state = random_value()?;
     let idempotency_key = random_value()?;
-    let access_token = client_access_token(env, request_started_at).await?;
+    let access_token = client_access_token(env, &configuration, request_started_at).await?;
     let request_body = cardea_oidc_client::email_login_approval_request_with_context(
         &idempotency_key,
         "SkyDriver",
-        "Development",
-        LOGIN_RESOURCE,
-        REDIRECT_URI,
+        configuration.display_environment,
+        configuration.resource,
+        configuration.redirect_uri,
         &state,
         &start.email,
         STATE_LIFETIME_SECONDS,
@@ -154,7 +159,13 @@ pub(crate) async fn begin_approval(request: &mut Request, env: &Env) -> Result<R
     }
     let approval: ApprovalResponse = approval.json().await?;
     let response_received_at = now_seconds();
-    if !valid_pending_approval(&approval, &state, request_started_at, response_received_at) {
+    if !valid_pending_approval(
+        &approval,
+        &configuration,
+        &state,
+        request_started_at,
+        response_received_at,
+    ) {
         return Response::error("Cardea approval invalid", 503);
     }
     let cookie = encode_approval_cookie(
@@ -187,7 +198,7 @@ fn approval_start_error(status: u16) -> Result<Response> {
 }
 
 pub(crate) async fn approval_status(request: &Request, env: &Env) -> Result<Response> {
-    require_development(env)?;
+    let configuration = configuration(env)?;
     let Some(encoded) = cookie_value(request, STATE_COOKIE)? else {
         return Response::error("approval login missing", 401);
     };
@@ -196,7 +207,7 @@ pub(crate) async fn approval_status(request: &Request, env: &Env) -> Result<Resp
     if transaction.issued_at > now || now - transaction.issued_at >= STATE_LIFETIME_SECONDS {
         return terminal_status("expired");
     }
-    let access_token = client_access_token(env, now).await?;
+    let access_token = client_access_token(env, &configuration, now).await?;
     let path = format!("/v1/approval-requests/{}", transaction.approval_id);
     for attempt in 0..STATUS_LONG_POLL_ATTEMPTS {
         let mut response = cardea_json_request(Method::Get, &path, &access_token, None).await?;
@@ -204,7 +215,7 @@ pub(crate) async fn approval_status(request: &Request, env: &Env) -> Result<Resp
             return Response::error("Cardea approval unavailable", 503);
         }
         let approval: ApprovalResponse = response.json().await?;
-        if !valid_owned_approval(&approval, &transaction) {
+        if !valid_owned_approval(&approval, &configuration, &transaction) {
             return Response::error("Cardea approval invalid", 503);
         }
         match approval.status.as_str() {
@@ -218,8 +229,15 @@ pub(crate) async fn approval_status(request: &Request, env: &Env) -> Result<Resp
                 }));
             }
             "approved" => {
-                return complete_approval(request, env, &access_token, &transaction, approval)
-                    .await;
+                return complete_approval(
+                    request,
+                    env,
+                    &configuration,
+                    &access_token,
+                    &transaction,
+                    approval,
+                )
+                .await;
             }
             "denied" | "cancelled" | "expired" => return terminal_status(&approval.status),
             _ => return Response::error("Cardea approval invalid", 503),
@@ -228,12 +246,12 @@ pub(crate) async fn approval_status(request: &Request, env: &Env) -> Result<Resp
     Response::error("Cardea approval unavailable", 503)
 }
 
-async fn client_access_token(env: &Env, now: u64) -> Result<String> {
+async fn client_access_token(env: &Env, configuration: &Configuration, now: u64) -> Result<String> {
     let token_endpoint = format!("{ISSUER}/oauth2/token");
     let assertion = cardea_oidc_client::client_assertion(
         &secret_bytes(env, CLIENT_PRIVATE_KEY_BINDING)?,
         &env.var(CLIENT_KEY_ID_BINDING)?.to_string(),
-        CLIENT_ID,
+        configuration.client_id,
         &token_endpoint,
         &random_value()?,
         now,
@@ -241,7 +259,7 @@ async fn client_access_token(env: &Env, now: u64) -> Result<String> {
     .ok_or_else(|| worker::Error::RustError("Cardea assertion generation failed".to_owned()))?;
     let body = serde_urlencoded::to_string([
         ("grant_type", "client_credentials"),
-        ("client_id", CLIENT_ID),
+        ("client_id", configuration.client_id),
         (
             "client_assertion_type",
             "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
@@ -297,14 +315,15 @@ async fn cardea_json_request(
 
 fn valid_pending_approval(
     approval: &ApprovalResponse,
+    configuration: &Configuration,
     state: &str,
     request_started_at: u64,
     response_received_at: u64,
 ) -> bool {
     approval.schema == "dravengarden.cardea.approval-request/v1"
-        && approval.client_id == CLIENT_ID
+        && approval.client_id == configuration.client_id
         && approval.action == LOGIN_ACTION
-        && approval.resource == LOGIN_RESOURCE
+        && approval.resource == configuration.resource
         && approval.status == "pending"
         && approval.approval_id.len() == 43
         && approval.created_at >= request_started_at
@@ -316,17 +335,22 @@ fn valid_pending_approval(
         && state.len() == 43
 }
 
-fn valid_owned_approval(approval: &ApprovalResponse, transaction: &ApprovalLoginCookie) -> bool {
+fn valid_owned_approval(
+    approval: &ApprovalResponse,
+    configuration: &Configuration,
+    transaction: &ApprovalLoginCookie,
+) -> bool {
     approval.schema == "dravengarden.cardea.approval-request/v1"
         && approval.approval_id == transaction.approval_id
-        && approval.client_id == CLIENT_ID
+        && approval.client_id == configuration.client_id
         && approval.action == LOGIN_ACTION
-        && approval.resource == LOGIN_RESOURCE
+        && approval.resource == configuration.resource
 }
 
 async fn complete_approval(
     request: &Request,
     env: &Env,
+    configuration: &Configuration,
     access_token: &str,
     transaction: &ApprovalLoginCookie,
     approval: ApprovalResponse,
@@ -336,7 +360,7 @@ async fn complete_approval(
     };
     let body = serde_json::json!({
         "code": code,
-        "redirect_uri": REDIRECT_URI,
+        "redirect_uri": configuration.redirect_uri,
         "session_policy": SESSION_POLICY_SCHEMA,
     });
     let mut response = cardea_json_request(
@@ -352,10 +376,10 @@ async fn complete_approval(
     let exchange: ApprovalExchangeResponse = response.json().await?;
     if exchange.schema != "dravengarden.cardea.approval-exchange/v1"
         || exchange.approval_id != transaction.approval_id
-        || exchange.client_id != CLIENT_ID
+        || exchange.client_id != configuration.client_id
         || exchange.subject_id != "draven"
         || exchange.action != LOGIN_ACTION
-        || exchange.resource != LOGIN_RESOURCE
+        || exchange.resource != configuration.resource
         || exchange.state != transaction.state
         || exchange.decided_at < transaction.issued_at
         || exchange.consumed_at < exchange.decided_at
@@ -467,13 +491,24 @@ fn cookie_value(request: &Request, name: &str) -> Result<Option<String>> {
     Ok(values.first().map(|value| (*value).to_owned()))
 }
 
-fn require_development(env: &Env) -> Result<()> {
-    if env.var("SKYDRIVER_ENVIRONMENT")?.to_string() != "dev" {
-        return Err(worker::Error::RustError(
+fn configuration(env: &Env) -> Result<Configuration> {
+    match env.var("SKYDRIVER_ENVIRONMENT")?.to_string().as_str() {
+        "dev" => Ok(Configuration {
+            client_id: "skydriver-dev",
+            display_environment: "Development",
+            resource: "https://dev.skydriver.stormbird.xyz",
+            redirect_uri: "https://dev.skydriver.stormbird.xyz/api/auth/cardea/callback",
+        }),
+        "prod" => Ok(Configuration {
+            client_id: "skydriver-prod",
+            display_environment: "Production",
+            resource: "https://skydriver.stormbird.xyz",
+            redirect_uri: "https://skydriver.stormbird.xyz/api/auth/cardea/callback",
+        }),
+        _ => Err(worker::Error::RustError(
             "Cardea OIDC is not configured for this environment".to_owned(),
-        ));
+        )),
     }
-    Ok(())
 }
 fn now_seconds() -> u64 {
     Date::now().as_millis() / 1_000
@@ -484,12 +519,13 @@ mod tests {
     use super::*;
 
     fn pending_approval(created_at: u64, expires_at: u64) -> ApprovalResponse {
+        let configuration = configuration_for_test();
         ApprovalResponse {
             schema: "dravengarden.cardea.approval-request/v1".to_owned(),
             approval_id: "a".repeat(43),
-            client_id: CLIENT_ID.to_owned(),
+            client_id: configuration.client_id.to_owned(),
             action: LOGIN_ACTION.to_owned(),
-            resource: LOGIN_RESOURCE.to_owned(),
+            resource: configuration.resource.to_owned(),
             status: "pending".to_owned(),
             created_at,
             expires_at,
@@ -502,8 +538,10 @@ mod tests {
     #[test]
     fn pending_approval_accepts_network_delay_across_seconds() {
         let approval = pending_approval(1_002, 1_302);
+        let configuration = configuration_for_test();
         assert!(valid_pending_approval(
             &approval,
+            &configuration,
             &"s".repeat(43),
             1_000,
             1_004,
@@ -514,17 +552,29 @@ mod tests {
     fn pending_approval_rejects_creation_outside_request_window() {
         let before_request = pending_approval(999, 1_299);
         let after_response = pending_approval(1_005, 1_305);
+        let configuration = configuration_for_test();
         assert!(!valid_pending_approval(
             &before_request,
+            &configuration,
             &"s".repeat(43),
             1_000,
             1_004,
         ));
         assert!(!valid_pending_approval(
             &after_response,
+            &configuration,
             &"s".repeat(43),
             1_000,
             1_004,
         ));
+    }
+
+    fn configuration_for_test() -> Configuration {
+        Configuration {
+            client_id: "skydriver-dev",
+            display_environment: "Development",
+            resource: "https://dev.skydriver.stormbird.xyz",
+            redirect_uri: "https://dev.skydriver.stormbird.xyz/api/auth/cardea/callback",
+        }
     }
 }

@@ -33,7 +33,7 @@ export function LoginPage({
     error,
     onLogin,
 }: LoginPageProps) {
-    const cardeaEnabled = environment === "dev";
+    const cardeaEnabled = environment === "dev" || environment === "prod";
     const [savedIdentity, setSavedIdentity] = useState(operatorAccount);
     const [identityError, setIdentityError] = useState(false);
     const [password, setPassword] = useState("");
