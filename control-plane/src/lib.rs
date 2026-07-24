@@ -793,6 +793,11 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _context: ScheduleConte
 }
 
 fn security_headers(mut response: Response, is_cross_origin_brand_asset: bool) -> Result<Response> {
+    let is_cross_origin_brand_asset = is_cross_origin_brand_asset
+        || response
+            .headers()
+            .get("Content-Type")?
+            .is_some_and(|content_type| content_type == "image/png");
     let headers = response.headers_mut();
     headers.set(
         "Content-Security-Policy",
