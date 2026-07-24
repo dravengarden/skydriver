@@ -87,12 +87,13 @@ struct ControlStateRow {
     reason = "the fetch entrypoint keeps the complete HTTP route table visible"
 )]
 pub async fn main(request: Request, env: Env, context: Context) -> Result<Response> {
+    let is_cross_origin_brand_asset = request.path() == "/skydriver-mark.png";
     if !request.path().starts_with("/api/") {
         return env
             .assets("ASSETS")?
             .fetch_request(request)
             .await
-            .and_then(security_headers);
+            .and_then(|response| security_headers(response, is_cross_origin_brand_asset));
     }
 
     if (request.path().starts_with("/api/v2/") || request.path().starts_with("/api/admin/"))
@@ -774,7 +775,7 @@ pub async fn main(request: Request, env: Env, context: Context) -> Result<Respon
         )
         .run(request, env)
         .await
-        .and_then(security_headers)
+        .and_then(|response| security_headers(response, false))
 }
 
 fn wasm_sdk_acceptance() -> Result<Response> {
@@ -791,7 +792,7 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _context: ScheduleConte
     }
 }
 
-fn security_headers(mut response: Response) -> Result<Response> {
+fn security_headers(mut response: Response, is_cross_origin_brand_asset: bool) -> Result<Response> {
     let headers = response.headers_mut();
     headers.set(
         "Content-Security-Policy",
@@ -808,7 +809,14 @@ fn security_headers(mut response: Response) -> Result<Response> {
         "camera=(), geolocation=(), microphone=(), payment=(), usb=()",
     )?;
     headers.set("Cross-Origin-Opener-Policy", "same-origin")?;
-    headers.set("Cross-Origin-Resource-Policy", "same-origin")?;
+    headers.set(
+        "Cross-Origin-Resource-Policy",
+        if is_cross_origin_brand_asset {
+            "cross-origin"
+        } else {
+            "same-origin"
+        },
+    )?;
     Ok(response)
 }
 
