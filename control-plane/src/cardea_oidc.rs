@@ -141,7 +141,7 @@ pub(crate) fn launch(env: &Env) -> Result<Response> {
         ("code_challenge_method", "S256"),
     ]);
     let encoded = encode_launch_cookie(&transaction, env)?;
-    let mut response = Response::redirect_with_status(authorize, 302)?;
+    let mut response = redirect_response(authorize.as_str(), 302)?;
     response.headers_mut().set(
         "Set-Cookie",
         &launch_cookie(&encoded, STATE_LIFETIME_SECONDS),
@@ -201,7 +201,7 @@ pub(crate) async fn callback(request: &Request, env: &Env) -> Result<Response> {
         .ok_or_else(|| worker::Error::RustError("operator session cookie missing".to_owned()))?;
     let home = worker::Url::parse(configuration.resource)
         .map_err(|_| worker::Error::RustError("application URL invalid".to_owned()))?;
-    let mut response = Response::redirect_with_status(home, 303)?;
+    let mut response = redirect_response(home.as_str(), 303)?;
     response
         .headers_mut()
         .append("Set-Cookie", &session_cookie)?;
@@ -709,6 +709,12 @@ fn launch_cookie(value: &str, maximum_age: u64) -> String {
 
 fn clear_launch_cookie() -> String {
     launch_cookie("", 0)
+}
+
+fn redirect_response(location: &str, status: u16) -> Result<Response> {
+    let mut response = Response::empty()?.with_status(status);
+    response.headers_mut().set("Location", location)?;
+    Ok(response)
 }
 
 fn clear_approval_cookie() -> String {
