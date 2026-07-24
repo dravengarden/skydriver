@@ -11,7 +11,7 @@ interface CardeaLoginFormProps {
     readonly state: CardeaLoginState;
     readonly retrySeconds: number;
     readonly remainingLabel: string | null;
-    readonly onSubmit: (detail: CardeaLoginSubmitDetail) => void;
+    readonly onSubmit: (detail: CardeaLoginSubmitDetail) => Promise<string | null>;
 }
 
 export function CardeaLoginForm({
@@ -27,10 +27,15 @@ export function CardeaLoginForm({
 
     useEffect(() => {
         const login = createCardeaEmailLogin("skydriver");
-        login.onSubmit = (detail) => submit.current(detail);
+        login.onSubmit = (detail) => {
+            void submit.current(detail).then((authenticationUrl) => {
+                if (detail.method !== "passkey") return;
+                if (authenticationUrl === null) login.passkeyUnavailable();
+                else login.authenticationUrl = authenticationUrl;
+            });
+        };
         host.current?.replaceChildren(login);
         element.current = login;
-        login.focusEmail();
         return () => {
             login.onSubmit = null;
             login.remove();

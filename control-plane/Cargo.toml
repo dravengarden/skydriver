@@ -12,7 +12,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 aes-gcm = { version = "0.10.3", default-features = false, features = ["aes", "alloc"] }
 base64 = "0.22.1"
-cardea-oidc-client = { git = "ssh://git@github.com/dravengarden/cardea.git", rev = "c2f57d9eb5060b0bc4ae149b16c18d0ef1b6deee" }
+cardea-oidc-client = { git = "ssh://git@github.com/dravengarden/cardea.git", rev = "218dd42a09b229f7babc5e7a8e8add86ec9ad0cf" }
 skydriver-driver-contract = { path = "../crates/skydriver-driver-contract" }
 skydriver-sdk-core = { path = "../crates/skydriver-sdk-core" }
 getrandom = { version = "0.4.3", features = ["wasm_js"] }

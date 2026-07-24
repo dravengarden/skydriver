@@ -15,8 +15,8 @@ importers:
   web:
     dependencies:
       '@dravengarden/cardea-consumer-ui':
-        specifier: git+ssh://git@github.com/dravengarden/cardea.git#9a86ab75f42bcb02992d581497d42c5154b5bfdd
-        version: git+ssh://git@github.com/dravengarden/cardea.git#9a86ab75f42bcb02992d581497d42c5154b5bfdd
+        specifier: git+ssh://git@github.com/dravengarden/cardea.git#218dd42a09b229f7babc5e7a8e8add86ec9ad0cf
+        version: git+ssh://git@github.com/dravengarden/cardea.git#218dd42a09b229f7babc5e7a8e8add86ec9ad0cf
       '@emotion/react':
         specifier: 11.14.0
         version: 11.14.0(@types/react@19.2.17)(react@19.2.7)
@@ -161,8 +161,8 @@ packages:
     resolution: {integrity: sha512-IchNf6dN4tHoMFIn/7OE8LWZ19Y6q/67Bmf6vnGREv8RSbBVb9LPJxEcnwrcwX6ixSvaiGoomAUvu4YSxXrVgw==}
     engines: {node: '>=12'}
 
-  '@dravengarden/cardea-consumer-ui@git+ssh://git@github.com/dravengarden/cardea.git#9a86ab75f42bcb02992d581497d42c5154b5bfdd':
-    resolution: {commit: 9a86ab75f42bcb02992d581497d42c5154b5bfdd, repo: git@github.com:dravengarden/cardea.git, type: git}
+  '@dravengarden/cardea-consumer-ui@git+ssh://git@github.com/dravengarden/cardea.git#218dd42a09b229f7babc5e7a8e8add86ec9ad0cf':
+    resolution: {commit: 218dd42a09b229f7babc5e7a8e8add86ec9ad0cf, repo: git@github.com:dravengarden/cardea.git, type: git}
     version: 0.1.0
 
   '@emnapi/core@1.11.1':
@@ -1733,7 +1733,7 @@ snapshots:
     dependencies:
       '@jridgewell/trace-mapping': 0.3.9
 
-  '@dravengarden/cardea-consumer-ui@git+ssh://git@github.com/dravengarden/cardea.git#9a86ab75f42bcb02992d581497d42c5154b5bfdd': {}
+  '@dravengarden/cardea-consumer-ui@git+ssh://git@github.com/dravengarden/cardea.git#218dd42a09b229f7babc5e7a8e8add86ec9ad0cf': {}
 
   '@emnapi/core@1.11.1':
     dependencies:

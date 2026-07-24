@@ -86,6 +86,7 @@ struct ApprovalResponse {
     expires_at: u64,
     decided_at: Option<u64>,
     user_url: String,
+    authentication_url: Option<String>,
     exchange_code: Option<String>,
 }
 
@@ -114,7 +115,8 @@ struct SessionPolicy {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ApprovalStartRequest {
-    email: String,
+    method: String,
+    email: Option<String>,
     device_id: String,
 }
 
@@ -212,6 +214,41 @@ pub(crate) async fn callback(request: &Request, env: &Env) -> Result<Response> {
     Ok(response)
 }
 
+fn login_approval_request(
+    start: &ApprovalStartRequest,
+    idempotency_key: &str,
+    configuration: &Configuration,
+    state: &str,
+    observed: &cardea_oidc_client::ObservedRequestContext,
+) -> Option<cardea_oidc_client::CreateApprovalRequest> {
+    match (start.method.as_str(), start.email.as_deref()) {
+        ("passkey", None) => cardea_oidc_client::passkey_login_approval_request_with_context(
+            idempotency_key,
+            "SkyDriver",
+            configuration.display_environment,
+            configuration.resource,
+            configuration.redirect_uri,
+            state,
+            STATE_LIFETIME_SECONDS,
+            observed,
+            None,
+        ),
+        ("email", Some(email)) => cardea_oidc_client::email_login_approval_request_with_context(
+            idempotency_key,
+            "SkyDriver",
+            configuration.display_environment,
+            configuration.resource,
+            configuration.redirect_uri,
+            state,
+            email,
+            STATE_LIFETIME_SECONDS,
+            observed,
+            None,
+        ),
+        _ => None,
+    }
+}
+
 pub(crate) async fn begin_approval(request: &mut Request, env: &Env) -> Result<Response> {
     let configuration = configuration(env)?;
     let source_ip = request
@@ -220,7 +257,7 @@ pub(crate) async fn begin_approval(request: &mut Request, env: &Env) -> Result<R
         .unwrap_or_else(|| "unknown".to_owned());
     let outcome = env
         .rate_limiter(EMAIL_RATE_LIMIT_BINDING)?
-        .limit(format!("cardea-email:{source_ip}"))
+        .limit(format!("cardea-login:{source_ip}"))
         .await?;
     if !outcome.success {
         return approval_start_error(429);
@@ -236,25 +273,15 @@ pub(crate) async fn begin_approval(request: &mut Request, env: &Env) -> Result<R
         city: cf.and_then(worker::Cf::city),
         edge_request_id: request.headers().get("CF-Ray")?,
         edge_colo: cf.map(worker::Cf::colo),
-        continuity_device_id: Some(start.device_id),
+        continuity_device_id: Some(start.device_id.clone()),
     };
     let request_started_at = now_seconds();
     let state = random_value()?;
     let idempotency_key = random_value()?;
     let access_token = client_access_token(env, &configuration, request_started_at).await?;
-    let request_body = cardea_oidc_client::email_login_approval_request_with_context(
-        &idempotency_key,
-        "SkyDriver",
-        configuration.display_environment,
-        configuration.resource,
-        configuration.redirect_uri,
-        &state,
-        &start.email,
-        STATE_LIFETIME_SECONDS,
-        &observed,
-        None,
-    )
-    .ok_or_else(|| worker::Error::RustError("invalid Cardea approval request".into()));
+    let request_body =
+        login_approval_request(&start, &idempotency_key, &configuration, &state, &observed)
+            .ok_or_else(|| worker::Error::RustError("invalid Cardea approval request".into()));
     let Ok(mut request_body) = request_body else {
         return approval_start_error(400);
     };
@@ -274,6 +301,14 @@ pub(crate) async fn begin_approval(request: &mut Request, env: &Env) -> Result<R
         return approval_start_error(503);
     }
     let approval: ApprovalResponse = approval.json().await?;
+    let expected_schema = if start.method == "passkey" {
+        "dravengarden.cardea.approval-request/v2"
+    } else {
+        "dravengarden.cardea.approval-request/v1"
+    };
+    if approval.schema != expected_schema {
+        return Response::error("Cardea approval invalid", 503);
+    }
     let response_received_at = now_seconds();
     if !valid_pending_approval(
         &approval,
@@ -284,6 +319,16 @@ pub(crate) async fn begin_approval(request: &mut Request, env: &Env) -> Result<R
     ) {
         return Response::error("Cardea approval invalid", 503);
     }
+    let authentication_url = match (
+        start.method.as_str(),
+        approval.authentication_url.as_deref(),
+    ) {
+        ("passkey", Some(path)) if path == format!("/passkey-approve/{}", approval.approval_id) => {
+            Some(format!("{ISSUER}{path}"))
+        }
+        ("email", None) => None,
+        _ => return Response::error("Cardea approval invalid", 503),
+    };
     let cookie = encode_approval_cookie(
         &ApprovalLoginCookie {
             approval_id: approval.approval_id,
@@ -294,7 +339,8 @@ pub(crate) async fn begin_approval(request: &mut Request, env: &Env) -> Result<R
     )?;
     let mut response = Response::from_json(&serde_json::json!({
         "status": "pending",
-        "expires_at": approval.expires_at
+        "expires_at": approval.expires_at,
+        "authentication_url": authentication_url
     }))?;
     response.headers_mut().set("Cache-Control", "no-store")?;
     response.headers_mut().set(
@@ -305,7 +351,7 @@ pub(crate) async fn begin_approval(request: &mut Request, env: &Env) -> Result<R
 }
 
 fn approval_start_error(status: u16) -> Result<Response> {
-    let mut response = Response::error("Verification email unavailable", status)?;
+    let mut response = Response::error("Cardea authentication unavailable", status)?;
     response.headers_mut().set("Cache-Control", "no-store")?;
     response
         .headers_mut()
@@ -510,8 +556,10 @@ fn valid_pending_approval(
     request_started_at: u64,
     response_received_at: u64,
 ) -> bool {
-    approval.schema == "dravengarden.cardea.approval-request/v1"
-        && approval.client_id == configuration.client_id
+    matches!(
+        approval.schema.as_str(),
+        "dravengarden.cardea.approval-request/v1" | "dravengarden.cardea.approval-request/v2"
+    ) && approval.client_id == configuration.client_id
         && approval.action == LOGIN_ACTION
         && approval.resource == configuration.resource
         && approval.status == "pending"
@@ -530,8 +578,10 @@ fn valid_owned_approval(
     configuration: &Configuration,
     transaction: &ApprovalLoginCookie,
 ) -> bool {
-    approval.schema == "dravengarden.cardea.approval-request/v1"
-        && approval.approval_id == transaction.approval_id
+    matches!(
+        approval.schema.as_str(),
+        "dravengarden.cardea.approval-request/v1" | "dravengarden.cardea.approval-request/v2"
+    ) && approval.approval_id == transaction.approval_id
         && approval.client_id == configuration.client_id
         && approval.action == LOGIN_ACTION
         && approval.resource == configuration.resource
@@ -798,6 +848,7 @@ mod tests {
             expires_at,
             decided_at: None,
             user_url: format!("/approve/{}", "a".repeat(43)),
+            authentication_url: None,
             exchange_code: None,
         }
     }

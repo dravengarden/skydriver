@@ -130,9 +130,9 @@ export function LoginPage({
         };
     }, [cardeaState]);
 
-    async function beginCardeaLogin(detail: CardeaLoginSubmitDetail) {
+    async function beginCardeaLogin(detail: CardeaLoginSubmitDetail): Promise<string | null> {
         if (cardeaState === "starting" || cardeaState === "waiting" || retrySeconds > 0) {
-            return;
+            return null;
         }
         setCardeaState("starting");
         setCardeaExpiresAt(null);
@@ -141,9 +141,17 @@ export function LoginPage({
                 method: "POST",
                 credentials: "same-origin",
                 headers: { Accept: "application/json", "Content-Type": "application/json" },
-                body: JSON.stringify({ email: detail.email, deviceId: detail.deviceId }),
+                body: JSON.stringify({
+                    method: detail.method,
+                    email: detail.email,
+                    deviceId: detail.deviceId,
+                }),
             });
             if (!response.ok) {
+                if (detail.method === "passkey" && response.status === 409) {
+                    setCardeaState("idle");
+                    return null;
+                }
                 const retryAfter = Number.parseInt(response.headers.get("Retry-After") ?? "", 10);
                 setCardeaRetryAt(
                     Date.now() +
@@ -154,7 +162,10 @@ export function LoginPage({
                 );
                 throw new Error("approval start unavailable");
             }
-            const result = (await response.json()) as { expires_at?: number };
+            const result = (await response.json()) as {
+                authentication_url?: string | null;
+                expires_at?: number;
+            };
             if (typeof result.expires_at !== "number" || !Number.isFinite(result.expires_at)) {
                 throw new Error("approval expiry unavailable");
             }
@@ -162,9 +173,13 @@ export function LoginPage({
             setCardeaRetryAt(null);
             setCardeaExpiresAt(result.expires_at * 1_000);
             setCardeaState("waiting");
+            return detail.method === "passkey" && typeof result.authentication_url === "string"
+                ? result.authentication_url
+                : null;
         } catch {
             setCardeaRetryAt((current) => current ?? Date.now() + ERROR_RETRY_SECONDS * 1_000);
             setCardeaState("error");
+            return null;
         }
     }
 
@@ -331,7 +346,7 @@ export function LoginPage({
                             state={cardeaState}
                             retrySeconds={retrySeconds}
                             remainingLabel={remainingApprovalLabel}
-                            onSubmit={(detail) => void beginCardeaLogin(detail)}
+                            onSubmit={beginCardeaLogin}
                         />
                     ) : (
                         <Button

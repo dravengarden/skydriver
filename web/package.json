@@ -12,7 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@dravengarden/cardea-consumer-ui": "git+ssh://git@github.com/dravengarden/cardea.git#9a86ab75f42bcb02992d581497d42c5154b5bfdd",
+    "@dravengarden/cardea-consumer-ui": "git+ssh://git@github.com/dravengarden/cardea.git#218dd42a09b229f7babc5e7a8e8add86ec9ad0cf",
     "@emotion/react": "11.14.0",
     "@emotion/styled": "11.14.1",
     "@mui/icons-material": "9.1.1",
