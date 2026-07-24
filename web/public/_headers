@@ -18,4 +18,5 @@
   Cache-Control: no-cache, must-revalidate
 
 /skydriver-mark.png
+  ! Cross-Origin-Resource-Policy
   Cross-Origin-Resource-Policy: cross-origin
