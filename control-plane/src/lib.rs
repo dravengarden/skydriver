@@ -120,6 +120,12 @@ pub async fn main(request: Request, env: Env, context: Context) -> Result<Respon
         .post_async("/api/auth/cardea/start", |mut request, context| async move {
             cardea_oidc::begin_approval(&mut request, &context.env).await
         })
+        .get_async("/api/auth/cardea/launch", |_, context| async move {
+            cardea_oidc::launch(&context.env)
+        })
+        .get_async("/api/auth/cardea/callback", |request, context| async move {
+            cardea_oidc::callback(&request, &context.env).await
+        })
         .get_async("/api/auth/cardea/status", |request, context| async move {
             cardea_oidc::approval_status(&request, &context.env).await
         })

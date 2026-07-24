@@ -13,9 +13,12 @@ use super::operator_sessions as session;
 const ISSUER: &str = "https://cardea.stormbird.xyz";
 const CLIENT_KEY_ID_BINDING: &str = "CARDEA_CLIENT_KEY_ID";
 const CLIENT_PRIVATE_KEY_BINDING: &str = "CARDEA_CLIENT_PRIVATE_KEY";
+const ID_TOKEN_KEY_ID_BINDING: &str = "CARDEA_ID_TOKEN_KEY_ID";
+const ID_TOKEN_PUBLIC_KEY_BINDING: &str = "CARDEA_ID_TOKEN_PUBLIC_KEY";
 const STATE_KEY_BINDING: &str = "CARDEA_STATE_KEY";
 const EMAIL_RATE_LIMIT_BINDING: &str = "SKYDRIVER_CARDEA_EMAIL_RATE_LIMITER";
 const STATE_COOKIE: &str = "skydriver_cardea_oidc";
+const LAUNCH_COOKIE: &str = "skydriver_cardea_launch";
 const STATE_LIFETIME_SECONDS: u64 = 5 * 60;
 const LOGIN_ACTION: &str = "session.create";
 const ERROR_RETRY_SECONDS: u64 = 60;
@@ -43,12 +46,31 @@ struct ApprovalLoginCookie {
     issued_at: u64,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LaunchCookie {
+    state: String,
+    nonce: String,
+    verifier: String,
+    issued_at: u64,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ClientTokenResponse {
     access_token: String,
     token_type: String,
     expires_in: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorizationCodeTokenResponse {
+    access_token: String,
+    token_type: String,
+    expires_in: u64,
+    scope: String,
+    id_token: String,
 }
 
 #[derive(Deserialize)]
@@ -94,6 +116,100 @@ struct SessionPolicy {
 struct ApprovalStartRequest {
     email: String,
     device_id: String,
+}
+
+pub(crate) fn launch(env: &Env) -> Result<Response> {
+    let configuration = configuration(env)?;
+    let transaction = LaunchCookie {
+        state: random_value()?,
+        nonce: random_value()?,
+        verifier: random_value()?,
+        issued_at: now_seconds(),
+    };
+    let challenge = cardea_oidc_client::pkce_challenge(&transaction.verifier)
+        .ok_or_else(|| worker::Error::RustError("Cardea PKCE generation failed".to_owned()))?;
+    let mut authorize = worker::Url::parse(&format!("{ISSUER}/oauth2/authorize"))
+        .map_err(|_| worker::Error::RustError("Cardea authorization URL invalid".to_owned()))?;
+    authorize.query_pairs_mut().extend_pairs([
+        ("response_type", "code"),
+        ("client_id", configuration.client_id),
+        ("redirect_uri", configuration.redirect_uri),
+        ("scope", "openid"),
+        ("state", transaction.state.as_str()),
+        ("nonce", transaction.nonce.as_str()),
+        ("code_challenge", challenge.as_str()),
+        ("code_challenge_method", "S256"),
+    ]);
+    let encoded = encode_launch_cookie(&transaction, env)?;
+    let mut response = Response::redirect_with_status(authorize, 302)?;
+    response.headers_mut().set(
+        "Set-Cookie",
+        &launch_cookie(&encoded, STATE_LIFETIME_SECONDS),
+    )?;
+    response.headers_mut().set("Cache-Control", "no-store")?;
+    Ok(response)
+}
+
+pub(crate) async fn callback(request: &Request, env: &Env) -> Result<Response> {
+    let configuration = configuration(env)?;
+    let Some(encoded) = cookie_value(request, LAUNCH_COOKIE)? else {
+        return Response::error("Cardea launch transaction missing", 400);
+    };
+    let transaction = decode_launch_cookie(&encoded, env)?;
+    let now = now_seconds();
+    if transaction.issued_at > now || now - transaction.issued_at >= STATE_LIFETIME_SECONDS {
+        return Response::error("Cardea launch transaction expired", 400);
+    }
+    let url = request.url()?;
+    let mut code = None;
+    let mut state = None;
+    for (key, value) in url.query_pairs() {
+        match key.as_ref() {
+            "code" if code.is_none() => code = Some(value.into_owned()),
+            "state" if state.is_none() => state = Some(value.into_owned()),
+            _ => return Response::error("Cardea callback invalid", 400),
+        }
+    }
+    let (Some(code), Some(state)) = (code, state) else {
+        return Response::error("Cardea callback invalid", 400);
+    };
+    if state != transaction.state {
+        return Response::error("Cardea callback state mismatch", 400);
+    }
+    let token =
+        exchange_authorization_code(env, &configuration, &code, &transaction.verifier, now).await?;
+    let (key_id, verifying_key) = oidc_verifying_key(env)?;
+    let Some(identity) = cardea_oidc_client::verify_id_token(
+        &token.id_token,
+        &verifying_key,
+        &key_id,
+        ISSUER,
+        configuration.client_id,
+        &transaction.nonce,
+        now_seconds(),
+    ) else {
+        return Response::error("Cardea identity token invalid", 503);
+    };
+    if identity.subject != "draven" {
+        return Response::error("Cardea identity is not authorized", 403);
+    }
+    let session_response =
+        session::create_browser_session_with_lifetime(request, env, 14 * 24 * 60 * 60).await?;
+    let session_cookie = session_response
+        .headers()
+        .get("Set-Cookie")?
+        .ok_or_else(|| worker::Error::RustError("operator session cookie missing".to_owned()))?;
+    let home = worker::Url::parse(configuration.resource)
+        .map_err(|_| worker::Error::RustError("application URL invalid".to_owned()))?;
+    let mut response = Response::redirect_with_status(home, 303)?;
+    response
+        .headers_mut()
+        .append("Set-Cookie", &session_cookie)?;
+    response
+        .headers_mut()
+        .append("Set-Cookie", &clear_launch_cookie())?;
+    response.headers_mut().set("Cache-Control", "no-store")?;
+    Ok(response)
 }
 
 pub(crate) async fn begin_approval(request: &mut Request, env: &Env) -> Result<Response> {
@@ -291,6 +407,80 @@ async fn client_access_token(env: &Env, configuration: &Configuration, now: u64)
     Ok(token.access_token)
 }
 
+async fn exchange_authorization_code(
+    env: &Env,
+    configuration: &Configuration,
+    code: &str,
+    verifier: &str,
+    now: u64,
+) -> Result<AuthorizationCodeTokenResponse> {
+    let token_endpoint = format!("{ISSUER}/oauth2/token");
+    let assertion = cardea_oidc_client::client_assertion(
+        &secret_bytes(env, CLIENT_PRIVATE_KEY_BINDING)?,
+        &env.var(CLIENT_KEY_ID_BINDING)?.to_string(),
+        configuration.client_id,
+        &token_endpoint,
+        &random_value()?,
+        now,
+    )
+    .ok_or_else(|| worker::Error::RustError("Cardea assertion generation failed".to_owned()))?;
+    let body = serde_urlencoded::to_string([
+        ("grant_type", "authorization_code"),
+        ("client_id", configuration.client_id),
+        (
+            "client_assertion_type",
+            "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        ),
+        ("client_assertion", assertion.as_str()),
+        ("code", code),
+        ("redirect_uri", configuration.redirect_uri),
+        ("code_verifier", verifier),
+    ])
+    .map_err(|_| worker::Error::RustError("Cardea token request encoding failed".to_owned()))?;
+    let headers = Headers::new();
+    headers.set("Content-Type", "application/x-www-form-urlencoded")?;
+    headers.set("Accept", "application/json")?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_headers(headers)
+        .with_body(Some(JsValue::from_str(&body)));
+    let mut response = Fetch::Request(Request::new_with_init(&token_endpoint, &init)?)
+        .send()
+        .await?;
+    if response.status_code() != 200 {
+        return Err(worker::Error::RustError(
+            "Cardea authorization code rejected".to_owned(),
+        ));
+    }
+    let token: AuthorizationCodeTokenResponse = response.json().await?;
+    if token.token_type != "Bearer"
+        || token.expires_in != 300
+        || token.scope != "openid"
+        || token.access_token.len() > 512
+    {
+        return Err(worker::Error::RustError(
+            "Cardea authorization response invalid".to_owned(),
+        ));
+    }
+    Ok(token)
+}
+
+fn oidc_verifying_key(env: &Env) -> Result<(String, [u8; 32])> {
+    let key_id = env.var(ID_TOKEN_KEY_ID_BINDING)?.to_string();
+    if key_id.is_empty() || key_id.len() > 128 {
+        return Err(worker::Error::RustError(
+            "Cardea signing key id invalid".to_owned(),
+        ));
+    }
+    Ok((
+        key_id,
+        decode_bytes(
+            &env.var(ID_TOKEN_PUBLIC_KEY_BINDING)?.to_string(),
+            ID_TOKEN_PUBLIC_KEY_BINDING,
+        )?,
+    ))
+}
+
 async fn cardea_json_request(
     method: Method,
     path: &str,
@@ -444,10 +634,81 @@ fn decode_approval_cookie(value: &str, env: &Env) -> Result<ApprovalLoginCookie>
     .map_err(Into::into)
 }
 
+fn encode_launch_cookie(state: &LaunchCookie, env: &Env) -> Result<String> {
+    encode_signed_cookie(
+        state,
+        env,
+        b"skydriver.cardea.launch.v1\0",
+        "Cardea launch cookie invalid",
+    )
+}
+
+fn decode_launch_cookie(value: &str, env: &Env) -> Result<LaunchCookie> {
+    decode_signed_cookie(
+        value,
+        env,
+        b"skydriver.cardea.launch.v1\0",
+        "Cardea launch cookie invalid",
+    )
+}
+
+fn encode_signed_cookie<T: Serialize>(
+    state: &T,
+    env: &Env,
+    domain: &[u8],
+    error: &str,
+) -> Result<String> {
+    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(state)?);
+    let mut mac = HmacSha256::new_from_slice(&secret_bytes(env, STATE_KEY_BINDING)?)
+        .map_err(|_| worker::Error::RustError(error.to_owned()))?;
+    mac.update(domain);
+    mac.update(payload.as_bytes());
+    Ok(format!(
+        "{payload}.{}",
+        URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+    ))
+}
+
+fn decode_signed_cookie<T: for<'de> Deserialize<'de>>(
+    value: &str,
+    env: &Env,
+    domain: &[u8],
+    error: &str,
+) -> Result<T> {
+    let (payload, signature) = value
+        .split_once('.')
+        .ok_or_else(|| worker::Error::RustError(error.to_owned()))?;
+    let mut mac = HmacSha256::new_from_slice(&secret_bytes(env, STATE_KEY_BINDING)?)
+        .map_err(|_| worker::Error::RustError(error.to_owned()))?;
+    mac.update(domain);
+    mac.update(payload.as_bytes());
+    let signature = URL_SAFE_NO_PAD
+        .decode(signature)
+        .map_err(|_| worker::Error::RustError(error.to_owned()))?;
+    mac.verify_slice(&signature)
+        .map_err(|_| worker::Error::RustError(error.to_owned()))?;
+    serde_json::from_slice(
+        &URL_SAFE_NO_PAD
+            .decode(payload)
+            .map_err(|_| worker::Error::RustError(error.to_owned()))?,
+    )
+    .map_err(Into::into)
+}
+
 fn approval_cookie(value: &str, maximum_age: u64) -> String {
     format!(
         "{STATE_COOKIE}={value}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={maximum_age}"
     )
+}
+
+fn launch_cookie(value: &str, maximum_age: u64) -> String {
+    format!(
+        "{LAUNCH_COOKIE}={value}; HttpOnly; Secure; SameSite=Lax; Path=/api/auth/cardea/callback; Max-Age={maximum_age}"
+    )
+}
+
+fn clear_launch_cookie() -> String {
+    launch_cookie("", 0)
 }
 
 fn clear_approval_cookie() -> String {
