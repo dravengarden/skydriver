@@ -20,7 +20,10 @@ if (decoded.length !== 32 || decoded.every((byte) => byte === 0)) {
 }
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
-const configPath = path.join(repositoryRoot, "control-plane/wrangler.jsonc");
+const configPath = path.resolve(
+    process.env.SKYDRIVER_WRANGLER_CONFIG ??
+        path.join(repositoryRoot, "control-plane/wrangler.jsonc"),
+);
 const result = spawnSync(
     "pnpm",
     [

@@ -4,6 +4,7 @@
 /.env
 /.admin-password
 /.dev.vars
+/control-plane/.dev.vars
 /target/
 /control-plane/build/
 /control-plane/.wrangler/

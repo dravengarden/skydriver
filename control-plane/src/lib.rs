@@ -4,7 +4,6 @@
 //! directly between Skydriver agents and storage providers.
 
 mod aws_s3_signing;
-mod cardea_oidc;
 mod driver_authorization;
 mod driver_configuration;
 mod driver_credentials;
@@ -116,18 +115,6 @@ pub async fn main(request: Request, env: Env, context: Context) -> Result<Respon
         })
         .post_async("/api/auth/login", |mut request, context| async move {
             operator_sessions::login(&mut request, &context.env).await
-        })
-        .post_async("/api/auth/cardea/start", |mut request, context| async move {
-            cardea_oidc::begin_approval(&mut request, &context.env).await
-        })
-        .get_async("/api/auth/cardea/launch", |_, context| async move {
-            cardea_oidc::launch(&context.env)
-        })
-        .get_async("/api/auth/cardea/callback", |request, context| async move {
-            cardea_oidc::callback(&request, &context.env).await
-        })
-        .get_async("/api/auth/cardea/status", |request, context| async move {
-            cardea_oidc::approval_status(&request, &context.env).await
         })
         .get_async("/api/auth/session", |request, context| async move {
             operator_sessions::status(&request, &context.env).await
@@ -802,7 +789,6 @@ fn security_headers(mut response: Response) -> Result<Response> {
     headers.set(
         "Content-Security-Policy",
         "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; \
-         frame-src https://cardea.stormbird.xyz; \
          form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
          img-src 'self' data:; font-src 'self' data:; connect-src 'self'",
     )?;
@@ -813,7 +799,7 @@ fn security_headers(mut response: Response) -> Result<Response> {
     headers.set(
         "Permissions-Policy",
         "camera=(), geolocation=(), microphone=(), payment=(), usb=(), \
-         publickey-credentials-get=(self \"https://cardea.stormbird.xyz\")",
+         publickey-credentials-get=(self)",
     )?;
     headers.set("Cross-Origin-Opener-Policy", "same-origin")?;
     headers.set("Cross-Origin-Resource-Policy", "same-origin")?;

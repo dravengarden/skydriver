@@ -92,6 +92,7 @@
             cargo-deny
             cargo-machete
             cargo-sweep
+            gitleaks
             rust-analyzer
             worker-build
             nodejs_24

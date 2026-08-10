@@ -39,12 +39,13 @@ wrangler=(
   --local \
   --persist-to "$state_directory" >/dev/null
 
-raw_token_1=0123456789abcdef0123456789abcdef
-raw_token_2=fedcba9876543210fedcba9876543210
+raw_token_1=$(printf '%s' 'public-test-parent-token' | sha256sum | cut -c1-32)
+raw_token_2=$(printf '%s' 'public-test-child-token' | sha256sum | cut -c1-32)
 token_1=$(printf '%s' "$raw_token_1" | base64 -w0 | tr '+/' '-_' | tr -d '=')
 token_2=$(printf '%s' "$raw_token_2" | base64 -w0 | tr '+/' '-_' | tr -d '=')
 verifier_1=$(printf '%s' "$token_1" | sha256sum | cut -d' ' -f1)
 verifier_2=$(printf '%s' "$token_2" | sha256sum | cut -d' ' -f1)
+admin_token=$(printf '%s' 'public-test-worker-credential' | sha256sum | cut -c1-64 | xxd -r -p | base64 -w0 | tr '+/' '-_' | tr -d '=')
 
 filesystem=12000000000000000000000000000001
 principal=22000000000000000000000000000001
@@ -145,7 +146,7 @@ setsid "${wrangler[@]}" dev \
   --persist-to "$state_directory" \
   --port "$port" \
   --inspector-port 0 \
-  --var SKYDRIVER_ADMIN_TOKEN:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
+  --var SKYDRIVER_ADMIN_TOKEN:"$admin_token" \
   --show-interactive-dev-session=false >"$server_log" 2>&1 &
 server_pid=$!
 

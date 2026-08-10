@@ -33,7 +33,10 @@ if (accountId === undefined || apiToken === undefined) {
 }
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
-const configPath = path.join(repositoryRoot, "control-plane/wrangler.jsonc");
+const configPath = path.resolve(
+    process.env.SKYDRIVER_WRANGLER_CONFIG ??
+        path.join(repositoryRoot, "control-plane/wrangler.jsonc"),
+);
 const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
 const environment = config.env?.[environmentName];
 const workerName = environment?.name;

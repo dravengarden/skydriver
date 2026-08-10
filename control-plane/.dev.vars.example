@@ -1,3 +1,6 @@
+SKYDRIVER_ADMIN_TOKEN=replace-with-unpadded-base64url-for-32-random-bytes
+SKYDRIVER_VFS_MASTER_KEY_V1=replace-with-unpadded-base64url-for-32-random-bytes
+SKYDRIVER_OPERATOR_ACCOUNT=operator
 SKYDRIVER_SESSION_KEY=replace-with-at-least-32-random-bytes
 SKYDRIVER_ROOT_KEY_V1=replace-with-unpadded-base64url-for-32-random-bytes
 SKYDRIVER_MAINTENANCE=0

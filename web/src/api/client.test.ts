@@ -169,15 +169,15 @@ describe("operator session", () => {
         vi.stubGlobal("fetch", fetchMock);
 
         await expect(
-            login({ account: "draven@skydriver-dev", password: "operator-secret" }),
+            login({ account: "operator@skydriver-dev", password: "test-operator-credential" }),
         ).resolves.toEqual({
             authenticated: true,
         });
         const call = fetchMock.mock.calls[0];
         expect(call?.[0]).toBe("/api/auth/login");
         expect(JSON.parse(String(call?.[1]?.body))).toEqual({
-            account: "draven@skydriver-dev",
-            password: "operator-secret",
+            account: "operator@skydriver-dev",
+            password: "test-operator-credential",
         });
     });
 });
@@ -298,7 +298,7 @@ describe("parseHealth", () => {
             parseHealth({
                 service: "skydriver-control-plane",
                 environment: "dev",
-                operator_account: "draven",
+                operator_account: "operator",
                 transfer_mode: "direct",
                 mode: "active",
                 incarnation: "0123456789abcdef0123456789abcdef",

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 
 const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
 const apiToken = process.env.CLOUDFLARE_API_TOKEN;
@@ -6,7 +7,12 @@ if (accountId === undefined || apiToken === undefined) {
     throw new Error("CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN are required");
 }
 
-const config = JSON.parse(fs.readFileSync("control-plane/wrangler.jsonc", "utf8"));
+const repositoryRoot = path.resolve(import.meta.dirname, "../..");
+const configPath = path.resolve(
+    process.env.SKYDRIVER_WRANGLER_CONFIG ??
+        path.join(repositoryRoot, "control-plane/wrangler.jsonc"),
+);
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
 const requiredSecrets = ["SKYDRIVER_ADMIN_TOKEN", "SKYDRIVER_VFS_MASTER_KEY_V1"];
 const forbiddenSecrets = ["SKYDRIVER_ROOT_KEY_V1", "SKYDRIVER_SESSION_KEY"];
 

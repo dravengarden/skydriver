@@ -54,7 +54,7 @@ if (config.name !== "skydriver-control-plane-local") {
 if (config.workers_dev !== false || config.preview_urls !== false) {
     fail("the default Worker must not expose public URLs");
 }
-if (config.vars?.SKYDRIVER_OPERATOR_ACCOUNT !== "draven") {
+if (config.vars?.SKYDRIVER_OPERATOR_ACCOUNT !== "operator") {
     fail("the local Worker must define the canonical operator account");
 }
 
@@ -82,20 +82,20 @@ const expected = {
         database: "skydriver-index-dev",
         bucket: "skydriver-manifests-dev",
         payload: "skydriver-payload-dev",
-        hostname: "dev.skydriver.stormbird.xyz",
-        operatorAccount: "draven@skydriver-dev",
+        hostname: "dev.skydriver.example",
+        operatorAccount: "operator@skydriver-dev",
     },
     prod: {
         worker: "skydriver-control-plane-prod",
         database: "skydriver-index-prod",
         bucket: "skydriver-manifests-prod",
         payload: "skydriver-payload-prod",
-        hostname: "skydriver.stormbird.xyz",
-        operatorAccount: "draven@skydriver-prod",
+        hostname: "skydriver.example",
+        operatorAccount: "operator@skydriver-prod",
     },
 };
 const expectedR2Endpoint =
-    "https://cf92459eee422bed7c7a8337316e8b15.r2.cloudflarestorage.com";
+    "https://00000000000000000000000000000000.r2.cloudflarestorage.com";
 
 const identities = [];
 for (const [name, wanted] of Object.entries(expected)) {

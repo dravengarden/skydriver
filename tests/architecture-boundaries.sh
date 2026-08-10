@@ -4,20 +4,6 @@ set -euo pipefail
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repository_root"
 
-if ! rg -q 'data-cardea-consumer-ui="v1"' web/src/auth/LoginPage.tsx; then
-  echo "Cardea-enabled browser login must declare cardea-consumer-ui/v1" >&2
-  exit 1
-fi
-
-legacy_brand='car''rack'
-if rg --line-number --ignore-case "$legacy_brand" --hidden \
-  --glob '!.git/**' --glob '!target/**' --glob '!node_modules/**' . \
-  || find . -path ./.git -prune -o -path ./target -prune -o \
-    -path '*/node_modules' -prune -o -iname "*$legacy_brand*" -print | grep -q .; then
-  echo "pre-v1 product identities are forbidden in the Skydriver v1 tree" >&2
-  exit 1
-fi
-
 dependency_manifests=(Cargo.toml Cargo.lock go.mod go.sum package.json pnpm-lock.yaml)
 if rg --line-number --ignore-case \
   'github\.com/(OpenListTeam/)?OpenList|api\.oplist\.org|name = "openlist"' \

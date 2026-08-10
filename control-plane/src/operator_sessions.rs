@@ -596,26 +596,26 @@ mod tests {
 
     #[test]
     fn accepts_only_canonical_operator_accounts() {
-        assert!(canonical_account("draven"));
+        assert!(canonical_account("operator"));
         assert!(canonical_account("operator.dev-1"));
-        assert!(canonical_account("draven@skydriver-dev"));
+        assert!(canonical_account("operator@skydriver-dev"));
         assert!(!canonical_account(""));
-        assert!(!canonical_account("Draven"));
+        assert!(!canonical_account("Operator"));
         assert!(!canonical_account("-operator"));
-        assert!(!canonical_account("draven@@skydriver-dev"));
-        assert!(!canonical_account("draven@-skydriver-dev"));
+        assert!(!canonical_account("operator@@skydriver-dev"));
+        assert!(!canonical_account("operator@-skydriver-dev"));
     }
 
     #[test]
     fn accepts_only_the_exact_configured_account() {
         assert!(account_matches(
-            "draven@skydriver-dev",
-            "draven@skydriver-dev"
+            "operator@skydriver-dev",
+            "operator@skydriver-dev"
         ));
-        assert!(!account_matches("draven", "draven@skydriver-dev"));
+        assert!(!account_matches("operator", "operator@skydriver-dev"));
         assert!(!account_matches(
-            "draven@skydriver-prod",
-            "draven@skydriver-dev"
+            "operator@skydriver-prod",
+            "operator@skydriver-dev"
         ));
     }
 

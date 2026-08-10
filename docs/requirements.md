@@ -303,8 +303,10 @@ This document is the normative product and correctness baseline. The key words
 - Development and production MUST use distinct Workers, custom routes, D1
   databases, R2 buckets, secrets, credentials, bootstrap authorities, and
   provider roots.
-- Production MUST use `skydriver.stormbird.xyz`; development MUST use
-  `dev.skydriver.stormbird.xyz`. Both MUST disable workers.dev and preview URLs.
+- Deployments MUST use owner-controlled custom domains configured outside the
+  source repository. The checked-in examples use reserved `.example`
+  hostnames; both development and production MUST disable workers.dev and
+  preview URLs.
 - Deployment tooling MUST reject overlapping dev/prod resource identifiers and
   MUST run environment-specific acceptance before promotion.
 - Public health and every operator surface MUST identify the active
