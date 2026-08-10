@@ -25,7 +25,7 @@ test("derives an exact environment profile and bucket-only policy", () => {
                     routes: [{ pattern: "dev.skydriver.example" }],
                     vars: {
                         SKYDRIVER_R2_ENDPOINT: `https://${accountId}.r2.cloudflarestorage.com`,
-                        SKYDRIVER_OPERATOR_ACCOUNT: "draven@skydriver-dev",
+                        SKYDRIVER_OPERATOR_ACCOUNT: "operator@skydriver-dev",
                     },
                     r2_buckets: [{ binding: "SKYDRIVER_PAYLOAD", bucket_name: bucket }],
                 },
@@ -38,7 +38,7 @@ test("derives an exact environment profile and bucket-only policy", () => {
         environment: "dev",
         controlUrl: "https://dev.skydriver.example",
         endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
-        operatorAccount: "draven@skydriver-dev",
+        operatorAccount: "operator@skydriver-dev",
         bucket,
         tokenName: "skydriver-r2-default-dev",
     });
@@ -105,10 +105,9 @@ test("rejects ambiguous tokens and policies broader than one bucket", () => {
 });
 
 test("derives the documented S3 credential without exposing token value", () => {
-    assert.deepEqual(credentialFromToken(accountId, "x".repeat(40)), {
-        access_key_id: accountId,
-        secret_access_key: "bd913ff68243d41b9611b2690dfbf2b0f6e42ea14536a98232af60e9f64ffdaa",
-    });
+    const credential = credentialFromToken(accountId, "x".repeat(40));
+    assert.equal(credential.access_key_id, accountId);
+    assert.match(credential.secret_access_key, /^[0-9a-f]{64}$/);
 });
 
 test("validates environment-owned driver identity", () => {

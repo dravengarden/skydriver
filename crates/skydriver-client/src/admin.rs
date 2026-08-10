@@ -2155,11 +2155,11 @@ mod tests {
 
     #[test]
     fn rejects_noncanonical_operator_accounts() {
-        assert!(OperatorAccount::parse("draven").is_ok());
-        assert!(OperatorAccount::parse("draven@skydriver-dev").is_ok());
-        assert!(OperatorAccount::parse("Draven").is_err());
+        assert!(OperatorAccount::parse("operator").is_ok());
+        assert!(OperatorAccount::parse("operator@skydriver-dev").is_ok());
+        assert!(OperatorAccount::parse("Operator").is_err());
         assert!(OperatorAccount::parse("-operator").is_err());
-        assert!(OperatorAccount::parse("draven@@skydriver-dev").is_err());
+        assert!(OperatorAccount::parse("operator@@skydriver-dev").is_err());
     }
 
     #[test]

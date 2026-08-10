@@ -50,9 +50,9 @@ wrangler=(
        NULL, 0, 1, unixepoch(), unixepoch(), 'legacy-bootstrap'
    );" >/dev/null
 
-admin_token=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA
-operator_account=draven
-r2_endpoint=https://0123456789abcdef.r2.cloudflarestorage.com
+admin_token=$(printf '%s' 'public-test-admin-credential' | sha256sum | cut -c1-64 | xxd -r -p | base64 -w0 | tr '+/' '-_' | tr -d '=')
+operator_account=operator
+r2_endpoint=https://example-account.r2.cloudflarestorage.com
 
 setsid "${wrangler[@]}" dev \
   --local \

@@ -16,7 +16,7 @@
   },
   "vars": {
     "SKYDRIVER_ENVIRONMENT": "local",
-    "SKYDRIVER_OPERATOR_ACCOUNT": "draven"
+    "SKYDRIVER_OPERATOR_ACCOUNT": "operator"
   },
   "durable_objects": {
     "bindings": [
@@ -60,18 +60,15 @@
       },
       "routes": [
         {
-          "pattern": "dev.skydriver.stormbird.xyz",
+          "pattern": "dev.skydriver.example",
           "custom_domain": true
         }
       ],
       "vars": {
         "SKYDRIVER_ENVIRONMENT": "dev",
-        "SKYDRIVER_OPERATOR_ACCOUNT": "draven@skydriver-dev",
-        "CARDEA_CLIENT_KEY_ID": "skydriver-dev-2026-07",
-        "CARDEA_ID_TOKEN_KEY_ID": "oidc.2026-07",
-        "CARDEA_ID_TOKEN_PUBLIC_KEY": "2JXxbiH5sLDeRZn0LwKyikIJDqHNpHE3JiMGj2SRtrI",
+        "SKYDRIVER_OPERATOR_ACCOUNT": "operator@skydriver-dev",
         "SKYDRIVER_DEFAULT_R2_MAX_PHYSICAL_BYTES": "107374182400",
-        "SKYDRIVER_R2_ENDPOINT": "https://cf92459eee422bed7c7a8337316e8b15.r2.cloudflarestorage.com"
+        "SKYDRIVER_R2_ENDPOINT": "https://00000000000000000000000000000000.r2.cloudflarestorage.com"
       },
       "durable_objects": {
         "bindings": [
@@ -81,21 +78,11 @@
           }
         ]
       },
-      "ratelimits": [
-        {
-          "name": "SKYDRIVER_CARDEA_EMAIL_RATE_LIMITER",
-          "namespace_id": "42001",
-          "simple": {
-            "limit": 5,
-            "period": 60
-          }
-        }
-      ],
       "d1_databases": [
         {
           "binding": "SKYDRIVER_INDEX",
           "database_name": "skydriver-index-dev",
-          "database_id": "5367fbc7-9d8b-4a10-b7a4-a6e920fed7c2",
+          "database_id": "11111111-1111-4111-8111-111111111111",
           "migrations_dir": "migrations"
         }
       ],
@@ -119,18 +106,15 @@
       },
       "routes": [
         {
-          "pattern": "skydriver.stormbird.xyz",
+          "pattern": "skydriver.example",
           "custom_domain": true
         }
       ],
       "vars": {
         "SKYDRIVER_ENVIRONMENT": "prod",
-        "SKYDRIVER_OPERATOR_ACCOUNT": "draven@skydriver-prod",
-        "CARDEA_CLIENT_KEY_ID": "skydriver-prod-2026-07",
-        "CARDEA_ID_TOKEN_KEY_ID": "oidc.2026-07",
-        "CARDEA_ID_TOKEN_PUBLIC_KEY": "2JXxbiH5sLDeRZn0LwKyikIJDqHNpHE3JiMGj2SRtrI",
+        "SKYDRIVER_OPERATOR_ACCOUNT": "operator@skydriver-prod",
         "SKYDRIVER_DEFAULT_R2_MAX_PHYSICAL_BYTES": "107374182400",
-        "SKYDRIVER_R2_ENDPOINT": "https://cf92459eee422bed7c7a8337316e8b15.r2.cloudflarestorage.com"
+        "SKYDRIVER_R2_ENDPOINT": "https://00000000000000000000000000000000.r2.cloudflarestorage.com"
       },
       "durable_objects": {
         "bindings": [
@@ -140,21 +124,11 @@
           }
         ]
       },
-      "ratelimits": [
-        {
-          "name": "SKYDRIVER_CARDEA_EMAIL_RATE_LIMITER",
-          "namespace_id": "42002",
-          "simple": {
-            "limit": 5,
-            "period": 60
-          }
-        }
-      ],
       "d1_databases": [
         {
           "binding": "SKYDRIVER_INDEX",
           "database_name": "skydriver-index-prod",
-          "database_id": "2e0874de-b3a1-4c63-8592-fcbd5a2b610b",
+          "database_id": "22222222-2222-4222-8222-222222222222",
           "migrations_dir": "migrations"
         }
       ],

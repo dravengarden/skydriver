@@ -1,0 +1,26 @@
+title = "Skydriver secret scanning"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Exclude generated artifacts and known non-secret test identifiers."
+paths = [
+  '''(^|/)target/''',
+  '''(^|/)node_modules/''',
+  '''(^|/)web/dist/''',
+  '''(^|/)control-plane/build/''',
+  '''(^|/)control-plane/\.wrangler/''',
+]
+regexTarget = "line"
+regexes = [
+  '''(?i)idempotency(?:[-_]key|key)''',
+  '''AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA''',
+  '''0123456789abcdef0123456789abcdef''',
+  '''fedcba9876543210fedcba9876543210''',
+  '''gFJYocreVdq4o7taC21pJ1P8jLoqaibruBF6HNpPbbA''',
+  '''ev4O5gPB1Kd9MvAlPE0bMg==''',
+  '''bd913ff68243d41b9611b2690dfbf2b0f6e42ea14536a98232af60e9f64ffdaa''',
+  '''019f10b4d77d7000a123456789abcdec''',
+  '''019f10b4d77d7000a123456789abcded''',
+]

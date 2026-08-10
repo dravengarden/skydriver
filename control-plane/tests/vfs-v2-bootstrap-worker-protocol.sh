@@ -44,8 +44,8 @@ wrangler=(
   --local \
   --persist-to "$state_directory" >/dev/null
 
-admin_token=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA
-operator_account=draven@skydriver-local
+admin_token=$(printf '%s' 'public-test-bootstrap-credential' | sha256sum | cut -c1-64 | xxd -r -p | base64 -w0 | tr '+/' '-_' | tr -d '=')
+operator_account=operator@skydriver-local
 export SKYDRIVER_OPERATOR_ACCOUNT="$operator_account"
 
 setsid "${wrangler[@]}" dev \
@@ -54,7 +54,7 @@ setsid "${wrangler[@]}" dev \
   --port "$port" \
   --inspector-port 0 \
   --test-scheduled \
-  --var SKYDRIVER_VFS_MASTER_KEY_V1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
+  --var SKYDRIVER_VFS_MASTER_KEY_V1:"$admin_token" \
   --var SKYDRIVER_OPERATOR_ACCOUNT:"$operator_account" \
   --var SKYDRIVER_ADMIN_TOKEN:"$admin_token" \
   --show-interactive-dev-session=false >"$server_log" 2>&1 &
@@ -101,7 +101,7 @@ unauthenticated_status=$(curl --silent --output /dev/null --write-out '%{http_co
 legacy_login_status=$(command curl --silent --show-error \
   --output "$state_directory/management-upgrade-required.json" --write-out '%{http_code}' \
   --header 'Skydriver-Protocol-Epoch: 2' --header 'Skydriver-SDK-Version: 0.3.5' \
-  -H "$json" --data '{"account":"draven","password":"ignored"}' \
+  -H "$json" --data '{"account":"operator","password":"ignored"}' \
   "$base_url/api/auth/login")
 [[ "$legacy_login_status" == 426 ]]
 jq -e '.code == "sdk_upgrade_required" and .minimum_sdk_version == "0.3.6"' \
@@ -110,14 +110,14 @@ jq -e '.code == "sdk_upgrade_required" and .minimum_sdk_version == "0.3.6"' \
 wrong_account_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   -H "$json" \
   --data "$(jq -cn --arg password "$admin_token" \
-    '{account: "draven@prod", password: $password}')" \
+    '{account: "operator@prod", password: $password}')" \
   "$base_url/api/auth/login")
 [[ "$wrong_account_status" == 401 ]]
 
 unqualified_account_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   -H "$json" \
   --data "$(jq -cn --arg password "$admin_token" \
-    '{account: "draven", password: $password}')" \
+    '{account: "operator", password: $password}')" \
   "$base_url/api/auth/login")
 [[ "$unqualified_account_status" == 401 ]]
 

@@ -136,7 +136,7 @@ next synchronization reconstructs it from authenticated metadata.
 The canonical CLI surface is:
 
 ```bash
-export SKYDRIVER_CONTROL_URL='https://dev.skydriver.stormbird.xyz'
+export SKYDRIVER_CONTROL_URL='https://dev.skydriver.example'
 export SKYDRIVER_VFS_TOKEN='<attenuated bearer>'
 
 skydriver sync /releases ./local-releases \

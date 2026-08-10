@@ -1,169 +1,172 @@
 # Skydriver
 
-Skydriver is a complete-object virtual filesystem. A file remains one complete
-object in exactly the same byte order at its storage driver; Skydriver never
-splits, packs, merges, or stripes user files. One virtual root has a default
-driver, while an empty child directory may become a non-recursive mount point
-whose complete subtree uses one other driver.
+Skydriver is an encrypted, content-addressed virtual filesystem for complete
+objects. Files remain whole at every storage provider: Skydriver does not
+split, pack, merge, stripe, or expose provider-internal parts as user files.
 
-The canonical implementation has three surfaces:
+The project provides a Rust client and CLI, a Rust Cloudflare control plane, a
+strict operator CLI, and a browser console. Payload bytes move directly
+between the client and the selected storage driver; the control plane stores
+metadata and coordinates authorization, publication, leases, and cleanup.
 
-- the Rust Cloudflare control plane owns metadata, permissions, key envelopes,
-  driver configuration, optimistic publication, read leases, retention, and
-  physical garbage collection;
-- the Rust `skydriver` binary and `skydriver-client` crate expose filesystem-like
-  list, stat, mkdir, put, get, remove, and rename operations; and
-- the Rust `skydriverctl` binary exposes every supported UI/operator mutation as
-  strict JSON-first commands for humans and AI agents.
+> Status: active development. The wire formats and requirements are versioned,
+> but interfaces may still change between releases. Read the protocol
+> documentation before using a deployment for important data.
 
-Payload bytes move directly between the Rust client and the selected driver.
-They never transit the Worker. OpenList is not linked, launched, or called; it
-may be inspected only as provider-behavior reference material.
+## Highlights
 
-## Correctness model
+- end-to-end integrity using SHA-256 Merkle roots and fixed verification blocks;
+- authenticated encryption by default with directory key epochs and immutable
+  file identities;
+- atomic, no-replace publication with complete provider readback;
+- resumable and bounded-concurrency transfer pipelines;
+- optimistic metadata revisions and durable idempotency receipts;
+- attenuated, revocable VFS tokens with directory and driver scope;
+- local filesystem, Aliyun Drive Open, Cloudflare R2, and AWS S3 drivers; and
+- a provider-free Rust correctness core shared by native clients and Worker
+  WASM.
 
-- Plaintext files have a SHA-256 Merkle root and fixed verification blocks.
-- Directories have canonical ordered Merkle roots.
-- Encryption is on by default. A directory key epoch and immutable file ID
-  derive the file key; provider names are opaque random storage keys.
-- Upload publishes only after complete provider readback and encoded checksum
-  verification.
-- Download verifies exact ranges, encoded SHA-256, authenticated encryption
-  frames, plaintext size, and plaintext Merkle root before success.
-- Namespace mutations use optimistic revisions and durable idempotency
-  receipts. Rename/move changes metadata only and never copies payload bytes.
-- Direct reads hold durable leases. Server GC cannot delete a location with an
-  active lease and must repeat reachability, identity, driver-revision, grace,
-  and fencing checks immediately around provider deletion.
-- Native clients and the Cloudflare Worker share the filesystem-independent
-  `skydriver-sdk-core`. The verification gate compiles it for
-  `wasm32-unknown-unknown` and executes its Merkle and authenticated-encryption
-  round trip inside the Worker runtime.
+## Architecture
 
-## Native filesystem CLI
+```text
+skydriver client / CLI ────────► storage driver
+          │                         (complete objects)
+          │ metadata, grants,
+          │ receipts, leases
+          ▼
+   Cloudflare control plane ───► D1 + R2 metadata
+          │
+          └────────────────────► browser console / skydriverctl
+```
 
-Both endpoint and bearer come from environment variables so secrets do not
-enter argv:
+The main components are:
+
+- `crates/skydriver-sdk-core`: portable canonical, integrity, crypto, catalog,
+  and acceptance primitives;
+- `crates/skydriver-client`: native I/O, transfer, recovery, and publication;
+- `crates/skydriver-cli`: the `skydriver` filesystem CLI and `skydriverctl`
+  management CLI;
+- `control-plane`: the Rust Worker and D1/R2 protocol implementation;
+- `web`: the React and MUI browser console; and
+- `driver`, `transfer/journal`, and `vfs`: small Go conformance oracles.
+
+The control plane never relays payload bodies. Provider credentials and VFS
+keys remain server-side or in the deployment secret store; clients receive
+only short-lived, scoped grants.
+
+## Quick start
+
+### Requirements
+
+- Nix with flakes enabled;
+- Git;
+- a Unix-like environment for the shell and protocol tests; and
+- Node, pnpm, Rust, and Go supplied by the repository's development shell.
+
+### Build and verify
 
 ```bash
-export SKYDRIVER_CONTROL_URL=https://dev.skydriver.stormbird.xyz
-export SKYDRIVER_VFS_TOKEN='...'
+git clone https://github.com/dravengarden/skydriver.git
+cd skydriver
+nix develop -c just verify
+```
+
+For a faster local loop:
+
+```bash
+nix develop -c just verify-fast
+```
+
+The checked-in Wrangler configuration is local-safe and uses reserved example
+values for remote profiles. For local Worker development, copy the ignored
+vars file and replace every placeholder with a locally generated value:
+
+```bash
+cp control-plane/.dev.vars.example control-plane/.dev.vars
+chmod 600 control-plane/.dev.vars
+```
+
+Never commit either `.dev.vars` or `.env`. Both are ignored by Git.
+
+## CLI usage
+
+The native CLI reads the control-plane URL and bearer token from the environment
+so secrets do not enter process arguments:
+
+```bash
+export SKYDRIVER_CONTROL_URL='https://your-control-plane.example'
+export SKYDRIVER_VFS_TOKEN='<short-lived scoped token>'
 
 skydriver list /
 skydriver mkdir /releases --idempotency-key release-dir-v1
-skydriver put ./app.tar.zst /releases/app.tar.zst \
-  --idempotency-key app-2026-07-14
-skydriver get /releases/app.tar.zst ./app.tar.zst
-skydriver sync /releases ./local-releases \
-  --maximum-concurrency 4 --maximum-file-concurrency 4
-skydriver rename /releases/app.tar.zst /releases/latest.tar.zst \
-  --idempotency-key latest-2026-07-14
-skydriver remove /releases/latest.tar.zst \
-  --idempotency-key remove-latest-2026-07-14
+skydriver put ./release.tar.zst /releases/release.tar.zst \
+  --idempotency-key release-v1
+skydriver get /releases/release.tar.zst ./release.tar.zst
+skydriver rename /releases/release.tar.zst /releases/latest.tar.zst \
+  --idempotency-key release-latest-v1
 ```
 
-`sync` first requests a bounded server-materialized catalog checkpoint. A
-full-root token streams the immutable checkpoint directly; a safely authorized
-narrow token receives only its projected Merkle subtree. ACL-boundary and
-snapshot cases transparently traverse revision-pinned pages. The client verifies
-the complete authorized catalog before payload work, while an unchanged verified
-view uses a conditional request and transfers no checkpoint body. When a
-full-root view changed from the immediately preceding published head, SDK 0.3.2
-can receive only the hash-linked content-addressed directory nodes missing from
-its authenticated base; it still reconstructs and verifies the exact complete
-target checkpoint before reuse. A missing, oversized, or incompatible delta
-transparently falls back to the complete checkpoint. The client also
-verifies unchanged local files from prior authenticated version/block metadata
-and downloads only changed or corrupted files. Changed files run concurrently
-and each retains its own resumable range pipeline. Untracked local files are
-preserved.
-
-Multipart journals, resume, range scheduling, encryption, checksums, and GC
-are internal. Transfer bounds tune the pipeline; they do not alter identity.
-
-## Management CLI for agents
-
-`SKYDRIVER_OPERATOR_ACCOUNT` identifies the non-secret operator account and
-`SKYDRIVER_OPERATOR_CREDENTIAL` authorizes redacted UI-equivalent environment
-management. `SKYDRIVER_VFS_TOKEN` separately authorizes scoped ACL, mount,
-and child-token operations.
+The management CLI exposes the same validated mutations as the browser UI:
 
 ```bash
+export SKYDRIVER_OPERATOR_ACCOUNT='operator@example'
+export SKYDRIVER_OPERATOR_CREDENTIAL='<short-lived operator credential>'
+
 skydriverctl snapshot
 skydriverctl metrics global all
-skydriverctl metrics driver aliyun-main
 skydriverctl watch --after 0 --limit 100
-skydriverctl directory <directory-id>
-skydriverctl driver register aliyun-main \
-  --kind aliyundrive-open/v2 --config-file ./aliyun-config.json --check
 skydriverctl vfs acl show /releases
-skydriverctl vfs mount show /releases
-skydriverctl vfs token issue /releases \
-  --action directory.list,content.read \
-  --expires-at <unix-seconds> --idempotency-key release-reader-v1
 ```
 
-Configuration commands validate locally and on the server. Mutations require
-an exact expected revision and stable idempotency key, return a durable receipt,
-and fail closed on ambiguous or incompatible responses. Provider credentials
-are accepted only from owner-private JSON files and are never returned by the
-control plane. The environment-owned `r2-default` credential is a stricter
-exception: the UI never accepts it, and the environment provisioner alone
-moves its exact-bucket Cloudflare authority through that write-only CLI path.
+Provider credentials must come from an owner-private file or an equivalent
+non-argv channel. They are never returned by the control plane.
 
-See [.agents/skills/skydriver-admin/SKILL.md](.agents/skills/skydriver-admin/SKILL.md)
-for the AI operating procedure and
-[.agents/skills/skydriver-admin/references/commands.md](.agents/skills/skydriver-admin/references/commands.md)
-for the complete command contract.
+## Configuration and deployment
 
-## Drivers
+Cloudflare deployment is intentionally separate from the public source tree's
+defaults. Copy the checked-in Wrangler profile into a deployment-owned file,
+replace the `.example` domains and placeholder resource IDs, then select it
+with `SKYDRIVER_WRANGLER_CONFIG`. Keep D1, R2, Worker, and secret identities
+separate between environments.
 
-The current native V2 adapters are:
+See [Cloudflare deployment](docs/cloudflare.md) for resource configuration,
+secret handling, migration, release, audit, and opt-in live acceptance. The
+control plane's [requirements](docs/requirements.md) are normative.
 
-| Driver | Complete upload | Exact range download | Resume/concurrency | Server delete | Notes |
-|---|---:|---:|---:|---:|---|
-| `local-filesystem/v2` | yes | yes | yes | retained/blocked | Cloudflare cannot safely reach an agent-local path; use a hosted driver for automatic physical cleanup |
-| `aliyundrive-open/v2` | yes | yes | journaled, upload concurrency 1 | yes | native Open API; server-owned OAuth renewal; optional OpenList token issuer only |
-| `r2/v1` | yes | yes | resumable multipart and concurrent ranges | yes | `r2-default` is environment-owned; direct short-lived SigV4 URLs; binding-owned cleanup; third-party buckets remain supported |
-| `aws-s3/v1` | yes | yes | resumable multipart and concurrent ranges | yes | official regional AWS endpoints only; expected owner pinned; unversioned general-purpose buckets; conditional write and delete |
+## Documentation
 
-Unsupported capabilities fail closed or return an explicit warning with the
-safe replacement. Additional S3-compatible, Google Drive, and WebDAV adapters must use
-the same complete-object contract; WebDAV implementations without reliable
-range/multipart semantics may degrade with a warning but may not weaken hash
-verification.
+- [Requirements](docs/requirements.md)
+- [VFS V2 protocol](docs/vfs-v2.md)
+- [Management plane](docs/management-plane-v1.md)
+- [VFS authorization](docs/vfs-authorization-v1.md)
+- [Driver SPI](docs/driver-spi.md)
+- [SDK core](docs/sdk-core.md)
+- [Rust client boundary](docs/rust-client-migration.md)
+- [Cloudflare deployment](docs/cloudflare.md)
+- [Transfer performance methodology](docs/transfer-performance-observations.md)
 
-## Environments
+## Security
 
-| Environment | UI/API | D1 | R2 |
-|---|---|---|---|
-| development | `https://dev.skydriver.stormbird.xyz` | `skydriver-index-dev` | `skydriver-manifests-dev` + `skydriver-payload-dev` |
-| production | `https://skydriver.stormbird.xyz` | `skydriver-index-prod` | `skydriver-manifests-prod` + `skydriver-payload-prod` |
+Skydriver handles encryption keys, provider credentials, bearer tokens, and
+filesystem metadata. Please read [SECURITY.md](SECURITY.md) before reporting a
+security issue.
 
-The D1 and R2 names in this table are retained legacy physical resources. Their
-stable IDs and contents are reused by Skydriver; renaming them in place would
-not improve isolation and could orphan encrypted data. Both custom domains
-disable `workers.dev`. Environment resource identifiers,
-deployment checks, and operator bootstrap are documented in
-[docs/cloudflare.md](docs/cloudflare.md).
+The project policy is simple: secrets and credentials must never enter Git,
+logs, command arguments, browser storage, test artifacts, or API responses.
+Use placeholders in examples and short-lived credentials for acceptance tests.
 
-## Development
+## Contributing
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md), then run the repository gate from the
+pinned shell:
 
 ```bash
-nix develop
-just verify
+nix develop -c just verify
 ```
 
-The full gate runs formatting, strict Rust/Go/web lint, race tests, Rust tests,
-real local Worker+D1 protocol tests, UI tests, and dev/prod dry-run builds.
-The small retained Go packages are conformance oracles for the complete-object
-driver contract, durable journal, and shared Merkle/crypto vectors only. There
-is no public Go SDK or CLI and no legacy archive implementation.
+Changes to wire formats, migrations, cryptographic domains, or authorization
+rules must update the relevant normative documentation and regression tests.
 
-Key specifications:
+## License
 
-- [requirements](docs/requirements.md)
-- [VFS V2 protocol](docs/vfs-v2.md)
-- [management plane](docs/management-plane-v1.md)
-- [Cloudflare environments](docs/cloudflare.md)
-- [Rust client boundary](docs/rust-client-migration.md)
+Skydriver is licensed under the [Apache License 2.0](LICENSE).

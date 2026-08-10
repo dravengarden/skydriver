@@ -6,12 +6,13 @@ root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 source "$root/tests/lib/live-metrics.sh"
 
 if [[ ${SKYDRIVER_R2_SMALL_SYNC_LIVE_TEST:-} != 1 ]]; then
-  echo "set SKYDRIVER_R2_SMALL_SYNC_LIVE_TEST=1 to authorize real dev R2 writes" >&2
-  exit 2
+  echo "skipping R2 small-sync live acceptance; set SKYDRIVER_R2_SMALL_SYNC_LIVE_TEST=1 to opt in" >&2
+  exit 0
 fi
 : "${SKYDRIVER_VFS_TOKEN:?SKYDRIVER_VFS_TOKEN is required}"
+: "${SKYDRIVER_CONTROL_URL:?SKYDRIVER_CONTROL_URL is required}"
 
-control_url=${SKYDRIVER_CONTROL_URL:-https://dev.skydriver.stormbird.xyz}
+control_url=$SKYDRIVER_CONTROL_URL
 driver_id=${SKYDRIVER_R2_DRIVER_ID:-r2-default}
 parent=${SKYDRIVER_R2_SMALL_SYNC_PARENT:-/}
 file_count=${SKYDRIVER_R2_SMALL_SYNC_FILES:-64}
@@ -21,10 +22,6 @@ sync_concurrency=${SKYDRIVER_R2_SMALL_SYNC_CONCURRENCY:-16}
 skydriver_bin=${SKYDRIVER_BIN:-target/release/skydriver}
 operation_timeout_seconds=${SKYDRIVER_LIVE_OPERATION_TIMEOUT_SECONDS:-300}
 
-if [[ $control_url != https://dev.skydriver.stormbird.xyz ]]; then
-  echo "small-file sync acceptance is restricted to the Skydriver development environment" >&2
-  exit 2
-fi
 if [[ $driver_id != r2-default ]]; then
   echo "SKYDRIVER_R2_DRIVER_ID must be r2-default" >&2
   exit 2

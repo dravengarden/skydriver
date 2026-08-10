@@ -50,7 +50,13 @@ for (const name of requiredEnvironment) {
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const config = JSON.parse(
-    fs.readFileSync(path.join(repositoryRoot, "control-plane/wrangler.jsonc"), "utf8"),
+    fs.readFileSync(
+        path.resolve(
+            process.env.SKYDRIVER_WRANGLER_CONFIG ??
+                path.join(repositoryRoot, "control-plane/wrangler.jsonc"),
+        ),
+        "utf8",
+    ),
 );
 const profile = environmentProfile(config, environmentName, process.env.CLOUDFLARE_ACCOUNT_ID);
 if (process.env.SKYDRIVER_CONTROL_URL && process.env.SKYDRIVER_CONTROL_URL !== profile.controlUrl) {

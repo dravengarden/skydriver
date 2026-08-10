@@ -29,6 +29,9 @@ dependencies:
     cargo deny check
     cargo machete --with-metadata
 
+secrets-check:
+    gitleaks dir . --config gitleaks.toml --redact --no-banner
+
 test:
     bash tests/architecture-boundaries.sh
     control-plane/tests/schema-retirement.sh
@@ -99,8 +102,8 @@ build:
     cargo build --workspace --all-features --locked
     cargo check -p skydriver-sdk-core --target wasm32-unknown-unknown --locked
     pnpm --filter @skydriver/web build
-    pnpm exec wrangler deploy --dry-run --env dev --config control-plane/wrangler.jsonc
-    pnpm exec wrangler deploy --dry-run --env prod --config control-plane/wrangler.jsonc
+    config="${SKYDRIVER_WRANGLER_CONFIG:-control-plane/wrangler.jsonc}"; pnpm exec wrangler deploy --dry-run --env dev --config "$config"
+    config="${SKYDRIVER_WRANGLER_CONFIG:-control-plane/wrangler.jsonc}"; pnpm exec wrangler deploy --dry-run --env prod --config "$config"
 
 migrate-dev:
     node control-plane/scripts/apply-migrations.mjs dev
@@ -152,4 +155,4 @@ check-r2-prod:
     env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_TOKEN_FACTORY_API_TOKEN -u SKYDRIVER_OPERATOR_CREDENTIAL -u SKYDRIVER_VFS_TOKEN cargo build -p skydriver-cli --bin skydriverctl --locked
     node control-plane/scripts/provision-default-r2.mjs prod --check
 
-verify: toolchain-check check-format lint dependencies build test
+verify: toolchain-check check-format lint dependencies secrets-check build test

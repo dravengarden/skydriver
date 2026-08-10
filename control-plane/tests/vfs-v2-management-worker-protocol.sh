@@ -66,8 +66,8 @@ wrangler=(
     json_object('root', '$state_directory/provider-secondary'), 1, 1, 1, 1
   )" >/dev/null
 
-admin_token=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA
-operator_account=draven
+admin_token=$(printf '%s' 'public-test-management-credential' | sha256sum | cut -c1-64 | xxd -r -p | base64 -w0 | tr '+/' '-_' | tr -d '=')
+operator_account=operator
 export SKYDRIVER_OPERATOR_ACCOUNT="$operator_account"
 
 setsid "${wrangler[@]}" dev \
@@ -75,7 +75,7 @@ setsid "${wrangler[@]}" dev \
   --persist-to "$state_directory" \
   --port "$port" \
   --inspector-port 0 \
-  --var SKYDRIVER_VFS_MASTER_KEY_V1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA \
+  --var SKYDRIVER_VFS_MASTER_KEY_V1:"$admin_token" \
   --var SKYDRIVER_OPERATOR_ACCOUNT:"$operator_account" \
   --var SKYDRIVER_ADMIN_TOKEN:"$admin_token" \
   --show-interactive-dev-session=false >"$server_log" 2>&1 &
